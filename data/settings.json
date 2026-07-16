@@ -1,0 +1,19 @@
+{
+  "language": "tr",
+  "theme": "dark",
+  "map_layer": "vector",
+  "cache_enabled": true,
+  "cache_limit_mb": 2051,
+  "cache_path": "/home/tahsincr/Masa\u00fcst\u00fc/yki/data/map-cache",
+  "video_source_type": "udp",
+  "video_source_uri": "",
+  "mock_mode": false,
+  "default_radius_takeoff": 35,
+  "default_radius_waypoint": 35,
+  "default_radius_loiter": 75,
+  "default_radius_land": 35,
+  "default_radius_hss": 100,
+  "map_center_min_zoom": 13,
+  "vehicle_trail_limit": 80,
+  "contact_trail_limit": 40
+}

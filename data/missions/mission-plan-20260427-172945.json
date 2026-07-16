@@ -1,0 +1,351 @@
+{
+  "saved_at": "2026-04-27T14:29:51.481961",
+  "base_layer": "vector",
+  "active_tool": "no_fly",
+  "selected_overlay_id": "2dd14b8e-a468-4336-b737-a5b49c74d144",
+  "overlays": [
+    {
+      "overlay_id": "bf9e2229-0b17-4502-9370-6e99b0b02f3d",
+      "overlay_type": "takeoff",
+      "label": "TKF 1",
+      "points": [
+        [
+          39.86702766391711,
+          32.73844242095948
+        ]
+      ],
+      "color": "#78b7ff",
+      "radius_m": 35,
+      "metadata": {
+        "route_order": 1,
+        "independent": false,
+        "keep_inside": false
+      }
+    },
+    {
+      "overlay_id": "9090bdc4-c4f4-45d0-858b-fb7842842651",
+      "overlay_type": "takeoff",
+      "label": "TKF 2",
+      "points": [
+        [
+          39.870716731924226,
+          32.74415016174317
+        ]
+      ],
+      "color": "#78b7ff",
+      "radius_m": 35,
+      "metadata": {
+        "route_order": 2,
+        "independent": false,
+        "keep_inside": false
+      }
+    },
+    {
+      "overlay_id": "00ae8160-b54b-4f15-ac42-3561a8726f81",
+      "overlay_type": "takeoff",
+      "label": "TKF 3",
+      "points": [
+        [
+          39.86850990258249,
+          32.748441696167
+        ]
+      ],
+      "color": "#78b7ff",
+      "radius_m": 35,
+      "metadata": {
+        "route_order": 3,
+        "independent": false,
+        "keep_inside": false
+      }
+    },
+    {
+      "overlay_id": "e1669ae8-0b7f-4f24-8fe8-d5bf0f5ccabc",
+      "overlay_type": "takeoff",
+      "label": "TKF 4",
+      "points": [
+        [
+          39.86159251482165,
+          32.75294780731202
+        ]
+      ],
+      "color": "#78b7ff",
+      "radius_m": 35,
+      "metadata": {
+        "route_order": 4,
+        "independent": false,
+        "keep_inside": false
+      }
+    },
+    {
+      "overlay_id": "15ee8d4d-072e-412d-a6a5-7ecbb535b748",
+      "overlay_type": "takeoff",
+      "label": "TKF 5",
+      "points": [
+        [
+          39.86067014375976,
+          32.74766921997071
+        ]
+      ],
+      "color": "#78b7ff",
+      "radius_m": 35,
+      "metadata": {
+        "route_order": 5,
+        "independent": false,
+        "keep_inside": false
+      }
+    },
+    {
+      "overlay_id": "a3be26ac-3aa7-492d-8715-d1608eaddb0b",
+      "overlay_type": "takeoff",
+      "label": "TKF 6",
+      "points": [
+        [
+          39.86445837436707,
+          32.74045944213868
+        ]
+      ],
+      "color": "#78b7ff",
+      "radius_m": 35,
+      "metadata": {
+        "route_order": 6,
+        "independent": false,
+        "keep_inside": false
+      }
+    },
+    {
+      "overlay_id": "d1aa161b-0e74-4bcb-9d83-ef87c420f058",
+      "overlay_type": "waypoint",
+      "label": "WP 7",
+      "points": [
+        [
+          39.87246238245461,
+          32.73797035217286
+        ]
+      ],
+      "color": "#74d99f",
+      "radius_m": 35,
+      "metadata": {
+        "route_order": 7,
+        "independent": false,
+        "keep_inside": false
+      }
+    },
+    {
+      "overlay_id": "e0e650ce-2327-4426-b3e0-1dc194b465e0",
+      "overlay_type": "waypoint",
+      "label": "WP 8",
+      "points": [
+        [
+          39.86571009155163,
+          32.73676872253419
+        ]
+      ],
+      "color": "#74d99f",
+      "radius_m": 35,
+      "metadata": {
+        "route_order": 8,
+        "independent": false,
+        "keep_inside": false
+      }
+    },
+    {
+      "overlay_id": "83386418-cbbe-40c4-b25e-550df3d7a0e2",
+      "overlay_type": "waypoint",
+      "label": "WP 9",
+      "points": [
+        [
+          39.866830029675384,
+          32.747325897216804
+        ]
+      ],
+      "color": "#74d99f",
+      "radius_m": 35,
+      "metadata": {
+        "route_order": 9,
+        "independent": false,
+        "keep_inside": false
+      }
+    },
+    {
+      "overlay_id": "2f76b612-5146-46e1-a4c3-31434ab5a1b4",
+      "overlay_type": "waypoint",
+      "label": "WP 10",
+      "points": [
+        [
+          39.870914354968946,
+          32.750329971313484
+        ]
+      ],
+      "color": "#74d99f",
+      "radius_m": 35,
+      "metadata": {
+        "route_order": 10,
+        "independent": false,
+        "keep_inside": false
+      }
+    },
+    {
+      "overlay_id": "cfa4f7d9-97d6-4247-af98-e879b3341d65",
+      "overlay_type": "waypoint",
+      "label": "WP 11",
+      "points": [
+        [
+          39.870156796872344,
+          32.75316238403321
+        ]
+      ],
+      "color": "#74d99f",
+      "radius_m": 35,
+      "metadata": {
+        "route_order": 11,
+        "independent": false,
+        "keep_inside": false
+      }
+    },
+    {
+      "overlay_id": "47630d93-4386-4eae-aeb2-7fe6df5fa84e",
+      "overlay_type": "waypoint",
+      "label": "WP 12",
+      "points": [
+        [
+          39.87559126750611,
+          32.75608062744141
+        ]
+      ],
+      "color": "#74d99f",
+      "radius_m": 35,
+      "metadata": {
+        "route_order": 12,
+        "independent": false,
+        "keep_inside": false
+      }
+    },
+    {
+      "overlay_id": "7104265a-cc66-4115-8ac2-5120abb39ff6",
+      "overlay_type": "land",
+      "label": "LND 13",
+      "points": [
+        [
+          39.863305456757146,
+          32.745308876037605
+        ]
+      ],
+      "color": "#2f7ed8",
+      "radius_m": 35,
+      "metadata": {
+        "route_order": 13,
+        "independent": false,
+        "keep_inside": false
+      }
+    },
+    {
+      "overlay_id": "d9409b31-d02a-4f07-a64a-529b2214fa2c",
+      "overlay_type": "land",
+      "label": "LND 14",
+      "points": [
+        [
+          39.86235016749027,
+          32.73960113525391
+        ]
+      ],
+      "color": "#2f7ed8",
+      "radius_m": 35,
+      "metadata": {
+        "route_order": 14,
+        "independent": false,
+        "keep_inside": false
+      }
+    },
+    {
+      "overlay_id": "e774d16a-18f3-4523-b9f5-c293cce5cc74",
+      "overlay_type": "land",
+      "label": "LND 15",
+      "points": [
+        [
+          39.86495247598373,
+          32.73565292358399
+        ]
+      ],
+      "color": "#2f7ed8",
+      "radius_m": 35,
+      "metadata": {
+        "route_order": 15,
+        "independent": false,
+        "keep_inside": false
+      }
+    },
+    {
+      "overlay_id": "ded9c9ff-8eca-4c05-9aea-3aa84ba7a36c",
+      "overlay_type": "hss",
+      "label": "HSS 1",
+      "points": [
+        [
+          39.871902461652276,
+          32.746810913085945
+        ]
+      ],
+      "color": "#eb6464",
+      "radius_m": 100,
+      "metadata": {
+        "route_order": null,
+        "independent": true,
+        "keep_inside": false
+      }
+    },
+    {
+      "overlay_id": "265d08f3-0393-44bd-b6ce-744e5f0c558d",
+      "overlay_type": "hss",
+      "label": "HSS 2",
+      "points": [
+        [
+          39.86982742117739,
+          32.744064331054695
+        ]
+      ],
+      "color": "#eb6464",
+      "radius_m": 100,
+      "metadata": {
+        "route_order": null,
+        "independent": true,
+        "keep_inside": false
+      }
+    },
+    {
+      "overlay_id": "68afa10e-8bfd-4959-b794-5d6c810d58cf",
+      "overlay_type": "hss",
+      "label": "HSS 3",
+      "points": [
+        [
+          39.86564421226914,
+          32.74234771728516
+        ]
+      ],
+      "color": "#eb6464",
+      "radius_m": 100,
+      "metadata": {
+        "route_order": null,
+        "independent": true,
+        "keep_inside": false
+      }
+    },
+    {
+      "overlay_id": "2dd14b8e-a468-4336-b737-a5b49c74d144",
+      "overlay_type": "hss",
+      "label": "HSS 4",
+      "points": [
+        [
+          39.863470160458924,
+          32.74118900299073
+        ]
+      ],
+      "color": "#eb6464",
+      "radius_m": 100,
+      "metadata": {
+        "route_order": null,
+        "independent": true,
+        "keep_inside": false
+      }
+    }
+  ],
+  "contacts": []
+}
