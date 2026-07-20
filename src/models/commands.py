@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any
+
+from src.core.abstracts import Model
+
+
+@dataclass(frozen=True, slots=True)
+class CommandRequest(Model):
+    code: str
+    parameters: dict[str, Any] = field(default_factory=dict)
+    source: str = "ui"
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "code", self.code.strip().upper())
+        object.__setattr__(self, "parameters", dict(self.parameters))
+        if not self.code:
+            raise ValueError("Komut kodu boş olamaz")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "parameters": dict(self.parameters),
+            "source": self.source,
+            "timestamp": self.timestamp.isoformat(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CommandResult(Model):
+    request: CommandRequest
+    accepted: bool
+    message: str
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "details", dict(self.details))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "request": self.request.to_dict(),
+            "accepted": self.accepted,
+            "message": self.message,
+            "details": dict(self.details),
+        }

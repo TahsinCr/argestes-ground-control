@@ -1,12 +1,37 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from datetime import datetime
+import math
+from dataclasses import asdict, dataclass, field, replace
+from datetime import UTC, datetime
 from typing import Any
+
+from src.core.abstracts import Model
+
+
+@dataclass(frozen=True, slots=True)
+class TargetTrack(Model):
+    """SİHA görüntü işleme hattının ürettiği hedef kutusu."""
+
+    locked: bool = False
+    center_x: int = 0
+    center_y: int = 0
+    width: int = 0
+    height: int = 0
+    vehicle_source: str = ""
+
+    def __post_init__(self) -> None:
+        values = (int(self.center_x), int(self.center_y), int(self.width), int(self.height))
+        if any(value < 0 for value in values):
+            raise ValueError("Hedef kutusu değerleri negatif olamaz")
+        if self.locked and (self.width <= 0 or self.height <= 0 or not self.vehicle_source.strip()):
+            raise ValueError("Kilitli hedef SİHA kaynağı ve pozitif kutu boyutu içermeli")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(slots=True)
-class TelemetrySnapshot:
+class TelemetrySnapshot(Model):
     team_id: int
     latitude: float
     longitude: float
@@ -22,8 +47,10 @@ class TelemetrySnapshot:
     battery_percent: int
     battery_voltage: float
     link_quality: int
+    link_quality_source: str
     gps_satellites: int
     gps_fix: str
+    gps_hdop: float | None
     flight_mode: str
     mission_index: int
     mission_total: int
@@ -39,6 +66,7 @@ class TelemetrySnapshot:
     packets_in: int
     packets_out: int
     bandwidth_kbps: float
+    position_valid: bool = False
     throttle_percent: float = 0.0
     home_distance: float = 0.0
     home_heading: float = 0.0
@@ -48,9 +76,78 @@ class TelemetrySnapshot:
     ekf_ok: bool = False
     system_status: str = "DISCONNECTED"
     warnings: list[str] = field(default_factory=list)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     server_time: datetime | str | None = None
     uav_time: datetime | str | None = None
+    target_track: TargetTrack = field(default_factory=TargetTrack)
+    position_received_at: datetime | None = None
+    uav_time_received_at: datetime | None = None
+    link_quality_received_at: datetime | None = None
+    home_latitude: float | None = None
+    home_longitude: float | None = None
+    radio_local_rssi: int | None = None
+    radio_remote_rssi: int | None = None
+    radio_local_noise: int | None = None
+    radio_remote_noise: int | None = None
+    radio_tx_buffer: int | None = None
+
+    @property
+    def has_valid_position(self) -> bool:
+        return bool(
+            self.position_valid
+            and math.isfinite(self.latitude)
+            and math.isfinite(self.longitude)
+            and -90.0 <= self.latitude <= 90.0
+            and -180.0 <= self.longitude <= 180.0
+            and not (abs(self.latitude) < 1e-9 and abs(self.longitude) < 1e-9)
+        )
+
+    def has_fresh_vehicle_telemetry(
+        self,
+        max_age_s: float,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        if max_age_s <= 0:
+            raise ValueError("Telemetri tazelik süresi pozitif olmalı")
+        if not self.telemetry_link or not self.autopilot_link or not self.has_valid_position:
+            return False
+        if not isinstance(self.uav_time, datetime) or self.uav_time.tzinfo is None:
+            return False
+        received = (self.position_received_at, self.uav_time_received_at)
+        if any(value is None or value.tzinfo is None for value in received):
+            return False
+        current = (now or datetime.now(UTC)).astimezone(UTC)
+        return all(
+            0.0 <= (current - value.astimezone(UTC)).total_seconds() <= max_age_s
+            for value in received
+            if value is not None
+        )
+
+    def has_fresh_link_quality(
+        self,
+        max_age_s: float,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        if max_age_s <= 0:
+            raise ValueError("Bağlantı kalitesi tazelik süresi pozitif olmalı")
+        received_at = self.link_quality_received_at
+        if (
+            not self.telemetry_link
+            or not self.autopilot_link
+            or not self.link_quality_source
+            or received_at is None
+            or received_at.tzinfo is None
+        ):
+            return False
+        current = (now or datetime.now(UTC)).astimezone(UTC)
+        age_s = (current - received_at.astimezone(UTC)).total_seconds()
+        return 0.0 <= age_s <= max_age_s
+
+    def copy(self, **changes: Any) -> "TelemetrySnapshot":
+        changes.setdefault("warnings", list(self.warnings))
+        return replace(self, **changes)
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -59,6 +156,12 @@ class TelemetrySnapshot:
             payload["server_time"] = self.server_time.isoformat()
         if isinstance(self.uav_time, datetime):
             payload["uav_time"] = self.uav_time.isoformat()
+        if self.position_received_at is not None:
+            payload["position_received_at"] = self.position_received_at.isoformat()
+        if self.uav_time_received_at is not None:
+            payload["uav_time_received_at"] = self.uav_time_received_at.isoformat()
+        if self.link_quality_received_at is not None:
+            payload["link_quality_received_at"] = self.link_quality_received_at.isoformat()
         return payload
 
     @classmethod
@@ -79,8 +182,10 @@ class TelemetrySnapshot:
             battery_percent=0,
             battery_voltage=0.0,
             link_quality=0,
+            link_quality_source="",
             gps_satellites=0,
             gps_fix="NO FIX",
+            gps_hdop=None,
             flight_mode="DISCONNECTED",
             mission_index=0,
             mission_total=0,
@@ -96,6 +201,7 @@ class TelemetrySnapshot:
             packets_in=0,
             packets_out=0,
             bandwidth_kbps=0.0,
+            position_valid=False,
             throttle_percent=0.0,
             home_distance=0.0,
             home_heading=0.0,

@@ -1,65 +1,377 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from src.services.base import CommandService, MissionService, TelemetryService, VideoService
-from src.services.logging_service import LoggingService
-from src.services.mock import (
-    MockCommandService,
-    MockMissionService,
+from src.core.dependency import DependencyContainer
+from src.core.events import Subscription
+from src.core.mavlink import MavlinkClient, MavlinkEndpoint
+from src.models.mission import MissionState
+from src.services.catalogs import configured_orin_commands, default_parameters
+from src.services.contracts.archive import MissionArchiveRepository
+from src.services.contracts.commands import CommandService
+from src.services.contracts.competition import CompetitionService
+from src.services.contracts.connections import ConnectionControlService
+from src.services.contracts.logging import LogService
+from src.services.contracts.mission import MissionService
+from src.services.contracts.orin import OrinService
+from src.services.contracts.parameters import ParameterService
+from src.services.contracts.settings import SettingsRepository
+from src.services.contracts.telemetry import TelemetryService
+from src.services.contracts.tile_cache import TileCacheService
+from src.services.contracts.vehicle import VehicleService
+from src.services.contracts.video import VideoService
+from src.services.facade import BackendFacade
+from src.services.competition import TeknofestCompetitionService
+from src.services.logging_service import LoggingService, ServiceLogHandler
+from src.services.mission_archive import MissionArchiveService
+from src.services.orchestration.commands import DispatchCommandService
+from src.services.orchestration.connections import BackendConnectionControlService
+from src.services.processing.mission import MissionStateService
+from src.services.processing.parameters import MutableParameterService, VehicleParameterService
+from src.services.processing.telemetry import (
     MockTelemetryService,
-    MockVideoService,
-)
-from src.services.planning import (
-    LocalCommandService,
-    PassiveVideoService,
-    PlanningMissionService,
-    ZeroTelemetryService,
+    MutableTelemetryService,
+    VehicleTelemetryService,
 )
 from src.services.settings import SettingsService
+from src.services.tile_cache import TileCacheServer
+from src.services.vehicle import (
+    MavlinkOrinService,
+    MavlinkVehicleService,
+    NullOrinService,
+    NullVehicleService,
+)
+from src.services.video import GStreamerVideoService, MutableVideoService
 
 
 @dataclass(slots=True)
 class RuntimeServices:
+    container: DependencyContainer
     log_service: LoggingService
     settings_service: SettingsService
+    vehicle_service: VehicleService
     telemetry_service: TelemetryService
     mission_service: MissionService
+    orin_service: OrinService
     command_service: CommandService
+    parameter_service: ParameterService
     video_service: VideoService
+    tile_cache_service: TileCacheServer
+    competition_service: CompetitionService
+    connection_service: ConnectionControlService
+    archive_service: MissionArchiveService
+    facade: BackendFacade
+    _subscriptions: list[Subscription] = field(default_factory=list, repr=False)
+    _python_handler: ServiceLogHandler | None = field(default=None, repr=False)
+    _started: bool = field(default=False, repr=False)
+    _starting: bool = field(default=False, repr=False)
+    _stop_requested: threading.Event = field(
+        default_factory=threading.Event,
+        repr=False,
+    )
+    _lifecycle_lock: threading.RLock = field(
+        default_factory=threading.RLock,
+        repr=False,
+    )
+    _stop_lock: threading.Lock = field(
+        default_factory=threading.Lock,
+        repr=False,
+    )
 
     def start(self) -> None:
-        self.telemetry_service.start()
-        self.mission_service.start()
-        self.video_service.start()
+        with self._lifecycle_lock:
+            if self._started or self._starting:
+                return
+            self._starting = True
+            self._stop_requested.clear()
+        self._install_python_logging()
+        try:
+            self._start_services()
+        finally:
+            cancelled = self._stop_requested.is_set()
+            with self._lifecycle_lock:
+                self._starting = False
+                self._started = not cancelled
+            if cancelled:
+                self._stop_services()
+
+    def _start_services(self) -> None:
+        for name, service in self._service_start_order():
+            if self._stop_requested.is_set():
+                return
+            try:
+                service.start()
+            except Exception as exc:
+                self.log_service.event(
+                    "RUNTIME",
+                    f"runtime.{name}_start_failed",
+                    f"{name} servisi başlatılamadı: {exc}",
+                    severity="danger",
+                )
+        settings = self.settings_service.current
+        if (
+            not self._stop_requested.is_set()
+            and not settings.backend.mock_mode
+            and settings.backend.mavlink.auto_connect
+        ):
+            try:
+                self.vehicle_service.start()
+            except Exception as exc:
+                self.log_service.event(
+                    "VEHICLE",
+                    "vehicle.connect_failed",
+                    f"Uçuş cihazı bağlantısı kurulamadı: {exc}",
+                    severity="danger",
+                    details={"endpoint": settings.backend.mavlink.endpoint},
+                )
 
     def stop(self) -> None:
-        self.telemetry_service.stop()
-        self.video_service.stop()
+        with self._lifecycle_lock:
+            if not self._started and not self._starting:
+                return
+            self._stop_requested.set()
+            self._started = False
+        self._stop_services()
+
+    def _stop_services(self) -> None:
+        with self._stop_lock:
+            for name, service in self._service_stop_order():
+                try:
+                    service.stop()
+                except Exception as exc:
+                    self.log_service.event(
+                        "RUNTIME",
+                        f"runtime.{name}_stop_failed",
+                        f"{name} servisi durdurulamadı: {exc}",
+                        severity="danger",
+                    )
+            self._remove_python_logging()
+
+    def _service_start_order(self):
+        return (
+            ("tile_cache", self.tile_cache_service),
+            ("mission", self.mission_service),
+            ("video", self.video_service),
+            ("telemetry", self.telemetry_service),
+            ("competition", self.competition_service),
+            ("parameters", self.parameter_service),
+            ("orin", self.orin_service),
+            ("connections", self.connection_service),
+        )
+
+    def _service_stop_order(self):
+        return (
+            ("connections", self.connection_service),
+            ("competition", self.competition_service),
+            ("parameters", self.parameter_service),
+            ("orin", self.orin_service),
+            ("telemetry", self.telemetry_service),
+            ("mission", self.mission_service),
+            ("vehicle", self.vehicle_service),
+            ("video", self.video_service),
+            ("tile_cache", self.tile_cache_service),
+        )
+
+    close = stop
+
+    def _install_python_logging(self) -> None:
+        if self._python_handler is not None:
+            return
+        self._python_handler = self.log_service.create_python_handler("PYTHON")
+        self._python_handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
+        logging.getLogger().addHandler(self._python_handler)
+
+    def _remove_python_logging(self) -> None:
+        if self._python_handler is None:
+            return
+        logging.getLogger().removeHandler(self._python_handler)
+        self._python_handler.close()
+        self._python_handler = None
 
 
 def create_runtime_services(base_dir: Path) -> RuntimeServices:
-    settings_service = SettingsService(base_dir=base_dir)
-    log_service = LoggingService()
-
-    if settings_service.current.mock_mode:
-        telemetry_service = MockTelemetryService(log_service.child("TELEM"))
-        mission_service = MockMissionService(log_service.child("MISSION"))
-        command_service = MockCommandService(log_service.child("CMD"))
-        video_service = MockVideoService(log_service.child("VIDEO"))
-        telemetry_service.telemetry_updated.connect(video_service.consume_snapshot)
+    log_service = LoggingService(log_path=base_dir / "data" / "logs" / "yki.jsonl")
+    settings_service = SettingsService(base_dir=base_dir, logger=log_service.child("SETTINGS"))
+    settings = settings_service.current
+    try:
+        orin_command_codes = configured_orin_commands(base_dir / "config.json")
+    except (OSError, ValueError) as exc:
+        orin_command_codes = ()
+        log_service.event(
+            "ORIN",
+            "orin.command_catalog_failed",
+            f"Orin komut kataloğu yüklenemedi: {exc}",
+            severity="danger",
+            details={"config_path": str(base_dir / "config.json")},
+        )
     else:
-        telemetry_service = ZeroTelemetryService(log_service.child("TELEM"))
-        mission_service = PlanningMissionService(log_service.child("MISSION"))
-        command_service = LocalCommandService(log_service.child("CMD"))
-        video_service = PassiveVideoService(log_service.child("VIDEO"))
+        if orin_command_codes:
+            log_service.event(
+                "ORIN",
+                "orin.command_catalog_loaded",
+                f"{len(orin_command_codes)} yapılandırılmış Orin komutu yüklendi",
+                severity="success",
+                details={"commands": list(orin_command_codes)},
+            )
 
-    return RuntimeServices(
+    mavlink_client: MavlinkClient | None = None
+    if not settings.backend.mock_mode:
+        mavlink_settings = settings.backend.mavlink
+        endpoint = MavlinkEndpoint(
+            uri=mavlink_settings.endpoint,
+            baud=mavlink_settings.baud,
+            heartbeat_timeout=float(mavlink_settings.heartbeat_timeout),
+            dialect=mavlink_settings.dialect,
+            source_system=mavlink_settings.source_system,
+            source_component=mavlink_settings.source_component,
+            autoreconnect=mavlink_settings.autoreconnect,
+        )
+        mavlink_client = MavlinkClient(endpoint)
+        vehicle_service: VehicleService = MavlinkVehicleService(
+            mavlink_client,
+            log_service.child("VEHICLE"),
+            operation_timeout=float(mavlink_settings.operation_timeout),
+            default_mission_altitude=float(settings.backend.mission.default_altitude_m),
+        )
+        telemetry_service: TelemetryService = VehicleTelemetryService(
+            vehicle_service,
+            log_service.child("TELEMETRY"),
+        )
+        parameter_service: ParameterService = VehicleParameterService(
+            default_parameters(),
+            vehicle_service,
+            log_service.child("PARAMETER"),
+            write_timeout=float(mavlink_settings.operation_timeout),
+            refresh_on_connect=mavlink_settings.sync_parameters_on_connect,
+        )
+        orin_service: OrinService = MavlinkOrinService(
+            mavlink_client,
+            vehicle_service,
+            settings.backend.orin,
+            log_service.child("ORIN"),
+        )
+    else:
+        vehicle_service = NullVehicleService()
+        telemetry_service = (
+            MockTelemetryService(log_service.child("TELEMETRY"))
+            if settings.backend.mock_mode
+            else MutableTelemetryService(log_service.child("TELEMETRY"))
+        )
+        parameter_service = MutableParameterService(default_parameters())
+        orin_service = NullOrinService()
+
+    mission_service = MissionStateService(
+        log_service.child("MISSION"),
+        initial_state=None if settings.backend.mock_mode else MissionState(),
+        default_radii=settings.backend.mission.radii,
+        vehicle=vehicle_service if mavlink_client is not None else None,
+        sync_from_vehicle_on_connect=settings.backend.mavlink.sync_mission_on_connect,
+    )
+    command_service = DispatchCommandService(
+        vehicle_service,
+        parameter_service,
+        log_service.child("COMMAND"),
+        mission=mission_service,
+        orin=orin_service,
+        configured_orin_tasks=orin_command_codes,
+    )
+    video_service = _create_video_service(settings, log_service)
+    tile_cache_service = TileCacheServer(
+        cache_path=settings.backend.cache.path,
+        enabled=settings.backend.cache.enabled,
+        limit_mb=settings.backend.cache.limit_mb,
+    )
+    archive_service = MissionArchiveService(base_dir)
+    competition_service = TeknofestCompetitionService(
+        settings.backend.competition,
+        telemetry_service,
+        mission_service,
+        vehicle_service,
+        log_service.child("TEKNOFEST"),
+    )
+    connection_service = BackendConnectionControlService(
+        settings=settings_service,
+        vehicle=vehicle_service,
+        telemetry=telemetry_service,
+        video=video_service,
+        competition=competition_service,
+        orin=orin_service,
+        logger=log_service.child("CONNECTION"),
+    )
+
+    container = DependencyContainer()
+    container.instance(LogService, log_service)
+    container.instance(SettingsRepository, settings_service)
+    container.instance(VehicleService, vehicle_service)
+    container.instance(TelemetryService, telemetry_service)
+    container.instance(MissionService, mission_service)
+    container.instance(OrinService, orin_service)
+    container.instance(CommandService, command_service)
+    container.instance(ParameterService, parameter_service)
+    container.instance(VideoService, video_service)
+    container.instance(TileCacheService, tile_cache_service)
+    container.instance(CompetitionService, competition_service)
+    container.instance(ConnectionControlService, connection_service)
+    container.instance(MissionArchiveRepository, archive_service)
+    if mavlink_client is not None:
+        container.instance(MavlinkClient, mavlink_client)
+
+    facade = BackendFacade(
+        telemetry=container.resolve(TelemetryService),
+        competition=container.resolve(CompetitionService),
+        mission=container.resolve(MissionService),
+        orin=container.resolve(OrinService),
+        commands=container.resolve(CommandService),
+        parameters=container.resolve(ParameterService),
+        settings=container.resolve(SettingsRepository),
+    )
+    runtime = RuntimeServices(
+        container=container,
         log_service=log_service,
         settings_service=settings_service,
+        vehicle_service=vehicle_service,
         telemetry_service=telemetry_service,
         mission_service=mission_service,
+        orin_service=orin_service,
         command_service=command_service,
+        parameter_service=parameter_service,
         video_service=video_service,
+        tile_cache_service=tile_cache_service,
+        competition_service=competition_service,
+        connection_service=connection_service,
+        archive_service=archive_service,
+        facade=facade,
+    )
+
+    def apply_settings(updated) -> None:
+        mission_service.set_default_radii(updated.backend.mission.radii)
+        vehicle_service.set_default_mission_altitude(
+            updated.backend.mission.default_altitude_m
+        )
+        tile_cache_service.configure(
+            cache_path=updated.backend.cache.path,
+            enabled=updated.backend.cache.enabled,
+            limit_mb=updated.backend.cache.limit_mb,
+        )
+        competition_service.configure(updated.backend.competition)
+        orin_service.configure(updated.backend.orin)
+
+    runtime._subscriptions.append(settings_service.changed.subscribe(apply_settings))
+    return runtime
+
+
+def _create_video_service(settings, log_service: LoggingService) -> VideoService:
+    backend = settings.backend
+    if backend.mock_mode or backend.video_source_type == "mock":
+        return MutableVideoService(log_service.child("VIDEO"))
+    return GStreamerVideoService(
+        backend.video_source_type,
+        backend.video_source_uri,
+        log_service.child("VIDEO"),
+        latency_ms=backend.video_latency_ms,
+        codec=backend.video_codec,
+        frame_timeout_s=backend.video_frame_timeout_s,
     )

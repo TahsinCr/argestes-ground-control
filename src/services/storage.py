@@ -16,13 +16,23 @@ def load_json_file(path: str | Path, default: dict[str, Any] | None = None) -> d
     file_path = Path(path)
     if not file_path.exists():
         return dict(default or {})
-    return json.loads(file_path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(file_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        if default is None:
+            raise
+        return dict(default)
+    if not isinstance(payload, dict):
+        raise ValueError(f"JSON kökü nesne olmalı: {file_path}")
+    return payload
 
 
 def save_json_file(path: str | Path, payload: dict[str, Any]) -> None:
     file_path = Path(path)
     ensure_directory(file_path.parent)
-    file_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    temporary = file_path.with_suffix(f"{file_path.suffix}.tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(file_path)
 
 
 def clear_directory_contents(path: str | Path) -> Path:

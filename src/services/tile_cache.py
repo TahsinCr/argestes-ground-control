@@ -12,8 +12,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
 
-from PyQt6.QtCore import QObject, pyqtSignal
-
+from src.core.events import EventStream
+from src.services.contracts.tile_cache import TileCacheService
 from src.services.storage import ensure_directory
 
 
@@ -58,7 +58,7 @@ class _TileHttpServer(ThreadingHTTPServer):
 
 
 class _TileHandler(BaseHTTPRequestHandler):
-    server_version = "KuzeyTileCache/2.0"
+    server_version = "YKITileCache/2.0"
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib callback name
         result = self.server.cache.handle_request(self.path)  # type: ignore[attr-defined]
@@ -69,15 +69,19 @@ class _TileHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(result.payload)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Cache-Control", "no-store, max-age=0")
-        self.send_header("X-Kuzey-Tile-Cache", result.cache_state)
+        self.send_header("X-YKI-Tile-Cache", result.cache_state)
         self.end_headers()
-        self.wfile.write(result.payload)
+        try:
+            self.wfile.write(result.payload)
+        except (BrokenPipeError, ConnectionResetError):
+            # WebEngine kapanırken devam eden tile isteğini iptal edebilir.
+            return
 
     def log_message(self, _format: str, *_args: Any) -> None:
         return
 
 
-class TileCacheServer(QObject):
+class TileCacheServer(TileCacheService):
     """Cache-first local tile server used by Leaflet.
 
     Leaflet only talks to this local server when map cache is enabled. The
@@ -85,17 +89,16 @@ class TileCacheServer(QObject):
     missing tile once, write it atomically, then answer the browser.
     """
 
-    cache_changed = pyqtSignal(int)
-
     def __init__(
         self,
         *,
         cache_path: str | Path,
         enabled: bool,
         limit_mb: int,
-        parent: QObject | None = None,
+        parent: object | None = None,
     ) -> None:
-        super().__init__(parent)
+        del parent
+        self._cache_changed = EventStream[int]()
         self._cache_path = Path(cache_path)
         self._enabled = enabled
         self._limit_mb = limit_mb
@@ -108,6 +111,14 @@ class TileCacheServer(QObject):
         self._last_persist_at = 0.0
         self._writes_since_persist = 0
         self._load_from_disk()
+
+    @property
+    def cache_changed(self) -> EventStream[int]:
+        return self._cache_changed
+
+    @property
+    def running(self) -> bool:
+        return self._server is not None and self._thread is not None and self._thread.is_alive()
 
     @property
     def base_url(self) -> str:
@@ -126,14 +137,14 @@ class TileCacheServer(QObject):
             self._enabled = enabled
             self._limit_mb = limit_mb
             self._load_from_disk_locked()
-        self.cache_changed.emit(self.count_tiles())
+        self.cache_changed.publish(self.count_tiles())
 
     def start(self) -> None:
         if self._server:
             return
         self._server = _TileHttpServer(("127.0.0.1", 0), _TileHandler)
         self._server.cache = self  # type: ignore[attr-defined]
-        self._thread = threading.Thread(target=self._server.serve_forever, name="KuzeyTileCache", daemon=True)
+        self._thread = threading.Thread(target=self._server.serve_forever, name="YKITileCache", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
@@ -146,12 +157,16 @@ class TileCacheServer(QObject):
         self._server = None
         self._thread = None
 
+    def restart(self) -> None:
+        self.stop()
+        self.start()
+
     def clear(self) -> None:
         with self._lock:
             shutil.rmtree(self._tiles_root, ignore_errors=True)
             self._index.clear()
             self.index_path.unlink(missing_ok=True)
-        self.cache_changed.emit(0)
+        self.cache_changed.publish(0)
 
     def count_tiles(self) -> int:
         with self._lock:
@@ -285,7 +300,7 @@ class TileCacheServer(QObject):
         request = Request(
             url,
             headers={
-                "User-Agent": "KuzeyGCS/1.0 (PyQt6 Ground Control Station)",
+                "User-Agent": "YKI/1.0 (PyQt6 Ground Control Station)",
                 "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
             },
         )
@@ -326,7 +341,7 @@ class TileCacheServer(QObject):
             self._request_persist_locked()
             count = len(self._index)
         if is_new_tile:
-            self.cache_changed.emit(count)
+            self.cache_changed.publish(count)
 
     def _load_from_disk(self) -> None:
         with self._lock:

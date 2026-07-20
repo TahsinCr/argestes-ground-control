@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import logging
+import json
+import os
+import threading
 from dataclasses import replace
+from pathlib import Path
+from typing import Any
 
-from PyQt6.QtCore import QObject, pyqtSignal
-
+from src.core.events import EventStream
 from src.models.logs import LogEntry
+from src.services.contracts.logging import LogService
 
 
 class ServiceLogger:
@@ -16,23 +21,34 @@ class ServiceLogger:
     def emit(self, severity: str, message: str) -> None:
         self._service.log(self._source, message, severity)
 
-    def debug(self, message: str) -> None:
-        self.emit("info", message)
+    def event(
+        self,
+        action: str,
+        message: str,
+        *,
+        severity: str = "info",
+        details: dict[str, Any] | None = None,
+        device_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> None:
+        self._service.event(
+            self._source,
+            action,
+            message,
+            severity=severity,
+            details=details,
+            device_id=device_id,
+            correlation_id=correlation_id,
+        )
 
-    def info(self, message: str) -> None:
-        self.emit("info", message)
-
-    def success(self, message: str) -> None:
-        self.emit("success", message)
-
-    def warning(self, message: str) -> None:
-        self.emit("warning", message)
-
-    def error(self, message: str) -> None:
-        self.emit("danger", message)
+    def debug(self, message: str) -> None: self.emit("debug", message)
+    def info(self, message: str) -> None: self.emit("info", message)
+    def success(self, message: str) -> None: self.emit("success", message)
+    def warning(self, message: str) -> None: self.emit("warning", message)
+    def error(self, message: str) -> None: self.emit("danger", message)
 
 
-class QtLogHandler(logging.Handler):
+class ServiceLogHandler(logging.Handler):
     def __init__(self, log_service: "LoggingService", source: str = "PYLOG") -> None:
         super().__init__()
         self._log_service = log_service
@@ -40,7 +56,7 @@ class QtLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         severity = {
-            logging.DEBUG: "info",
+            logging.DEBUG: "debug",
             logging.INFO: "info",
             logging.WARNING: "warning",
             logging.ERROR: "danger",
@@ -49,17 +65,39 @@ class QtLogHandler(logging.Handler):
         self._log_service.log(self._source, self.format(record), severity)
 
 
-class LoggingService(QObject):
-    entry_emitted = pyqtSignal(object)
+class LoggingService(LogService):
+    """Birden çok arayüzün dinleyebildiği yapılandırılmış merkezi log servisi."""
 
-    def __init__(self, max_entries: int = 1000, parent: QObject | None = None) -> None:
-        super().__init__(parent)
+    def __init__(
+        self,
+        max_entries: int = 1000,
+        *,
+        log_path: Path | None = None,
+        max_file_bytes: int = 10 * 1024 * 1024,
+        backup_count: int = 5,
+    ) -> None:
+        if max_entries <= 0:
+            raise ValueError("max_entries pozitif olmalı")
+        if max_file_bytes <= 0 or backup_count < 0:
+            raise ValueError("Log dosyası limitleri geçersiz")
+        self._entries = EventStream[LogEntry]()
         self._history: list[LogEntry] = []
         self._max_entries = max_entries
+        self._lock = threading.RLock()
+        self._log_path = Path(log_path) if log_path is not None else None
+        self._max_file_bytes = int(max_file_bytes)
+        self._backup_count = int(backup_count)
+        if self._log_path is not None:
+            self._log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def entries(self) -> EventStream[LogEntry]:
+        return self._entries
 
     @property
     def history(self) -> list[LogEntry]:
-        return list(self._history)
+        with self._lock:
+            return [replace(item, details=dict(item.details)) for item in self._history]
 
     def child(self, source: str) -> ServiceLogger:
         return ServiceLogger(self, source)
@@ -67,15 +105,76 @@ class LoggingService(QObject):
     def log(self, source: str, message: str, severity: str = "info") -> None:
         self.emit_entry(LogEntry(source=source, message=message, severity=severity))
 
+    def event(
+        self,
+        source: str,
+        action: str,
+        message: str,
+        *,
+        severity: str = "info",
+        details: dict[str, Any] | None = None,
+        device_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> None:
+        self.emit_entry(
+            LogEntry(
+                source=source,
+                action=action,
+                message=message,
+                severity=severity,
+                details=details or {},
+                device_id=device_id,
+                correlation_id=correlation_id,
+            )
+        )
+
     def emit_entry(self, entry: LogEntry) -> None:
-        self._history.append(entry)
-        if len(self._history) > self._max_entries:
-            self._history = self._history[-self._max_entries :]
-        self.entry_emitted.emit(entry)
+        snapshot = replace(entry, details=dict(entry.details))
+        with self._lock:
+            self._history.append(snapshot)
+            if len(self._history) > self._max_entries:
+                del self._history[: len(self._history) - self._max_entries]
+            self._persist(snapshot)
+        self._entries.publish(replace(snapshot, details=dict(snapshot.details)))
 
     def reemit_history(self) -> None:
-        for entry in self._history:
-            self.entry_emitted.emit(replace(entry))
+        for entry in self.history:
+            self._entries.publish(entry)
 
-    def create_python_handler(self, source: str = "PYLOG") -> QtLogHandler:
-        return QtLogHandler(self, source)
+    def create_python_handler(self, source: str = "PYLOG") -> ServiceLogHandler:
+        return ServiceLogHandler(self, source)
+
+    @property
+    def log_path(self) -> Path | None:
+        return self._log_path
+
+    def _persist(self, entry: LogEntry) -> None:
+        if self._log_path is None:
+            return
+        payload = json.dumps(entry.to_dict(), ensure_ascii=False, default=str, separators=(",", ":"))
+        encoded_size = len(payload.encode("utf-8")) + 1
+        if self._log_path.exists() and self._log_path.stat().st_size + encoded_size > self._max_file_bytes:
+            self._rotate_files()
+        with self._log_path.open("a", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    def _rotate_files(self) -> None:
+        if self._log_path is None:
+            return
+        if self._backup_count == 0:
+            self._log_path.unlink(missing_ok=True)
+            return
+        oldest = self._log_path.with_name(f"{self._log_path.name}.{self._backup_count}")
+        oldest.unlink(missing_ok=True)
+        for index in range(self._backup_count - 1, 0, -1):
+            source = self._log_path.with_name(f"{self._log_path.name}.{index}")
+            if source.exists():
+                source.replace(self._log_path.with_name(f"{self._log_path.name}.{index + 1}"))
+        if self._log_path.exists():
+            self._log_path.replace(self._log_path.with_name(f"{self._log_path.name}.1"))
+
+
+QtLogHandler = ServiceLogHandler

@@ -1,2 +1,1 @@
-"""Kuzey Takimi yer kontrol istasyonu."""
-
+"""Modüler yer kontrol istasyonu uygulaması."""

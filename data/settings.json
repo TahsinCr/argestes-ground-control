@@ -1,19 +1,64 @@
 {
-  "language": "tr",
-  "theme": "dark",
-  "map_layer": "vector",
-  "cache_enabled": true,
-  "cache_limit_mb": 2051,
-  "cache_path": "/home/tahsincr/Masa\u00fcst\u00fc/yki/data/map-cache",
-  "video_source_type": "udp",
-  "video_source_uri": "",
-  "mock_mode": false,
-  "default_radius_takeoff": 35,
-  "default_radius_waypoint": 35,
-  "default_radius_loiter": 75,
-  "default_radius_land": 35,
-  "default_radius_hss": 100,
-  "map_center_min_zoom": 13,
-  "vehicle_trail_limit": 80,
-  "contact_trail_limit": 40
+  "backend": {
+    "mock_mode": false,
+    "video_source_type": "udp",
+    "video_source_uri": "0.0.0.0:5601",
+    "video_codec": "h265",
+    "video_latency_ms": 100,
+    "video_frame_timeout_s": 3,
+    "cache": {
+      "enabled": true,
+      "limit_mb": 2051,
+      "path": "/home/tahsincr/Masaüstü/siha-test/yki/data/map-cache"
+    },
+    "mavlink": {
+      "endpoint": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_ABA3E9VB-if00-port0",
+      "baud": 57600,
+      "heartbeat_timeout": 10,
+      "auto_connect": true,
+      "dialect": "ardupilotmega",
+      "source_system": 255,
+      "source_component": 0,
+      "autoreconnect": true,
+      "operation_timeout": 5,
+      "sync_parameters_on_connect": true,
+      "sync_mission_on_connect": true
+    },
+    "orin": {
+      "enabled": true,
+      "component_id": 191,
+      "network_id": 77,
+      "message_type": 42000,
+      "heartbeat_timeout_s": 12.0,
+      "command_timeout_s": 5.0
+    },
+    "competition": {
+      "base_url": "http://127.0.0.1:5000",
+      "username": "kirlangic",
+      "password": "kirlangic-demo",
+      "team_number": 1,
+      "timeout_s": 3.0,
+      "telemetry_period_ms": 1000,
+      "auto_connect": false
+    },
+    "mission": {
+      "radii": {
+        "takeoff": 35,
+        "waypoint": 35,
+        "loiter": 75,
+        "rtl": 75,
+        "land": 35,
+        "hss": 100
+      },
+      "default_altitude_m": 100
+    }
+  },
+  "ui": {
+    "language": "tr",
+    "theme": "dark",
+    "map_layer": "satellite",
+    "map_center_min_zoom": 13,
+    "vehicle_trail_limit": 76,
+    "contact_trail_limit": 40
+  }
 }
