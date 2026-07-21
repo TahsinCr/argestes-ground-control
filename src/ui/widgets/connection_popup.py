@@ -232,12 +232,14 @@ class ConnectionPopup(QDialog):
 
         self.source_type_label = QLabel("Kaynak türü", self)
         self.source_type_input = QComboBox(self)
-        self.source_type_input.addItems(["udp", "rtsp", "usb", "file", "pipeline"])
+        self.source_type_input.addItems(
+            ["http", "udp", "rtsp", "usb", "file", "pipeline"]
+        )
         form.addRow(self.source_type_label, self.source_type_input)
 
         self.codec_label = QLabel("Codec", self)
         self.codec_input = QComboBox(self)
-        self.codec_input.addItems(["h265", "h264"])
+        self.codec_input.addItems(["mjpeg", "h265", "h264"])
         form.addRow(self.codec_label, self.codec_input)
 
         self.video_latency_label = QLabel("Pipeline gecikmesi", self)

@@ -105,9 +105,11 @@ class BackendSettings:
         self.video_codec = self.video_codec.strip().lower()
         self.video_latency_ms = int(self.video_latency_ms)
         self.video_frame_timeout_s = int(self.video_frame_timeout_s)
-        if self.video_source_type not in {"mock", "rtsp", "udp", "usb", "file", "pipeline"}:
+        if self.video_source_type not in {
+            "mock", "http", "rtsp", "udp", "usb", "file", "pipeline"
+        }:
             raise ValueError(f"Desteklenmeyen video kaynağı: {self.video_source_type}")
-        if self.video_codec not in {"h264", "h265"}:
+        if self.video_codec not in {"h264", "h265", "mjpeg"}:
             raise ValueError(f"Desteklenmeyen video codec: {self.video_codec}")
         if not 0 <= self.video_latency_ms <= 10_000:
             raise ValueError("Video gecikmesi 0..10000 ms aralığında olmalı")

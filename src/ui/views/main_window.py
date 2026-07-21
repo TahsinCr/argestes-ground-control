@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 from src.ui.config.i18n import t
 from src.models.settings import SettingsModel
 from src.models.telemetry import TelemetrySnapshot
+from src.models.video import VideoStreamStats
 from src.models.connections import ConnectionStatus
 from src.services.contracts import CommandService, MissionService, TelemetryService, VideoService
 from src.services.logging_service import LoggingService
@@ -27,7 +28,7 @@ from src.ui.themes.style import ThemePalette, apply_theme
 from src.ui.views.archive_dialog import MissionArchiveDialog
 from src.ui.views.settings_dialog import SettingsDialog
 from src.ui.widgets.attitude import AttitudeIndicator
-from src.ui.widgets.common import PanelFrame, SignalMeter, StatusChip
+from src.ui.widgets.common import BatteryMeter, PanelFrame, SignalMeter, StatusChip
 from src.ui.widgets.connection_popup import ConnectionPopup
 from src.ui.widgets.control_panels import CommandPanel, TelemetryPanel
 from src.ui.widgets.logs import EventLogPanel
@@ -76,7 +77,7 @@ class MainWindow(QMainWindow):
 
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.resize(1600, 940)
-        self.setMinimumSize(1380, 840)
+        self.setMinimumSize(1280, 720)
         self._build_ui()
         self.connection_popup = ConnectionPopup(self.theme, self)
         self._connect_signals()
@@ -121,13 +122,19 @@ class MainWindow(QMainWindow):
             )
         status_layout.addStretch(1)
 
+        self.battery_meter = BatteryMeter("BATARYA", self)
+        self.battery_meter.set_theme(self.theme)
+        self.battery_meter.set_unavailable()
+        status_layout.addWidget(self.battery_meter)
+
         self.link_meters = {
             "command": SignalMeter("KOMUT LINKI", self),
-            "bulk": SignalMeter("YUKSEK BANT", self),
+            "bulk": SignalMeter("VIDEO AKTARIMI", self),
         }
         for meter in self.link_meters.values():
             meter.set_theme(self.theme)
             status_layout.addWidget(meter)
+        self.link_meters["bulk"].set_unavailable("Akış bekleniyor")
 
         self.settings_button = QPushButton("⚙", self)
         self.settings_button.setObjectName("SettingsIconButton")
@@ -165,7 +172,7 @@ class MainWindow(QMainWindow):
             self,
             task_codes=self.command_service.available_tasks,
         )
-        sidebar_layout.addWidget(self.telemetry_panel, 3)
+        sidebar_layout.addWidget(self.telemetry_panel, 5)
         sidebar_layout.addWidget(self.command_panel, 4)
         return sidebar
 
@@ -194,7 +201,13 @@ class MainWindow(QMainWindow):
             tile_cache_service=self.tile_cache_service,
             parent=self,
         )
-        self.video_panel = VideoPanel("", "", self)
+        self.video_panel = VideoPanel(
+            "",
+            "",
+            theme=self.theme,
+            language=self.language,
+            parent=self,
+        )
         visuals_splitter.addWidget(self.map_panel)
         visuals_splitter.addWidget(self.video_panel)
         visuals_splitter.setStretchFactor(0, 1)
@@ -228,6 +241,8 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self.telemetry_service.telemetry_updated.connect(self._on_telemetry)
         self.video_service.frame_ready.connect(self.video_panel.set_frame)
+        self.video_service.stats_updated.connect(self._on_video_stats)
+        self.video_panel.reconnect_requested.connect(self._reconnect_video_from_panel)
         self.command_panel.command_requested.connect(self.command_service.issue_command)
         self.map_panel.command_requested.connect(self.command_service.issue_command)
         self.command_service.command_dispatched.connect(self._on_command_dispatched)
@@ -317,6 +332,7 @@ class MainWindow(QMainWindow):
             )
         for meter in self.link_meters.values():
             meter.set_theme(self.theme)
+        self.battery_meter.set_theme(self.theme)
         for chip in self.bottom_status.values():
             chip.set_theme(self.theme)
         self.connection_popup.set_theme(self.theme)
@@ -324,6 +340,7 @@ class MainWindow(QMainWindow):
         self.telemetry_panel.set_theme(self.theme)
         self.attitude_indicator.set_theme(self.theme)
         self.map_panel.set_theme(self.theme)
+        self.video_panel.set_theme(self.theme)
         self.map_panel.retranslate(self.language)
         self._retranslate_ui()
 
@@ -336,6 +353,7 @@ class MainWindow(QMainWindow):
             t("panel.telemetry", self.language),
             t("panel.telemetry.subtitle", self.language),
         )
+        self.telemetry_panel.set_language(self.language)
         self.telemetry_panel.set_status_labels(self._status_labels())
         self.map_panel.set_title(
             t("panel.map", self.language),
@@ -346,6 +364,7 @@ class MainWindow(QMainWindow):
             t("panel.video", self.language),
             video_subtitle,
         )
+        self.video_panel.set_language(self.language)
         self.flight_panel.set_title(
             t("panel.flight", self.language),
             t("panel.flight.subtitle", self.language),
@@ -368,6 +387,7 @@ class MainWindow(QMainWindow):
         self.parameters_panel.set_language(self.language)
         self.link_meters["command"].set_label(t("status.command_link", self.language))
         self.link_meters["bulk"].set_label(t("status.payload_link", self.language))
+        self.battery_meter.set_label(t("status.battery", self.language))
         self.bottom_status["server"].set_label(t("status.server", self.language))
         self.bottom_status["telemetry"].set_label(t("status.telemetry", self.language))
         self.bottom_status["video"].set_label(t("status.video", self.language))
@@ -387,10 +407,20 @@ class MainWindow(QMainWindow):
             self.settings_service.current.backend.mavlink.heartbeat_timeout
         )
         link_quality_available = snapshot.has_fresh_link_quality(link_freshness_s)
-        bulk_quality = int(min(100, max(0, snapshot.bandwidth_kbps / 120.0 * 100))) if snapshot.video_link else 0
-        down_kbps = snapshot.bandwidth_kbps if snapshot.video_link else 0.0
-        up_kbps = max(0.0, snapshot.bandwidth_kbps * 0.08) if snapshot.video_link else 0.0
         packet_text = f"↓ {snapshot.packets_in} ↑ {snapshot.packets_out}"
+        if (
+            snapshot.telemetry_link
+            and snapshot.autopilot_link
+            and snapshot.battery_available
+        ):
+            self.battery_meter.set_battery(
+                snapshot.battery_percent,
+                snapshot.battery_voltage,
+                snapshot.battery_current_amps,
+                snapshot.battery_consumed_mah,
+            )
+        else:
+            self.battery_meter.set_unavailable()
         if snapshot.telemetry_link and snapshot.autopilot_link:
             self.link_meters["command"].set_value(
                 snapshot.link_quality if link_quality_available else 0,
@@ -398,12 +428,30 @@ class MainWindow(QMainWindow):
             )
         else:
             self.link_meters["command"].set_unavailable(packet_text)
-        self.link_meters["bulk"].set_value(bulk_quality, f"↓ {down_kbps:0.0f} ↑ {up_kbps:0.0f} kbps")
-
         warning_signature = "|".join(snapshot.warnings)
         if warning_signature and warning_signature != self._last_warning_signature:
             self.log_service.log("FLT", ", ".join(snapshot.warnings), "warning")
         self._last_warning_signature = warning_signature
+
+    def _on_video_stats(self, stats: VideoStreamStats) -> None:
+        self.video_panel.set_stats(stats)
+        if not stats.connected:
+            detail = (
+                f"↓ 0 kbps · {stats.frames_received} kare"
+                if stats.frames_received
+                else "Akış bekleniyor"
+            )
+            self.link_meters["bulk"].set_unavailable(detail)
+            return
+        bitrate = (
+            f"{stats.bitrate_kbps / 1000.0:.1f} Mbps"
+            if stats.bitrate_kbps >= 1000.0
+            else f"{stats.bitrate_kbps:.0f} kbps"
+        )
+        self.link_meters["bulk"].set_value(
+            stats.quality_percent,
+            f"↓ {bitrate} · {stats.fps:.1f} FPS",
+        )
 
     def _on_connection_status(self, status: ConnectionStatus) -> None:
         chip = self.bottom_status.get(status.channel)
@@ -412,6 +460,8 @@ class MainWindow(QMainWindow):
             chip.set_state(state)
             chip.set_label(t(f"status.{status.channel}", self.language))
             chip.setToolTip(f"{status.summary}\n{status.detail}\nTıklayın: bağlantı ayarları")
+        if status.channel == "video" and not status.connected:
+            self.link_meters["bulk"].set_unavailable("Akış bekleniyor")
         if self.connection_popup.isVisible() and self.connection_popup.channel == status.channel:
             self.connection_popup.refresh_status(status)
         self._offer_serial_access_repair(status)
@@ -493,11 +543,26 @@ class MainWindow(QMainWindow):
         self.connection_popup.set_busy(True)
         self.connection_service.reconnect(channel, options)
 
+    def _reconnect_video_from_panel(self) -> None:
+        backend = self.settings_service.current.backend
+        self.connection_service.reconnect(
+            "video",
+            {
+                "endpoint": backend.video_source_uri,
+                "source_type": backend.video_source_type,
+                "codec": backend.video_codec,
+                "latency_ms": backend.video_latency_ms,
+                "frame_timeout_s": backend.video_frame_timeout_s,
+            },
+        )
+
     def _disconnect_channel(self, channel: str) -> None:
         self.connection_popup.set_busy(True, "Bağlantı kapatılıyor…")
         self.connection_service.disconnect(channel)
 
     def _on_connection_operation_started(self, channel: str) -> None:
+        if channel == "video":
+            self.video_panel.set_reconnect_busy(True)
         if self.connection_popup.isVisible() and self.connection_popup.channel == channel:
             self.connection_popup.set_busy(True)
 
@@ -508,6 +573,8 @@ class MainWindow(QMainWindow):
         message: str,
         status: ConnectionStatus,
     ) -> None:
+        if channel == "video":
+            self.video_panel.set_reconnect_busy(False)
         self._on_connection_status(status)
         if self.connection_popup.isVisible() and self.connection_popup.channel == channel:
             self.connection_popup.finish_operation(success, message, status)

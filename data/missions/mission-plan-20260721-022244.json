@@ -1,0 +1,136 @@
+{
+  "saved_at": "2026-07-20T23:22:46.877286+00:00",
+  "base_layer": "satellite",
+  "active_tool": "pan",
+  "selected_overlay_id": null,
+  "overlays": [
+    {
+      "overlay_id": "vehicle-waypoint-0",
+      "overlay_type": "waypoint",
+      "label": "WAYPOINT 0",
+      "points": [
+        [
+          40.2256111,
+          28.874991,
+          105.18000030517578
+        ]
+      ],
+      "color": "#74d99f",
+      "radius_m": null,
+      "metadata": {
+        "route_order": 0,
+        "source": "flight-controller"
+      }
+    },
+    {
+      "overlay_id": "vehicle-waypoint-1",
+      "overlay_type": "waypoint",
+      "label": "WAYPOINT 1",
+      "points": [
+        [
+          40.2294311,
+          28.8756108,
+          100.0
+        ]
+      ],
+      "color": "#74d99f",
+      "radius_m": 35.0,
+      "metadata": {
+        "route_order": 1,
+        "source": "flight-controller"
+      }
+    },
+    {
+      "overlay_id": "vehicle-waypoint-2",
+      "overlay_type": "waypoint",
+      "label": "WAYPOINT 2",
+      "points": [
+        [
+          40.2285956,
+          28.8779926,
+          100.0
+        ]
+      ],
+      "color": "#74d99f",
+      "radius_m": 35.0,
+      "metadata": {
+        "route_order": 2,
+        "source": "flight-controller"
+      }
+    },
+    {
+      "overlay_id": "vehicle-waypoint-3",
+      "overlay_type": "waypoint",
+      "label": "WAYPOINT 3",
+      "points": [
+        [
+          40.2269574,
+          28.8769841,
+          100.0
+        ]
+      ],
+      "color": "#74d99f",
+      "radius_m": 35.0,
+      "metadata": {
+        "route_order": 3,
+        "source": "flight-controller"
+      }
+    },
+    {
+      "overlay_id": "vehicle-waypoint-4",
+      "overlay_type": "waypoint",
+      "label": "WAYPOINT 4",
+      "points": [
+        [
+          40.2257942,
+          28.8764691,
+          100.0
+        ]
+      ],
+      "color": "#74d99f",
+      "radius_m": 35.0,
+      "metadata": {
+        "route_order": 4,
+        "source": "flight-controller"
+      }
+    },
+    {
+      "overlay_id": "vehicle-waypoint-5",
+      "overlay_type": "waypoint",
+      "label": "WAYPOINT 5",
+      "points": [
+        [
+          40.2263348,
+          28.8722634,
+          100.0
+        ]
+      ],
+      "color": "#74d99f",
+      "radius_m": 35.0,
+      "metadata": {
+        "route_order": 5,
+        "source": "flight-controller"
+      }
+    },
+    {
+      "overlay_id": "vehicle-waypoint-6",
+      "overlay_type": "waypoint",
+      "label": "WAYPOINT 6",
+      "points": [
+        [
+          40.2274816,
+          28.8728642,
+          100.0
+        ]
+      ],
+      "color": "#74d99f",
+      "radius_m": 35.0,
+      "metadata": {
+        "route_order": 6,
+        "source": "flight-controller"
+      }
+    }
+  ],
+  "revision": 251,
+  "contacts": []
+}

@@ -302,6 +302,7 @@ class QtParameterService(_QtAdapter):
 
 class QtVideoService(_QtAdapter):
     frame_ready = pyqtSignal(QImage)
+    stats_updated = pyqtSignal(object)
 
     def __init__(
         self,
@@ -318,6 +319,15 @@ class QtVideoService(_QtAdapter):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._emit_mock_frame)
         self._subscribe(backend.frames, self._on_frame)
+        self._subscribe(backend.stats_changed, self.stats_updated.emit)
+
+    @property
+    def connected(self) -> bool:
+        return self.backend.connected
+
+    @property
+    def stats(self):
+        return self.backend.stats
 
     def start(self) -> None:
         if self._mock_mode:

@@ -65,7 +65,12 @@ class VehicleService(Service):
         ...
 
     @abstractmethod
-    def upload_mission(self, overlays: Iterable[MapOverlay]) -> int: ...
+    def upload_mission(
+        self,
+        overlays: Iterable[MapOverlay],
+        *,
+        loop: bool = False,
+    ) -> int: ...
 
     @abstractmethod
     def download_mission(self) -> list[MapOverlay]: ...

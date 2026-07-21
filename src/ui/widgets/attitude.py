@@ -34,10 +34,14 @@ class AttitudeIndicator(QWidget):
 
         outer = QRectF(self.rect()).adjusted(1, 1, -1, -1)
         heading_rect = QRectF(outer.left() + 60, outer.top() + 6, outer.width() - 120, 26)
-        hud_rect = QRectF(outer.left() + 62, outer.top() + 40, outer.width() - 124, outer.height() - 100)
+        hud_rect = QRectF(
+            outer.left() + 62,
+            outer.top() + 40,
+            outer.width() - 124,
+            outer.height() - 50,
+        )
         speed_rect = QRectF(outer.left() + 8, hud_rect.top(), 52, hud_rect.height())
         altitude_rect = QRectF(outer.right() - 60, hud_rect.top(), 52, hud_rect.height())
-        footer_rect = QRectF(outer.left() + 8, outer.bottom() - 42, outer.width() - 16, 34)
 
         self._draw_horizon(painter, hud_rect)
         self._draw_bank_scale(painter, hud_rect)
@@ -61,7 +65,7 @@ class AttitudeIndicator(QWidget):
             major_step=20.0,
             color=QColor(self._theme.warning),
         )
-        self._draw_footer(painter, footer_rect)
+        self._draw_flight_readouts(painter, hud_rect)
         painter.end()
 
     def _draw_horizon(self, painter: QPainter, rect: QRectF) -> None:
@@ -159,15 +163,34 @@ class AttitudeIndicator(QWidget):
         heading = self._snapshot.heading % 360
         pixels_per_degree = rect.width() / 70.0
 
+        if not (self._snapshot.telemetry_link and self._snapshot.autopilot_link):
+            painter.setPen(QColor(self._theme.muted_text))
+            painter.setFont(QFont("Noto Sans", 8, QFont.Weight.Bold))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "---")
+            painter.restore()
+            return
+
         painter.setPen(QPen(QColor(self._theme.text), 1))
-        for degrees in range(-40, 45, 5):
-            value = (heading + degrees) % 360
+        first_tick = math.ceil((heading - 40.0) / 5.0) * 5
+        last_tick = math.floor((heading + 40.0) / 5.0) * 5
+        for tick in range(first_tick, last_tick + 1, 5):
+            degrees = tick - heading
+            value = tick % 360
             x = center_x + degrees * pixels_per_degree
             if rect.left() <= x <= rect.right():
-                line_height = 10 if degrees % 10 == 0 else 5
+                cardinal = value % 45 == 0
+                numeric = value % 10 == 0
+                distance_to_cardinal = min(value % 45, 45 - (value % 45))
+                show_label = cardinal or (numeric and distance_to_cardinal >= 10)
+                major = numeric or cardinal
+                line_height = 10 if major else 5
                 painter.drawLine(QPointF(x, rect.bottom() - line_height), QPointF(x, rect.bottom()))
-                if degrees % 10 == 0:
-                    label = f"{int(value):03d}"
+                if show_label:
+                    label = (
+                        self._cardinal_direction(value)
+                        if cardinal
+                        else f"{int(value):03d}"
+                    )
                     painter.drawText(
                         QRectF(x - 14, rect.top() + 2, 28, 11),
                         Qt.AlignmentFlag.AlignCenter,
@@ -186,6 +209,69 @@ class AttitudeIndicator(QWidget):
         painter.drawPolygon(caret)
 
         painter.restore()
+
+    def _draw_flight_readouts(self, painter: QPainter, rect: QRectF) -> None:
+        connected = bool(
+            self._snapshot.telemetry_link and self._snapshot.autopilot_link
+        )
+        box_width = min(94.0, max(76.0, (rect.width() - 18.0) / 2.0))
+        box_height = 36.0
+        speed_box = QRectF(
+            rect.left() + 6.0,
+            rect.bottom() - box_height - 6.0,
+            box_width,
+            box_height,
+        )
+        heading_box = QRectF(
+            rect.right() - box_width - 6.0,
+            rect.bottom() - box_height - 6.0,
+            box_width,
+            box_height,
+        )
+
+        background = QColor(self._theme.background)
+        background.setAlpha(218)
+        for box in (speed_box, heading_box):
+            painter.fillRect(box, background)
+            painter.setPen(QPen(QColor(self._theme.border_strong), 1))
+            painter.drawRect(box)
+
+        painter.setFont(QFont("Noto Sans", 8, QFont.Weight.Bold))
+        if connected:
+            painter.setPen(QColor(self._theme.info))
+            painter.drawText(
+                speed_box.adjusted(6, 2, -4, -17),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                f"AS {self._snapshot.air_speed:0.1f} m/s",
+            )
+            painter.setPen(QColor(self._theme.success))
+            painter.drawText(
+                speed_box.adjusted(6, 17, -4, -2),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                f"GS {self._snapshot.ground_speed:0.1f} m/s",
+            )
+            painter.setPen(QColor(self._theme.warning))
+            painter.drawText(
+                heading_box.adjusted(4, 2, -4, -17),
+                Qt.AlignmentFlag.AlignCenter,
+                f"HDG {self._snapshot.heading % 360:03.0f}°",
+            )
+            painter.setPen(QColor(self._theme.text))
+            painter.drawText(
+                heading_box.adjusted(4, 17, -4, -2),
+                Qt.AlignmentFlag.AlignCenter,
+                self._cardinal_direction(self._snapshot.heading),
+            )
+        else:
+            painter.setPen(QColor(self._theme.muted_text))
+            painter.drawText(speed_box, Qt.AlignmentFlag.AlignCenter, "AS --  ·  GS --")
+            painter.drawText(heading_box, Qt.AlignmentFlag.AlignCenter, "HDG --")
+
+    @staticmethod
+    def _cardinal_direction(heading: float) -> str:
+        directions = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+        index = int(((heading % 360.0) + 22.5) // 45.0) % len(directions)
+        return directions[index]
 
     def _draw_vertical_tape(
         self,
@@ -237,53 +323,4 @@ class AttitudeIndicator(QWidget):
             Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter,
             unit,
         )
-        painter.restore()
-
-    def _draw_footer(self, painter: QPainter, rect: QRectF) -> None:
-        painter.save()
-        painter.fillRect(rect, QColor(self._theme.surface_alt))
-        painter.setPen(QPen(QColor(self._theme.border_strong), 1))
-        painter.drawRect(rect)
-        painter.setPen(QColor(self._theme.text))
-        painter.setFont(QFont("Noto Sans", 7, QFont.Weight.Bold))
-        sections = [
-            f"ROLL {self._snapshot.roll:+0.1f}",
-            f"PITCH {self._snapshot.pitch:+0.1f}",
-            f"HDG {self._snapshot.heading % 360:03.0f}",
-            f"ALT {self._snapshot.altitude_agl:0.1f} m",
-        ]
-        columns = 2
-        rows = 2
-        segment_width = rect.width() / columns
-        segment_height = rect.height() / rows
-        for index, text in enumerate(sections):
-            row = index // columns
-            column = index % columns
-            cell = QRectF(
-                rect.left() + column * segment_width + 4,
-                rect.top() + row * segment_height,
-                segment_width - 8,
-                segment_height,
-            )
-            painter.drawText(
-                cell,
-                Qt.AlignmentFlag.AlignCenter,
-                text,
-            )
-            if column < columns - 1:
-                divider_x = rect.left() + (column + 1) * segment_width
-                painter.setPen(QPen(QColor(self._theme.border), 1))
-                painter.drawLine(
-                    QPointF(divider_x, cell.top() + 4),
-                    QPointF(divider_x, cell.bottom() - 4),
-                )
-                painter.setPen(QColor(self._theme.text))
-            if row == 0:
-                divider_y = rect.top() + segment_height
-                painter.setPen(QPen(QColor(self._theme.border), 1))
-                painter.drawLine(
-                    QPointF(rect.left() + 4, divider_y),
-                    QPointF(rect.right() - 4, divider_y),
-                )
-                painter.setPen(QColor(self._theme.text))
         painter.restore()

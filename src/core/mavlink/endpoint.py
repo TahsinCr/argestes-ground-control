@@ -15,7 +15,7 @@ class MavlinkEndpoint:
     heartbeat_timeout: float = 10.0
 
     def __post_init__(self) -> None:
-        normalized_uri = self.uri.strip()
+        normalized_uri = self.normalize_uri(self.uri)
         normalized_dialect = self.dialect.strip()
         object.__setattr__(self, "uri", normalized_uri)
         object.__setattr__(self, "dialect", normalized_dialect)
@@ -32,6 +32,22 @@ class MavlinkEndpoint:
         if self.heartbeat_timeout <= 0:
             raise ValueError("Heartbeat timeout pozitif olmalı")
         self._validate_network_uri(normalized_uri)
+
+    @staticmethod
+    def normalize_uri(uri: str) -> str:
+        """Açık bir şema yoksa ``host:port`` adresini TCP istemcisi sayar."""
+        normalized = uri.strip()
+        if normalized.count(":") != 1:
+            return normalized
+        host, port = normalized.rsplit(":", 1)
+        if (
+            host
+            and port.isdigit()
+            and "/" not in host
+            and "\\" not in host
+        ):
+            return f"tcp:{host}:{port}"
+        return normalized
 
     def connection_kwargs(self) -> dict[str, object]:
         return {

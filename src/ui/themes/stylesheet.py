@@ -175,6 +175,18 @@ def build_stylesheet(theme: ThemePalette) -> str:
         color: {theme.muted_text};
         font-size: 10px;
     }}
+    #TelemetrySectionTitle {{
+        margin-top: 2px;
+        color: {theme.muted_text};
+        font-size: 9px;
+        font-weight: 750;
+        letter-spacing: 0.6px;
+    }}
+    #TelemetrySection {{
+        background: {theme.background_alt};
+        border: 1px solid rgba(255,255,255,0.045);
+        border-radius: 4px;
+    }}
     QLabel[role="readout-label"] {{
         color: {theme.muted_text};
         font-size: 10px;
@@ -183,7 +195,8 @@ def build_stylesheet(theme: ThemePalette) -> str:
     }}
     QLabel[role="readout-value"] {{
         color: {theme.text};
-        font-size: 12px;
+        font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+        font-size: 10px;
         font-weight: 600;
     }}
     QPushButton {{

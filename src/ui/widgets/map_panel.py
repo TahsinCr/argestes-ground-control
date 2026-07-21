@@ -140,6 +140,7 @@ class MapPanel(PanelFrame):
         self._contact_cache: dict[str, dict[str, Any]] = {}
         self._selected_overlay_id: str | None = None
         self._active_tool = "pan"
+        self._mission_loop = False
         self._mission_upload_pending = False
         self._pending_mission_signature: str | None = None
         self._last_uploaded_mission_signature: str | None = None
@@ -238,6 +239,14 @@ class MapPanel(PanelFrame):
             "gpsFix": snapshot.gps_fix,
             "gpsSatellites": snapshot.gps_satellites,
             "gpsHdop": snapshot.gps_hdop,
+            "localPositionAvailable": bool(
+                snapshot.telemetry_link
+                and snapshot.autopilot_link
+                and snapshot.has_local_position
+            ),
+            "localNorth": snapshot.local_north_m,
+            "localEast": snapshot.local_east_m,
+            "localDown": snapshot.local_down_m,
         }
         self._run_script(f"window.ykiMap && window.ykiMap.pushTelemetry({json.dumps(payload)});")
 
@@ -250,7 +259,11 @@ class MapPanel(PanelFrame):
         if overlays is None:
             state = getattr(self._mission_service, "state", MissionState())
             overlays = state.overlays
-        self._pending_mission_signature = self._vehicle_mission_signature(overlays)
+        loop = bool(parameters.get("loop", False))
+        self._pending_mission_signature = self._vehicle_mission_signature(
+            overlays,
+            loop=loop,
+        )
         self._set_mission_transfer_state(
             "pending",
             "Görev planı uçuş cihazına gönderiliyor…",
@@ -262,9 +275,17 @@ class MapPanel(PanelFrame):
         self._mission_upload_pending = False
         state = "success" if result.accepted else "danger"
         if result.accepted:
+            self._mission_loop = bool(result.request.parameters.get("loop", False))
+            self._run_script(
+                "window.ykiMap && window.ykiMap.setMissionLoop("
+                f"{json.dumps(self._mission_loop)});"
+            )
             self._last_uploaded_mission_signature = (
                 self._pending_mission_signature
-                or self._vehicle_mission_signature(result.request.parameters.get("overlays", []))
+                or self._vehicle_mission_signature(
+                    result.request.parameters.get("overlays", []),
+                    loop=bool(result.request.parameters.get("loop", False)),
+                )
             )
         self._pending_mission_signature = None
         self._set_mission_transfer_state(state, result.message)
@@ -403,6 +424,13 @@ class MapPanel(PanelFrame):
                 "vector": t("map.layer.vector", self._language),
                 "satellite": t("map.layer.satellite", self._language),
             },
+            "missionMode": {
+                "once": t("map.mission.once", self._language),
+                "loop": t("map.mission.loop", self._language),
+                "onceHint": t("map.mission.once_hint", self._language),
+                "loopHint": t("map.mission.loop_hint", self._language),
+            },
+            "missionLoop": self._mission_loop,
             "tools": {key: t(label_key, self._language) for key, label_key in TOOL_LABEL_KEYS.items()},
             "toolOrder": {
                 "primary": tool_config["primary"],
@@ -457,6 +485,25 @@ class MapPanel(PanelFrame):
         }
 
     def _sync_mission_state(self, state: MissionState) -> None:
+        vehicle_items = [
+            overlay
+            for overlay in state.overlays
+            if overlay.is_vehicle_mission
+            and overlay.source == "flight-controller"
+        ]
+        if vehicle_items and len(vehicle_items) == len(
+            [overlay for overlay in state.overlays if overlay.is_vehicle_mission]
+        ):
+            downloaded_loop = any(
+                bool(overlay.metadata.get("mission_loop", False))
+                for overlay in vehicle_items
+            )
+            if downloaded_loop != self._mission_loop:
+                self._mission_loop = downloaded_loop
+                self._run_script(
+                    "window.ykiMap && window.ykiMap.setMissionLoop("
+                    f"{json.dumps(downloaded_loop)});"
+                )
         overlays = [overlay.to_dict() for overlay in state.overlays]
         contacts = [contact.to_dict() for contact in getattr(state, "contacts", [])]
         overlay_lookup = {item["overlay_id"]: item for item in overlays}
@@ -520,7 +567,7 @@ class MapPanel(PanelFrame):
                 self._set_mission_transfer_state("idle", "Görev planı boş")
             return
 
-        signature = self._vehicle_mission_signature(relevant)
+        signature = self._vehicle_mission_signature(relevant, loop=self._mission_loop)
         if self._last_uploaded_mission_signature is None and all(
             str(overlay.metadata.get("source", "")).lower() == "flight-controller"
             for overlay in relevant
@@ -538,13 +585,17 @@ class MapPanel(PanelFrame):
             )
 
     @classmethod
-    def _vehicle_mission_signature(cls, overlays) -> str:
+    def _vehicle_mission_signature(cls, overlays, *, loop: bool = False) -> str:
         payloads: list[dict[str, Any]] = []
         for overlay in overlays:
             payload = overlay.to_dict() if isinstance(overlay, MapOverlay) else dict(overlay)
             if str(payload.get("overlay_type", "")).lower() in cls._VEHICLE_MISSION_TYPES:
                 payloads.append(payload)
-        return json.dumps(payloads, sort_keys=True, separators=(",", ":"))
+        return json.dumps(
+            {"loop": bool(loop), "overlays": payloads},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
 
     def _update_summary(self, state: MissionState) -> None:
         del state
@@ -620,6 +671,7 @@ class MapPanel(PanelFrame):
             if request in {"archive", "save", "load"}:
                 self.storage_requested.emit(request)
         elif action == "mission_send_request":
+            self._mission_loop = bool(payload.get("loop", self._mission_loop))
             state = getattr(self._mission_service, "state", MissionState())
             overlays = [overlay for overlay in state.overlays if overlay.is_vehicle_mission]
             self.command_requested.emit(
@@ -627,8 +679,13 @@ class MapPanel(PanelFrame):
                 {
                     "overlays": [overlay.to_dict() for overlay in overlays],
                     "selected_overlay_id": state.selected_overlay_id,
+                    "loop": self._mission_loop,
                 },
             )
+        elif action == "mission_loop_changed":
+            self._mission_loop = bool(payload.get("loop", False))
+            state = getattr(self._mission_service, "state", MissionState())
+            self._sync_mission_transfer_freshness(state.overlays)
         elif action == "layer_changed":
             layer = payload.get("layer", "vector")
             self._base_layer = layer

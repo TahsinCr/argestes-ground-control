@@ -147,6 +147,10 @@ class MavlinkCoreTests(unittest.TestCase):
     def test_endpoint_factories_keep_transport_details_out_of_consumers(self) -> None:
         self.assertEqual(MavlinkEndpoint.tcp("127.0.0.1", 5760).uri, "tcp:127.0.0.1:5760")
         self.assertEqual(MavlinkEndpoint.udp("0.0.0.0", 14550).uri, "udp:0.0.0.0:14550")
+        self.assertEqual(
+            MavlinkEndpoint(uri="127.0.0.1:5762").uri,
+            "tcp:127.0.0.1:5762",
+        )
         serial = MavlinkEndpoint.serial("/dev/ttyUSB0", baud=921600)
         self.assertEqual((serial.uri, serial.baud), ("/dev/ttyUSB0", 921600))
         with self.assertRaisesRegex(ValueError, "baud ayrı"):

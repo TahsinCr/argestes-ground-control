@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDoubleSpinBox,
+    QFrame,
     QGridLayout,
     QLabel,
+    QLayout,
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -26,65 +30,125 @@ from src.ui.config.commands import (
 from src.models.commands import CommandResult
 from src.models.telemetry import TelemetrySnapshot
 from src.ui.themes.style import ThemePalette
-from src.ui.widgets.common import MetricCard, PanelFrame, compact_button
+from src.ui.widgets.common import PanelFrame, compact_button
 
 
 class TelemetryPanel(PanelFrame):
+    SECTION_SPECS = (
+        (
+            "flight",
+            (
+                ("flight_mode", "telemetry.flight_mode"),
+                ("vehicle_state", "telemetry.vehicle_state"),
+                ("altitude_agl", "telemetry.altitude_agl"),
+                ("altitude_msl", "telemetry.altitude_msl"),
+                ("climb_rate", "telemetry.vertical_speed"),
+                ("throttle", "telemetry.throttle"),
+                ("load_factor", "telemetry.load_factor"),
+                ("ekf", "telemetry.ekf"),
+            ),
+        ),
+        (
+            "navigation",
+            (
+                ("waypoint", "telemetry.waypoint"),
+                ("home", "telemetry.home"),
+                ("mission", "telemetry.mission"),
+                ("wind", "telemetry.wind"),
+            ),
+        ),
+        (
+            "motion",
+            (
+                ("roll", "telemetry.roll"),
+                ("pitch", "telemetry.pitch"),
+                ("yaw", "telemetry.yaw"),
+                ("acceleration_x", "telemetry.axis_x"),
+                ("acceleration_y", "telemetry.axis_y"),
+                ("acceleration_z", "telemetry.axis_z"),
+            ),
+        ),
+    )
+
     def __init__(self, title: str, subtitle: str, theme: ThemePalette, parent=None) -> None:
         super().__init__(title, subtitle, parent)
         self.setMinimumWidth(300)
         self._theme = theme
+        self._language = "tr"
 
-        summary = QWidget(self)
-        summary_layout = QGridLayout(summary)
-        summary_layout.setContentsMargins(0, 0, 0, 0)
-        summary_layout.setHorizontalSpacing(4)
-        summary_layout.setVerticalSpacing(4)
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setObjectName("TelemetryScrollArea")
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.scroll_area.setMinimumHeight(0)
+        self.scroll_area.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
 
-        self.cards = {
-            "mode": MetricCard("MODE", "DISCONNECTED", "system"),
-            "battery": MetricCard("BAT", "0%", "0.0 V"),
-            "alt": MetricCard("ALT", "0.0 m", "MSL 0.0 m"),
-            "airspeed": MetricCard("IAS / GS", "IAS 0.0 m/s", "GS 0.0 m/s"),
-        }
-        for index, card in enumerate(self.cards.values()):
-            summary_layout.addWidget(card, index // 2, index % 2)
-        self.body_layout.addWidget(summary)
+        self.scroll_content = QWidget(self.scroll_area)
+        self.scroll_content.setObjectName("TelemetryScrollContent")
+        self.scroll_content.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Minimum,
+        )
+        self.content_layout = QVBoxLayout(self.scroll_content)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(3)
+        self.content_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        self.scroll_area.setWidget(self.scroll_content)
+        self.body_layout.addWidget(self.scroll_area)
 
-        details = QWidget(self)
-        details_layout = QGridLayout(details)
-        details_layout.setContentsMargins(0, 2, 0, 0)
-        details_layout.setHorizontalSpacing(10)
-        details_layout.setVerticalSpacing(4)
         self.readouts: dict[str, QLabel] = {}
-        labels = [
-            ("GS", 0, 0),
-            ("V/S", 0, 2),
-            ("HDG", 1, 0),
-            ("THR", 1, 2),
-            ("WIND", 2, 0),
-            ("WP", 2, 2),
-            ("MISSION", 3, 0),
-            ("LINK", 3, 2),
-            ("GPS", 4, 0),
-            ("SAT", 4, 2),
-            ("EKF", 5, 0),
-            ("RC", 5, 2),
-            ("HOME", 6, 0),
-            ("LAT", 7, 0),
-            ("LON", 7, 2),
-            ("SRV TIME", 8, 0),
-            ("UAV TIME", 8, 2),
-        ]
-        for key, row, column in labels:
-            label = QLabel(key, details)
+        self.readout_labels: dict[str, QLabel] = {}
+        self.section_titles: dict[str, QLabel] = {}
+        for section_key, items in self.SECTION_SPECS:
+            self._add_readout_section(section_key, items)
+        self.content_layout.addStretch(1)
+        self.set_language(self._language)
+
+    def _add_readout_section(
+        self,
+        section_key: str,
+        items: tuple[tuple[str, str], ...],
+    ) -> None:
+        title = QLabel("", self.scroll_content)
+        title.setProperty("role", "section-label")
+        title.setObjectName("TelemetrySectionTitle")
+        self.section_titles[section_key] = title
+        self.content_layout.addWidget(title)
+
+        section = QFrame(self.scroll_content)
+        section.setObjectName("TelemetrySection")
+        layout = QGridLayout(section)
+        layout.setContentsMargins(7, 4, 7, 4)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(3)
+        for index, (key, _label_key) in enumerate(items):
+            row = index // 2
+            column = (index % 2) * 2
+            label = QLabel("", section)
             label.setProperty("role", "readout-label")
-            value = QLabel("--", details)
+            value = QLabel("--", section)
             value.setProperty("role", "readout-value")
-            details_layout.addWidget(label, row, column)
-            details_layout.addWidget(value, row, column + 1)
-            self.readouts[key.lower().replace(" ", "_")] = value
-        self.body_layout.addWidget(details, 1)
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            value.setMinimumWidth(0)
+            value.setSizePolicy(
+                QSizePolicy.Policy.Ignored,
+                QSizePolicy.Policy.Preferred,
+            )
+            layout.addWidget(label, row, column)
+            layout.addWidget(value, row, column + 1)
+            layout.setColumnStretch(column + 1, 1)
+            self.readout_labels[key] = label
+            self.readouts[key] = value
+        self.content_layout.addWidget(section)
 
     def set_theme(self, theme: ThemePalette) -> None:
         self._theme = theme
@@ -92,41 +156,67 @@ class TelemetryPanel(PanelFrame):
     def set_status_labels(self, labels: dict[str, str]) -> None:
         del labels
 
+    def set_language(self, language: str) -> None:
+        self._language = language
+        for section_key, items in self.SECTION_SPECS:
+            self.section_titles[section_key].setText(
+                t(f"telemetry.section.{section_key}", language).upper()
+            )
+            for key, label_key in items:
+                self.readout_labels[key].setText(t(label_key, language).upper())
+
     def update_snapshot(self, snapshot: TelemetrySnapshot) -> None:
+        connected = bool(snapshot.telemetry_link and snapshot.autopilot_link)
+        if not connected:
+            for readout in self.readouts.values():
+                readout.setText("--")
+                readout.setToolTip("")
+            self.readouts["flight_mode"].setText(snapshot.flight_mode)
+            return
+
         arm_state = "ARMED" if snapshot.armed else "DISARMED"
-        self.cards["mode"].update_value(snapshot.flight_mode, f"{arm_state} · {snapshot.system_status}")
-        self.cards["alt"].update_value(f"{snapshot.altitude_agl:0.1f} m", f"MSL {snapshot.altitude_msl:0.1f} m")
-        self.cards["airspeed"].update_value(
-            f"IAS {snapshot.air_speed:0.1f} m/s",
-            f"GS {snapshot.ground_speed:0.1f} m/s",
+        self.readouts["flight_mode"].setText(snapshot.flight_mode)
+        self.readouts["vehicle_state"].setText(
+            f"{arm_state} · {snapshot.system_status}"
         )
-        self.cards["battery"].update_value(f"{snapshot.battery_percent}%", f"{snapshot.battery_voltage:0.1f} V")
-
-        self.readouts["gs"].setText(f"{snapshot.ground_speed:0.1f} m/s")
-        self.readouts["v/s"].setText(f"{snapshot.climb_rate:+0.1f} m/s")
-        self.readouts["hdg"].setText(f"{snapshot.heading:03.0f}°")
-        self.readouts["thr"].setText(f"{snapshot.throttle_percent:0.0f}%")
-        self.readouts["wind"].setText(f"{snapshot.wind_speed:0.1f} m/s · {snapshot.wind_heading:03.0f}°")
-        self.readouts["wp"].setText(f"{snapshot.wp_distance:0.0f} m · {snapshot.nav_bearing:03.0f}°")
-        self.readouts["mission"].setText(f"{snapshot.mission_index}/{snapshot.mission_total}")
-        self.readouts["link"].setText(f"{snapshot.link_quality}%")
-        self.readouts["lat"].setText(f"{snapshot.latitude:.5f}")
-        self.readouts["lon"].setText(f"{snapshot.longitude:.5f}")
-        self.readouts["gps"].setText(snapshot.gps_fix)
-        self.readouts["sat"].setText(str(snapshot.gps_satellites))
-        self.readouts["home"].setText(f"{snapshot.home_distance:0.0f} m / {snapshot.home_heading:03.0f}")
-        self.readouts["rc"].setText(str(snapshot.rc_rssi))
+        self.readouts["altitude_agl"].setText(f"{snapshot.altitude_agl:0.1f} m")
+        self.readouts["altitude_msl"].setText(f"{snapshot.altitude_msl:0.1f} m")
+        self.readouts["climb_rate"].setText(f"{snapshot.climb_rate:+0.1f} m/s")
+        self.readouts["throttle"].setText(f"{snapshot.throttle_percent:0.0f}%")
+        self.readouts["load_factor"].setText(
+            self._format_optional(snapshot.load_factor_g, "g", 2)
+        )
+        self.readouts["waypoint"].setText(
+            f"{snapshot.wp_distance:0.0f} m · {snapshot.nav_bearing:03.0f}°"
+        )
+        self.readouts["home"].setText(
+            f"{snapshot.home_distance:0.0f} m · {snapshot.home_heading:03.0f}°"
+        )
+        self.readouts["mission"].setText(
+            f"{snapshot.mission_index}/{snapshot.mission_total}"
+        )
+        self.readouts["roll"].setText(f"{snapshot.roll:+0.1f}°")
+        self.readouts["pitch"].setText(f"{snapshot.pitch:+0.1f}°")
+        self.readouts["yaw"].setText(f"{snapshot.yaw % 360:03.0f}°")
+        self.readouts["acceleration_x"].setText(
+            self._format_optional(snapshot.acceleration_x_mps2, "m/s²", 2)
+        )
+        self.readouts["acceleration_y"].setText(
+            self._format_optional(snapshot.acceleration_y_mps2, "m/s²", 2)
+        )
+        self.readouts["acceleration_z"].setText(
+            self._format_optional(snapshot.acceleration_z_mps2, "m/s²", 2)
+        )
+        self.readouts["wind"].setText(
+            f"{snapshot.wind_speed:0.1f} m/s · {snapshot.wind_heading:03.0f}°"
+        )
         self.readouts["ekf"].setText("OK" if snapshot.ekf_ok else "WAIT")
-        self.readouts["srv_time"].setText(self._format_external_time(snapshot.server_time))
-        self.readouts["uav_time"].setText(self._format_external_time(snapshot.uav_time))
 
-    def _format_external_time(self, value: datetime | str | None) -> str:
-        if isinstance(value, datetime):
-            return value.strftime("%H:%M:%S")
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-        return "00:00:00"
-
+    @staticmethod
+    def _format_optional(value: float | None, unit: str, decimals: int) -> str:
+        if value is None:
+            return "--"
+        return f"{value:.{decimals}f} {unit}"
 
 class CommandPanel(PanelFrame):
     command_requested = pyqtSignal(str, dict)
@@ -173,20 +263,9 @@ class CommandPanel(PanelFrame):
         self.arm_label.setProperty("role", "section-label")
         self.body_layout.addWidget(self.arm_label)
 
-        arm_row = QWidget(self)
-        arm_layout = QGridLayout(arm_row)
-        arm_layout.setContentsMargins(0, 0, 0, 0)
-        arm_layout.setHorizontalSpacing(4)
-        arm_layout.setVerticalSpacing(4)
-
-        self.arm_button = compact_button("ARM", "success")
-        self.arm_button.clicked.connect(lambda: self._request_arm(True))
-        arm_layout.addWidget(self.arm_button, 0, 0)
-
-        self.disarm_button = compact_button("DISARM", "danger")
-        self.disarm_button.clicked.connect(lambda: self._request_arm(False))
-        arm_layout.addWidget(self.disarm_button, 0, 1)
-        self.body_layout.addWidget(arm_row)
+        self.arm_toggle_button = compact_button("ARM", "success")
+        self.arm_toggle_button.clicked.connect(self._toggle_arm_state)
+        self.body_layout.addWidget(self.arm_toggle_button)
 
         self.command_status = QLabel(self)
         self.command_status.setProperty("role", "readout-label")
@@ -255,8 +334,6 @@ class CommandPanel(PanelFrame):
         self.task_apply_button.setText(t("command.task_apply", language).upper())
         self._sync_arm_controls()
         self.mode_apply_button.setToolTip(t("command.mode_apply.tooltip", language))
-        self.arm_button.setToolTip(t("command.arm.tooltip", language))
-        self.disarm_button.setToolTip(t("command.disarm.tooltip", language))
         self.profile_apply_button.setToolTip(t("command.profile_apply.tooltip", language))
         if not self._pending_commands:
             self._set_command_status(
@@ -358,61 +435,55 @@ class CommandPanel(PanelFrame):
     def _sync_arm_controls(self) -> None:
         if not self._vehicle_connected:
             state_key = "command.arm_state.disconnected"
-            arm_text_key = "command.arm_button.ready"
-            disarm_text_key = "command.disarm_button.ready"
-            arm_role = None
-            disarm_role = None
+            button_text_key = "command.arm_toggle.unavailable"
+            button_role = None
+            tooltip_key = "command.arm.tooltip"
         elif self._requested_armed is True:
             state_key = "command.arm_state.arming"
-            arm_text_key = "command.arm_button.pending"
-            disarm_text_key = "command.disarm_button.current"
-            arm_role = "primary"
-            disarm_role = "danger"
+            button_text_key = "command.arm_button.pending"
+            button_role = "success"
+            tooltip_key = "command.arm.tooltip"
         elif self._requested_armed is False:
             state_key = "command.arm_state.disarming"
-            arm_text_key = "command.arm_button.current"
-            disarm_text_key = "command.disarm_button.pending"
-            arm_role = "success"
-            disarm_role = "primary"
+            button_text_key = "command.disarm_button.pending"
+            button_role = "danger"
+            tooltip_key = "command.disarm.tooltip"
         elif self._armed:
             state_key = "command.arm_state.armed"
-            arm_text_key = "command.arm_button.current"
-            disarm_text_key = "command.disarm_button.ready"
-            arm_role = "success"
-            disarm_role = None
+            button_text_key = "command.disarm_button.ready"
+            button_role = "danger"
+            tooltip_key = "command.disarm.tooltip"
         else:
             state_key = "command.arm_state.disarmed"
-            arm_text_key = "command.arm_button.ready"
-            disarm_text_key = "command.disarm_button.current"
-            arm_role = None
-            disarm_role = "danger"
+            button_text_key = "command.arm_button.ready"
+            button_role = "success"
+            tooltip_key = "command.arm.tooltip"
         self.arm_label.setText(t(state_key, self._language).upper())
-        self.arm_button.setText(t(arm_text_key, self._language))
-        self.disarm_button.setText(t(disarm_text_key, self._language))
-
-        self.arm_button.setProperty(
+        self.arm_toggle_button.setText(t(button_text_key, self._language))
+        self.arm_toggle_button.setToolTip(t(tooltip_key, self._language))
+        self.arm_toggle_button.setProperty(
             "currentState",
-            self._vehicle_connected and self._armed and self._requested_armed is None,
+            self._vehicle_connected
+            and self._requested_armed is None
+            and self._armed,
         )
-        self.disarm_button.setProperty(
-            "currentState",
-            self._vehicle_connected and not self._armed and self._requested_armed is None,
+        self.arm_toggle_button.setProperty(
+            "pendingState",
+            self._requested_armed is not None,
         )
-        self.arm_button.setProperty("pendingState", self._requested_armed is True)
-        self.disarm_button.setProperty("pendingState", self._requested_armed is False)
-        self.arm_button.setProperty("role", arm_role)
-        self.disarm_button.setProperty("role", disarm_role)
-        for button in (self.arm_button, self.disarm_button):
-            button.style().unpolish(button)
-            button.style().polish(button)
+        self.arm_toggle_button.setProperty("role", button_role)
+        self.arm_toggle_button.style().unpolish(self.arm_toggle_button)
+        self.arm_toggle_button.style().polish(self.arm_toggle_button)
 
         available = (
             self._vehicle_connected
             and not self._pending_commands
             and self._requested_armed is None
         )
-        self.arm_button.setEnabled(available and not self._armed)
-        self.disarm_button.setEnabled(available and self._armed)
+        self.arm_toggle_button.setEnabled(available)
+
+    def _toggle_arm_state(self) -> None:
+        self._request_arm(not self._armed)
 
     def _request_arm(self, armed: bool) -> None:
         if not self._vehicle_connected or self._pending_commands:

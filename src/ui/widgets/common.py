@@ -283,6 +283,41 @@ class SignalMeter(QFrame):
         )
 
 
+class BatteryMeter(SignalMeter):
+    """Alt durum çubuğu için kompakt, eşik renkli batarya göstergesi."""
+
+    def set_battery(
+        self,
+        percent: int,
+        voltage: float,
+        current_amps: float | None = None,
+        consumed_mah: int | None = None,
+    ) -> None:
+        details = [f"{voltage:0.1f} V"] if voltage > 0.0 else []
+        if current_amps is not None:
+            details.append(f"{current_amps:0.1f} A")
+        self.set_value(percent, " · ".join(details))
+
+        tooltip = [f"Batarya: %{max(0, min(100, int(percent)))}"]
+        tooltip.extend(details)
+        if consumed_mah is not None:
+            tooltip.append(f"Tüketim: {consumed_mah} mAh")
+        self.setToolTip("\n".join(tooltip))
+
+    def set_unavailable(self, detail: str = "") -> None:
+        super().set_unavailable(detail)
+        self.setToolTip("Batarya telemetrisi bekleniyor")
+
+    def _level_color(self) -> str:
+        if not self._theme:
+            return "#888888"
+        if self._value <= 15:
+            return self._theme.danger
+        if self._value < 30:
+            return self._theme.warning
+        return self._theme.success
+
+
 def action_button(text: str, role: str = "") -> QPushButton:
     button = QPushButton(text)
     if role:

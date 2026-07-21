@@ -133,6 +133,7 @@ SETTINGS_SECTIONS = (
         (
             FieldSpec("backend.video_source_type", "dialog.settings.video_type", "combo", (
                 ChoiceSpec("mock", "video.source.mock"),
+                ChoiceSpec("http", "video.source.http"),
                 ChoiceSpec("rtsp", "video.source.rtsp"),
                 ChoiceSpec("udp", "video.source.udp"),
                 ChoiceSpec("usb", "video.source.usb"),
@@ -140,6 +141,7 @@ SETTINGS_SECTIONS = (
             FieldSpec("backend.video_codec", "dialog.settings.video_codec", "combo", (
                 ChoiceSpec("h265", "video.codec.h265"),
                 ChoiceSpec("h264", "video.codec.h264"),
+                ChoiceSpec("mjpeg", "video.codec.mjpeg"),
             )),
             FieldSpec("backend.video_source_uri", "dialog.settings.video_uri", "text"),
             FieldSpec("backend.video_latency_ms", "dialog.settings.video_latency", "spin", minimum=0, maximum=10000, suffix=" ms"),

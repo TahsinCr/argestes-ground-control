@@ -90,6 +90,46 @@ class TelemetrySnapshot(Model):
     radio_local_noise: int | None = None
     radio_remote_noise: int | None = None
     radio_tx_buffer: int | None = None
+    battery_current_amps: float | None = None
+    battery_consumed_mah: int | None = None
+    barometric_pressure_hpa: float | None = None
+    barometric_temperature_c: float | None = None
+    differential_pressure_hpa: float | None = None
+    acceleration_x_mps2: float | None = None
+    acceleration_y_mps2: float | None = None
+    acceleration_z_mps2: float | None = None
+    local_north_m: float | None = None
+    local_east_m: float | None = None
+    local_down_m: float | None = None
+
+    @property
+    def battery_available(self) -> bool:
+        return bool(
+            self.battery_percent > 0
+            or self.battery_voltage > 0.0
+            or self.battery_current_amps is not None
+        )
+
+    @property
+    def acceleration_magnitude_mps2(self) -> float | None:
+        axes = (
+            self.acceleration_x_mps2,
+            self.acceleration_y_mps2,
+            self.acceleration_z_mps2,
+        )
+        if any(value is None or not math.isfinite(value) for value in axes):
+            return None
+        x = float(axes[0])
+        y = float(axes[1])
+        z = float(axes[2])
+        return math.sqrt(x * x + y * y + z * z)
+
+    @property
+    def load_factor_g(self) -> float | None:
+        magnitude = self.acceleration_magnitude_mps2
+        if magnitude is None:
+            return None
+        return magnitude / 9.80665
 
     @property
     def has_valid_position(self) -> bool:
@@ -101,6 +141,11 @@ class TelemetrySnapshot(Model):
             and -180.0 <= self.longitude <= 180.0
             and not (abs(self.latitude) < 1e-9 and abs(self.longitude) < 1e-9)
         )
+
+    @property
+    def has_local_position(self) -> bool:
+        values = (self.local_north_m, self.local_east_m, self.local_down_m)
+        return all(value is not None and math.isfinite(value) for value in values)
 
     def has_fresh_vehicle_telemetry(
         self,

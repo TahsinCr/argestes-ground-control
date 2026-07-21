@@ -4,7 +4,7 @@ from abc import abstractmethod
 
 from src.core.abstracts import Service
 from src.core.events import EventStream
-from src.models.video import VideoFrame
+from src.models.video import VideoFrame, VideoStreamStats
 
 
 class VideoService(Service):
@@ -19,6 +19,14 @@ class VideoService(Service):
     @property
     @abstractmethod
     def frames(self) -> EventStream[VideoFrame]: ...
+
+    @property
+    @abstractmethod
+    def stats(self) -> VideoStreamStats: ...
+
+    @property
+    @abstractmethod
+    def stats_changed(self) -> EventStream[VideoStreamStats]: ...
 
     @abstractmethod
     def configure(

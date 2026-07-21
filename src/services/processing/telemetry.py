@@ -62,6 +62,7 @@ class MutableTelemetryService(TelemetryService):
 class TelemetryDecoder:
     """Uçuş cihazı mesajlarını UI'dan bağımsız telemetri modeline dönüştürür."""
 
+    STANDARD_GRAVITY_MPS2 = 9.80665
     FIX_TYPES = {0: "NO GPS", 1: "NO FIX", 2: "2D FIX", 3: "3D FIX", 4: "DGPS", 5: "RTK FLOAT", 6: "RTK"}
     SYSTEM_STATES = {
         0: "UNINIT",
@@ -123,6 +124,12 @@ class TelemetryDecoder:
             )
             if home_metrics is not None:
                 updates.update(home_distance=home_metrics[0], home_heading=home_metrics[1])
+        elif message_type == "LOCAL_POSITION_NED":
+            updates.update(
+                local_north_m=self._required_finite_float(message.x, "local x"),
+                local_east_m=self._required_finite_float(message.y, "local y"),
+                local_down_m=self._required_finite_float(message.z, "local z"),
+            )
         elif message_type == "ATTITUDE":
             updates.update(
                 roll=math.degrees(float(message.roll)),
@@ -140,11 +147,45 @@ class TelemetryDecoder:
             )
         elif message_type == "SYS_STATUS":
             remaining = int(getattr(message, "battery_remaining", -1))
-            updates.update(
-                battery_percent=max(0, remaining),
-                battery_voltage=float(getattr(message, "voltage_battery", 0.0)) / 1000.0,
-                cpu_load=int(float(getattr(message, "load", 0.0)) / 10.0),
+            voltage_mv = int(getattr(message, "voltage_battery", 0))
+            current_ca = int(getattr(message, "current_battery", -1))
+            updates["cpu_load"] = max(
+                0,
+                min(100, int(float(getattr(message, "load", 0.0)) / 10.0)),
             )
+            if 0 <= remaining <= 100:
+                updates["battery_percent"] = remaining
+            if 0 < voltage_mv < 65_535:
+                updates["battery_voltage"] = voltage_mv / 1000.0
+            if current_ca >= 0:
+                updates["battery_current_amps"] = current_ca / 100.0
+        elif message_type == "BATTERY_STATUS":
+            remaining = int(getattr(message, "battery_remaining", -1))
+            current_ca = int(getattr(message, "current_battery", -1))
+            consumed_mah = int(getattr(message, "current_consumed", -1))
+            voltage = self._battery_status_voltage(getattr(message, "voltages", ()))
+            if 0 <= remaining <= 100:
+                updates["battery_percent"] = remaining
+            if voltage is not None:
+                updates["battery_voltage"] = voltage
+            if current_ca >= 0:
+                updates["battery_current_amps"] = current_ca / 100.0
+            if consumed_mah >= 0:
+                updates["battery_consumed_mah"] = consumed_mah
+        elif message_type == "SCALED_PRESSURE":
+            pressure = self._finite_float(getattr(message, "press_abs", None))
+            differential = self._finite_float(getattr(message, "press_diff", None))
+            temperature_cdeg = int(getattr(message, "temperature", -32_768))
+            if pressure is not None and pressure > 0.0:
+                updates["barometric_pressure_hpa"] = pressure
+            if differential is not None:
+                updates["differential_pressure_hpa"] = differential
+            if temperature_cdeg != -32_768:
+                updates["barometric_temperature_c"] = temperature_cdeg / 100.0
+        elif message_type in {"SCALED_IMU", "SCALED_IMU2"}:
+            updates.update(self._scaled_imu_acceleration(message))
+        elif message_type == "HIGHRES_IMU":
+            updates.update(self._highres_imu_updates(message))
         elif message_type == "GPS_RAW_INT":
             fix_type = int(getattr(message, "fix_type", 0))
             gps_time = self._unix_time(getattr(message, "time_usec", 0))
@@ -253,6 +294,73 @@ class TelemetryDecoder:
             return None
         return encoded / 100.0
 
+    @staticmethod
+    def _finite_float(value: Any) -> float | None:
+        try:
+            converted = float(value)
+        except (TypeError, ValueError):
+            return None
+        return converted if math.isfinite(converted) else None
+
+    @classmethod
+    def _required_finite_float(cls, value: Any, field_name: str) -> float:
+        converted = cls._finite_float(value)
+        if converted is None:
+            raise ValueError(f"{field_name} geçerli bir sayı değil")
+        return converted
+
+    @classmethod
+    def _scaled_imu_acceleration(cls, message: Any) -> dict[str, float]:
+        scale = cls.STANDARD_GRAVITY_MPS2 / 1000.0
+        values = {
+            "acceleration_x_mps2": float(getattr(message, "xacc", 0.0)) * scale,
+            "acceleration_y_mps2": float(getattr(message, "yacc", 0.0)) * scale,
+            "acceleration_z_mps2": float(getattr(message, "zacc", 0.0)) * scale,
+        }
+        if not all(math.isfinite(value) for value in values.values()):
+            raise ValueError("SCALED_IMU geçersiz ivme değeri içeriyor")
+        return values
+
+    @staticmethod
+    def _highres_imu_updates(message: Any) -> dict[str, float]:
+        values = {
+            "acceleration_x_mps2": float(getattr(message, "xacc", 0.0)),
+            "acceleration_y_mps2": float(getattr(message, "yacc", 0.0)),
+            "acceleration_z_mps2": float(getattr(message, "zacc", 0.0)),
+        }
+        pressure = TelemetryDecoder._finite_float(
+            getattr(message, "abs_pressure", None)
+        )
+        differential = TelemetryDecoder._finite_float(
+            getattr(message, "diff_pressure", None)
+        )
+        temperature = TelemetryDecoder._finite_float(
+            getattr(message, "temperature", None)
+        )
+        if pressure is not None and pressure > 0.0:
+            values["barometric_pressure_hpa"] = pressure
+        if differential is not None:
+            values["differential_pressure_hpa"] = differential
+        if temperature is not None:
+            values["barometric_temperature_c"] = temperature
+        if not all(math.isfinite(value) for value in values.values()):
+            raise ValueError("HIGHRES_IMU geçersiz ivme değeri içeriyor")
+        return values
+
+    @staticmethod
+    def _battery_status_voltage(values: Any) -> float | None:
+        try:
+            valid_cells = [
+                encoded
+                for value in values
+                if 0 < (encoded := int(value)) < 65_535
+            ]
+        except (TypeError, ValueError):
+            return None
+        if not valid_cells:
+            return None
+        return sum(valid_cells) / 1000.0
+
     @classmethod
     def _radio_link_quality(cls, message: Any) -> int:
         """SiK/RFD RADIO_STATUS alanlarından RF hat sağlığını yüzdeye çevirir.
@@ -294,9 +402,15 @@ class TelemetryDecoder:
 TELEMETRY_MESSAGE_TYPES = (
     "HEARTBEAT",
     "GLOBAL_POSITION_INT",
+    "LOCAL_POSITION_NED",
     "ATTITUDE",
     "VFR_HUD",
     "SYS_STATUS",
+    "BATTERY_STATUS",
+    "SCALED_PRESSURE",
+    "SCALED_IMU",
+    "SCALED_IMU2",
+    "HIGHRES_IMU",
     "GPS_RAW_INT",
     "SYSTEM_TIME",
     "RADIO",
@@ -422,6 +536,19 @@ class VehicleTelemetryService(MutableTelemetryService):
                     radio_local_noise=None,
                     radio_remote_noise=None,
                     radio_tx_buffer=None,
+                    battery_percent=0,
+                    battery_voltage=0.0,
+                    battery_current_amps=None,
+                    battery_consumed_mah=None,
+                    barometric_pressure_hpa=None,
+                    barometric_temperature_c=None,
+                    differential_pressure_hpa=None,
+                    acceleration_x_mps2=None,
+                    acceleration_y_mps2=None,
+                    acceleration_z_mps2=None,
+                    local_north_m=None,
+                    local_east_m=None,
+                    local_down_m=None,
                 )
             )
 
@@ -519,6 +646,17 @@ class MockTelemetryService(MutableTelemetryService):
             position_received_at=vehicle_now,
             uav_time_received_at=vehicle_now,
             link_quality_received_at=vehicle_now,
+            battery_current_amps=8.4 + math.sin(phase * 0.33) * 1.2,
+            battery_consumed_mah=max(0, int(phase * 18.0)),
+            barometric_pressure_hpa=898.0 + math.sin(phase * 0.18) * 1.4,
+            barometric_temperature_c=24.0 + math.sin(phase * 0.15) * 2.0,
+            differential_pressure_hpa=5.2 + math.sin(phase * 0.66) * 0.8,
+            acceleration_x_mps2=math.sin(phase * 0.71) * 1.8,
+            acceleration_y_mps2=math.cos(phase * 0.63) * 1.4,
+            acceleration_z_mps2=9.80665 + math.sin(phase * 0.52) * 0.9,
+            local_north_m=phase * 3.4,
+            local_east_m=math.sin(phase * 0.22) * 85.0,
+            local_down_m=-(137.0 + math.sin(phase) * 18.0),
         )
         self.push(snapshot)
         return snapshot

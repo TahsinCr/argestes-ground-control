@@ -84,6 +84,7 @@ class VehicleServiceTests(unittest.TestCase):
         telemetry.start()
         parameters.start()
         self.assertIn("HEARTBEAT", vehicle.subscriptions)
+        self.assertIn("LOCAL_POSITION_NED", vehicle.subscriptions)
         self.assertIn("PARAM_VALUE", vehicle.subscriptions)
         self.assertEqual(vehicle.parameter_requests, 1)
         parameters.stop()
@@ -110,6 +111,19 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertTrue(snapshot.position_valid)
         self.assertTrue(snapshot.has_valid_position)
         self.assertIsNotNone(snapshot.position_received_at)
+
+        snapshot = TelemetryDecoder().apply(
+            snapshot,
+            _Message(
+                message_type="LOCAL_POSITION_NED",
+                x=145.25,
+                y=-32.5,
+                z=-114.6,
+            ),
+        )
+        self.assertAlmostEqual(snapshot.local_north_m or 0.0, 145.25)
+        self.assertAlmostEqual(snapshot.local_east_m or 0.0, -32.5)
+        self.assertAlmostEqual(snapshot.local_down_m or 0.0, -114.6)
 
     def test_telemetry_decoder_exposes_critical_flight_readouts(self) -> None:
         decoder = TelemetryDecoder()
@@ -157,6 +171,49 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertTrue(snapshot.ekf_ok)
         self.assertGreater(snapshot.home_distance, 0)
         self.assertGreaterEqual(snapshot.home_heading, 0)
+
+    def test_telemetry_decoder_exposes_battery_baro_and_body_axis_acceleration(self) -> None:
+        decoder = TelemetryDecoder()
+        snapshot = decoder.apply(
+            TelemetrySnapshot.zero(),
+            _Message(
+                message_type="BATTERY_STATUS",
+                battery_remaining=74,
+                current_battery=835,
+                current_consumed=1460,
+                voltages=[4100, 4090, 4080, 65_535],
+            ),
+        )
+        snapshot = decoder.apply(
+            snapshot,
+            _Message(
+                message_type="SCALED_PRESSURE",
+                press_abs=898.25,
+                press_diff=5.5,
+                temperature=2435,
+            ),
+        )
+        snapshot = decoder.apply(
+            snapshot,
+            _Message(
+                message_type="SCALED_IMU",
+                xacc=100,
+                yacc=-200,
+                zacc=1000,
+            ),
+        )
+
+        self.assertEqual(snapshot.battery_percent, 74)
+        self.assertAlmostEqual(snapshot.battery_voltage, 12.27)
+        self.assertAlmostEqual(snapshot.battery_current_amps or 0.0, 8.35)
+        self.assertEqual(snapshot.battery_consumed_mah, 1460)
+        self.assertAlmostEqual(snapshot.barometric_pressure_hpa or 0.0, 898.25)
+        self.assertAlmostEqual(snapshot.differential_pressure_hpa or 0.0, 5.5)
+        self.assertAlmostEqual(snapshot.barometric_temperature_c or 0.0, 24.35)
+        self.assertAlmostEqual(snapshot.acceleration_x_mps2 or 0.0, 0.980665)
+        self.assertAlmostEqual(snapshot.acceleration_y_mps2 or 0.0, -1.96133)
+        self.assertAlmostEqual(snapshot.acceleration_z_mps2 or 0.0, 9.80665)
+        self.assertIsNotNone(snapshot.load_factor_g)
 
     def test_radio_status_uses_both_rf_margins_and_tx_buffer_for_link_health(self) -> None:
         snapshot = TelemetryDecoder().apply(
@@ -467,8 +524,9 @@ class VehicleServiceTests(unittest.TestCase):
             connected = True
             state = VehicleConnectionState(True, "test", 1, 1)
 
-            def upload_mission(self, overlays) -> int:
+            def upload_mission(self, overlays, *, loop: bool = False) -> int:
                 self.overlays = list(overlays)
+                self.loop = loop
                 return len(self.overlays)
 
         vehicle = Vehicle()
@@ -497,6 +555,7 @@ class VehicleServiceTests(unittest.TestCase):
         )
         self.assertTrue(result.accepted)
         self.assertEqual(len(vehicle.overlays), 1)
+        self.assertFalse(vehicle.loop)
         self.assertIn("1 görev öğesi", result.message)
         self.assertEqual(logs.history[-1].details["item_count"], 1)
 
@@ -508,9 +567,9 @@ class VehicleServiceTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.calls: list[tuple[str, object]] = []
 
-            def upload_mission(self, overlays) -> int:
+            def upload_mission(self, overlays, *, loop: bool = False) -> int:
                 items = list(overlays)
-                self.calls.append(("upload", items))
+                self.calls.append(("upload", (items, loop)))
                 return len(items)
 
             def execute(self, request) -> bool:
@@ -651,6 +710,7 @@ class VehicleServiceTests(unittest.TestCase):
                 self.sent: list[tuple[str, tuple]] = []
                 self.responses = [
                     SimpleNamespace(seq=0),
+                    SimpleNamespace(seq=1),
                     SimpleNamespace(type=mavlink.MAV_MISSION_ACCEPTED),
                 ]
 
@@ -667,9 +727,89 @@ class VehicleServiceTests(unittest.TestCase):
             [MapOverlay("wp", "waypoint", "WP", [[39.1, 32.1]], "#fff", 35)]
         )
         self.assertEqual(count, 1)
-        self.assertEqual([call[0] for call in client.sent], ["mission_count_send", "mission_item_int_send"])
-        self.assertEqual(client.sent[0][1][2], 1)
+        self.assertEqual(
+            [call[0] for call in client.sent],
+            [
+                "mission_count_send",
+                "mission_item_int_send",
+                "mission_item_int_send",
+                "mission_set_current_send",
+            ],
+        )
+        self.assertEqual(client.sent[0][1][2], 2)
         self.assertEqual(client.sent[1][1][2], 0)
+        self.assertEqual(client.sent[2][1][2], 1)
+        self.assertEqual(client.sent[2][1][11:13], (391_000_000, 321_000_000))
+        self.assertEqual(client.sent[3][1], (1, 1, 1))
+
+    def test_loop_mission_repeats_waypoints_without_repeating_takeoff(self) -> None:
+        mavlink = SimpleNamespace(
+            MAV_CMD_NAV_TAKEOFF=22,
+            MAV_CMD_NAV_WAYPOINT=16,
+            MAV_CMD_NAV_LOITER_UNLIM=17,
+            MAV_CMD_NAV_RETURN_TO_LAUNCH=20,
+            MAV_CMD_NAV_LAND=21,
+            MAV_CMD_DO_JUMP=177,
+            MAV_FRAME_GLOBAL_RELATIVE_ALT_INT=6,
+            MAV_FRAME_MISSION=2,
+            MAV_MISSION_TYPE_MISSION=0,
+            MAV_MISSION_ACCEPTED=0,
+        )
+
+        class Client:
+            endpoint = SimpleNamespace(uri="test")
+            connection = SimpleNamespace(target_system=1, target_component=1)
+            router = SimpleNamespace(sequence=0)
+            is_connected = True
+
+            def __init__(self) -> None:
+                self.mavlink = mavlink
+                self.sent: list[tuple[str, tuple]] = []
+                self.responses = [
+                    *(SimpleNamespace(seq=sequence) for sequence in range(5)),
+                    SimpleNamespace(type=mavlink.MAV_MISSION_ACCEPTED),
+                ]
+
+            def call_mav(self, method: str, *args) -> None:
+                self.sent.append((method, args))
+
+            def wait_for(self, *_args, **_kwargs):
+                return self.responses.pop(0)
+
+        client = Client()
+        vehicle = MavlinkVehicleService(client)  # type: ignore[arg-type]
+        vehicle._state = VehicleConnectionState(True, "test", 1, 1)
+        count = vehicle.upload_mission(
+            [
+                MapOverlay(
+                    "takeoff",
+                    "takeoff",
+                    "Takeoff",
+                    [[39.0, 32.0, 60.0]],
+                    "#fff",
+                    metadata={"route_order": 1},
+                ),
+                MapOverlay(
+                    "route",
+                    "route",
+                    "Route",
+                    [[39.1, 32.1, 100.0], [39.2, 32.2, 100.0]],
+                    "#fff",
+                    metadata={"route_order": 2},
+                ),
+            ],
+            loop=True,
+        )
+
+        self.assertEqual(count, 3)
+        self.assertEqual(client.sent[0], ("mission_count_send", (1, 1, 5, 0)))
+        jump = client.sent[-2]
+        self.assertEqual(jump[0], "mission_item_int_send")
+        self.assertEqual(jump[1][2], 4)
+        self.assertEqual(jump[1][4], mavlink.MAV_CMD_DO_JUMP)
+        self.assertEqual(jump[1][7], 2.0)
+        self.assertEqual(jump[1][8], -1.0)
+        self.assertEqual(client.sent[-1], ("mission_set_current_send", (1, 1, 1)))
 
     def test_mission_conversion_sorts_route_items_and_retains_areas_locally(self) -> None:
         mavlink = SimpleNamespace(
@@ -708,6 +848,18 @@ class VehicleServiceTests(unittest.TestCase):
         service.stop()
         self.assertEqual(received[0].pixel_format, "rgba8888")
         self.assertGreater(received[0].width, 0)
+        self.assertGreaterEqual(service.stats.frames_received, 1)
+
+    def test_gstreamer_http_mjpeg_pipeline_uses_transport_meter(self) -> None:
+        pipeline = GStreamerVideoService.build_pipeline(
+            "http",
+            "http://192.168.1.4:4747/video/force/1280x720",
+            codec="mjpeg",
+        )
+        self.assertIn("souphttpsrc", pipeline)
+        self.assertIn("multipartdemux", pipeline)
+        self.assertIn("identity name=yki_transport_stats", pipeline)
+        self.assertIn("jpegdec", pipeline)
 
     def test_gstreamer_rtsp_rtp_and_v4l2_plugins_are_available(self) -> None:
         service = GStreamerVideoService("usb", "/dev/video0")
@@ -717,6 +869,9 @@ class VehicleServiceTests(unittest.TestCase):
             "rtph264depay",
             "rtph265depay",
             "v4l2src",
+            "souphttpsrc",
+            "multipartdemux",
+            "jpegdec",
             "appsink",
         ):
             self.assertIsNotNone(Gst.ElementFactory.find(element), element)
@@ -735,6 +890,8 @@ class VehicleServiceTests(unittest.TestCase):
         service._set_connected(True)
         service._check_frame_timeout(now=10.2)
         self.assertFalse(service.connected)
+        self.assertFalse(service.stats.connected)
+        self.assertEqual(service.stats.quality_percent, 0)
         self.assertEqual(states, [True, False])
         self.assertEqual(logs.history[-1].action, "video.frame_timeout")
 

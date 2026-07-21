@@ -16,6 +16,7 @@ from src.models.commands import CommandRequest, CommandResult
 from src.models.connections import ConnectionStatus
 from src.models.mission import MapOverlay
 from src.models.telemetry import TelemetrySnapshot
+from src.models.video import VideoStreamStats
 from src.ui.adapters.runtime import create_qt_runtime_services
 from src.ui.config.i18n import t
 from src.ui.themes.manager import apply_theme
@@ -79,11 +80,18 @@ class UiSmokeTests(unittest.TestCase):
                 gps_satellites=14,
                 gps_fix="3D FIX",
                 gps_hdop=0.82,
+                local_north_m=145.25,
+                local_east_m=-32.5,
+                local_down_m=-114.6,
             )
             window.map_panel.update_snapshot(first_position)
             self.assertIn('"active": true', map_scripts[-1])
             self.assertIn('"gpsSatellites": 14', map_scripts[-1])
             self.assertIn('"gpsHdop": 0.82', map_scripts[-1])
+            self.assertIn('"localPositionAvailable": true', map_scripts[-1])
+            self.assertIn('"localNorth": 145.25', map_scripts[-1])
+            self.assertIn('"localEast": -32.5', map_scripts[-1])
+            self.assertIn('"localDown": -114.6', map_scripts[-1])
             jumped_position = first_position.copy(latitude=-35.36, longitude=149.16)
             window.map_panel.update_snapshot(jumped_position)
             self.assertIn('"resetTrack": true', map_scripts[-1])
@@ -119,6 +127,38 @@ class UiSmokeTests(unittest.TestCase):
             window._on_telemetry(packet_snapshot)
             self.assertEqual(window.link_meters["command"].value.text(), "93%")
             self.assertEqual(window.link_meters["command"].detail.text(), "↓ 391 ↑ 8")
+            self.assertEqual(window.battery_meter.value.text(), "--%")
+            battery_snapshot = packet_snapshot.copy(
+                battery_percent=76,
+                battery_voltage=15.8,
+                battery_current_amps=7.4,
+                battery_consumed_mah=940,
+            )
+            window._on_telemetry(battery_snapshot)
+            self.assertEqual(window.battery_meter.value.text(), "76%")
+            self.assertEqual(window.battery_meter.detail.text(), "15.8 V · 7.4 A")
+            self.assertIn("940 mAh", window.battery_meter.toolTip())
+            self.assertEqual(
+                window.link_meters["bulk"].label.text(),
+                "Video Aktarımı",
+            )
+            window._on_video_stats(
+                VideoStreamStats(
+                    connected=True,
+                    quality_percent=92,
+                    frames_received=120,
+                    fps=29.7,
+                    bitrate_kbps=2420.0,
+                    width=1280,
+                    height=720,
+                    frame_age_s=0.0,
+                )
+            )
+            self.assertEqual(window.link_meters["bulk"].value.text(), "92%")
+            self.assertEqual(
+                window.link_meters["bulk"].detail.text(),
+                "↓ 2.4 Mbps · 29.7 FPS",
+            )
             telemetry_chip.set_state("success")
             self.assertIn(theme.success, telemetry_chip.text_label.styleSheet())
             telemetry_chip.set_state("danger")

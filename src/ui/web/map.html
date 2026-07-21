@@ -174,6 +174,7 @@
     }
 
     .layer-toggle button,
+    .mission-mode-toggle button,
     .tool-button {
       appearance: none;
       border: 1px solid var(--border);
@@ -183,14 +184,16 @@
       transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
     }
 
-    .layer-toggle {
+    .layer-toggle,
+    .mission-mode-toggle {
       display: inline-flex;
       gap: 0;
       overflow: hidden;
       border-radius: 4px;
     }
 
-    .layer-toggle button {
+    .layer-toggle button,
+    .mission-mode-toggle button {
       min-width: 82px;
       height: 28px;
       padding: 0 10px;
@@ -199,11 +202,13 @@
       border-radius: 0;
     }
 
-    .layer-toggle button + button {
+    .layer-toggle button + button,
+    .mission-mode-toggle button + button {
       border-left: none;
     }
 
     .layer-toggle button.active,
+    .mission-mode-toggle button.active,
     .tool-button.active {
       color: var(--text);
       border-color: var(--accent);
@@ -312,6 +317,7 @@
 
     .tool-button:hover,
     .layer-toggle button:hover,
+    .mission-mode-toggle button:hover,
     .context-menu button:hover {
       background: var(--surface-hover);
       color: var(--text);
@@ -373,8 +379,10 @@
       pointer-events: none;
       z-index: 930;
       display: inline-flex;
-      align-items: center;
-      gap: 10px;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
+      max-width: calc(100% - 24px);
       padding: 7px 10px;
       background: rgba(30, 30, 30, 0.88);
       border: 1px solid var(--border);
@@ -386,6 +394,17 @@
     .hud-footer strong {
       color: var(--text);
       font-weight: 700;
+    }
+
+    .hud-footer span {
+      white-space: nowrap;
+    }
+
+    .hud-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
     }
 
     .context-menu {
@@ -665,6 +684,7 @@
         </div>
         <div class="map-top-right">
           <div class="floating-bar layer-toggle" id="layer-toggle"></div>
+          <div class="floating-bar mission-mode-toggle" id="mission-mode-toggle"></div>
           <div class="gps-summary" id="gps-summary" data-state="offline">
             <span>GPS</span>
             <strong id="gps-fix">NO FIX</strong>
@@ -675,9 +695,14 @@
       </div>
       <div class="tool-dock" id="tool-dock"></div>
       <div class="hud-footer">
-        <span id="vehicle-readout">UAV LAT <strong>--</strong> LON <strong>--</strong></span>
-        <span id="cursor-readout">CURSOR LAT <strong>0.00000</strong> LON <strong>0.00000</strong></span>
-        <span id="zoom-readout">ZOOM <strong>0</strong></span>
+        <div class="hud-row">
+          <span id="vehicle-readout">UAV LAT <strong>--</strong> LON <strong>--</strong></span>
+          <span id="local-readout">LOCAL NED <strong>N -- · E -- · D -- m</strong></span>
+        </div>
+        <div class="hud-row">
+          <span id="cursor-readout">CURSOR LAT <strong>0.00000</strong> LON <strong>0.00000</strong></span>
+          <span id="zoom-readout">ZOOM <strong>0</strong></span>
+        </div>
       </div>
       <div id="context-menu" class="context-menu">
         <button data-action="goto"></button>
@@ -797,11 +822,18 @@
     const state = {
       ui: {
         layers: { vector: 'Vector', satellite: 'Satellite' },
+        missionMode: {
+          once: 'Tek Sefer',
+          loop: 'Döngü',
+          onceHint: 'Görevi bir kez çalıştır',
+          loopHint: 'Waypointleri sürekli tekrarla',
+        },
         tools: { ...TOOL_DEFAULTS },
         context: { ...CONTEXT_DEFAULTS },
       },
       activeTool: 'pan',
       currentLayer: 'vector',
+      missionLoop: false,
       selectedId: null,
       overlayOrder: [],
       layers: new Map(),
@@ -879,6 +911,13 @@
         const layer = button.dataset.layer;
         button.textContent = state.ui.layers[layer] || layer.toUpperCase();
       });
+      document.querySelectorAll('#mission-mode-toggle button').forEach((button) => {
+        const mode = button.dataset.mode;
+        button.textContent = state.ui.missionMode[mode] || mode.toUpperCase();
+        button.title = mode === 'loop'
+          ? state.ui.missionMode.loopHint
+          : state.ui.missionMode.onceHint;
+      });
     }
 
     function buildLayerToggle() {
@@ -894,6 +933,22 @@
         container.appendChild(button);
       });
       syncLayerState();
+      setToolbarTitles();
+    }
+
+    function buildMissionModeToggle() {
+      const container = document.getElementById('mission-mode-toggle');
+      container.innerHTML = '';
+      ['once', 'loop'].forEach((mode) => {
+        const button = document.createElement('button');
+        button.dataset.mode = mode;
+        button.addEventListener('click', () => {
+          window.ykiMap.setMissionLoop(mode === 'loop');
+          emitAction({ type: 'mission_loop_changed', loop: state.missionLoop });
+        });
+        container.appendChild(button);
+      });
+      syncMissionModeState();
       setToolbarTitles();
     }
 
@@ -931,7 +986,7 @@
           }
           if (tool === 'send') {
             window.ykiMap.setMissionTransferState('pending', 'Görev planı uçuş cihazına gönderiliyor…');
-            emitAction({ type: 'mission_send_request' });
+            emitAction({ type: 'mission_send_request', loop: state.missionLoop });
             return;
           }
           if (tool === 'clear') {
@@ -967,6 +1022,15 @@
     function syncLayerState() {
       document.querySelectorAll('#layer-toggle button').forEach((button) => {
         button.classList.toggle('active', button.dataset.layer === state.currentLayer);
+      });
+    }
+
+    function syncMissionModeState() {
+      document.querySelectorAll('#mission-mode-toggle button').forEach((button) => {
+        button.classList.toggle(
+          'active',
+          button.dataset.mode === (state.missionLoop ? 'loop' : 'once'),
+        );
       });
     }
 
@@ -2291,6 +2355,7 @@
       L.control.scale({ imperial: false }).addTo(map);
 
       buildLayerToggle();
+      buildMissionModeToggle();
       buildToolDock();
       bindDialogEvents();
 
@@ -2366,6 +2431,7 @@
       setUiConfig(config) {
         state.ui = {
           layers: config.layers || state.ui.layers,
+          missionMode: config.missionMode || state.ui.missionMode,
           tools: config.tools || state.ui.tools,
           context: config.context || state.ui.context,
           primaryTools: config.toolOrder?.primary || state.ui.primaryTools || PRIMARY_TOOLS,
@@ -2391,6 +2457,10 @@
         };
         if (config.currentLayer) {
           state.currentLayer = config.currentLayer;
+        }
+        if (typeof config.missionLoop === 'boolean') {
+          state.missionLoop = config.missionLoop;
+          syncMissionModeState();
         }
         const defaults = config.missionDefaults || {};
         state.defaultRadii = { ...state.defaultRadii, ...(defaults.radii || {}) };
@@ -2433,6 +2503,11 @@
           }
         }
         window.setTimeout(emitBounds, 0);
+      },
+
+      setMissionLoop(loop) {
+        state.missionLoop = Boolean(loop);
+        syncMissionModeState();
       },
 
       setActiveTool(tool) {
@@ -2525,6 +2600,22 @@
           window.ykiMap.setCommandAvailable(payload.commandAvailable);
         }
         updateGpsSummary(payload || {});
+        const localReadout = document.querySelector('#local-readout');
+        const localNorth = Number(payload && payload.localNorth);
+        const localEast = Number(payload && payload.localEast);
+        const localDown = Number(payload && payload.localDown);
+        if (
+          payload
+          && payload.localPositionAvailable
+          && Number.isFinite(localNorth)
+          && Number.isFinite(localEast)
+          && Number.isFinite(localDown)
+        ) {
+          const signed = (value) => `${value >= 0 ? '+' : ''}${value.toFixed(1)}`;
+          localReadout.innerHTML = `LOCAL NED <strong>N ${signed(localNorth)} · E ${signed(localEast)} · D ${signed(localDown)} m</strong>`;
+        } else {
+          localReadout.innerHTML = 'LOCAL NED <strong>N -- · E -- · D -- m</strong>';
+        }
         if (!payload || !payload.active) {
           if (vehicleMarker && map.hasLayer(vehicleMarker)) {
             map.removeLayer(vehicleMarker);

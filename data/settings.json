@@ -1,9 +1,9 @@
 {
   "backend": {
     "mock_mode": false,
-    "video_source_type": "udp",
-    "video_source_uri": "0.0.0.0:5601",
-    "video_codec": "h265",
+    "video_source_type": "http",
+    "video_source_uri": "http://192.168.1.4:4747/video/force/1280x720",
+    "video_codec": "mjpeg",
     "video_latency_ms": 100,
     "video_frame_timeout_s": 3,
     "cache": {
@@ -12,8 +12,8 @@
       "path": "/home/tahsincr/Masaüstü/siha-test/yki/data/map-cache"
     },
     "mavlink": {
-      "endpoint": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_ABA3E9VB-if00-port0",
-      "baud": 57600,
+      "endpoint": "tcp:127.0.0.1:5762",
+      "baud": 115200,
       "heartbeat_timeout": 10,
       "auto_connect": true,
       "dialect": "ardupilotmega",
@@ -29,8 +29,8 @@
       "component_id": 191,
       "network_id": 77,
       "message_type": 42000,
-      "heartbeat_timeout_s": 12.0,
-      "command_timeout_s": 5.0
+      "heartbeat_timeout_s": 12,
+      "command_timeout_s": 5
     },
     "competition": {
       "base_url": "http://127.0.0.1:5000",
@@ -54,7 +54,7 @@
     }
   },
   "ui": {
-    "language": "tr",
+    "language": "en",
     "theme": "dark",
     "map_layer": "satellite",
     "map_center_min_zoom": 13,

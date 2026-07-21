@@ -152,10 +152,12 @@ class DispatchCommandService(CommandService):
             mission_items = [item for item in overlays if item.is_vehicle_mission]
             if not mission_items:
                 raise ValueError("Ucus cihazina gonderilecek görev noktasi yok")
-            item_count = self._vehicle.upload_mission(mission_items)
+            loop = bool(request.parameters.get("loop", False))
+            item_count = self._vehicle.upload_mission(mission_items, loop=loop)
             return True, {
                 "item_count": item_count,
                 "ignored_item_count": len(overlays) - len(mission_items),
+                "loop": loop,
             }
         if request.code == "SET_MISSION_TASK":
             task = str(request.parameters.get("task", "")).strip().upper()
@@ -226,7 +228,11 @@ class DispatchCommandService(CommandService):
         details: dict[str, object],
     ) -> str:
         if request.code == "MISSION_UPLOAD":
-            return f"{int(details.get('item_count', 0))} görev öğesi uçuş cihazı tarafından kabul edildi"
+            mode = "döngü görevi" if details.get("loop") else "tek seferlik görev"
+            return (
+                f"{int(details.get('item_count', 0))} görev öğesi {mode} olarak "
+                "uçuş cihazı tarafından kabul edildi"
+            )
         if request.code == "SET_TARGET_PROFILE":
             return f"{int(details.get('profile_field_count', 0))} uçuş profili değeri doğrulandı"
         if request.code == "SET_MISSION_TASK":

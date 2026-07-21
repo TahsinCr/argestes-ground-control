@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Any
 
 from src.core.events import EventStream
-from src.models.video import VideoFrame
+from src.models.video import VideoFrame, VideoStreamStats
 from src.services.contracts.video import VideoService
 from src.services.logging_service import ServiceLogger
 
@@ -15,10 +16,13 @@ from src.services.logging_service import ServiceLogger
 class MutableVideoService(VideoService):
     def __init__(self, logger: ServiceLogger | None = None) -> None:
         self._frames = EventStream[VideoFrame]()
+        self._stats_changed = EventStream[VideoStreamStats]()
         self._connection_changed = EventStream[bool]()
         self._logger = logger
         self._connected = False
         self._connection_lock = threading.RLock()
+        self._stats = VideoStreamStats()
+        self._stats_lock = threading.RLock()
 
     @property
     def connected(self) -> bool:
@@ -32,6 +36,15 @@ class MutableVideoService(VideoService):
     @property
     def frames(self) -> EventStream[VideoFrame]:
         return self._frames
+
+    @property
+    def stats(self) -> VideoStreamStats:
+        with self._stats_lock:
+            return self._stats
+
+    @property
+    def stats_changed(self) -> EventStream[VideoStreamStats]:
+        return self._stats_changed
 
     def start(self) -> None:
         self._set_connected(True)
@@ -57,6 +70,17 @@ class MutableVideoService(VideoService):
     def push(self, frame: VideoFrame) -> None:
         self._set_connected(True)
         self._frames.publish(frame)
+        previous = self.stats
+        self._publish_stats(
+            VideoStreamStats(
+                connected=True,
+                quality_percent=100,
+                frames_received=previous.frames_received + 1,
+                width=frame.width,
+                height=frame.height,
+                frame_age_s=0.0,
+            )
+        )
 
     def _set_connected(self, connected: bool) -> None:
         value = bool(connected)
@@ -65,6 +89,26 @@ class MutableVideoService(VideoService):
                 return
             self._connected = value
         self._connection_changed.publish_isolated(value)
+        current = self.stats
+        self._publish_stats(
+            VideoStreamStats(
+                connected=value,
+                quality_percent=current.quality_percent if value else 0,
+                frames_received=current.frames_received,
+                fps=current.fps if value else 0.0,
+                bitrate_kbps=current.bitrate_kbps if value else 0.0,
+                width=current.width,
+                height=current.height,
+                frame_age_s=current.frame_age_s,
+            )
+        )
+
+    def _publish_stats(self, stats: VideoStreamStats) -> None:
+        with self._stats_lock:
+            if stats == self._stats:
+                return
+            self._stats = stats
+        self._stats_changed.publish_isolated(stats)
 
 
 class GStreamerVideoService(MutableVideoService):
@@ -86,7 +130,7 @@ class GStreamerVideoService(MutableVideoService):
         self._latency_ms = max(0, int(latency_ms))
         self._codec = codec.strip().lower()
         self._frame_timeout_s = float(frame_timeout_s)
-        if self._codec not in {"h264", "h265"}:
+        if self._codec not in {"h264", "h265", "mjpeg"}:
             raise ValueError(f"Desteklenmeyen GStreamer codec: {codec}")
         if self._frame_timeout_s <= 0:
             raise ValueError("Video kare zaman aşımı pozitif olmalı")
@@ -96,6 +140,11 @@ class GStreamerVideoService(MutableVideoService):
         self._stop_event = threading.Event()
         self._frame_count = 0
         self._last_frame_at = 0.0
+        self._last_stats_at = 0.0
+        self._peak_fps = 0.0
+        self._frame_times: deque[float] = deque()
+        self._transport_samples: deque[tuple[float, int]] = deque()
+        self._measurement_lock = threading.RLock()
         self._started = False
 
     @property
@@ -119,9 +168,9 @@ class GStreamerVideoService(MutableVideoService):
         normalized_type = source_type.strip().lower()
         normalized_uri = source_uri.strip()
         normalized_codec = codec.strip().lower()
-        if normalized_codec not in {"h264", "h265"}:
+        if normalized_codec not in {"h264", "h265", "mjpeg"}:
             raise ValueError(f"Desteklenmeyen GStreamer codec: {codec}")
-        if normalized_type not in {"rtsp", "udp", "usb", "file", "pipeline"}:
+        if normalized_type not in {"http", "rtsp", "udp", "usb", "file", "pipeline"}:
             raise ValueError(f"Desteklenmeyen GStreamer kaynak tipi: {source_type}")
         if not normalized_uri:
             raise ValueError("Video kaynağı adresi boş olamaz")
@@ -153,6 +202,11 @@ class GStreamerVideoService(MutableVideoService):
         if sink is None:
             raise ValueError("GStreamer pipeline yki_sink appsink öğesi üretmedi")
         sink.connect("new-sample", self._on_sample)
+        transport_meter = pipeline.get_by_name("yki_transport_stats")
+        if transport_meter is not None:
+            transport_pad = transport_meter.get_static_pad("src")
+            if transport_pad is not None:
+                transport_pad.add_probe(Gst.PadProbeType.BUFFER, self._on_transport_buffer)
         result = pipeline.set_state(Gst.State.PLAYING)
         if result == Gst.StateChangeReturn.FAILURE:
             pipeline.set_state(Gst.State.NULL)
@@ -160,6 +214,13 @@ class GStreamerVideoService(MutableVideoService):
         self._pipeline = pipeline
         self._stop_event.clear()
         self._last_frame_at = 0.0
+        self._frame_count = 0
+        self._last_stats_at = 0.0
+        self._peak_fps = 0.0
+        with self._measurement_lock:
+            self._frame_times.clear()
+            self._transport_samples.clear()
+        self._publish_stats(VideoStreamStats())
         self._started = True
         self._bus_thread = threading.Thread(
             target=self._watch_bus,
@@ -220,16 +281,17 @@ class GStreamerVideoService(MutableVideoService):
                 buffer.unmap(info)
             was_connected = self.connected
             self._last_frame_at = time.monotonic()
-            self.push(
-                VideoFrame(
-                    width=width,
-                    height=height,
-                    data=data,
-                    pixel_format="rgba8888",
-                    stride=width * 4,
-                )
+            frame = VideoFrame(
+                width=width,
+                height=height,
+                data=data,
+                pixel_format="rgba8888",
+                stride=width * 4,
             )
+            self._set_connected(True)
+            self._frames.publish(frame)
             self._frame_count += 1
+            self._record_frame_stats(width, height, self._last_frame_at)
             if not was_connected and self._frame_count > 1:
                 self._event(
                     "video.stream_recovered",
@@ -251,6 +313,72 @@ class GStreamerVideoService(MutableVideoService):
                 severity="danger",
             )
             return Gst.FlowReturn.ERROR
+
+    def _on_transport_buffer(self, _pad: Any, info: Any) -> Any:
+        Gst = self._gst
+        if Gst is None:
+            return 0
+        buffer = info.get_buffer()
+        if buffer is not None:
+            now = time.monotonic()
+            with self._measurement_lock:
+                self._transport_samples.append((now, int(buffer.get_size())))
+        return Gst.PadProbeReturn.OK
+
+    def _record_frame_stats(self, width: int, height: int, now: float) -> None:
+        with self._measurement_lock:
+            self._frame_times.append(now)
+            cutoff = now - 2.0
+            while self._frame_times and self._frame_times[0] < cutoff:
+                self._frame_times.popleft()
+            while self._transport_samples and self._transport_samples[0][0] < cutoff:
+                self._transport_samples.popleft()
+            frame_times = tuple(self._frame_times)
+            transport_samples = tuple(self._transport_samples)
+
+        if now - self._last_stats_at < 0.45 and self._frame_count > 1:
+            return
+        self._last_stats_at = now
+        fps = 0.0
+        if len(frame_times) >= 2:
+            span = frame_times[-1] - frame_times[0]
+            if span > 0.0:
+                fps = (len(frame_times) - 1) / span
+        self._peak_fps = max(self._peak_fps, fps)
+        target_fps = max(self._peak_fps, 1.0)
+        delivery_score = min(1.0, fps / target_fps) if fps > 0.0 else 1.0
+        jitter_score = 1.0
+        if len(frame_times) >= 4:
+            intervals = [
+                later - earlier
+                for earlier, later in zip(frame_times, frame_times[1:])
+            ]
+            mean_interval = sum(intervals) / len(intervals)
+            if mean_interval > 0.0:
+                variance = sum(
+                    (interval - mean_interval) ** 2 for interval in intervals
+                ) / len(intervals)
+                jitter_ratio = variance ** 0.5 / mean_interval
+                jitter_score = max(0.0, 1.0 - min(1.0, jitter_ratio * 2.0))
+        quality = int(round(100.0 * (delivery_score * 0.75 + jitter_score * 0.25)))
+
+        bitrate_kbps = 0.0
+        if transport_samples:
+            transport_span = max(0.5, now - transport_samples[0][0])
+            bitrate_kbps = sum(size for _timestamp, size in transport_samples) * 8.0
+            bitrate_kbps /= transport_span * 1000.0
+        self._publish_stats(
+            VideoStreamStats(
+                connected=True,
+                quality_percent=max(1, min(100, quality)),
+                frames_received=self._frame_count,
+                fps=fps,
+                bitrate_kbps=bitrate_kbps,
+                width=width,
+                height=height,
+                frame_age_s=0.0,
+            )
+        )
 
     def _watch_bus(self) -> None:
         pipeline = self._pipeline
@@ -326,7 +454,7 @@ class GStreamerVideoService(MutableVideoService):
         source_type = source_type.strip().lower()
         source_uri = source_uri.strip()
         codec = codec.strip().lower()
-        if codec not in {"h264", "h265"}:
+        if codec not in {"h264", "h265", "mjpeg"}:
             raise ValueError(f"Desteklenmeyen GStreamer codec: {codec}")
         if not source_uri:
             raise ValueError("Video kaynağı adresi boş olamaz")
@@ -334,6 +462,15 @@ class GStreamerVideoService(MutableVideoService):
             source = source_uri
             if "appsink" in source and "name=yki_sink" in source:
                 return source
+        elif source_type == "http":
+            parsed = urlparse(source_uri)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError(f"Geçersiz HTTP video adresi: {source_uri}")
+            source = (
+                f'souphttpsrc location="{cls._quote(source_uri)}" is-live=true '
+                "do-timestamp=true timeout=5 ! multipartdemux "
+                "! identity name=yki_transport_stats silent=true ! jpegdec"
+            )
         elif source_type == "rtsp":
             source = (
                 f'rtspsrc location="{cls._quote(source_uri)}" latency={max(0, int(latency_ms))} '

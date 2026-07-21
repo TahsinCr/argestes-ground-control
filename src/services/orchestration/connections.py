@@ -150,11 +150,21 @@ class BackendConnectionControlService(ConnectionControlService):
             )
         if key == "video":
             backend = settings.backend
+            stats = self._video.stats
+            stream_detail = (
+                f"{stats.width}x{stats.height} / {stats.fps:.1f} FPS / "
+                f"{stats.bitrate_kbps:.0f} kbps / kalite %{stats.quality_percent}"
+                if stats.frames_received > 0
+                else "Henüz video karesi alınmadı"
+            )
             return ConnectionStatus(
                 key,
                 self._video.connected,
                 "Video akışı bağlı" if self._video.connected else "Video akışı bekliyor",
-                f"{backend.video_source_type.upper()} / {backend.video_codec.upper()}",
+                (
+                    f"{backend.video_source_type.upper()} / "
+                    f"{backend.video_codec.upper()} / {stream_detail}"
+                ),
                 backend.video_source_uri,
                 float(backend.video_frame_timeout_s),
                 {
@@ -162,6 +172,7 @@ class BackendConnectionControlService(ConnectionControlService):
                     "codec": backend.video_codec,
                     "latency_ms": backend.video_latency_ms,
                     "frame_timeout_s": backend.video_frame_timeout_s,
+                    **stats.to_dict(),
                 },
             )
 

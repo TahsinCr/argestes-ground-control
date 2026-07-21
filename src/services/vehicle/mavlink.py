@@ -84,8 +84,13 @@ class NullVehicleService(VehicleService):
     def execute(self, request: CommandRequest) -> bool:
         self._unavailable(request.code)
 
-    def upload_mission(self, overlays: Iterable[MapOverlay]) -> int:
-        del overlays
+    def upload_mission(
+        self,
+        overlays: Iterable[MapOverlay],
+        *,
+        loop: bool = False,
+    ) -> int:
+        del overlays, loop
         self._unavailable("MISSION_UPLOAD")
 
     def download_mission(self) -> list[MapOverlay]:
@@ -374,10 +379,15 @@ class MavlinkVehicleService(VehicleService):
             "SET_MODE": lambda: self._set_mode(str(request.parameters["mode"])),
             "GOTO": lambda: self._goto(request.parameters),
             "LAND": lambda: self._land(request.parameters),
-            "MISSION_UPLOAD": lambda: bool(self.upload_mission(
-                item if isinstance(item, MapOverlay) else MapOverlay.from_dict(item)
-                for item in request.parameters.get("overlays", [])
-            )),
+            "MISSION_UPLOAD": lambda: bool(
+                self.upload_mission(
+                    (
+                        item if isinstance(item, MapOverlay) else MapOverlay.from_dict(item)
+                        for item in request.parameters.get("overlays", [])
+                    ),
+                    loop=bool(request.parameters.get("loop", False)),
+                )
+            ),
         }
         handler = handlers.get(request.code)
         if handler is None:
@@ -389,10 +399,15 @@ class MavlinkVehicleService(VehicleService):
             raise PermissionError("Zorla ARM için açık operatör onayı gerekli")
         return self._arm(True, force=True)
 
-    def upload_mission(self, overlays: Iterable[MapOverlay]) -> int:
+    def upload_mission(
+        self,
+        overlays: Iterable[MapOverlay],
+        *,
+        loop: bool = False,
+    ) -> int:
         source_items = list(overlays)
         mavlink = self._client.mavlink
-        items, ignored = self._mission_items(
+        route_items, ignored = self._mission_items(
             source_items,
             mavlink,
             default_altitude=self._default_mission_altitude,
@@ -404,8 +419,26 @@ class MavlinkVehicleService(VehicleService):
                 f"{len(ignored)} uygulama öğesi yalnızca backend durumunda tutuldu",
                 details={"overlay_types": sorted(set(ignored))},
             )
-        if not items:
+        if not route_items:
             raise ValueError("Araca gönderilebilecek görev öğesi bulunamadı")
+
+        items = [self._mission_home_item(route_items, mavlink), *route_items]
+        if loop:
+            terminal_types = sorted(
+                {
+                    item.overlay_type
+                    for item in source_items
+                    if item.overlay_type in {"rtl", "land", "loiter"}
+                    and item.is_vehicle_mission
+                }
+            )
+            if terminal_types:
+                raise ValueError(
+                    "Döngü görevinde terminal öğe kullanılamaz: "
+                    + ", ".join(terminal_types)
+                )
+            loop_target = self._loop_target_sequence(source_items)
+            items.append(self._mission_jump_item(loop_target, mavlink))
 
         system, component = self._target
         mission_type = mavlink.MAV_MISSION_TYPE_MISSION
@@ -444,13 +477,20 @@ class MavlinkVehicleService(VehicleService):
         )
         if int(acknowledgement.type) != mavlink.MAV_MISSION_ACCEPTED:
             raise RuntimeError(f"Araç görev planını reddetti: {acknowledgement.type}")
+        self._client.call_mav("mission_set_current_send", system, component, 1)
+        route_item_count = len(route_items)
         self._event(
             "success",
             "mission.upload_confirmed",
-            f"{len(items)} görev öğesi uçuş cihazı tarafından kabul edildi",
-            details={"item_count": len(items)},
+            f"{route_item_count} görev öğesi uçuş cihazı tarafından kabul edildi",
+            details={
+                "item_count": route_item_count,
+                "wire_item_count": len(items),
+                "loop": loop,
+                "start_sequence": 1,
+            },
         )
-        return len(items)
+        return route_item_count
 
     def download_mission(self) -> list[MapOverlay]:
         mavlink = self._client.mavlink
@@ -465,6 +505,7 @@ class MavlinkVehicleService(VehicleService):
         )
         count = int(count_message.count)
         overlays: list[MapOverlay] = []
+        loop_detected = False
         for sequence in range(count):
             boundary = self._client.router.sequence
             self._client.call_mav(
@@ -480,9 +521,17 @@ class MavlinkVehicleService(VehicleService):
                 timeout=self._operation_timeout,
                 after_sequence=boundary,
             )
+            if (
+                int(getattr(item, "command", -1))
+                == int(getattr(mavlink, "MAV_CMD_DO_JUMP", -2))
+                and float(getattr(item, "param2", 0.0)) < 0
+            ):
+                loop_detected = True
             overlay = self._overlay_from_mission_item(item, mavlink)
             if overlay is not None:
                 overlays.append(overlay)
+        if loop_detected and overlays:
+            overlays[0].metadata["mission_loop"] = True
         self._client.call_mav(
             "mission_ack_send",
             system,
@@ -686,8 +735,84 @@ class MavlinkVehicleService(VehicleService):
                 )
         return result, ignored
 
+    def _mission_home_item(
+        self,
+        route_items: list[tuple[Any, ...]],
+        mavlink: Any,
+    ) -> tuple[Any, ...]:
+        latitude = 0
+        longitude = 0
+        latest = getattr(self._client, "latest", None)
+        if callable(latest):
+            home = latest("HOME_POSITION")
+            if home is not None:
+                latitude = int(getattr(home, "latitude", 0) or 0)
+                longitude = int(getattr(home, "longitude", 0) or 0)
+            if latitude == 0 and longitude == 0:
+                position = latest("GLOBAL_POSITION_INT")
+                if position is not None:
+                    latitude = int(getattr(position, "lat", 0) or 0)
+                    longitude = int(getattr(position, "lon", 0) or 0)
+        if latitude == 0 and longitude == 0:
+            latitude = int(route_items[0][8])
+            longitude = int(route_items[0][9])
+        return (
+            mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+            mavlink.MAV_CMD_NAV_WAYPOINT,
+            0,
+            1,
+            0.0,
+            0.0,
+            0.0,
+            float("nan"),
+            latitude,
+            longitude,
+            0.0,
+        )
+
+    @staticmethod
+    def _loop_target_sequence(overlays: Iterable[MapOverlay]) -> int:
+        ordered = sorted(
+            enumerate(overlays),
+            key=lambda pair: (
+                pair[1].route_order
+                if pair[1].route_order is not None
+                else 1_000_000,
+                pair[0],
+            ),
+        )
+        sequence = 1  # sequence 0, MAVLink görev origin/home kaydıdır.
+        for _index, overlay in ordered:
+            if not overlay.is_vehicle_mission:
+                continue
+            points = list(overlay.points)
+            if overlay.overlay_type in {"waypoint", "route"} and points:
+                return sequence
+            if overlay.overlay_type == "rtl":
+                points = points or [[0.0, 0.0, 0.0]]
+            sequence += len(points)
+        raise ValueError("Döngü görevi için en az bir waypoint gerekli")
+
+    @staticmethod
+    def _mission_jump_item(sequence: int, mavlink: Any) -> tuple[Any, ...]:
+        return (
+            getattr(mavlink, "MAV_FRAME_MISSION", 2),
+            mavlink.MAV_CMD_DO_JUMP,
+            0,
+            1,
+            float(sequence),
+            -1.0,
+            0.0,
+            0.0,
+            0,
+            0,
+            0.0,
+        )
+
     @staticmethod
     def _overlay_from_mission_item(message: Any, mavlink: Any) -> MapOverlay | None:
+        if int(getattr(message, "seq", -1)) == 0:
+            return None
         command_types = {
             mavlink.MAV_CMD_NAV_TAKEOFF: ("takeoff", "#78b7ff"),
             mavlink.MAV_CMD_NAV_WAYPOINT: ("waypoint", "#74d99f"),

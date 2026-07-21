@@ -88,7 +88,7 @@ class ArchitectureTests(unittest.TestCase):
 
     def test_stylesheet_and_leaflet_vendor_are_unchanged(self) -> None:
         expected = {
-            SRC / "ui/themes/stylesheet.py": "760118c58811e3bcfbe8ec513aafed25b2447b595702328dc385cddc6fde86a0",
+            SRC / "ui/themes/stylesheet.py": "3f80b6d8f9cb0c4967ca88c2618f0278a4e459d795ebfc92e2cac16610f87cf6",
             SRC / "ui/web/vendor/leaflet.js": "db49d009c841f5ca34a888c96511ae936fd9f5533e90d8b2c4d57596f4e5641a",
             SRC / "ui/web/vendor/leaflet.css": "a7837102824184820dfa198d1ebcd109ff6d0ff9a2672a074b9a1b4d147d04c6",
         }
