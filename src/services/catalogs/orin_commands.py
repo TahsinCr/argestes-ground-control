@@ -9,7 +9,7 @@ def configured_orin_commands(config_path: Path) -> tuple[str, ...]:
     """Return normalized task names exposed by the standalone Orin config.
 
     The YKİ only reads command names. Executable paths remain owned and
-    validated by ``orin_mavlink_agent.py`` on the Orin.
+    validated by the vehicle-side application agent.
     """
 
     path = Path(config_path)

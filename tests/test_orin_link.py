@@ -1,25 +1,14 @@
 from __future__ import annotations
 
 import json
-import sys
 import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from orin_mavlink_agent import (
-    ConfiguredCommandExecutor,
-    OrinMavlinkAgent,
-    Packet,
-    PacketAssembler,
-    PacketCodec,
-    load_config,
-)
 from src.core.events import EventStream
 from src.core.mavlink import (
-    MavlinkApplicationAssembler,
-    MavlinkApplicationCodec,
     MavlinkApplicationPacket,
     MavlinkConnection,
     MavlinkEndpoint,
@@ -39,31 +28,7 @@ from src.services.vehicle.orin import MavlinkOrinService
 from src.services.video import MutableVideoService
 
 
-class _ExtensionMessage(SimpleNamespace):
-    def get_srcSystem(self) -> int:
-        return int(self.source_system)
-
-    def get_srcComponent(self) -> int:
-        return int(self.source_component)
-
-
 class OrinLinkTests(unittest.TestCase):
-    def test_agent_broadcasts_application_heartbeat_across_pixhawk_routes(self) -> None:
-        agent = OrinMavlinkAgent("udpout:127.0.0.1:19999")
-        sent: list[tuple[str, dict, int | None, int | None]] = []
-
-        def capture(packet_type, payload, *, target_system=None, target_component=None):
-            sent.append((packet_type, payload, target_system, target_component))
-            return Packet(packet_type, payload, packet_id=42)
-
-        agent.send_packet = capture  # type: ignore[method-assign]
-        packet = agent._send_application_heartbeat()
-
-        self.assertEqual(packet.packet_id, 42)
-        self.assertEqual(sent[0][0], "system.heartbeat")
-        self.assertEqual(sent[0][2:], (0, 0))
-        self.assertEqual(sent[0][1]["health"], "ok")
-
     def test_yki_catalog_reads_configured_orin_command_names(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "config.json"
@@ -82,54 +47,6 @@ class OrinLinkTests(unittest.TestCase):
                 configured_orin_commands(config_path),
                 ("PING_TEST", "CAMERA_START"),
             )
-
-    def test_configured_ping_command_runs_without_a_shell(self) -> None:
-        config_path = Path(__file__).resolve().parents[1] / "config.json"
-        config = load_config(config_path)
-        executor = ConfiguredCommandExecutor(
-            config_path,
-            config["commands"],
-            timeout_s=config["agent"]["command_timeout_s"],
-        )
-        executor.validate()
-        accepted, message, details = executor.execute(
-            "PING_TEST",
-            {"source": "unit-test", "value": 27},
-        )
-        self.assertTrue(accepted)
-        self.assertEqual(message, "command completed: PING_TEST")
-        self.assertEqual(details["exit_code"], 0)
-        self.assertEqual(details["task"], "PING_TEST")
-        self.assertEqual(details["execution"], "completed")
-        self.assertGreaterEqual(details["duration_ms"], 0)
-        self.assertIn('"source":"unit-test"', details["stdout"])
-
-    def test_configured_command_success_and_failure_are_written_to_agent_log(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            config_path = Path(directory) / "config.json"
-            config_path.write_text("{}", encoding="utf-8")
-            executor = ConfiguredCommandExecutor(
-                config_path,
-                {
-                    "FAIL_TEST": [
-                        sys.executable,
-                        "-c",
-                        "import sys; print('script-started'); print('script-error', file=sys.stderr); raise SystemExit(7)",
-                    ]
-                },
-            )
-            with self.assertLogs(level="INFO") as captured:
-                accepted, message, details = executor.execute("FAIL_TEST", {})
-            self.assertFalse(accepted)
-            self.assertIn("exit code 7", message)
-            self.assertEqual(details["execution"], "failed")
-            self.assertEqual(details["exit_code"], 7)
-            self.assertIn("script-started", details["stdout"])
-            self.assertIn("script-error", details["stderr"])
-            combined = "\n".join(captured.output)
-            self.assertIn("configured command starting task=FAIL_TEST", combined)
-            self.assertIn("status=failed exit_code=7", combined)
-            self.assertIn("configured command stderr task=FAIL_TEST", combined)
 
     def test_connection_ignores_onboard_heartbeat_until_pixhawk_heartbeat_arrives(self) -> None:
         class Raw:
@@ -161,42 +78,6 @@ class OrinLinkTests(unittest.TestCase):
         self.assertTrue(connection.is_connected)
         connection.stop()
         self.assertTrue(raw.closed)
-
-    def test_core_and_standalone_agent_share_the_same_fragmented_wire_format(self) -> None:
-        payload = {"task": "KAMIKAZE", "path": ["nokta-" + str(i) for i in range(180)]}
-        core_packet = MavlinkApplicationPacket("task.start", payload, packet_id=1234)
-        core_fragments = MavlinkApplicationCodec.encode(core_packet)
-        self.assertGreater(len(core_fragments), 1)
-
-        remote_assembler = PacketAssembler()
-        remote_packet = None
-        for fragment in reversed(core_fragments):
-            remote_packet = remote_assembler.accept(
-                _ExtensionMessage(
-                    payload=list(fragment) + [0] * (249 - len(fragment)),
-                    source_system=255,
-                    source_component=0,
-                )
-            ) or remote_packet
-        self.assertIsNotNone(remote_packet)
-        self.assertEqual(remote_packet.packet_type, "task.start")
-        self.assertEqual(remote_packet.payload, payload)
-
-        remote_fragments = PacketCodec.encode(
-            Packet("system.ack", {"request_id": 1234, "accepted": True}, packet_id=5678)
-        )
-        core_assembler = MavlinkApplicationAssembler()
-        decoded = None
-        for fragment in remote_fragments:
-            decoded = core_assembler.accept(
-                list(fragment) + [0] * (249 - len(fragment)),
-                source_system=1,
-                source_component=191,
-            ) or decoded
-        self.assertIsNotNone(decoded)
-        self.assertEqual(decoded.packet_type, "system.ack")
-        self.assertEqual(decoded.source_component, 191)
-        self.assertTrue(decoded.payload["accepted"])
 
     def test_orin_service_requires_heartbeat_and_waits_for_real_ack(self) -> None:
         vehicle = SimpleNamespace(
