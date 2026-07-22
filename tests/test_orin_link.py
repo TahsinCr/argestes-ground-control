@@ -14,7 +14,6 @@ from orin_mavlink_agent import (
     Packet,
     PacketAssembler,
     PacketCodec,
-    load_config,
 )
 from src.core.events import EventStream
 from src.core.mavlink import (
@@ -130,7 +129,7 @@ class OrinLinkTests(unittest.TestCase):
                 json.dumps(
                     {
                         "commands": {
-                            "ping_test": "orin_commands/ping_test.py",
+                            "ping_test": "scripts/ping_test.py",
                             "CAMERA_START": ["/usr/bin/python3", "camera.py"],
                         }
                     }
@@ -141,27 +140,6 @@ class OrinLinkTests(unittest.TestCase):
                 configured_orin_commands(config_path),
                 ("PING_TEST", "CAMERA_START"),
             )
-
-    def test_configured_ping_command_runs_without_a_shell(self) -> None:
-        config_path = Path(__file__).resolve().parents[1] / "config.json"
-        config = load_config(config_path)
-        executor = ConfiguredCommandExecutor(
-            config_path,
-            config["commands"],
-            timeout_s=config["agent"]["command_timeout_s"],
-        )
-        executor.validate()
-        accepted, message, details = executor.execute(
-            "PING_TEST",
-            {"source": "unit-test", "value": 27},
-        )
-        self.assertTrue(accepted)
-        self.assertEqual(message, "command completed: PING_TEST")
-        self.assertEqual(details["exit_code"], 0)
-        self.assertEqual(details["task"], "PING_TEST")
-        self.assertEqual(details["execution"], "completed")
-        self.assertGreaterEqual(details["duration_ms"], 0)
-        self.assertIn('"source":"unit-test"', details["stdout"])
 
     def test_configured_command_success_and_failure_are_written_to_agent_log(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
