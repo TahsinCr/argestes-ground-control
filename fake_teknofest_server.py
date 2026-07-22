@@ -17,8 +17,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
 import math
+import os
 import random
 import secrets
+import sys
 import threading
 import time
 from typing import Any
@@ -26,6 +28,10 @@ from urllib.parse import urlparse
 
 
 EARTH_RADIUS_M = 6_371_000.0
+ANSI_RESET = "\033[0m"
+ANSI_BOLD_GREEN = "\033[1;92m"
+ANSI_BOLD_MAGENTA = "\033[1;95m"
+ANSI_BOLD_CYAN = "\033[1;96m"
 
 
 def server_time(now: datetime | None = None) -> dict[str, int]:
@@ -140,12 +146,14 @@ class FakeTeknofestState:
         competitor_count: int,
         seed: int,
         quiet: bool = False,
+        color_output: bool = False,
     ) -> None:
         self.username = username
         self.password = password
         self.own_team_number = own_team_number
         self.competitor_count = competitor_count
         self.quiet = quiet
+        self.color_output = color_output
         self.sessions: dict[str, int] = {}
         self.last_telemetry_at: dict[int, float] = {}
         self.anchor = (39.8680, 32.7485, 1100.0)
@@ -222,27 +230,36 @@ class FakeTeknofestState:
                 gps_values = tuple(int(gps[key]) for key in ("saat", "dakika", "saniye", "milisaniye"))
             except (KeyError, TypeError, ValueError):
                 return 204, {"hata_kodu": 2, "mesaj": "Telemetri paketi eksik veya geçersiz"}
-            valid = (
-                -90 <= latitude <= 90
-                and -180 <= longitude <= 180
-                and altitude >= 0
-                and -90 <= pitch <= 90
-                and 0 <= heading <= 360
-                and -90 <= roll <= 90
-                and speed >= 0
-                and 0 <= battery <= 100
-                and autonomous in {0, 1}
-                and locked in {0, 1}
-                and all(value >= 0 for value in target_values)
-                and 0 <= gps_values[0] <= 23
-                and 0 <= gps_values[1] <= 59
-                and 0 <= gps_values[2] <= 59
-                and 0 <= gps_values[3] <= 999
-            )
-            if locked and (target_values[2] <= 0 or target_values[3] <= 0):
-                valid = False
-            if not valid:
-                return 400, {"hata_kodu": 2, "mesaj": "Telemetri değeri izin verilen aralık dışı"}
+            field_checks = {
+                "iha_enlem": -90 <= latitude <= 90,
+                "iha_boylam": -180 <= longitude <= 180,
+                "iha_irtifa": altitude >= 0,
+                "iha_dikilme": -90 <= pitch <= 90,
+                "iha_yonelme": 0 <= heading <= 360,
+                "iha_yatis": -90 <= roll <= 90,
+                "iha_hiz": speed >= 0,
+                "iha_batarya": 0 <= battery <= 100,
+                "iha_otonom": autonomous in {0, 1},
+                "iha_kilitlenme": locked in {0, 1},
+                "hedef_kutusu": all(value >= 0 for value in target_values),
+                "gps_saati.saat": 0 <= gps_values[0] <= 23,
+                "gps_saati.dakika": 0 <= gps_values[1] <= 59,
+                "gps_saati.saniye": 0 <= gps_values[2] <= 59,
+                "gps_saati.milisaniye": 0 <= gps_values[3] <= 999,
+            }
+            if locked:
+                field_checks["hedef_kutusu.boyut"] = (
+                    target_values[2] > 0 and target_values[3] > 0
+                )
+            invalid_fields = [
+                field for field, valid in field_checks.items() if not valid
+            ]
+            if invalid_fields:
+                return 400, {
+                    "hata_kodu": 2,
+                    "mesaj": "Telemetri değeri izin verilen aralık dışı",
+                    "gecersiz_alanlar": invalid_fields,
+                }
             self.anchor = (latitude, longitude, altitude)
             self.last_own_telemetry = dict(payload)
             self.telemetry_history.append(dict(payload))
@@ -274,8 +291,15 @@ class FakeTeknofestState:
             )
         return {"sunucusaati": server_time(), "hss_koordinat_bilgileri": values}
 
-    def log(self, message: str, *args: Any) -> None:
+    def log(
+        self,
+        message: str,
+        *args: Any,
+        color: str = "",
+    ) -> None:
         if not self.quiet:
+            if color and self.color_output:
+                message = f"{color}{message}{ANSI_RESET}"
             logging.getLogger("fake-teknofest").info(message, *args)
 
 
@@ -370,7 +394,13 @@ class FakeTeknofestHandler(BaseHTTPRequestHandler):
                     max(ages, default=0),
                 )
             else:
-                self.state.log("TELEMETRI RED takım=%d HTTP=%d mesaj=%s", team, status, response.get("mesaj"))
+                self.state.log(
+                    "TELEMETRI RED takım=%d HTTP=%d mesaj=%s alanlar=%s",
+                    team,
+                    status,
+                    response.get("mesaj"),
+                    ",".join(response.get("gecersiz_alanlar", ())) or "-",
+                )
             self._send(status, response)
         elif path == "/api/kilitlenme_bilgisi":
             try:
@@ -382,8 +412,17 @@ class FakeTeknofestHandler(BaseHTTPRequestHandler):
                 return
             with self.state.lock:
                 self.state.received_lock_events.append(dict(payload))
-            self.state.log("RX KILITLENME takım=%d veri=%s", team, json.dumps(payload, ensure_ascii=False))
-            self.state.log("TX KILITLENME_ACK takım=%d", team)
+            self.state.log(
+                "=== KILITLENME BASARILI === RX takım=%d veri=%s",
+                team,
+                json.dumps(payload, ensure_ascii=False),
+                color=ANSI_BOLD_GREEN,
+            )
+            self.state.log(
+                "=== KILITLENME KAYDEDILDI === TX ACK takım=%d",
+                team,
+                color=ANSI_BOLD_CYAN,
+            )
             self._send(200, {"durum": "kaydedildi"})
         elif path == "/api/kamikaze_bilgisi":
             if (
@@ -395,8 +434,24 @@ class FakeTeknofestHandler(BaseHTTPRequestHandler):
                 return
             with self.state.lock:
                 self.state.received_kamikaze_events.append(dict(payload))
-            self.state.log("RX KAMIKAZE takım=%d veri=%s", team, json.dumps(payload, ensure_ascii=False))
-            self.state.log("TX KAMIKAZE_ACK takım=%d", team)
+            self.state.log(
+                "=== KAMIKAZE QR ALINDI === RX takım=%d veri=%s",
+                team,
+                json.dumps(payload, ensure_ascii=False),
+                color=ANSI_BOLD_MAGENTA,
+            )
+            self.state.log(
+                "=== QR COZUMLENDI === takım=%d qr=%s uzunluk=%d",
+                team,
+                str(payload["qrMetni"]),
+                len(str(payload["qrMetni"])),
+                color=ANSI_BOLD_MAGENTA,
+            )
+            self.state.log(
+                "=== KAMIKAZE KAYDEDILDI === TX ACK takım=%d",
+                team,
+                color=ANSI_BOLD_CYAN,
+            )
             self._send(200, {"durum": "kaydedildi"})
         else:
             self._send(404, {"mesaj": "Geçersiz URL"})
@@ -456,9 +511,10 @@ def create_server(
     username: str = "kirlangic",
     password: str = "kirlangic-demo",
     team_number: int = 1,
-    competitor_count: int = 27,
+    competitor_count: int = 12,
     seed: int = 2026,
     quiet: bool = False,
+    color_output: bool = False,
 ) -> FakeTeknofestServer:
     if competitor_count <= 0:
         raise ValueError("Rakip İHA sayısı pozitif olmalı")
@@ -471,6 +527,7 @@ def create_server(
             competitor_count=competitor_count,
             seed=seed,
             quiet=quiet,
+            color_output=color_output,
         ),
     )
 
@@ -484,10 +541,15 @@ def main() -> int:
     parser.add_argument("--team-number", type=int, default=1)
     parser.add_argument("--competitors", type=int, default=27)
     parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument(
+        "--no-color",
+        action="store_true",
+        help="QR ve kilitlenme olaylarında ANSI terminal renklerini kapat",
+    )
     args = parser.parse_args()
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s.%(msecs)03dZ [SAHTE-TEKNOFEST] %(message)s",
+        format="%(asctime)s.%(msecs)03dZ [FAKE-SERVER] %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
     logging.Formatter.converter = time.gmtime
@@ -499,9 +561,14 @@ def main() -> int:
         team_number=args.team_number,
         competitor_count=args.competitors,
         seed=args.seed,
+        color_output=(
+            not args.no_color
+            and not os.environ.get("NO_COLOR")
+            and sys.stderr.isatty()
+        ),
     )
     host, port = server.server_address[:2]
-    logging.getLogger("fake-teknofest").info(
+    logging.getLogger("fake-server").info(
         "Sunucu hazır http://%s:%d | takım=%d | rakip=%d | kullanıcı=%s",
         host,
         port,
@@ -512,7 +579,7 @@ def main() -> int:
     try:
         server.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:
-        logging.getLogger("fake-teknofest").info("Sunucu kapatılıyor")
+        logging.getLogger("fake-server").info("Sunucu kapatılıyor")
     finally:
         server.server_close()
     return 0

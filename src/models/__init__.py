@@ -6,6 +6,7 @@ from src.models.competition import (
     CompetitorTelemetry,
     HssZone,
     KamikazeEvent,
+    KamikazeQrWorkflowState,
     LockEvent,
     QrCoordinate,
 )
@@ -16,7 +17,18 @@ from src.models.orin import OrinCommandReceipt, OrinConnectionState, OrinLinkCon
 from src.models.parameters import Parameter
 from src.models.settings import SettingsModel
 from src.models.telemetry import TargetTrack, TelemetrySnapshot
-from src.models.video import VideoFrame
+from src.models.target_lock import (
+    TargetBoundingBox,
+    TargetLockAcquisition,
+    TargetLockVisionState,
+    TargetLockWorkflowState,
+)
+from src.models.video import (
+    PhoneCameraBridgeState,
+    QrDetection,
+    QrDetectionSnapshot,
+    VideoFrame,
+)
 from src.models.vehicle import (
     VehicleConnectionConfig,
     VehicleConnectionState,
@@ -32,6 +44,7 @@ __all__ = [
     "CompetitorTelemetry",
     "HssZone",
     "KamikazeEvent",
+    "KamikazeQrWorkflowState",
     "LockEvent",
     "QrCoordinate",
     "LogEntry",
@@ -47,7 +60,14 @@ __all__ = [
     "SettingsModel",
     "TelemetrySnapshot",
     "TargetTrack",
+    "TargetBoundingBox",
+    "TargetLockAcquisition",
+    "TargetLockVisionState",
+    "TargetLockWorkflowState",
     "VideoFrame",
+    "QrDetection",
+    "QrDetectionSnapshot",
+    "PhoneCameraBridgeState",
     "VehicleConnectionConfig",
     "VehicleConnectionState",
     "VehicleTransportStats",

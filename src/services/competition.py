@@ -457,18 +457,21 @@ class TeknofestCompetitionService(CompetitionService):
             "takim_numarasi": self.config.team_number,
             "iha_enlem": round(snapshot.latitude, 7),
             "iha_boylam": round(snapshot.longitude, 7),
-            "iha_irtifa": round(snapshot.altitude_agl, 2),
+            # Pixhawk RELATIVE_ALT yerdeyken barometre gurultusu nedeniyle
+            # birkac santimetre negatif olabilir. Yarışma protokolü bu alanı
+            # 0 veya daha buyuk kabul ettigi icin yalnizca alt siniri normalize et.
+            "iha_irtifa": max(0.0, round(snapshot.altitude_agl, 2)),
             "iha_dikilme": round(snapshot.pitch, 2),
             "iha_yonelme": round(snapshot.heading % 360.0, 2),
             "iha_yatis": round(snapshot.roll, 2),
-            "iha_hiz": round(snapshot.ground_speed, 2),
+            "iha_hiz": max(0.0, round(snapshot.ground_speed, 2)),
             "iha_batarya": max(0, min(100, int(snapshot.battery_percent))),
             "iha_otonom": int(autonomous),
             "iha_kilitlenme": int(track.locked),
-            "hedef_merkez_X": int(track.center_x),
-            "hedef_merkez_Y": int(track.center_y),
-            "hedef_genislik": int(track.width),
-            "hedef_yukseklik": int(track.height),
+            "hedef_merkez_X": max(0, int(track.center_x)),
+            "hedef_merkez_Y": max(0, int(track.center_y)),
+            "hedef_genislik": max(0, int(track.width)),
+            "hedef_yukseklik": max(0, int(track.height)),
             "gps_saati": {
                 "saat": timestamp.hour,
                 "dakika": timestamp.minute,

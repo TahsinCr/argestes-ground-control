@@ -22,7 +22,7 @@ from src.services.contracts.orin import OrinService
 from src.services.contracts.settings import SettingsRepository
 from src.services.contracts.telemetry import TelemetryService
 from src.services.contracts.vehicle import VehicleService
-from src.services.contracts.video import VideoService
+from src.services.contracts.video import PhoneCameraBridgeService, VideoService
 from src.services.logging_service import ServiceLogger
 
 
@@ -40,6 +40,7 @@ class BackendConnectionControlService(ConnectionControlService):
         vehicle: VehicleService,
         telemetry: TelemetryService,
         video: VideoService,
+        phone_camera: PhoneCameraBridgeService | None = None,
         competition: CompetitionService,
         orin: OrinService | None = None,
         logger: ServiceLogger | None = None,
@@ -48,6 +49,7 @@ class BackendConnectionControlService(ConnectionControlService):
         self._vehicle = vehicle
         self._telemetry = telemetry
         self._video = video
+        self._phone_camera = phone_camera
         self._competition = competition
         self._orin = orin
         self._logger = logger
@@ -75,6 +77,12 @@ class BackendConnectionControlService(ConnectionControlService):
         if self._orin is not None:
             self._subscriptions.append(
                 self._orin.changed.subscribe(lambda _state: self._publish("orin"))
+            )
+        if self._phone_camera is not None:
+            self._subscriptions.append(
+                self._phone_camera.changed.subscribe(
+                    lambda _state: self._publish("video")
+                )
             )
         self._health_stop.clear()
         self._health_thread = threading.Thread(
@@ -151,6 +159,11 @@ class BackendConnectionControlService(ConnectionControlService):
         if key == "video":
             backend = settings.backend
             stats = self._video.stats
+            phone_state = (
+                self._phone_camera.state
+                if self._phone_camera is not None and backend.phone_camera.enabled
+                else None
+            )
             stream_detail = (
                 f"{stats.width}x{stats.height} / {stats.fps:.1f} FPS / "
                 f"{stats.bitrate_kbps:.0f} kbps / kalite %{stats.quality_percent}"
@@ -164,6 +177,11 @@ class BackendConnectionControlService(ConnectionControlService):
                 (
                     f"{backend.video_source_type.upper()} / "
                     f"{backend.video_codec.upper()} / {stream_detail}"
+                    + (
+                        f" / Samsung USB {'hazır' if phone_state.ready else 'bekleniyor'}"
+                        if phone_state is not None
+                        else ""
+                    )
                 ),
                 backend.video_source_uri,
                 float(backend.video_frame_timeout_s),
@@ -172,6 +190,11 @@ class BackendConnectionControlService(ConnectionControlService):
                     "codec": backend.video_codec,
                     "latency_ms": backend.video_latency_ms,
                     "frame_timeout_s": backend.video_frame_timeout_s,
+                    **(
+                        {"phone_camera": phone_state.to_dict()}
+                        if phone_state is not None
+                        else {}
+                    ),
                     **stats.to_dict(),
                 },
             )
@@ -187,15 +210,27 @@ class BackendConnectionControlService(ConnectionControlService):
                 orin_state.last_heartbeat_at if orin_state is not None else None
             )
             orin_timeout = float(settings.backend.orin.heartbeat_timeout_s)
+            simulated = bool(orin_state is not None and orin_state.simulated)
             orin_ready = bool(
-                connected
-                and orin_state is not None
+                orin_state is not None
                 and orin_state.alive
-                and heartbeat_age is not None
-                and heartbeat_age <= orin_timeout
+                and (
+                    simulated
+                    or (
+                        connected
+                        and heartbeat_age is not None
+                        and heartbeat_age <= orin_timeout
+                    )
+                )
             )
             if orin_state is None:
                 detail = "Orin servisi bu çalışma kipinde kullanılamıyor"
+            elif simulated and orin_ready:
+                task = orin_state.active_task or "boşta"
+                detail = (
+                    f"GEÇİCİ SİMÜLASYON / sağlık {orin_state.health.upper()} / "
+                    f"görev {task}"
+                )
             elif orin_ready:
                 task = orin_state.active_task or "boşta"
                 latency = (
@@ -219,13 +254,24 @@ class BackendConnectionControlService(ConnectionControlService):
             return ConnectionStatus(
                 key,
                 orin_ready,
-                "Orin çalışıyor" if orin_ready else "Orin heartbeat alınmıyor",
+                (
+                    "Orin bağlı (geçici simülasyon)"
+                    if simulated and orin_ready
+                    else "Orin çalışıyor"
+                    if orin_ready
+                    else "Orin heartbeat alınmıyor"
+                ),
                 detail,
-                state.endpoint or settings.backend.mavlink.endpoint,
+                (
+                    orin_state.endpoint
+                    if simulated and orin_state is not None
+                    else state.endpoint or settings.backend.mavlink.endpoint
+                ),
                 freshness_limit,
                 {
                     **self._vehicle_options(settings),
                     "shared_vehicle_link": True,
+                    "simulated": simulated,
                     "vehicle_connected": connected,
                     "component_id": settings.backend.orin.component_id,
                     "network_id": settings.backend.orin.network_id,
@@ -240,7 +286,7 @@ class BackendConnectionControlService(ConnectionControlService):
                     "packets_in": orin_state.packets_in if orin_state is not None else 0,
                     "packets_out": orin_state.packets_out if orin_state is not None else 0,
                 },
-                can_disconnect=connected,
+                can_disconnect=connected and not simulated,
             )
         if key == "gps":
             position_age = self._age_seconds(snapshot.position_received_at)
@@ -466,6 +512,8 @@ class BackendConnectionControlService(ConnectionControlService):
                     )
             elif key == "video":
                 self._video.stop()
+                if self._phone_camera is not None:
+                    self._phone_camera.stop()
             else:
                 self._vehicle.stop()
                 current = self._settings.current
@@ -514,6 +562,8 @@ class BackendConnectionControlService(ConnectionControlService):
             "backend.video_frame_timeout_s", frame_timeout_s
         )
         self._settings.save(updated)
+        if self._phone_camera is not None and updated.backend.phone_camera.enabled:
+            self._phone_camera.start()
         self._video.configure(
             source_type=source_type,
             source_uri=source_uri,

@@ -111,6 +111,147 @@ class MutableVideoService(VideoService):
         self._stats_changed.publish_isolated(stats)
 
 
+class AutoReconnectVideoService(VideoService):
+    """Herhangi bir VideoService kaynağına kesintisiz yeniden bağlanma ekler."""
+
+    def __init__(
+        self,
+        source: VideoService,
+        logger: ServiceLogger | None = None,
+        *,
+        retry_interval_s: float = 3.0,
+    ) -> None:
+        if retry_interval_s <= 0:
+            raise ValueError("Video yeniden bağlanma aralığı pozitif olmalı")
+        self._source = source
+        self._logger = logger
+        self._retry_interval_s = float(retry_interval_s)
+        self._running = False
+        self._state_lock = threading.RLock()
+        self._connect_lock = threading.RLock()
+        self._stop_event = threading.Event()
+        self._monitor_thread: threading.Thread | None = None
+
+    @property
+    def connected(self) -> bool:
+        return self._source.connected
+
+    @property
+    def connection_changed(self) -> EventStream[bool]:
+        return self._source.connection_changed
+
+    @property
+    def frames(self) -> EventStream[VideoFrame]:
+        return self._source.frames
+
+    @property
+    def stats(self) -> VideoStreamStats:
+        return self._source.stats
+
+    @property
+    def stats_changed(self) -> EventStream[VideoStreamStats]:
+        return self._source.stats_changed
+
+    def start(self) -> None:
+        with self._state_lock:
+            if not self._running:
+                self._running = True
+                self._stop_event.clear()
+                self._monitor_thread = threading.Thread(
+                    target=self._monitor,
+                    name="VideoReconnectMonitor",
+                    daemon=True,
+                )
+                self._monitor_thread.start()
+        self._attempt_reconnect(force=False)
+
+    def stop(self) -> None:
+        with self._state_lock:
+            if not self._running:
+                self._source.stop()
+                return
+            self._running = False
+            self._stop_event.set()
+            thread = self._monitor_thread
+            self._monitor_thread = None
+        with self._connect_lock:
+            self._source.stop()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(1.0, self._retry_interval_s + 0.5))
+
+    def configure(
+        self,
+        *,
+        source_type: str,
+        source_uri: str,
+        latency_ms: int,
+        codec: str,
+        frame_timeout_s: float,
+    ) -> None:
+        with self._connect_lock:
+            self._source.configure(
+                source_type=source_type,
+                source_uri=source_uri,
+                latency_ms=latency_ms,
+                codec=codec,
+                frame_timeout_s=frame_timeout_s,
+            )
+
+    def reconnect(self) -> None:
+        with self._state_lock:
+            running = self._running
+        if not running:
+            self.start()
+            return
+        self._attempt_reconnect(force=True)
+
+    def push(self, frame: VideoFrame) -> None:
+        self._source.push(frame)
+
+    def _monitor(self) -> None:
+        while not self._stop_event.wait(self._retry_interval_s):
+            if not self.connected:
+                self._attempt_reconnect(force=True)
+
+    def _attempt_reconnect(self, *, force: bool) -> None:
+        with self._state_lock:
+            if not self._running:
+                return
+        with self._connect_lock:
+            if self.connected and not force:
+                return
+            try:
+                self._source.reconnect()
+            except Exception as exc:
+                self._event(
+                    "video.auto_reconnect_failed",
+                    f"Video kaynağına yeniden bağlanılamadı: {exc}",
+                    severity="warning",
+                )
+                return
+        self._event(
+            "video.auto_reconnect_started",
+            "Video kaynağı yeniden başlatıldı; ilk kare bekleniyor",
+            details={"retry_interval_s": self._retry_interval_s},
+        )
+
+    def _event(
+        self,
+        action: str,
+        message: str,
+        *,
+        severity: str = "info",
+        details: dict[str, object] | None = None,
+    ) -> None:
+        if self._logger:
+            self._logger.event(
+                action,
+                message,
+                severity=severity,
+                details=details or {},
+            )
+
+
 class GStreamerVideoService(MutableVideoService):
     """GStreamer appsink karelerini ortak VideoFrame modeline dönüştürür."""
 

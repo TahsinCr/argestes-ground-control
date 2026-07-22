@@ -86,6 +86,43 @@ class MissionDefaults:
 
 
 @dataclass(slots=True)
+class PhoneCameraSettings:
+    enabled: bool = False
+    adb_serial: str = ""
+    video_device: str = "/dev/video20"
+    camera_facing: str = "back"
+    camera_id: str = ""
+    width: int = 1920
+    height: int = 1080
+    fps: int = 30
+    bitrate_mbps: int = 16
+    restart_interval_s: int = 3
+
+    def __post_init__(self) -> None:
+        self.adb_serial = self.adb_serial.strip()
+        self.video_device = self.video_device.strip()
+        self.camera_facing = self.camera_facing.strip().lower()
+        self.camera_id = self.camera_id.strip()
+        self.width = int(self.width)
+        self.height = int(self.height)
+        self.fps = int(self.fps)
+        self.bitrate_mbps = int(self.bitrate_mbps)
+        self.restart_interval_s = int(self.restart_interval_s)
+        if not self.video_device.startswith("/dev/video"):
+            raise ValueError("Telefon kamera aygıtı /dev/videoN biçiminde olmalı")
+        if self.camera_facing not in {"back", "front", "external"}:
+            raise ValueError(f"Desteklenmeyen telefon kamera yönü: {self.camera_facing}")
+        if not 320 <= self.width <= 7680 or not 240 <= self.height <= 4320:
+            raise ValueError("Telefon kamera çözünürlüğü desteklenen aralıkta değil")
+        if not 1 <= self.fps <= 240:
+            raise ValueError("Telefon kamera FPS değeri 1..240 aralığında olmalı")
+        if not 1 <= self.bitrate_mbps <= 200:
+            raise ValueError("Telefon kamera bitrate değeri 1..200 Mbps aralığında olmalı")
+        if not 1 <= self.restart_interval_s <= 60:
+            raise ValueError("Telefon kamera yeniden başlatma aralığı 1..60 saniye olmalı")
+
+
+@dataclass(slots=True)
 class BackendSettings:
     mock_mode: bool = False
     video_source_type: str = "udp"
@@ -98,6 +135,7 @@ class BackendSettings:
     orin: OrinLinkConfig = field(default_factory=OrinLinkConfig)
     competition: CompetitionServerConfig = field(default_factory=CompetitionServerConfig)
     mission: MissionDefaults = field(default_factory=MissionDefaults)
+    phone_camera: PhoneCameraSettings = field(default_factory=PhoneCameraSettings)
 
     def __post_init__(self) -> None:
         self.video_source_type = self.video_source_type.strip().lower()
@@ -161,6 +199,12 @@ class SettingsModel(Model):
                 **_known(CompetitionServerConfig, backend_payload.pop("competition", {}))
             )
             mission_payload = dict(backend_payload.pop("mission", {}))
+            phone_camera = PhoneCameraSettings(
+                **_known(
+                    PhoneCameraSettings,
+                    backend_payload.pop("phone_camera", {}),
+                )
+            )
             radii = dict(DEFAULT_RADII)
             radii.update({key: int(value) for key, value in mission_payload.get("radii", {}).items()})
             backend = BackendSettings(
@@ -173,6 +217,7 @@ class SettingsModel(Model):
                     radii=radii,
                     default_altitude_m=int(mission_payload.get("default_altitude_m", 100)),
                 ),
+                phone_camera=phone_camera,
             )
             return cls(backend=backend, ui=UiSettings(**_known(UiSettings, ui_payload)))
         return cls._from_legacy(payload)

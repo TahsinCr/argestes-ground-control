@@ -1,0 +1,12 @@
+# Cascade PID döngü kazançları (1718mm kanat / 3.3kg ağırlık)
+# İç döngü (servo) dış döngüden (piksel hatası) ~6x daha agresif
+# Bu sayede rüzgar bozunumuna karşı hızlı tepki, referansa yumuşak oturma
+control:
+  outer_loop:
+    kp: 0.04
+    ki: 0.001
+    kd: 0.002
+  inner_loop:
+    kp: 0.25
+    ki: 0.008
+    kd: 0.012

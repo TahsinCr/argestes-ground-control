@@ -1,0 +1,20 @@
+# Raspberry Pi HQ ve 16mm lens kalibrasyon parametreleri
+# Not: Şartname canlı yayın standardına uygun 640x480 çözünürlük
+# Fokal piksel değerleri çözünürlük değişimine göre yeniden hesaplanmıştır
+camera:
+  model: Raspberry Pi HQ
+  lens: 16mm
+  focal_length_mm: 16.0
+  resolution:
+    width: 640
+    height: 480
+  intrinsics:
+    fx: 460.0
+    fy: 460.0
+    cx: 320.0
+    cy: 240.0
+  distortion:
+    k1: -0.25
+    k2: 0.12
+    p1: 0.0
+    p2: 0.0

@@ -1,0 +1,8 @@
+# Resmi Ultralytics YOLO26s; COCO airplane sinifi (class id 4).
+model:
+  engine_path: "data/models/target_lock/yolo26s.pt"
+  input_shape: [640, 640]
+  confidence_threshold: 0.30
+  iou_threshold: 0.45
+  use_dla: false
+  dla_core: 0

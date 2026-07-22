@@ -145,6 +145,28 @@ class KamikazeEvent(Model):
 
 
 @dataclass(frozen=True, slots=True)
+class KamikazeQrWorkflowState(Model):
+    active: bool = False
+    started_at: datetime | None = None
+    qr_text: str = ""
+    sending: bool = False
+    submitted: bool = False
+    last_error: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "active": self.active,
+            "started_at": (
+                self.started_at.isoformat() if self.started_at is not None else None
+            ),
+            "qr_text": self.qr_text,
+            "sending": self.sending,
+            "submitted": self.submitted,
+            "last_error": self.last_error,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class HssZone(Model):
     identifier: int
     latitude: float

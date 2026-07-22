@@ -26,7 +26,7 @@ from src.core.mavlink import (
 )
 from src.models.commands import CommandRequest
 from src.models.competition import CompetitionConnectionState
-from src.models.orin import OrinCommandReceipt, OrinConnectionState
+from src.models.orin import OrinCommandReceipt, OrinConnectionState, OrinLinkConfig
 from src.models.vehicle import VehicleConnectionState
 from src.services.logging_service import LoggingService
 from src.services.catalogs import configured_orin_commands
@@ -35,7 +35,7 @@ from src.services.orchestration.connections import BackendConnectionControlServi
 from src.services.processing.parameters import MutableParameterService
 from src.services.processing.telemetry import MutableTelemetryService
 from src.services.settings import SettingsService
-from src.services.vehicle.orin import MavlinkOrinService
+from src.services.vehicle.orin import MavlinkOrinService, SimulatedOrinService
 from src.services.video import MutableVideoService
 
 
@@ -48,6 +48,65 @@ class _ExtensionMessage(SimpleNamespace):
 
 
 class OrinLinkTests(unittest.TestCase):
+    def test_temporary_orin_simulation_is_connected_and_accepts_tasks(self) -> None:
+        logs = LoggingService()
+        service = SimulatedOrinService(
+            OrinLinkConfig(simulate_connected=True),
+            logs.child("ORIN"),
+        )
+
+        service.start()
+        receipt = service.issue("task.start", {"task": "KAMIKAZE"})
+
+        self.assertTrue(service.connected)
+        self.assertTrue(service.state.simulated)
+        self.assertEqual(service.state.active_task, "KAMIKAZE")
+        self.assertTrue(receipt.accepted)
+        self.assertEqual(receipt.response["execution"], "simulated")
+        self.assertEqual(
+            [entry.action for entry in logs.history],
+            ["orin.simulation_started", "orin.simulated_command"],
+        )
+        service.stop()
+
+    def test_temporary_orin_simulation_status_is_green_without_vehicle_link(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = SettingsService(Path(directory))
+            settings.set_value("backend.orin.simulate_connected", True)
+            orin = SimulatedOrinService(OrinLinkConfig(simulate_connected=True))
+            orin.start()
+            vehicle = SimpleNamespace(
+                connected=False,
+                state=VehicleConnectionState(False, "COM3"),
+                connection_changed=EventStream(),
+            )
+            competition = SimpleNamespace(
+                state=CompetitionConnectionState(
+                    connected=False,
+                    authenticated=False,
+                    running=False,
+                    endpoint="http://127.0.0.1:5000",
+                    team_number=1,
+                ),
+                changed=EventStream(),
+            )
+            control = BackendConnectionControlService(
+                settings=settings,
+                vehicle=vehicle,  # type: ignore[arg-type]
+                telemetry=MutableTelemetryService(),
+                video=MutableVideoService(),
+                competition=competition,
+                orin=orin,
+            )
+
+            status = control.status("orin")
+
+            self.assertTrue(status.connected)
+            self.assertTrue(status.options["simulated"])
+            self.assertEqual(status.endpoint, "simulation://orin")
+            self.assertIn("geçici simülasyon", status.summary.lower())
+            orin.stop()
+
     def test_agent_broadcasts_application_heartbeat_across_pixhawk_routes(self) -> None:
         agent = OrinMavlinkAgent("udpout:127.0.0.1:19999")
         sent: list[tuple[str, dict, int | None, int | None]] = []

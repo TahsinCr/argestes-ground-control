@@ -1,6 +1,0 @@
-from abc import ABC, abstractmethod
-
-class BaseModel(ABC): ...
-
-class BaseService(ABC): ...
-

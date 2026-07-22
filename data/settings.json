@@ -1,8 +1,8 @@
 {
   "backend": {
     "mock_mode": false,
-    "video_source_type": "http",
-    "video_source_uri": "http://192.168.1.4:4747/video/force/1280x720",
+    "video_source_type": "usb",
+    "video_source_uri": "/dev/video20",
     "video_codec": "mjpeg",
     "video_latency_ms": 100,
     "video_frame_timeout_s": 3,
@@ -26,6 +26,7 @@
     },
     "orin": {
       "enabled": true,
+      "simulate_connected": true,
       "component_id": 191,
       "network_id": 77,
       "message_type": 42000,
@@ -39,7 +40,7 @@
       "team_number": 1,
       "timeout_s": 3.0,
       "telemetry_period_ms": 1000,
-      "auto_connect": false
+      "auto_connect": true
     },
     "mission": {
       "radii": {
@@ -51,6 +52,18 @@
         "hss": 100
       },
       "default_altitude_m": 100
+    },
+    "phone_camera": {
+      "enabled": true,
+      "adb_serial": "R5CY81TMA6F",
+      "video_device": "/dev/video20",
+      "camera_facing": "back",
+      "camera_id": "",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "bitrate_mbps": 16,
+      "restart_interval_s": 3
     }
   },
   "ui": {

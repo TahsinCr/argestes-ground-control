@@ -121,6 +121,7 @@ SETTINGS_SECTIONS = (
         "dialog.settings.section.orin",
         (
             FieldSpec("backend.orin.enabled", "dialog.settings.orin_enabled", "check"),
+            FieldSpec("backend.orin.simulate_connected", "dialog.settings.orin_simulated", "check"),
             FieldSpec("backend.orin.component_id", "dialog.settings.orin_component", "spin", minimum=1, maximum=255),
             FieldSpec("backend.orin.network_id", "dialog.settings.orin_network", "spin", minimum=0, maximum=255),
             FieldSpec("backend.orin.message_type", "dialog.settings.orin_message_type", "spin", minimum=32768, maximum=65535),
@@ -146,6 +147,25 @@ SETTINGS_SECTIONS = (
             FieldSpec("backend.video_source_uri", "dialog.settings.video_uri", "text"),
             FieldSpec("backend.video_latency_ms", "dialog.settings.video_latency", "spin", minimum=0, maximum=10000, suffix=" ms"),
             FieldSpec("backend.video_frame_timeout_s", "dialog.settings.video_timeout", "spin", minimum=1, maximum=60, suffix=" s"),
+        ),
+    ),
+    SectionSpec(
+        "dialog.settings.section.phone_camera",
+        (
+            FieldSpec("backend.phone_camera.enabled", "dialog.settings.phone_camera_enabled", "check"),
+            FieldSpec("backend.phone_camera.adb_serial", "dialog.settings.phone_camera_serial", "text"),
+            FieldSpec("backend.phone_camera.video_device", "dialog.settings.phone_camera_device", "text"),
+            FieldSpec("backend.phone_camera.camera_facing", "dialog.settings.phone_camera_facing", "combo", (
+                ChoiceSpec("back", "phone_camera.facing.back"),
+                ChoiceSpec("front", "phone_camera.facing.front"),
+                ChoiceSpec("external", "phone_camera.facing.external"),
+            )),
+            FieldSpec("backend.phone_camera.camera_id", "dialog.settings.phone_camera_id", "text"),
+            FieldSpec("backend.phone_camera.width", "dialog.settings.phone_camera_width", "spin", minimum=320, maximum=7680, suffix=" px"),
+            FieldSpec("backend.phone_camera.height", "dialog.settings.phone_camera_height", "spin", minimum=240, maximum=4320, suffix=" px"),
+            FieldSpec("backend.phone_camera.fps", "dialog.settings.phone_camera_fps", "spin", minimum=1, maximum=240, suffix=" FPS"),
+            FieldSpec("backend.phone_camera.bitrate_mbps", "dialog.settings.phone_camera_bitrate", "spin", minimum=1, maximum=200, suffix=" Mbps"),
+            FieldSpec("backend.phone_camera.restart_interval_s", "dialog.settings.phone_camera_restart", "spin", minimum=1, maximum=60, suffix=" s"),
         ),
     ),
 )

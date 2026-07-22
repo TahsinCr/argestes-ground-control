@@ -14,6 +14,12 @@ f435832 chore: preserve working YKI baseline
 
 Bu sürümü incelemek için `git show f435832`, ayrı bir dalda açmak için `git switch -c eski-yki f435832` kullanılabilir.
 
+Geçici WeChat QR video işleme özelliğinden hemen önceki güncel geri dönüş noktası:
+
+```text
+5995134 chore: checkpoint before temporary QR processing
+```
+
 ## Kurulum ve çalıştırma
 
 ```bash
@@ -46,7 +52,7 @@ Haberleşme sahipliği bilinçli olarak ikiye ayrılmıştır:
 - `SİHA -> YKİ -> TEKNOFEST`: kendi telemetrisi, doğrudan SİHA/GPS saati, görüntü işlemenin hedef kutusu, başarılı kilitlenme ve kamikaze/okunmuş QR metni.
 - `TEKNOFEST -> YKİ`: 27 rakip telemetrisi, HSS koordinatları, QR hedef koordinatı ve sunucu saati.
 
-YKİ kilitlenme, hedef kutusu, GPS saati veya kamikaze QR metni üretmez. `TARGET_LOCK`/`KAMIKAZE` UI komutları yalnızca SİHA'da bir görevi tetikleyebilir; yarışma sunucusuna sonuç paketi ancak araç/Jetson backend'i `CompetitionService.submit_lock_event` veya `submit_kamikaze_event` çağırdığında gider. Kendi SİHA telemetrisi de yalnızca `VehicleService.connected` doğrudan araç bağlantısını doğrularken, telemetri/otopilot hattı açıkken, geçerli `GLOBAL_POSITION_INT` konumu ve doğrudan ArduPilot `SYSTEM_TIME`/GPS zamanı tazeyken gönderilir. Telemetri modelinde eski bir snapshot kalmış olsa bile araç bağlantısı kapalıysa `/api/telemetri_gonder` çağrılmaz. Bu araç verilerinden biri kesilir veya bayatlarsa TX durur; TEKNOFEST oturumu ile HSS/QR alımı ise bağlantı sağlığı için devam eder. Varsayılan tazelik penceresi telemetri gönderim periyodunun üç katıdır (en az 2 saniye; varsayılan ayarda 3 saniye).
+Normal uçuş yapısında YKİ kilitlenme, hedef kutusu, GPS saati veya kamikaze QR metni üretmez; bunlar araç/Jetson backend'inden gelmelidir. Geçici kamera testi için etkin olan `simulate_connected` kipinde ise `KAMIKAZE` görevi YKİ'daki OpenCV/WeChat QR akışını açar ve ilk okunan QR, kaynağı `opencv-kamikaze-simulation` olarak açıkça işaretlenerek sahte sunucuya gönderilir. Gerçek Orin devreye alındığında bu geçici ayar kapatılmalıdır. Kendi SİHA telemetrisi yalnızca `VehicleService.connected` doğrudan araç bağlantısını doğrularken, telemetri/otopilot hattı açıkken, geçerli `GLOBAL_POSITION_INT` konumu ve doğrudan ArduPilot `SYSTEM_TIME`/GPS zamanı tazeyken gönderilir. Telemetri modelinde eski bir snapshot kalmış olsa bile araç bağlantısı kapalıysa `/api/telemetri_gonder` çağrılmaz. Bu araç verilerinden biri kesilir veya bayatlarsa TX durur; TEKNOFEST oturumu ile HSS/QR alımı ise bağlantı sağlığı için devam eder. Varsayılan tazelik penceresi telemetri gönderim periyodunun üç katıdır (en az 2 saniye; varsayılan ayarda 3 saniye).
 
 Komut satırından adres ve senaryo da ayarlanabilir:
 
@@ -63,6 +69,41 @@ sudo pacman -S --needed gstreamer gst-plugins-base gst-plugins-good gst-plugins-
 `PyGObject` proje sanal ortamına da kurulmuştur. RTSP, H.264/RTP UDP, V4L2 USB, dosya ve özel pipeline kaynakları UI'dan bağımsız `VideoFrame` akışına dönüştürülür.
 Bu çalışma alanında sudo gerektiren `gst-plugins-good` sistem kurulumu yerine gerekli ve sürüm uyumlu RTSP/RTP/V4L2 pluginleri `~/.local/share/kirlangic-yki/gstreamer-1.0` altına kurulmuştur; video servisi bu kullanıcı yolunu başlangıçta otomatik tarar.
 
+Video akışında `opencv-contrib-python-headless` içindeki WeChat QR algılayıcısı yalnızca Kamikaze görevi etkinleştirildiğinde çalışır. Resmi OpenCV Zoo modelleri `data/models/wechat_qrcode` altında tutulur. WeChat'in görüntü kenarındaki QR'larda oluşturabildiği geçersiz ROI hatası güvenli kenar payıyla engellenir; yine de hata oluşursa yerleşik OpenCV QR okuyucusu aynı kareyi yedek olarak çözer. Her Kamikaze oturumunda yalnızca ilk çözülen QR izlenir ve diğer QR sonuçları yok sayılır. Çözülen QR için kutu çizilmez; yalnızca QR'ın yakınında yeşil deşifre metni gösterilir. Optik akış taramalar arasındaki konumu yumuşatır ancak algılayıcının kayıp kararını uzatmaz; QR görüntüden çıkınca metin de kaldırılır. Kabul edilen QR metni görev oturumu boyunca bellekte tutulduğu için aynı QR yeniden gönderilmez; bellek ancak Kamikaze görevi yeniden başlatıldığında sıfırlanır. `qr.*`, `kamikaze.qr_*` ve `competition.kamikaze_*` geçişleri backend/UI loguna yazılır; sahte sunucu terminalinde `RX KAMIKAZE`, `RX KAMIKAZE_QR` ve `TX KAMIKAZE_ACK` satırları görünür. Kamera akışı kesilirse video kaynağı yapılandırılmış kare zaman aşımı aralığında otomatik olarak tekrar başlatılır; manuel yeniden bağlanma düğmesi de kullanılabilir.
+
+### Target Lock görüntü işleme
+
+Otonom görevlerden **Target Lock** uygulandığında kamera akışına UI'dan bağımsız `TargetLockVideoService` eklenir. Servis `target_tracker` içindeki YOLO, ByteTrack, EKF, vuruş alanı ve kilit zamanlayıcısını kullanır. Ağır model çıkarımı ayrı bir worker'da yapıldığı için video karesi dondurulmaz; görev değiştirildiğinde devam eden eski inference sonucu atılır.
+
+Kilit modu boyunca görüntünün yatay orta `%50`, dikey orta `%80` bölgesini gösteren çerçeve normalde sarıdır. Uçak hedefi kırmızı, en fazla 3 piksel kalınlığındaki kutuyla gösterilir. İlk geçerli hedefle 5 saniyelik deneme penceresi başlar. Hedef merkezi bu alanda ve hedefin en az bir ekseni görüntünün en az `%6`'sı iken biriken süre sayılır; kısa kopmalar sayacı sıfırlamaz. Bu pencere içinde toplam 4 saniye birikirse kilit başarılıdır. Kilit başarılı olursa çerçeve ve durum metni 1 saniye yeşil, 5 saniyelik pencere toplam 4 saniyeye ulaşmadan biterse 1 saniye kırmızı olur; ardından çerçeve yeniden sarıya döner. Kilit tamamlandığında merkezi telemetri hedef kutusu güncellenir ve olay en geç 2 saniyelik gönderim penceresinde TEKNOFEST servisine aktarılır. `target_lock.*` ile `competition.lock_*` olayları YKİ loguna, `RX KILITLENME` ve `TX KILITLENME_ACK` satırları sahte sunucu terminaline düşer.
+
+Resmi Ultralytics `yolo26s.pt` ağırlığı ve aynı ağırlıktan üretilen ONNX dosyası `data/models/target_lock` altındadır. YKİ sanal ortamında `ultralytics`/PyTorch zorunlu değildir; PT yükleyicisi yoksa servis kardeş `.onnx` dosyasına ve ONNX Runtime'a otomatik geçer. Bu COCO `airplane` sınıfı kullanan genel amaçlı bir başlangıç modelidir; yarışma kamerasının irtifa, açı ve hedef tiplerinde güvenilirlik için ayrı bir SİHA veri kümesiyle fine-tune edilmelidir. Kaynak, checksum ve export bilgisi [model notunda](data/models/target_lock/README.md) kayıtlıdır.
+
+### Samsung telefonu USB kamera olarak kullanma
+
+Galaxy S25 Ultra, ADB ve scrcpy aracılığıyla `/dev/video20` V4L2 kaynağına aktarılır. Kernel aygıtını ilk kez oluşturmak ve her açılışta aynı numara/etiketle yüklenmesini sağlamak için bir kez şunu çalıştırın:
+
+```bash
+./install_galaxy_usb_camera.sh
+```
+
+Kurucu `modules-load.d`, `modprobe.d` ve kullanıcıya özel erişim sağlayan udev kuralını ekler; aygıtı herkese yazılabilir yapan `chmod 666` kullanmaz. Geçici entegrasyonu kaldırmak için:
+
+```bash
+./remove_galaxy_usb_camera.sh
+```
+
+YKİ içinde **Ayarlar > Samsung USB Kamera** bölümünden ADB seri numarası, arka/ön kamera, çözünürlük, FPS, bitrate ve yeniden deneme aralığı değiştirilebilir. Video kaynağı `usb`, URI `/dev/video20` olmalıdır. Varsayılan profil `1920x1080`, `30 FPS`, `16 Mbps` ve arka kameradır.
+
+Uygulama açılırken backend yetkilendirilmiş ADB cihazını kontrol eder, scrcpy kamera sürecini UI'dan bağımsız başlatır ve kapanırsa otomatik yeniden başlatır. Video servisi de `/dev/video20` karelerini ayrıca izler ve kare akışı kesilirse yeniden bağlanır. Alt bardaki **Video** bağlantı penceresi hem scrcpy/ADB köprüsünü hem gerçek kare, FPS, bitrate ve kalite durumunu gösterir. Telefon bağlı değilse durum yeşile dönmez.
+
+Komut satırı kontrolü için:
+
+```bash
+adb devices -l
+v4l2-ctl --device=/dev/video20 --all
+```
+
 Gerçek araç bağlantısı Ayarlar > Backend > MAVLink bölümünden etkinleştirilir. Alt bardaki Telemetri/Otopilot/GPS bağlantı penceresinde endpoint veya baud değiştirilip Bağlan/Yeniden Bağlan seçildiğinde ayar önce kalıcılaştırılır, ardından aynı MAVLink servisi yeni fiziksel portla yeniden açılır. `pymavlink` yalnızca gerçek MAVLink bağlantısı açılırken yüklenir; UI ve backend testleri araç olmadan çalışabilir.
 
 ### Orin uygulama kanalı
@@ -73,6 +114,11 @@ kutusu, telemetri bağlı olsa bile Orin'in kendi uygulama heartbeat'i alınmada
 yeşile dönmez. Kutunun popup formu ortak MAVLink endpoint/baud ayarlarını
 Telemetri popup'ıyla paylaşır; üst sağlık alanı Orin heartbeat yaşını, aktif
 görevi ve son komut ACK gecikmesini gösterir.
+
+Şu an `data/settings.json` içindeki `backend.orin.simulate_connected=true`
+ayarı nedeniyle ORIN kutusu açıkça **GEÇİCİ SİMÜLASYON** olarak yeşil
+gösterilir ve görev komutları yerel iş akışlarını tetikler. Gerçek Orin
+heartbeat hattına dönmek için bu ayarı kapatıp YKİ'yı yeniden başlatın.
 
 Araç tarafındaki tek dosyalık bağımsız ajan:
 
@@ -108,7 +154,7 @@ src/
 ├── services/
 │   ├── contracts/           # Bütün servislerin soyut portları
 │   ├── vehicle/             # Core MAVLink'i alan servislerinden saklayan araç adaptörü
-│   ├── processing/          # Çift yönlü görev, telemetri ve parametre servisleri
+│   ├── processing/          # Görev, telemetri, QR ve hedef kilit işleme servisleri
 │   ├── orchestration/       # Birden çok yeteneği yöneten üst seviye akışlar
 │   ├── video.py             # UI'dan bağımsız GStreamer video servisi
 │   ├── competition.py       # TEKNOFEST HTTP oturumu ve rakip telemetrisi

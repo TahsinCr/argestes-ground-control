@@ -8,6 +8,7 @@ from src.models.mission import MapContact, MapOverlay, MissionState
 from src.models.orin import OrinMessage
 from src.models.settings import SettingsModel
 from src.models.telemetry import TelemetrySnapshot
+from src.models.target_lock import TargetLockVisionState, TargetLockWorkflowState
 from src.models.parameters import Parameter
 from src.services.contracts.commands import CommandService
 from src.services.contracts.competition import CompetitionService
@@ -16,6 +17,7 @@ from src.services.contracts.orin import OrinService
 from src.services.contracts.parameters import ParameterService
 from src.services.contracts.telemetry import TelemetryService
 from src.services.contracts.settings import SettingsRepository
+from src.services.contracts.target_lock import TargetLockService, TargetLockVisionService
 
 
 class BackendFacade:
@@ -31,6 +33,8 @@ class BackendFacade:
         commands: CommandService,
         parameters: ParameterService,
         settings: SettingsRepository,
+        target_lock: TargetLockService,
+        target_lock_vision: TargetLockVisionService,
     ) -> None:
         self.telemetry = telemetry
         self.competition = competition
@@ -39,6 +43,8 @@ class BackendFacade:
         self.commands = commands
         self.parameters = parameters
         self.settings = settings
+        self.target_lock = target_lock
+        self.target_lock_vision = target_lock_vision
 
     def telemetry_snapshot(self) -> TelemetrySnapshot:
         return self.telemetry.current
@@ -57,6 +63,24 @@ class BackendFacade:
 
     def submit_vehicle_kamikaze_event(self, event: KamikazeEvent) -> None:
         self.competition.submit_kamikaze_event(event)
+
+    def target_lock_snapshot(self) -> TargetLockWorkflowState:
+        return self.target_lock.state
+
+    def target_lock_vision_snapshot(self) -> TargetLockVisionState:
+        return self.target_lock_vision.target_lock_state
+
+    def subscribe_target_lock(
+        self,
+        callback: Callable[[TargetLockWorkflowState], None],
+    ):
+        return self.target_lock.changed.subscribe(callback)
+
+    def subscribe_target_lock_vision(
+        self,
+        callback: Callable[[TargetLockVisionState], None],
+    ):
+        return self.target_lock_vision.target_lock_changed.subscribe(callback)
 
     def mission_snapshot(self) -> MissionState:
         return self.mission.state

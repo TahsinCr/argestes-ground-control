@@ -1,0 +1,56 @@
+# ============================================================
+# GÖRÜNTÜLÜ TAKİP SİSTEMİ PARAMETRELERİ
+# TEKNOFEST 2026 / KIRLANGIÇ KTR MİMARİSİ
+# ============================================================
+
+# ---------- MODEL PARAMETRELERİ ----------
+model:
+  engine_path: data/models/target_lock/yolo26s.pt
+  input_shape: [640, 640]
+  confidence_threshold: 0.30
+  iou_threshold: 0.45
+  use_dla: false
+  dla_core: 0
+
+# ---------- TRACKING PARAMETRELERİ ----------
+tracking:
+  track_high_thresh: 0.35    # Birinci aşama eşiği (sahte kilitlenmeyi önle)
+  track_low_thresh: 0.10     # İkinci aşama eşiği (kısa flulaşmalar)
+  match_thresh: 0.7          # IOU eşleme eşiği
+  new_track_thresh: 0.30     # Yeni track açma güven eşiği
+  max_lost_frames: 30        # Maksimum kayıp frame (coasting sonrasi redetect)
+  min_hit_streak: 4          # Onaylı track için minimum eşleşme
+
+  # Özel Kalman Filtresi (EKF)
+  kalman:
+    state_dim: 8
+    q_diag: [0.5, 0.5, 0.1, 0.1, 1.0, 1.0, 0.2, 0.2]
+    r_diag: [2.5, 2.5, 5.0, 5.0]
+    min_conf_for_update: 0.6
+    max_draw_missed_frames: 5
+
+# ---------- KAMERA PARAMETRELERİ ----------
+camera:
+  model: Raspberry Pi HQ
+  lens: 16mm
+  focal_length_mm: 16.0
+  resolution: [640, 480]
+  fx: 460.0
+  fy: 460.0
+  cx: 320.0
+  cy: 240.0
+  k1: -0.25
+  k2: 0.12
+  p1: 0.0
+  p2: 0.0
+
+# ---------- KONTROL PARAMETRELERİ ----------
+control:
+  outer_loop:
+    kp: 0.04
+    ki: 0.001
+    kd: 0.002
+  inner_loop:
+    kp: 0.25
+    ki: 0.008
+    kd: 0.012

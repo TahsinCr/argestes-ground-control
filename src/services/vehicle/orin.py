@@ -5,6 +5,7 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from itertools import count
 from typing import Any
 
 from src.core.events import EventStream, Subscription
@@ -67,6 +68,155 @@ class NullOrinService(OrinService):
     def issue(self, packet_type: str, payload=None, *, timeout=None) -> OrinCommandReceipt:
         del packet_type, payload, timeout
         raise ConnectionError("Orin MAVLink uygulama kanalı hazır değil")
+
+
+class SimulatedOrinService(OrinService):
+    """Gerçek Orin devreye alınana kadar açıkça işaretli geçici adaptör."""
+
+    def __init__(
+        self,
+        config: OrinLinkConfig | None = None,
+        logger: ServiceLogger | None = None,
+    ) -> None:
+        self._config = config or OrinLinkConfig(simulate_connected=True)
+        self._logger = logger
+        self._changed = EventStream[OrinConnectionState]()
+        self._received = EventStream[OrinMessage]()
+        self._request_ids = count(1)
+        self._started = False
+        self._lock = threading.RLock()
+        self._state = OrinConnectionState(
+            alive=False,
+            simulated=True,
+            endpoint="simulation://orin",
+            system_id=1,
+            component_id=self._config.component_id,
+            health="simulated",
+            version="temporary-yki-simulation",
+            capabilities=("task.start", "kamikaze.qr"),
+        )
+
+    @property
+    def connected(self) -> bool:
+        with self._lock:
+            return self._state.alive
+
+    @property
+    def state(self) -> OrinConnectionState:
+        with self._lock:
+            return replace(self._state)
+
+    @property
+    def changed(self) -> EventStream[OrinConnectionState]:
+        return self._changed
+
+    @property
+    def received(self) -> EventStream[OrinMessage]:
+        return self._received
+
+    def configure(self, config: OrinLinkConfig) -> None:
+        with self._lock:
+            self._config = config
+            self._state = replace(
+                self._state,
+                component_id=config.component_id,
+            )
+        self._publish()
+
+    def start(self) -> None:
+        with self._lock:
+            if self._started:
+                return
+            self._started = True
+            now = datetime.now(UTC)
+            self._state = replace(
+                self._state,
+                alive=True,
+                last_heartbeat_at=now,
+                last_packet_at=now,
+                last_error="",
+            )
+        self._publish()
+        self._event(
+            "orin.simulation_started",
+            "Orin geçici simülasyon bağlantısı etkin",
+            severity="warning",
+            details={"endpoint": "simulation://orin"},
+        )
+
+    def stop(self) -> None:
+        with self._lock:
+            if not self._started:
+                return
+            self._started = False
+            self._state = replace(self._state, alive=False, active_task="")
+        self._publish()
+
+    def issue(
+        self,
+        packet_type: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> OrinCommandReceipt:
+        del timeout
+        with self._lock:
+            if not self._started or not self._state.alive:
+                raise ConnectionError("Geçici Orin simülasyonu çalışmıyor")
+            request_id = next(self._request_ids)
+            body = dict(payload or {})
+            task = str(body.get("task", "")).strip().upper()
+            now = datetime.now(UTC)
+            self._state = replace(
+                self._state,
+                active_task=task or self._state.active_task,
+                packets_out=self._state.packets_out + 1,
+                last_packet_at=now,
+            )
+        self._publish()
+        self._event(
+            "orin.simulated_command",
+            f"Orin komutu geçici simülasyonda kabul edildi: {task or packet_type}",
+            severity="warning",
+            details={
+                "packet_type": packet_type,
+                "task": task,
+                "request_id": request_id,
+                "simulated": True,
+            },
+        )
+        return OrinCommandReceipt(
+            request_id=request_id,
+            accepted=True,
+            message="Geçici Orin simülasyonu komutu kabul etti",
+            response={
+                "accepted": True,
+                "task": task,
+                "active_task": task,
+                "execution": "simulated",
+                "simulated": True,
+            },
+            round_trip_ms=0.0,
+        )
+
+    def _publish(self) -> None:
+        self._changed.publish_isolated(self.state)
+
+    def _event(
+        self,
+        action: str,
+        message: str,
+        *,
+        severity: str = "info",
+        details: dict[str, object] | None = None,
+    ) -> None:
+        if self._logger:
+            self._logger.event(
+                action,
+                message,
+                severity=severity,
+                details=details or {},
+            )
 
 
 class MavlinkOrinService(OrinService):

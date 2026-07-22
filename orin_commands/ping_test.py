@@ -9,7 +9,10 @@ from datetime import datetime, timezone
 
 
 def main() -> int:
-    raw_payload = sys.stdin.read().strip() or os.environ.get("ORIN_PAYLOAD_JSON", "{}")
+    raw_payload = sys.stdin.read().strip() or os.environ.get(
+        "ORIN_PAYLOAD_JSON",
+        "{}",
+    )
     try:
         payload = json.loads(raw_payload)
     except json.JSONDecodeError as exc:

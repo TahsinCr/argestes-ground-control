@@ -62,3 +62,85 @@ class VideoFrame(Model):
             "timestamp": self.timestamp.isoformat(),
             "data_size": len(self.data),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class QrDetection(Model):
+    """Bir video karesinde takip edilen QR alanı ve çözülmüş içeriği."""
+
+    track_id: str
+    points: tuple[tuple[float, float], ...]
+    decoded: bool = False
+    data: str = ""
+    submitted: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.track_id.strip():
+            raise ValueError("QR takip kimliği boş olamaz")
+        if len(self.points) < 4:
+            raise ValueError("QR alanı en az dört köşe içermeli")
+        if self.decoded and not self.data:
+            raise ValueError("Okunmuş QR verisi boş olamaz")
+        if self.submitted and not self.decoded:
+            raise ValueError("Gönderilmiş QR önce okunmuş olmalı")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "track_id": self.track_id,
+            "points": [list(point) for point in self.points],
+            "decoded": self.decoded,
+            "data": self.data,
+            "submitted": self.submitted,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class QrDetectionSnapshot(Model):
+    detections: tuple[QrDetection, ...] = ()
+    processed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    @property
+    def decoded(self) -> tuple[QrDetection, ...]:
+        return tuple(detection for detection in self.detections if detection.decoded)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "detections": [detection.to_dict() for detection in self.detections],
+            "processed_at": self.processed_at.isoformat(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PhoneCameraBridgeState(Model):
+    enabled: bool = False
+    running: bool = False
+    adb_connected: bool = False
+    video_device_ready: bool = False
+    serial: str = ""
+    video_device: str = "/dev/video20"
+    process_id: int | None = None
+    last_error: str = ""
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    @property
+    def ready(self) -> bool:
+        return bool(
+            self.enabled
+            and self.running
+            and self.adb_connected
+            and self.video_device_ready
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "enabled": self.enabled,
+            "running": self.running,
+            "adb_connected": self.adb_connected,
+            "video_device_ready": self.video_device_ready,
+            "serial": self.serial,
+            "video_device": self.video_device,
+            "process_id": self.process_id,
+            "last_error": self.last_error,
+            "ready": self.ready,
+            "updated_at": self.updated_at.isoformat(),
+        }

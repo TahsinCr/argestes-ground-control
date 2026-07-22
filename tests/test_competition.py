@@ -19,7 +19,7 @@ from src.services.processing.telemetry import MutableTelemetryService
 
 class CompetitionTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.server = create_server(port=0, quiet=True)
+        self.server = create_server(port=0, competitor_count=27, quiet=True)
         self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.server_thread.start()
         host, port = self.server.server_address[:2]
@@ -151,8 +151,11 @@ class CompetitionTests(unittest.TestCase):
             "teknofest2026",
             "jetson-qr-reader",
         )
-        self.service.submit_lock_event(lock)
-        self.service.submit_kamikaze_event(kamikaze)
+        self.server.state.quiet = False
+        self.server.state.color_output = True
+        with self.assertLogs("fake-teknofest", level="INFO") as server_logs:
+            self.service.submit_lock_event(lock)
+            self.service.submit_kamikaze_event(kamikaze)
 
         self.assertEqual(len(self.server.state.received_lock_events), 1)
         self.assertEqual(len(self.server.state.received_kamikaze_events), 1)
@@ -160,6 +163,12 @@ class CompetitionTests(unittest.TestCase):
             self.server.state.received_kamikaze_events[0]["qrMetni"],
             "teknofest2026",
         )
+        server_output = "\n".join(server_logs.output)
+        self.assertIn("KILITLENME BASARILI", server_output)
+        self.assertIn("KAMIKAZE QR ALINDI", server_output)
+        self.assertIn("QR COZUMLENDI", server_output)
+        self.assertIn("\033[1;92m", server_output)
+        self.assertIn("\033[1;95m", server_output)
         actions = {entry.action for entry in self.logs.history}
         self.assertTrue(
             {
@@ -190,6 +199,43 @@ class CompetitionTests(unittest.TestCase):
         self.assertTrue(self._wait_until(lambda: self.service.state.connected))
         time.sleep(0.7)
         self.assertEqual(len(self.server.state.telemetry_history), 0)
+
+    def test_protocol_nonnegative_values_are_clamped_to_zero(self) -> None:
+        received_at = datetime.now(UTC)
+        self.telemetry.push(
+            TelemetrySnapshot.zero().copy(
+                latitude=39.868,
+                longitude=32.7485,
+                altitude_agl=-0.08,
+                ground_speed=-0.03,
+                position_valid=True,
+                telemetry_link=True,
+                autopilot_link=True,
+                uav_time=received_at,
+                position_received_at=received_at,
+                uav_time_received_at=received_at,
+            )
+        )
+
+        self.service.start()
+        self.assertTrue(
+            self._wait_until(lambda: len(self.server.state.telemetry_history) >= 1)
+        )
+
+        sent = self.server.state.telemetry_history[-1]
+        self.assertEqual(sent["iha_irtifa"], 0.0)
+        self.assertEqual(sent["iha_hiz"], 0.0)
+        self.assertEqual(sent["hedef_merkez_X"], 0)
+        self.assertEqual(sent["hedef_merkez_Y"], 0)
+        self.assertEqual(sent["hedef_genislik"], 0)
+        self.assertEqual(sent["hedef_yukseklik"], 0)
+        self.assertTrue(self.service.state.connected)
+        self.assertFalse(
+            any(
+                entry.action == "competition.connection_failed"
+                for entry in self.logs.history
+            )
+        )
 
     def test_telemetry_is_never_sent_while_vehicle_connection_is_down(self) -> None:
         received_at = datetime.now(UTC)
