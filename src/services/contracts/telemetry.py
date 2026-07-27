@@ -19,8 +19,8 @@ class TelemetryService(Service):
 
     @abstractmethod
     def push(self, snapshot: TelemetrySnapshot) -> None:
-        """UI, test, ağ veya başka bir tetikleyiciden telemetri kabul eder."""
+        """Accept telemetry from UI, tests, network or another trigger."""
 
     @abstractmethod
     def patch(self, **changes: Any) -> None:
-        """Bir veri kaynağının sahip olduğu alanları atomik olarak günceller."""
+        """Atomically update fields owned by one data source."""

@@ -13,8 +13,8 @@ from src.models.mission import MissionState
 from src.models.telemetry import TargetTrack, TelemetrySnapshot
 from src.services.competition import TeknofestCompetitionService
 from src.services.logging_service import LoggingService
-from src.services.processing.mission import MissionStateService
-from src.services.processing.telemetry import MutableTelemetryService
+from src.services.planner import PlannerService
+from src.services.vehicle.telemetry import MutableTelemetryService
 
 
 class CompetitionTests(unittest.TestCase):
@@ -24,7 +24,7 @@ class CompetitionTests(unittest.TestCase):
         self.server_thread.start()
         host, port = self.server.server_address[:2]
         self.telemetry = MutableTelemetryService()
-        self.mission = MissionStateService(initial_state=MissionState())
+        self.planner = PlannerService(initial_state=MissionState())
         self.vehicle = SimpleNamespace(connected=True)
         self.logs = LoggingService()
         self.freshness_timeout_s = 0.8
@@ -39,17 +39,17 @@ class CompetitionTests(unittest.TestCase):
                 auto_connect=True,
             ),
             self.telemetry,
-            self.mission,
+            self.planner,
             self.vehicle,  # type: ignore[arg-type]
             self.logs.child("TEKNOFEST"),
             telemetry_freshness_timeout_s=self.freshness_timeout_s,
         )
         self.telemetry.start()
-        self.mission.start()
+        self.planner.start()
 
     def tearDown(self) -> None:
         self.service.stop()
-        self.mission.stop()
+        self.planner.stop()
         self.telemetry.stop()
         self.server.shutdown()
         self.server.server_close()
@@ -89,7 +89,7 @@ class CompetitionTests(unittest.TestCase):
         self.service.start()
 
         self.assertTrue(self._wait_until(lambda: self.service.state.competitor_count == 27))
-        contacts = self.mission.state.contacts
+        contacts = self.planner.state.contacts
         self.assertEqual(len(contacts), 27)
         self.assertEqual({contact.source for contact in contacts}, {"teknofest"})
         self.assertEqual({contact.metadata["team_number"] for contact in contacts}, set(range(2, 29)))
@@ -102,13 +102,44 @@ class CompetitionTests(unittest.TestCase):
         self.assertTrue(self.telemetry.current.server_link)
         self.assertIsNotNone(self.telemetry.current.server_time)
         self.assertTrue(self._wait_until(lambda: self.service.state.hss_count == 4))
-        self.assertTrue(self.service.state.qr_available)
+        self.assertTrue(self._wait_until(lambda: self.service.state.qr_available))
         server_overlays = {
-            item.overlay_id: item for item in self.mission.state.overlays
+            item.overlay_id: item for item in self.planner.state.overlays
             if str(item.metadata.get("source", "")).startswith("teknofest-")
         }
         self.assertEqual(len([key for key in server_overlays if key.startswith("teknofest-hss-")]), 4)
         self.assertIn("teknofest-qr", server_overlays)
+        hss_distances = [
+            own_point.distance_to(Point(item.points[0][0], item.points[0][1]))
+            for key, item in server_overlays.items()
+            if key.startswith("teknofest-hss-")
+        ]
+        self.assertLessEqual(max(hss_distances), 901.0)
+        hss_request_count = sum(
+            entry.action == "competition.hss_request_tx"
+            for entry in self.logs.history
+        )
+        hss_snapshot = {
+            item.overlay_id: item.to_dict()
+            for item in self.planner.state.overlays
+            if item.overlay_id.startswith("teknofest-hss-")
+        }
+        self.service.refresh_reference_data()
+        self.assertEqual(
+            sum(
+                entry.action == "competition.hss_request_tx"
+                for entry in self.logs.history
+            ),
+            hss_request_count + 1,
+        )
+        self.assertEqual(
+            {
+                item.overlay_id: item.to_dict()
+                for item in self.planner.state.overlays
+                if item.overlay_id.startswith("teknofest-hss-")
+            },
+            hss_snapshot,
+        )
 
         sent = self.server.state.telemetry_history[-1]
         self.assertEqual(sent["iha_irtifa"], 137.0)
@@ -126,19 +157,111 @@ class CompetitionTests(unittest.TestCase):
             self._wait_until(
                 lambda: any(
                     int(contact.metadata["data_age_ms"]) > 0
-                    for contact in self.mission.state.contacts
+                    for contact in self.planner.state.contacts
                 ),
                 timeout=4.0,
             )
         )
-        self.assertTrue(all(contact.metadata["data_age_ms"] >= 0 for contact in self.mission.state.contacts))
+        self.assertTrue(all(contact.metadata["data_age_ms"] >= 0 for contact in self.planner.state.contacts))
+
+    def test_outbound_nonnegative_fields_are_clamped_before_transmission(self) -> None:
+        received_at = datetime.now(UTC)
+        snapshot = TelemetrySnapshot.zero().copy(
+            latitude=40.225611,
+            longitude=28.8749911,
+            altitude_agl=-0.12,
+            ground_speed=-0.04,
+            position_valid=True,
+            telemetry_link=True,
+            autopilot_link=True,
+            timestamp=received_at,
+            uav_time=received_at,
+            position_received_at=received_at,
+            uav_time_received_at=received_at,
+        )
+
+        payload = self.service._telemetry_payload(snapshot, received_at)
+
+        self.assertEqual(payload["iha_irtifa"], 0.0)
+        self.assertEqual(payload["iha_hiz"], 0.0)
+
+    def test_hss_is_polled_each_second_and_removed_after_empty_response(self) -> None:
+        received_at = datetime.now(UTC)
+        self.telemetry.push(
+            TelemetrySnapshot.zero().copy(
+                latitude=40.225611,
+                longitude=28.8749911,
+                altitude_agl=100.0,
+                position_valid=True,
+                telemetry_link=True,
+                autopilot_link=True,
+                timestamp=received_at,
+                uav_time=received_at,
+                position_received_at=received_at,
+                uav_time_received_at=received_at,
+            )
+        )
+        self.service.start()
+        self.assertTrue(self._wait_until(lambda: self.service.state.hss_count == 4))
+        initial_requests = sum(
+            entry.action == "competition.hss_request_tx"
+            for entry in self.logs.history
+        )
+        self.assertTrue(
+            self._wait_until(
+                lambda: sum(
+                    entry.action == "competition.hss_request_tx"
+                    for entry in self.logs.history
+                ) > initial_requests,
+                timeout=1.5,
+            )
+        )
+
+        with self.server.state.lock:
+            self.server.state.hss_zones = ()
+
+        self.assertTrue(
+            self._wait_until(
+                lambda: self.service.state.hss_count == 0,
+                timeout=1.5,
+            )
+        )
+        self.assertFalse(
+            any(
+                item.overlay_id.startswith("teknofest-hss-")
+                for item in self.planner.state.overlays
+            )
+        )
+
+        with self.server.state.lock:
+            self.server.state.hss_zones = (
+                {
+                    "id": 20,
+                    "hssEnlem": 40.226,
+                    "hssBoylam": 28.876,
+                    "hssYaricap": 75,
+                },
+            )
+
+        self.assertTrue(
+            self._wait_until(
+                lambda: self.service.state.hss_count == 1,
+                timeout=1.5,
+            )
+        )
+        self.assertTrue(
+            any(
+                item.overlay_id == "teknofest-hss-20"
+                for item in self.planner.state.overlays
+            )
+        )
 
     def test_disconnect_clears_only_teknofest_contacts(self) -> None:
         from src.models.mission import MapContact
 
-        self.mission.upsert_contact(MapContact("radar-1", "Radar", 39.86, 32.74, source="radar"))
+        self.planner.upsert_contact(MapContact("radar-1", "Radar", 39.86, 32.74, source="radar"))
         self.service.disconnect()
-        self.assertEqual([item.contact_id for item in self.mission.state.contacts], ["radar-1"])
+        self.assertEqual([item.contact_id for item in self.planner.state.contacts], ["radar-1"])
 
     def test_vehicle_events_are_forwarded_once_and_ui_cannot_create_them(self) -> None:
         self.service.start()
@@ -240,7 +363,9 @@ class CompetitionTests(unittest.TestCase):
         self.assertTrue(
             self._wait_until(lambda: len(self.server.state.telemetry_history) >= 1)
         )
-        self.assertTrue(self.service.state.telemetry_tx_active)
+        self.assertTrue(
+            self._wait_until(lambda: self.service.state.telemetry_tx_active)
+        )
 
         self.assertTrue(
             self._wait_until(
@@ -260,6 +385,47 @@ class CompetitionTests(unittest.TestCase):
             blocked[-1].details["reason"],
             {"position_stale", "vehicle_gps_time_stale"},
         )
+
+    def test_repeated_connection_failures_are_rate_limited(self) -> None:
+        self.service._log_connection_failure("connection refused")
+        self.service._log_connection_failure("connection refused")
+        failures = [
+            entry
+            for entry in self.logs.history
+            if entry.action == "competition.connection_failed"
+        ]
+        self.assertEqual(len(failures), 1)
+
+        self.service._log_connection_failure("timeout")
+        failures = [
+            entry
+            for entry in self.logs.history
+            if entry.action == "competition.connection_failed"
+        ]
+        self.assertEqual(len(failures), 2)
+
+        self.service._last_connection_error_signature = "connection refused"
+        self.service._last_connection_error_log_at = time.monotonic() - 31.0
+        self.service._log_connection_failure("connection refused")
+        failures = [
+            entry
+            for entry in self.logs.history
+            if entry.action == "competition.connection_failed"
+        ]
+        self.assertEqual(len(failures), 3)
+
+    def test_identical_state_updates_are_not_republished(self) -> None:
+        states = []
+        subscription = self.service.changed.subscribe(states.append)
+        try:
+            self.service._publish_state(running=False)
+            self.assertEqual(states, [])
+            self.service._publish_state(running=True)
+            self.assertEqual(len(states), 1)
+            self.service._publish_state(running=True)
+            self.assertEqual(len(states), 1)
+        finally:
+            subscription.cancel()
 
     @staticmethod
     def _wait_until(predicate, timeout: float = 3.0) -> bool:

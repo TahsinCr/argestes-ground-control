@@ -26,7 +26,7 @@ from src.services.logging_service import ServiceLogger
 
 
 class NullVehicleService(VehicleService):
-    """Araç bağlantısı yapılandırılmadığında güvenli şekilde kapalı kalan servis."""
+    """Service that remains safely offline when no vehicle link is configured."""
 
     def __init__(self) -> None:
         self._changed = EventStream[VehicleConnectionState]()
@@ -102,10 +102,23 @@ class NullVehicleService(VehicleService):
 
 
 class MavlinkVehicleService(VehicleService):
-    """Core MAVLink ayrıntılarını alan servislerinden saklayan araç adaptörü."""
+    """Vehicle adapter hiding core MAVLink details from domain services."""
 
     FORCE_ARM_MAGIC = 21_196.0
     TRANSPORT_STATUS_TYPES = frozenset({"RADIO", "RADIO_STATUS"})
+    DEFAULT_STREAM_RATES_HZ = {
+        "ATTITUDE": 20.0,
+        "GLOBAL_POSITION_INT": 10.0,
+        "LOCAL_POSITION_NED": 10.0,
+        "VFR_HUD": 10.0,
+        "SCALED_IMU": 10.0,
+        "NAV_CONTROLLER_OUTPUT": 5.0,
+        "GPS_RAW_INT": 5.0,
+        "RC_CHANNELS": 5.0,
+        "SYS_STATUS": 2.0,
+        "BATTERY_STATUS": 2.0,
+        "HOME_POSITION": 1.0,
+    }
 
     def __init__(
         self,
@@ -115,6 +128,7 @@ class MavlinkVehicleService(VehicleService):
         operation_timeout: float = 5.0,
         default_mission_altitude: float = 100.0,
         custom_handlers: dict[str, Callable[[CommandRequest], bool | None]] | None = None,
+        stream_rates_hz: dict[str, float] | None = None,
     ) -> None:
         if operation_timeout <= 0:
             raise ValueError("Araç işlem zaman aşımı pozitif olmalı")
@@ -136,6 +150,12 @@ class MavlinkVehicleService(VehicleService):
         self._watchdog_thread: threading.Thread | None = None
         self._custom_handlers = {
             code.strip().upper(): handler for code, handler in (custom_handlers or {}).items()
+        }
+        source_rates = stream_rates_hz or self.DEFAULT_STREAM_RATES_HZ
+        self._stream_rates_hz = {
+            str(message_type).strip().upper(): float(rate)
+            for message_type, rate in source_rates.items()
+            if str(message_type).strip() and float(rate) > 0.0
         }
 
     @property
@@ -234,6 +254,7 @@ class MavlinkVehicleService(VehicleService):
             daemon=True,
         )
         self._watchdog_thread.start()
+        self._request_telemetry_streams()
         self._changed.publish_isolated(self._state)
         self._event(
             "success",
@@ -241,6 +262,51 @@ class MavlinkVehicleService(VehicleService):
             f"Uçuş cihazına bağlanıldı ({self._state.device_id})",
             details=self._state.to_dict(),
         )
+
+    def _request_telemetry_streams(self) -> None:
+        mavlink = self._client.mavlink
+        requested: dict[str, float] = {}
+        rejected: dict[str, str] = {}
+        system, component = self._target
+        for message_type, rate_hz in self._stream_rates_hz.items():
+            message_id = getattr(mavlink, f"MAVLINK_MSG_ID_{message_type}", None)
+            if message_id is None:
+                rejected[message_type] = "message id unavailable"
+                continue
+            try:
+                self._client.request_message_rate(
+                    int(message_id),
+                    rate_hz,
+                    target_system=system,
+                    target_component=component,
+                )
+            except Exception as exc:
+                rejected[message_type] = str(exc)
+            else:
+                requested[message_type] = rate_hz
+        if requested:
+            self._event(
+                "success",
+                "vehicle.telemetry_stream_profile_requested",
+                "Uçuş cihazından hızlı telemetri akışı istendi",
+                details={
+                    "rates": ", ".join(
+                        f"{name}={rate:g} Hz"
+                        for name, rate in requested.items()
+                    ),
+                    "requested_count": len(requested),
+                },
+            )
+        if rejected:
+            self._event(
+                "warning",
+                "vehicle.telemetry_stream_profile_partial",
+                "Bazı telemetri mesaj hızları istenemedi",
+                details={
+                    "messages": ", ".join(rejected),
+                    "failed_count": len(rejected),
+                },
+            )
 
     def stop(self) -> None:
         if not self._started:
@@ -287,7 +353,7 @@ class MavlinkVehicleService(VehicleService):
         )
 
     def _is_active_connection_message(self, message: Any) -> bool:
-        """Radyo durumunu fiziksel hattan, araç verisini hedef SYS/COMP'ten alır."""
+        """Read radio status from the link and vehicle data from target SYS/COMP."""
 
         try:
             if mavlink_message_type(message) in self.TRANSPORT_STATUS_TYPES:
@@ -378,6 +444,7 @@ class MavlinkVehicleService(VehicleService):
             "DISARM": lambda: self._arm(False),
             "SET_MODE": lambda: self._set_mode(str(request.parameters["mode"])),
             "GOTO": lambda: self._goto(request.parameters),
+            "SET_HOME": lambda: self._set_home(request.parameters),
             "LAND": lambda: self._land(request.parameters),
             "MISSION_UPLOAD": lambda: bool(
                 self.upload_mission(
@@ -406,6 +473,7 @@ class MavlinkVehicleService(VehicleService):
         loop: bool = False,
     ) -> int:
         source_items = list(overlays)
+        self._validate_mission_structure(source_items, loop=loop)
         mavlink = self._client.mavlink
         route_items, ignored = self._mission_items(
             source_items,
@@ -417,26 +485,16 @@ class MavlinkVehicleService(VehicleService):
                 "info",
                 "mission.items_retained_locally",
                 f"{len(ignored)} uygulama öğesi yalnızca backend durumunda tutuldu",
-                details={"overlay_types": sorted(set(ignored))},
+                details={
+                    "count": len(ignored),
+                    "overlay_types": sorted(set(ignored)),
+                },
             )
         if not route_items:
             raise ValueError("Araca gönderilebilecek görev öğesi bulunamadı")
 
         items = [self._mission_home_item(route_items, mavlink), *route_items]
         if loop:
-            terminal_types = sorted(
-                {
-                    item.overlay_type
-                    for item in source_items
-                    if item.overlay_type in {"rtl", "land", "loiter"}
-                    and item.is_vehicle_mission
-                }
-            )
-            if terminal_types:
-                raise ValueError(
-                    "Döngü görevinde terminal öğe kullanılamaz: "
-                    + ", ".join(terminal_types)
-                )
             loop_target = self._loop_target_sequence(source_items)
             items.append(self._mission_jump_item(loop_target, mavlink))
 
@@ -627,6 +685,50 @@ class MavlinkVehicleService(VehicleService):
         )
         return False
 
+    def _set_home(self, parameters: dict[str, Any]) -> bool:
+        latitude = float(parameters["latitude"])
+        longitude = float(parameters["longitude"])
+        if (
+            not math.isfinite(latitude)
+            or not math.isfinite(longitude)
+            or not -90.0 <= latitude <= 90.0
+            or not -180.0 <= longitude <= 180.0
+        ):
+            raise ValueError("Home koordinatı geçersiz")
+        altitude_value = parameters.get("altitude")
+        if altitude_value is None:
+            position = self._client.latest("GLOBAL_POSITION_INT")
+            altitude = (
+                float(getattr(position, "alt", 0.0)) / 1000.0
+                if position is not None
+                else 0.0
+            )
+        else:
+            altitude = float(altitude_value)
+        if not math.isfinite(altitude):
+            raise ValueError("Home irtifası geçersiz")
+        self._command_long(
+            self._client.mavlink.MAV_CMD_DO_SET_HOME,
+            0,
+            0,
+            0,
+            0,
+            latitude,
+            longitude,
+            altitude,
+        )
+        self._event(
+            "success",
+            "vehicle.home_set",
+            "Home/merkez noktası uçuş cihazında güncellendi",
+            details={
+                "latitude": latitude,
+                "longitude": longitude,
+                "altitude": altitude,
+            },
+        )
+        return True
+
     def _land(self, parameters: dict[str, Any]) -> bool:
         latitude = float(parameters.get("latitude", 0.0))
         longitude = float(parameters.get("longitude", 0.0))
@@ -676,6 +778,66 @@ class MavlinkVehicleService(VehicleService):
         if isinstance(value, (int, float)) and math.isfinite(float(value)):
             return float(value)
         raise TypeError(f"MAVLink parametresi sonlu sayısal olmalı: {name}")
+
+    @staticmethod
+    def _validate_mission_structure(
+        overlays: Iterable[MapOverlay],
+        *,
+        loop: bool,
+    ) -> None:
+        ordered = [
+            overlay
+            for _index, overlay in sorted(
+                enumerate(overlays),
+                key=lambda pair: (
+                    pair[1].route_order
+                    if pair[1].route_order is not None
+                    else 1_000_000,
+                    pair[0],
+                ),
+            )
+            if overlay.is_vehicle_mission
+        ]
+        if not ordered:
+            raise ValueError("Araca gönderilebilecek görev öğesi bulunamadı")
+
+        takeoff_indexes = [
+            index
+            for index, overlay in enumerate(ordered)
+            if overlay.overlay_type == "takeoff"
+        ]
+        if len(takeoff_indexes) > 1:
+            raise ValueError("Görev planında yalnızca bir TAKEOFF noktası olabilir")
+        if takeoff_indexes and takeoff_indexes[0] != 0:
+            raise ValueError("TAKEOFF noktası görev sırasının ilk öğesi olmalı")
+
+        terminal = [
+            (index, overlay.overlay_type)
+            for index, overlay in enumerate(ordered)
+            if overlay.overlay_type in {"land", "rtl", "loiter"}
+        ]
+        if len(terminal) > 1:
+            types = ", ".join(item_type.upper() for _index, item_type in terminal)
+            raise ValueError(f"Görev planında birden fazla terminal öğe var: {types}")
+        if terminal and terminal[0][0] != len(ordered) - 1:
+            raise ValueError(
+                f"{terminal[0][1].upper()} terminal komutu görev sırasının sonunda olmalı"
+            )
+
+        if loop:
+            if terminal:
+                raise ValueError(
+                    "Döngü görevinde terminal öğe kullanılamaz: "
+                    + terminal[0][1]
+                )
+            if not any(
+                overlay.overlay_type in {"waypoint", "route"}
+                and overlay.points
+                for overlay in ordered
+            ):
+                raise ValueError(
+                    "Döngü görevi için en az bir WAYPOINT veya ROUTE öğesi gerekli"
+                )
 
     @staticmethod
     def _mission_items(
@@ -781,7 +943,7 @@ class MavlinkVehicleService(VehicleService):
                 pair[0],
             ),
         )
-        sequence = 1  # sequence 0, MAVLink görev origin/home kaydıdır.
+        sequence = 1  # Sequence 0 is the MAVLink mission origin/home record.
         for _index, overlay in ordered:
             if not overlay.is_vehicle_mission:
                 continue

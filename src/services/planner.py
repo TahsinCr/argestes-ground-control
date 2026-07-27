@@ -5,17 +5,17 @@ from collections.abc import Iterable
 from collections.abc import Callable
 from typing import Any
 
+from src.core.abstracts import Service
 from src.core.events import EventStream, Subscription
 from src.models.mission import MapContact, MapOverlay, MissionState
-from src.services.contracts.mission import MissionService
 from src.services.contracts.vehicle import VehicleService
 from src.services.logging_service import ServiceLogger
 
 
-class MissionMapApi:
-    """UI, REST, görev motoru veya testlerin kullandığı ortak görev yazma API'si."""
+class PlannerMapApi:
+    """Shared planner write API used by the UI, REST clients and tests."""
 
-    def __init__(self, service: "MissionStateService") -> None:
+    def __init__(self, service: "PlannerService") -> None:
         self._service = service
 
     def set_point(
@@ -70,6 +70,9 @@ class MissionMapApi:
     def set_route(self, points: list[list[float]], **kwargs: Any) -> str:
         return self.set_area("route", points=points, **kwargs)
 
+    def set_mission_loop(self, enabled: bool) -> None:
+        self._service.set_mission_loop(enabled)
+
     def remove(self, overlay_id: str) -> None:
         self._service.remove_overlay(overlay_id)
 
@@ -80,7 +83,8 @@ class MissionMapApi:
         return self._service.state
 
 
-class MissionStateService(MissionService):
+class PlannerService(Service):
+    """Manage GCS planning and map references without executing missions."""
     DEFAULT_COLORS = {
         "takeoff": "#78b7ff",
         "waypoint": "#74d99f",
@@ -121,7 +125,7 @@ class MissionStateService(MissionService):
             "hss": 100.0,
         }
         self.set_default_radii(default_radii or {})
-        self.api = MissionMapApi(self)
+        self.api = PlannerMapApi(self)
 
     @property
     def changed(self) -> EventStream[MissionState]:
@@ -135,7 +139,7 @@ class MissionStateService(MissionService):
     def start(self) -> None:
         self._stop_event.clear()
         self._changed.publish(self.state)
-        self._log("info", "Görev durum servisi hazır")
+        self._log("info", "mission.planner_started", "YKİ planlayıcısı hazır")
         if self._vehicle is not None and self._vehicle_subscription is None:
             self._vehicle_subscription = self._vehicle.connection_changed.subscribe(
                 self._on_vehicle_connection
@@ -148,6 +152,11 @@ class MissionStateService(MissionService):
         if self._vehicle_subscription is not None:
             self._vehicle_subscription.cancel()
             self._vehicle_subscription = None
+        thread = self._sync_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+        if thread is None or not thread.is_alive():
+            self._sync_thread = None
 
     def default_color(self, item_type: str) -> str:
         return self.DEFAULT_COLORS.get(item_type, "#61a8ff")
@@ -188,6 +197,19 @@ class MissionStateService(MissionService):
     def set_active_tool(self, tool: str) -> None:
         self._mutate(active_tool=tool)
 
+    def set_mission_loop(self, enabled: bool) -> None:
+        normalized = bool(enabled)
+        if self.state.mission_loop == normalized:
+            return
+        self._mutate(mission_loop=normalized)
+        self._log(
+            "info",
+            "mission.loop_enabled" if normalized else "mission.loop_disabled",
+            "Görev tekrar modu döngü olarak ayarlandı"
+            if normalized
+            else "Görev tekrar modu tek sefer olarak ayarlandı",
+        )
+
     def select_overlay(self, overlay_id: str | None) -> None:
         self._mutate(selected_overlay_id=overlay_id)
 
@@ -199,7 +221,11 @@ class MissionStateService(MissionService):
         if [item.to_dict() for item in self.state.overlays] == [item.to_dict() for item in replacement]:
             return
         self._mutate(overlays=replacement, selected_overlay_id=None)
-        self._log("info", "Görev planı harici kaynaktan güncellendi")
+        self._log(
+            "info",
+            "mission.external_updated",
+            "Görev planı harici kaynaktan güncellendi",
+        )
 
     def replace_source_overlays(
         self,
@@ -217,19 +243,30 @@ class MissionStateService(MissionService):
             raise ValueError("Harita öğesi metadata kaynağı ile servis kaynağı eşleşmiyor")
 
         state = self.state
-        retained = [
-            item
-            for item in state.overlays
-            if str(item.metadata.get("source", "")).lower() != normalized_source
-        ]
-        replacement = [*retained, *snapshots]
+        replacement: list[MapOverlay] = []
+        source_inserted = False
+        for item in state.overlays:
+            item_source = str(item.metadata.get("source", "")).lower()
+            if item_source == normalized_source:
+                if not source_inserted:
+                    replacement.extend(snapshots)
+                    source_inserted = True
+                continue
+            replacement.append(item)
+        if not source_inserted:
+            replacement.extend(snapshots)
         if [item.to_dict() for item in state.overlays] == [item.to_dict() for item in replacement]:
             return
         selected = state.selected_overlay_id
         if selected and not any(item.overlay_id == selected for item in replacement):
             selected = None
         self._mutate(overlays=replacement, selected_overlay_id=selected)
-        self._log("info", f"{normalized_source} harita verisi güncellendi ({len(snapshots)})")
+        self._log(
+            "info",
+            "mission.source_updated",
+            f"{normalized_source} harita verisi güncellendi ({len(snapshots)})",
+            {"source": normalized_source, "count": len(snapshots)},
+        )
 
     def upsert_overlay(self, overlay: MapOverlay) -> None:
         snapshot = MapOverlay.from_dict(overlay.to_dict())
@@ -242,7 +279,9 @@ class MissionStateService(MissionService):
         if current is not None and current.is_source_managed:
             self._log(
                 "warning",
+                "mission.item_update_rejected",
                 f"Harici kaynak tarafindan yonetilen harita ogesi degistirilemez: {snapshot.overlay_id}",
+                {"overlay_id": snapshot.overlay_id},
             )
             return
 
@@ -256,7 +295,12 @@ class MissionStateService(MissionService):
             return {"overlays": overlays, "selected_overlay_id": snapshot.overlay_id}
 
         self._transform(update)
-        self._log("info", f"{overlay.label} kaydedildi")
+        self._log(
+            "info",
+            "mission.item_saved",
+            f"{overlay.label} kaydedildi",
+            {"label": overlay.label, "overlay_id": overlay.overlay_id},
+        )
 
     def remove_overlay(self, overlay_id: str) -> None:
         overlay = next(
@@ -268,7 +312,9 @@ class MissionStateService(MissionService):
         if overlay.is_source_managed:
             self._log(
                 "warning",
+                "mission.item_delete_rejected",
                 f"Harici kaynak tarafindan yonetilen harita ogesi silinemez: {overlay_id}",
+                {"overlay_id": overlay_id},
             )
             return
         self._transform(
@@ -277,25 +323,53 @@ class MissionStateService(MissionService):
                 "selected_overlay_id": None,
             }
         )
-        self._log("warning", f"Görev öğesi silindi: {overlay_id}")
+        self._log(
+            "warning",
+            "mission.item_deleted",
+            f"Görev öğesi silindi: {overlay_id}",
+            {"overlay_id": overlay_id},
+        )
 
     def clear_dynamic_overlays(self) -> None:
         state = self.state
         retained = [item for item in state.overlays if item.is_source_managed]
-        if len(retained) == len(state.overlays):
+        if len(retained) == len(state.overlays) and not state.mission_loop:
             return
         selected = state.selected_overlay_id
         if selected and not any(item.overlay_id == selected for item in retained):
             selected = None
-        self._mutate(overlays=retained, selected_overlay_id=selected)
-        self._log("warning", "Kullanici görev planındaki harita öğeleri temizlendi")
+        self._mutate(
+            overlays=retained,
+            selected_overlay_id=selected,
+            mission_loop=False,
+        )
+        self._log(
+            "warning",
+            "mission.local_cleared",
+            "Kullanici görev planındaki harita öğeleri temizlendi",
+        )
 
     def clear_all(self) -> None:
         state = self.state
-        if not state.overlays and not state.contacts and state.active_tool == "pan":
+        if (
+            not state.overlays
+            and not state.contacts
+            and state.active_tool == "pan"
+            and not state.mission_loop
+        ):
             return
-        self._mutate(overlays=[], contacts=[], selected_overlay_id=None, active_tool="pan")
-        self._log("warning", "Görev ve temas durumu temizlendi")
+        self._mutate(
+            overlays=[],
+            contacts=[],
+            selected_overlay_id=None,
+            active_tool="pan",
+            mission_loop=False,
+        )
+        self._log(
+            "warning",
+            "mission.all_cleared",
+            "Görev ve temas durumu temizlendi",
+        )
 
     def upsert_contact(self, contact: MapContact) -> None:
         snapshot = MapContact.from_dict(contact.to_dict())
@@ -373,8 +447,38 @@ class MissionStateService(MissionService):
                 "base_layer": state.base_layer,
                 "active_tool": "pan",
                 "selected_overlay_id": None,
+                "mission_loop": state.mission_loop,
             }
         )
+
+    def replace_local_plan(
+        self,
+        overlays: Iterable[MapOverlay],
+        *,
+        mission_loop: bool,
+    ) -> None:
+        """Restore operator-owned map items while preserving live source layers."""
+
+        local = [MapOverlay.from_dict(item.to_dict()) for item in overlays]
+        if any(item.is_source_managed for item in local):
+            raise ValueError("Harici kaynak katmanları yerel plan olarak geri yüklenemez")
+        identifiers = [item.overlay_id for item in local]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("Görev öğesi kimlikleri benzersiz olmalı")
+
+        def restore(current: MissionState) -> dict[str, Any]:
+            sources = [item for item in current.overlays if item.is_source_managed]
+            selected = current.selected_overlay_id
+            restored_ids = {item.overlay_id for item in local}
+            if selected not in restored_ids:
+                selected = None
+            return {
+                "overlays": [*local, *sources],
+                "selected_overlay_id": selected,
+                "mission_loop": bool(mission_loop),
+            }
+
+        self._transform(restore)
 
     def _mutate(self, **changes: Any) -> None:
         self._transform(lambda _state: changes)
@@ -387,9 +491,20 @@ class MissionStateService(MissionService):
             snapshot = MissionState.from_dict(self._state.to_dict())
         self._changed.publish(snapshot)
 
-    def _log(self, severity: str, message: str) -> None:
+    def _log(
+        self,
+        severity: str,
+        action: str,
+        message: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         if self._logger:
-            self._logger.emit(severity, message)
+            self._logger.event(
+                action,
+                message,
+                severity=severity,
+                details=details,
+            )
 
     def _on_vehicle_connection(self, state) -> None:
         if state.connected and self._sync_from_vehicle_on_connect:
@@ -422,6 +537,12 @@ class MissionStateService(MissionService):
                 if item.is_source_managed or not item.is_vehicle_mission
             ]
             self.set_overlays([*retained, *overlays])
+            self.set_mission_loop(
+                any(
+                    bool(item.metadata.get("mission_loop", False))
+                    for item in overlays
+                )
+            )
         except Exception as exc:
             if self._logger and not self._stop_event.is_set():
                 self._logger.event(
@@ -439,6 +560,10 @@ class MissionStateService(MissionService):
                     details={"overlay_count": len(overlays)},
                     device_id=self._vehicle.state.device_id if self._vehicle.connected else None,
                 )
+        finally:
+            with self._lock:
+                if self._sync_thread is threading.current_thread():
+                    self._sync_thread = None
 
     @staticmethod
     def _initial_state() -> MissionState:

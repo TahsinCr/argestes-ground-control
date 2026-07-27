@@ -11,7 +11,7 @@ from src.services.storage import clear_directory_contents, ensure_directory, loa
 
 
 class SettingsService(SettingsRepository):
-    """Backend/UI ayar sahipliklerini koruyan, arayüzden bağımsız ayar servisi."""
+    """UI-independent settings service preserving backend and UI ownership."""
 
     def __init__(self, base_dir: Path, logger: ServiceLogger | None = None) -> None:
         self._changed = EventStream[SettingsModel]()
@@ -33,22 +33,65 @@ class SettingsService(SettingsRepository):
             return SettingsModel.from_dict(self._settings.to_dict())
 
     def _load(self) -> SettingsModel:
-        if not self._settings_path.exists():
-            settings = SettingsModel.default(self._base_dir)
+        if self._settings_path.exists():
+            try:
+                payload = load_json_file(self._settings_path)
+                settings = SettingsModel.from_dict(payload)
+                self._prepare_runtime_paths(settings)
+                return settings
+            except (OSError, TypeError, ValueError) as exc:
+                if self._logger:
+                    self._logger.event(
+                        "settings.load_failed",
+                        f"Ayar dosyası okunamadı; güvenli varsayılanlar kullanılacak: {exc}",
+                        severity="warning",
+                        details={
+                            "path": str(self._settings_path),
+                            "error_type": exc.__class__.__name__,
+                        },
+                    )
+                return self._restore_defaults(reason="unreadable")
+        return self._restore_defaults(reason="missing")
+
+    def _restore_defaults(self, *, reason: str) -> SettingsModel:
+        settings = SettingsModel.default(self._base_dir)
+        self._prepare_runtime_paths(settings)
+        try:
             self.save(settings, notify=False)
-            return settings
-        payload = load_json_file(self._settings_path)
-        settings = SettingsModel.from_dict(payload)
-        if not settings.backend.cache.path:
-            settings.backend.cache.path = str(self._base_dir / "data" / "map-cache")
-        ensure_directory(settings.backend.cache.path)
+        except OSError as exc:
+            if self._logger:
+                self._logger.event(
+                    "settings.defaults_persist_failed",
+                    f"Varsayılan ayarlar dosyaya yazılamadı; bellekte kullanılacak: {exc}",
+                    severity="danger",
+                    details={
+                        "path": str(self._settings_path),
+                        "error_type": exc.__class__.__name__,
+                    },
+                )
+        else:
+            if self._logger:
+                self._logger.event(
+                    "settings.defaults_created",
+                    "Varsayılan ayar dosyası oluşturuldu",
+                    severity="success",
+                    details={
+                        "path": str(self._settings_path),
+                        "reason": reason,
+                    },
+                )
         return settings
+
+    def _prepare_runtime_paths(self, settings: SettingsModel) -> None:
+        if not settings.backend.cache.path.strip():
+            settings.backend.cache.path = str(
+                self._base_dir / "data" / "map-cache"
+            )
+        ensure_directory(settings.backend.cache.path)
 
     def save(self, settings: SettingsModel, *, notify: bool = True) -> None:
         snapshot = SettingsModel.from_dict(settings.to_dict())
-        if not snapshot.backend.cache.path.strip():
-            snapshot.backend.cache.path = str(self._base_dir / "data" / "map-cache")
-        ensure_directory(snapshot.backend.cache.path)
+        self._prepare_runtime_paths(snapshot)
         previous = self.current if hasattr(self, "_settings") else None
         save_json_file(self._settings_path, snapshot.to_dict())
         with self._lock:

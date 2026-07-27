@@ -12,7 +12,7 @@ ConditionEvaluator: TypeAlias = Callable[[str], bool]
 
 
 def mavlink_message_type(message: Any) -> str:
-    """pymavlink mesaj tipini tek bir normalize biçimde döndürür."""
+    """Return a pymavlink message type in one normalized form."""
     getter = getattr(message, "get_type", None)
     if not callable(getter):
         raise TypeError("MAVLink mesajı get_type() sağlamalı")
@@ -81,7 +81,7 @@ def normalize_source_ids(value: int | Iterable[int] | None) -> frozenset[int] | 
 
 @dataclass(frozen=True, slots=True)
 class MavlinkMessageFilter:
-    """MAVLink'in kendi mesaj metadata alanlarıyla çalışan birleşik filtre."""
+    """Composite filter using MAVLink's native message metadata fields."""
 
     message_types: frozenset[str] | MessageTypeInput | None = None
     source_systems: frozenset[int] | int | Iterable[int] | None = None

@@ -47,21 +47,7 @@ class ArchitectureTests(unittest.TestCase):
 
     def test_service_groups_use_contracts_instead_of_peer_implementations(self) -> None:
         rules = {
-            "processing": (
-                "src.services.vehicle",
-                "src.services.orchestration",
-                "src.services.runtime",
-                "src.services.facade",
-            ),
-            "orchestration": (
-                "src.services.vehicle",
-                "src.services.processing",
-                "src.services.runtime",
-                "src.services.facade",
-            ),
             "vehicle": (
-                "src.services.processing",
-                "src.services.orchestration",
                 "src.services.runtime",
                 "src.services.facade",
             ),
@@ -73,6 +59,9 @@ class ArchitectureTests(unittest.TestCase):
                     if module.startswith(forbidden_prefixes):
                         violations.append(f"{path.relative_to(ROOT)} -> {module}")
         self.assertEqual(violations, [])
+        self.assertFalse((SRC / "services" / "orchestration").exists())
+        self.assertFalse((SRC / "services" / "catalogs").exists())
+        self.assertFalse((SRC / "services" / "processing").exists())
 
     def test_only_vehicle_adapter_and_composition_root_know_core_mavlink(self) -> None:
         violations: list[str] = []
@@ -88,7 +77,7 @@ class ArchitectureTests(unittest.TestCase):
 
     def test_stylesheet_and_leaflet_vendor_are_unchanged(self) -> None:
         expected = {
-            SRC / "ui/themes/stylesheet.py": "3f80b6d8f9cb0c4967ca88c2618f0278a4e459d795ebfc92e2cac16610f87cf6",
+            SRC / "ui/themes/stylesheet.py": "81690e0074d40d0a6184b87ca3fc13085e5e226a7d8e32d8dc20130c19de41a5",
             SRC / "ui/web/vendor/leaflet.js": "db49d009c841f5ca34a888c96511ae936fd9f5533e90d8b2c4d57596f4e5641a",
             SRC / "ui/web/vendor/leaflet.css": "a7837102824184820dfa198d1ebcd109ff6d0ff9a2672a074b9a1b4d147d04c6",
         }

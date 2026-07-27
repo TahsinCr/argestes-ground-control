@@ -5,7 +5,7 @@ from typing import Any, Protocol, runtime_checkable
 
 @runtime_checkable
 class MavlinkHeader(Protocol):
-    """pymavlink MAVLink message header'ın kullanılan temel alanları."""
+    """Required fields from a pymavlink MAVLink message header."""
 
     msgId: int
     seq: int
@@ -15,7 +15,7 @@ class MavlinkHeader(Protocol):
 
 @runtime_checkable
 class MavlinkMessage(Protocol):
-    """Dialect'ten bağımsız temel pymavlink message sözleşmesi."""
+    """Dialect-independent base pymavlink message contract."""
 
     id: int
     msgname: str

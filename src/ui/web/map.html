@@ -50,19 +50,6 @@
       display: none;
     }
 
-    .leaflet-control-scale {
-      margin: 0 0 14px 14px !important;
-    }
-
-    .leaflet-control-scale-line {
-      background: rgba(13, 17, 22, 0.82);
-      border: 1px solid var(--border);
-      border-top: none;
-      color: var(--text);
-      font-size: 10px;
-      line-height: 1.1;
-    }
-
     .vector-base-tiles.vector-dark {
       filter: brightness(1.42) contrast(0.98) saturate(0.78);
     }
@@ -174,7 +161,7 @@
     }
 
     .layer-toggle button,
-    .mission-mode-toggle button,
+    .mission-mode-button,
     .tool-button {
       appearance: none;
       border: 1px solid var(--border);
@@ -184,16 +171,14 @@
       transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
     }
 
-    .layer-toggle,
-    .mission-mode-toggle {
+    .layer-toggle {
       display: inline-flex;
       gap: 0;
       overflow: hidden;
       border-radius: 4px;
     }
 
-    .layer-toggle button,
-    .mission-mode-toggle button {
+    .layer-toggle button {
       min-width: 82px;
       height: 28px;
       padding: 0 10px;
@@ -202,14 +187,13 @@
       border-radius: 0;
     }
 
-    .layer-toggle button + button,
-    .mission-mode-toggle button + button {
+    .layer-toggle button + button {
       border-left: none;
     }
 
     .layer-toggle button.active,
-    .mission-mode-toggle button.active,
-    .tool-button.active {
+    .tool-button.active,
+    .tool-button.dialog-open {
       color: var(--text);
       border-color: var(--accent);
       background: var(--accent-dim);
@@ -260,6 +244,7 @@
     }
 
     .tool-dock {
+      --tool-group-gap: 4px;
       position: absolute;
       left: 50%;
       bottom: 14px;
@@ -268,7 +253,7 @@
       z-index: 950;
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: var(--tool-group-gap);
       padding: 0;
       background: transparent;
       border: none;
@@ -284,6 +269,62 @@
       border: 1px solid var(--border-strong);
       border-radius: 4px;
       box-shadow: 0 8px 20px rgba(0, 0, 0, 0.24);
+    }
+
+    .mission-mode-toggle {
+      position: relative;
+      display: flex;
+      align-items: center;
+      padding: 5px;
+      border: 1px solid var(--accent);
+      border-radius: 10px;
+      background:
+        linear-gradient(180deg, rgba(97, 168, 255, 0.14), rgba(97, 168, 255, 0.04)),
+        var(--surface);
+      box-shadow:
+        0 8px 20px rgba(0, 0, 0, 0.24),
+        inset 0 0 0 1px rgba(97, 168, 255, 0.08);
+    }
+
+    .mission-mode-toggle::after {
+      content: "";
+      position: absolute;
+      right: 4px;
+      bottom: 4px;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 5px rgba(97, 168, 255, 0.8);
+      pointer-events: none;
+    }
+
+    .mission-mode-button {
+      width: 42px;
+      height: 34px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 7px;
+      color: var(--accent);
+    }
+
+    .mission-mode-button[data-mode="loop"] {
+      color: var(--success);
+      border-color: var(--success);
+      background: rgba(106, 153, 85, 0.16);
+    }
+
+    .mission-mode-button svg {
+      width: 21px;
+      height: 21px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      pointer-events: none;
     }
 
     .tool-button {
@@ -317,7 +358,7 @@
 
     .tool-button:hover,
     .layer-toggle button:hover,
-    .mission-mode-toggle button:hover,
+    .mission-mode-button:hover,
     .context-menu button:hover {
       background: var(--surface-hover);
       color: var(--text);
@@ -460,6 +501,26 @@
       stroke-width: 1.8;
       stroke-linecap: round;
       stroke-linejoin: round;
+    }
+
+    .home-reference-marker {
+      width: 27px;
+      height: 27px;
+      display: grid;
+      place-items: center;
+      background: rgba(11, 15, 21, 0.96);
+      border: 2px solid #f4b942;
+      border-radius: 50% 50% 50% 4px;
+      box-shadow: 0 2px 7px rgba(0, 0, 0, 0.5);
+      color: #f4b942;
+      font-size: 14px;
+      font-weight: 900;
+      line-height: 1;
+      transform: rotate(-45deg);
+    }
+
+    .home-reference-marker span {
+      transform: rotate(45deg);
     }
 
     .aircraft-icon {
@@ -643,13 +704,14 @@
 
     .point-list-row {
       display: grid;
-      grid-template-columns: 36px minmax(88px, 1fr) 64px 64px 58px;
+      grid-template-columns: 24px 26px minmax(98px, 1fr) 64px 64px;
       gap: 6px;
       align-items: center;
       padding: 6px;
       background: rgba(255, 255, 255, 0.035);
       border: 1px solid var(--border);
       border-radius: 4px;
+      transition: border-color 100ms ease, background 100ms ease, opacity 100ms ease;
     }
 
     .point-list-row:hover {
@@ -657,8 +719,48 @@
       background: rgba(14, 99, 156, 0.14);
     }
 
+    .point-list-row.is-dragging {
+      opacity: 0.42;
+      border-color: var(--accent);
+    }
+
     .point-list-row strong {
       font-size: 11px;
+      text-align: center;
+    }
+
+    .point-drag-handle {
+      width: 24px;
+      height: 28px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border: 1px dashed var(--border-strong);
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.025);
+      color: var(--muted);
+      cursor: grab;
+      touch-action: none;
+    }
+
+    .point-drag-handle:hover,
+    .point-drag-handle:focus-visible {
+      color: var(--text);
+      border-color: var(--accent);
+      background: var(--surface-hover);
+      outline: none;
+    }
+
+    .point-drag-handle:active {
+      cursor: grabbing;
+    }
+
+    .point-drag-handle svg {
+      width: 12px;
+      height: 18px;
+      fill: currentColor;
+      pointer-events: none;
     }
 
     .list-section-title {
@@ -684,7 +786,6 @@
         </div>
         <div class="map-top-right">
           <div class="floating-bar layer-toggle" id="layer-toggle"></div>
-          <div class="floating-bar mission-mode-toggle" id="mission-mode-toggle"></div>
           <div class="gps-summary" id="gps-summary" data-state="offline">
             <span>GPS</span>
             <strong id="gps-fix">NO FIX</strong>
@@ -702,15 +803,13 @@
         <div class="hud-row">
           <span id="cursor-readout">CURSOR LAT <strong>0.00000</strong> LON <strong>0.00000</strong></span>
           <span id="zoom-readout">ZOOM <strong>0</strong></span>
+          <span id="scale-readout">SCALE <strong>--</strong></span>
         </div>
       </div>
       <div id="context-menu" class="context-menu">
         <button data-action="goto"></button>
-        <button data-action="takeoff"></button>
-        <button data-action="waypoint"></button>
-        <button data-action="loiter"></button>
-        <button data-action="land"></button>
         <button data-action="center"></button>
+        <button data-action="set_home"></button>
         <button data-action="delete"></button>
       </div>
       <div id="point-dialog" class="map-dialog small">
@@ -780,11 +879,8 @@
     };
     const CONTEXT_DEFAULTS = {
       goto: 'Send GOTO',
-      takeoff: 'Set takeoff point',
-      waypoint: 'Add waypoint',
-      loiter: 'Add loiter point',
-      land: 'Set land point',
       center: 'Center vehicle',
+      set_home: 'Set home/reference here',
       delete: 'Delete selected',
     };
     const COLORS = {
@@ -805,6 +901,9 @@
     const POLYGON_TYPES = new Set(['no_fly', 'safe_zone']);
     const EDITABLE_POINT_TYPES = ['takeoff', 'waypoint', 'loiter', 'rtl', 'land'];
     const DEFAULT_RADII = { takeoff: 35, waypoint: 35, loiter: 75, rtl: 75, land: 35, hss: 100, target: 20 };
+    const TOOL_DOCK_MIN_GAP_PX = 4;
+    const TOOL_DOCK_MAX_GAP_PX = 32;
+    const TOOL_DOCK_SIDE_CLEARANCE_PX = 12;
 
     let map;
     let bridge = null;
@@ -815,9 +914,14 @@
     let labelGroup;
     let contactGroup;
     let vehicleMarker = null;
+    let homeReferenceMarker = null;
     let trailLine = null;
     let missionRouteLine = null;
+    let rtlReturnLine = null;
     let contextPoint = null;
+    let contextOverlayId = null;
+    let toolDockResizeObserver = null;
+    let toolDockSpacingFrame = 0;
 
     const state = {
       ui: {
@@ -827,6 +931,9 @@
           loop: 'Döngü',
           onceHint: 'Görevi bir kez çalıştır',
           loopHint: 'Waypointleri sürekli tekrarla',
+        },
+        pointList: {
+          dragHint: 'Sıralamak için sürükleyin',
         },
         tools: { ...TOOL_DEFAULTS },
         context: { ...CONTEXT_DEFAULTS },
@@ -853,10 +960,25 @@
       dragMoved: false,
       suppressPointClick: false,
       commandAvailable: false,
+      homeReferenceInitialized: false,
+      homeReferenceDragging: false,
+      homeReferencePending: false,
+      homeReferencePendingUntil: 0,
+      homeReferenceRollbackLatLng: null,
+      homeReferenceCommandedLatLng: null,
       lastCursor: '',
       pendingCursor: null,
       cursorFrame: 0,
       lastVehicleLatLng: null,
+      telemetryDisplay: {
+        gpsState: '',
+        gpsFix: '',
+        gpsSatellites: '',
+        gpsHdop: '',
+        localReadout: '',
+        vehicleReadout: '',
+        heading: null,
+      },
     };
 
     function iconSvg(name) {
@@ -879,6 +1001,8 @@
         send: '<svg viewBox="0 0 24 24"><path d="M4 12l16-8-5 16-3-6z"/><path d="M12 14l-3 5"/></svg>',
         clear: '<svg viewBox="0 0 24 24"><path d="M4 8h16"/><path d="M8 8V5h8v3"/><path d="M6 8l1 11h10l1-11"/></svg>',
         contact: '<svg viewBox="0 0 24 24"><path d="M4 15l8-9 8 9"/><path d="M12 6v12"/><path d="M8 17h8"/></svg>',
+        once: '<svg viewBox="0 0 24 24"><path d="M4 12h13"/><path d="M13 8l4 4-4 4"/><path d="M20 7v10"/></svg>',
+        loop: '<svg viewBox="0 0 24 24"><path d="M17 7H8a5 5 0 0 0-4 2"/><path d="M17 7l-3-3"/><path d="M17 7l-3 3"/><path d="M7 17h9a5 5 0 0 0 4-2"/><path d="M7 17l3-3"/><path d="M7 17l3 3"/></svg>',
       };
       return icons[name] || icons.pan;
     }
@@ -907,17 +1031,74 @@
         const action = button.dataset.action;
         button.textContent = state.ui.context[action] || CONTEXT_DEFAULTS[action];
       });
+      if (homeReferenceMarker) {
+        homeReferenceMarker.setTooltipContent(
+          state.ui.context.set_home || CONTEXT_DEFAULTS.set_home,
+        );
+      }
       document.querySelectorAll('#layer-toggle button').forEach((button) => {
         const layer = button.dataset.layer;
         button.textContent = state.ui.layers[layer] || layer.toUpperCase();
       });
-      document.querySelectorAll('#mission-mode-toggle button').forEach((button) => {
-        const mode = button.dataset.mode;
-        button.textContent = state.ui.missionMode[mode] || mode.toUpperCase();
-        button.title = mode === 'loop'
+      const missionModeButton = document.querySelector(
+        '#mission-mode-toggle .mission-mode-button',
+      );
+      if (missionModeButton) {
+        const mode = state.missionLoop ? 'loop' : 'once';
+        const label = state.ui.missionMode[mode] || mode.toUpperCase();
+        const hint = state.missionLoop
           ? state.ui.missionMode.loopHint
           : state.ui.missionMode.onceHint;
-      });
+        missionModeButton.title = `${label} — ${hint}`;
+        missionModeButton.setAttribute('aria-label', label);
+      }
+      scheduleToolDockSpacing();
+    }
+
+    function updateToolDockSpacing() {
+      toolDockSpacingFrame = 0;
+      const container = document.getElementById('tool-dock');
+      const shell = document.getElementById('map-shell');
+      if (!container || !shell) return;
+      const sections = Array.from(container.children);
+      if (sections.length < 2) return;
+
+      const sectionsWidth = sections.reduce(
+        (total, section) => total + section.getBoundingClientRect().width,
+        0,
+      );
+      const availableWidth = Math.max(
+        0,
+        shell.clientWidth - TOOL_DOCK_SIDE_CLEARANCE_PX * 2,
+      );
+      const idealGap = (
+        availableWidth - sectionsWidth
+      ) / (sections.length - 1);
+      const gap = Math.max(
+        TOOL_DOCK_MIN_GAP_PX,
+        Math.min(TOOL_DOCK_MAX_GAP_PX, idealGap),
+      );
+      container.style.setProperty('--tool-group-gap', `${gap.toFixed(1)}px`);
+      container.dataset.groupGap = gap.toFixed(1);
+    }
+
+    function scheduleToolDockSpacing() {
+      if (toolDockSpacingFrame) {
+        cancelAnimationFrame(toolDockSpacingFrame);
+      }
+      toolDockSpacingFrame = requestAnimationFrame(updateToolDockSpacing);
+    }
+
+    function observeToolDockSpacing() {
+      if (toolDockResizeObserver || typeof ResizeObserver === 'undefined') {
+        scheduleToolDockSpacing();
+        return;
+      }
+      const shell = document.getElementById('map-shell');
+      toolDockResizeObserver = new ResizeObserver(scheduleToolDockSpacing);
+      toolDockResizeObserver.observe(shell);
+      window.addEventListener('resize', scheduleToolDockSpacing);
+      scheduleToolDockSpacing();
     }
 
     function buildLayerToggle() {
@@ -937,24 +1118,26 @@
     }
 
     function buildMissionModeToggle() {
-      const container = document.getElementById('mission-mode-toggle');
-      container.innerHTML = '';
-      ['once', 'loop'].forEach((mode) => {
-        const button = document.createElement('button');
-        button.dataset.mode = mode;
-        button.addEventListener('click', () => {
-          window.ykiMap.setMissionLoop(mode === 'loop');
-          emitAction({ type: 'mission_loop_changed', loop: state.missionLoop });
-        });
-        container.appendChild(button);
+      const container = document.createElement('div');
+      container.className = 'mission-mode-toggle';
+      container.id = 'mission-mode-toggle';
+
+      const button = document.createElement('button');
+      button.className = 'mission-mode-button';
+      button.type = 'button';
+      button.setAttribute('aria-pressed', String(state.missionLoop));
+      button.addEventListener('click', () => {
+        window.ykiMap.setMissionLoop(!state.missionLoop);
+        emitAction({ type: 'mission_loop_changed', loop: state.missionLoop });
       });
-      syncMissionModeState();
-      setToolbarTitles();
+      container.appendChild(button);
+      return container;
     }
 
     function buildToolDock() {
       const container = document.getElementById('tool-dock');
       container.innerHTML = '';
+      container.appendChild(buildMissionModeToggle());
       const buildButton = (tool) => {
         const button = document.createElement('button');
         button.className = 'tool-button';
@@ -977,7 +1160,7 @@
           : iconSvg(tool);
         button.addEventListener('click', () => {
           if (tool === 'mission_list') {
-            openMissionDialog();
+            toggleMissionDialog();
             return;
           }
           if (tool === 'archive') {
@@ -1011,6 +1194,10 @@
       });
       syncToolState();
       setToolbarTitles();
+      setMissionDialogButtonState(
+        document.getElementById('mission-dialog').style.display === 'block',
+      );
+      scheduleToolDockSpacing();
     }
 
     function syncToolState() {
@@ -1026,12 +1213,13 @@
     }
 
     function syncMissionModeState() {
-      document.querySelectorAll('#mission-mode-toggle button').forEach((button) => {
-        button.classList.toggle(
-          'active',
-          button.dataset.mode === (state.missionLoop ? 'loop' : 'once'),
-        );
-      });
+      const button = document.querySelector('#mission-mode-toggle .mission-mode-button');
+      if (!button) return;
+      const mode = state.missionLoop ? 'loop' : 'once';
+      button.dataset.mode = mode;
+      button.innerHTML = iconSvg(mode);
+      button.setAttribute('aria-pressed', String(state.missionLoop));
+      setToolbarTitles();
     }
 
     function updateGpsSummary(payload) {
@@ -1041,12 +1229,27 @@
       const hdop = Number(payload?.gpsHdop);
       const ready = Boolean(payload?.gpsReady);
       const connected = Boolean(payload?.commandAvailable);
-      summary.dataset.state = ready ? 'ready' : (connected ? 'waiting' : 'offline');
-      document.getElementById('gps-fix').textContent = fix;
-      document.getElementById('gps-satellites').textContent = `${satellites} SAT`;
-      document.getElementById('gps-hdop').textContent = Number.isFinite(hdop)
+      const gpsState = ready ? 'ready' : (connected ? 'waiting' : 'offline');
+      const satelliteText = `${satellites} SAT`;
+      const hdopText = Number.isFinite(hdop)
         ? `HDOP ${hdop.toFixed(1)}`
         : 'HDOP --';
+      if (state.telemetryDisplay.gpsState !== gpsState) {
+        state.telemetryDisplay.gpsState = gpsState;
+        summary.dataset.state = gpsState;
+      }
+      if (state.telemetryDisplay.gpsFix !== fix) {
+        state.telemetryDisplay.gpsFix = fix;
+        document.getElementById('gps-fix').textContent = fix;
+      }
+      if (state.telemetryDisplay.gpsSatellites !== satelliteText) {
+        state.telemetryDisplay.gpsSatellites = satelliteText;
+        document.getElementById('gps-satellites').textContent = satelliteText;
+      }
+      if (state.telemetryDisplay.gpsHdop !== hdopText) {
+        state.telemetryDisplay.gpsHdop = hdopText;
+        document.getElementById('gps-hdop').textContent = hdopText;
+      }
     }
 
     function emitAction(payload) {
@@ -1085,9 +1288,9 @@
         if (!isMiddlePointerEvent(event)) {
           return;
         }
-        // Leaflet 1.9 orta tuşu hem harita hem marker/vertex sürüklemesi
-        // olarak kabul eder. Olayı katmanlara ulaşmadan doğrudan haritanın
-        // draggable nesnesine vererek görev ve referans noktalarını koruyoruz.
+        // Leaflet 1.9 treats the middle button as both map and marker/vertex
+        // dragging. Route the event directly to the map draggable before it
+        // reaches layers so mission and reference points remain unchanged.
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
@@ -1125,6 +1328,16 @@
 
     function isEditableLayer(layer) {
       return Boolean(layer) && !isSourceManagedLayer(layer);
+    }
+
+    function isDraggablePointLayer(layer) {
+      return Boolean(
+        layer
+        && layer instanceof L.Circle
+        && POINT_TYPES.has(normalizeType(layer.overlayData?.overlay_type))
+        && normalizeType(layer.overlayData?.overlay_type) !== 'rtl'
+        && isEditableLayer(layer)
+      );
     }
 
     function isArchivableLayer(layer) {
@@ -1243,6 +1456,148 @@
       return '<svg viewBox="0 0 40 40"><path class="airframe" d="M20 4.5 30.2 34.5 20 29.2 9.8 34.5z"/><path class="spine" d="M20 9.5v18.8"/><path class="wing" d="M14.6 23.8 20 18.7l5.4 5.1"/><path class="wing" d="M16.5 31.4 20 28.2l3.5 3.2"/></svg>';
     }
 
+    function homeReferenceIcon() {
+      return L.divIcon({
+        className: 'home-reference-wrap',
+        html: '<div class="home-reference-marker"><span>H</span></div>',
+        iconSize: [27, 27],
+        iconAnchor: [4, 23],
+      });
+    }
+
+    function createHomeReferenceMarker(latlng) {
+      const marker = L.marker(latlng, {
+        draggable: true,
+        bubblingMouseEvents: false,
+        keyboard: false,
+        zIndexOffset: 850,
+        icon: homeReferenceIcon(),
+      });
+      marker.bindTooltip('Home / Reference', {
+        direction: 'top',
+        offset: [9, -19],
+      });
+      marker.on('dragstart', () => {
+        hideContextMenu();
+        state.homeReferenceDragging = true;
+        const current = marker.getLatLng();
+        state.homeReferenceRollbackLatLng = L.latLng(current.lat, current.lng);
+      });
+      marker.on('dragend', (event) => {
+        const destination = event.target.getLatLng();
+        state.homeReferenceDragging = false;
+        setHomeReference(
+          destination,
+          true,
+          state.homeReferenceRollbackLatLng,
+        );
+      });
+      marker.on('contextmenu', (event) => {
+        L.DomEvent.stop(event.originalEvent || event);
+        showContextMenu(event.containerPoint, event.latlng);
+      });
+      return marker;
+    }
+
+    function setHomeReference(
+      latlng,
+      shouldNotify = false,
+      rollbackLatLng = null,
+    ) {
+      if (!homeReferenceMarker || !latlng) {
+        return;
+      }
+      if (shouldNotify && state.homeReferencePending) {
+        return;
+      }
+      const position = L.latLng(Number(latlng.lat), Number(latlng.lng));
+      if (
+        !Number.isFinite(position.lat)
+        || !Number.isFinite(position.lng)
+        || position.lat < -90
+        || position.lat > 90
+        || position.lng < -180
+        || position.lng > 180
+      ) {
+        return;
+      }
+      const previous = homeReferenceMarker.getLatLng();
+      homeReferenceMarker.setLatLng(position);
+      if (map && !map.hasLayer(homeReferenceMarker)) {
+        homeReferenceMarker.addTo(map);
+      }
+      state.homeReferenceInitialized = true;
+      syncRtlMarkersToHome();
+      refreshMissionRoute();
+      if (shouldNotify) {
+        const rollback = rollbackLatLng || previous;
+        state.homeReferenceRollbackLatLng = L.latLng(
+          rollback.lat,
+          rollback.lng,
+        );
+        state.homeReferenceCommandedLatLng = null;
+        state.homeReferencePending = true;
+        state.homeReferencePendingUntil = Date.now() + 15000;
+        if (homeReferenceMarker.dragging) {
+          homeReferenceMarker.dragging.disable();
+        }
+        emitAction({
+          type: 'set_home_reference',
+          lat: position.lat,
+          lon: position.lng,
+          previous_lat: rollback.lat,
+          previous_lon: rollback.lng,
+        });
+      }
+    }
+
+    function updateHomeReference(payload) {
+      // HOME_POSITION may keep arriving while Leaflet is moving the marker.
+      // Do not let an older telemetry sample fight the operator's drag.
+      if (state.homeReferenceDragging) {
+        return;
+      }
+      const available = Boolean(payload?.homePositionAvailable);
+      const latitude = Number(payload?.homeLat);
+      const longitude = Number(payload?.homeLon);
+      if (
+        !available
+        || !Number.isFinite(latitude)
+        || !Number.isFinite(longitude)
+        || latitude < -90
+        || latitude > 90
+        || longitude < -180
+        || longitude > 180
+      ) {
+        return;
+      }
+      const telemetryPosition = L.latLng(latitude, longitude);
+      if (state.homeReferenceCommandedLatLng) {
+        const commandedDistance = (
+          state.homeReferenceCommandedLatLng.distanceTo(telemetryPosition)
+        );
+        if (commandedDistance <= 2.0) {
+          state.homeReferenceCommandedLatLng = null;
+        } else {
+          // A successful SET_HOME acknowledgement is authoritative. Some
+          // autopilots keep publishing the previous HOME_POSITION briefly,
+          // or do not publish it again at all.
+          return;
+        }
+      }
+      if (state.homeReferencePending) {
+        const distance = homeReferenceMarker.getLatLng().distanceTo(telemetryPosition);
+        if (distance <= 2.0) {
+          state.homeReferencePending = false;
+        } else if (Date.now() < state.homeReferencePendingUntil) {
+          return;
+        } else {
+          state.homeReferencePending = false;
+        }
+      }
+      setHomeReference(telemetryPosition, false);
+    }
+
     function contactColor(data) {
       const id = String(data.contact_id || '').toLowerCase();
       const source = String(data.source || '').toLowerCase();
@@ -1302,9 +1657,9 @@
       if (!marker) {
         marker = L.marker(position, {
           interactive: true,
-          // Etiket, noktanin ikinci bir surukleme tutamaci degildir. Leaflet
-          // draggable etikette normal tiklamayi dragstart olarak algilayip
-          // nokta ayar penceresini engelleyebiliyor.
+          // A label is not a second drag handle for its point. Leaflet can
+          // interpret a normal label click as dragstart and prevent the point
+          // settings dialog from opening.
           draggable: false,
           bubblingMouseEvents: false,
           icon: L.divIcon({ className: 'overlay-label-wrap', html }),
@@ -1322,6 +1677,12 @@
     }
 
     function registerLabelEvents(marker, layer) {
+      marker.on('mousedown', (event) => {
+        if (!isPrimaryPointerEvent(event) || !isDraggablePointLayer(layer)) {
+          return;
+        }
+        beginPointDrag(layer, event);
+      });
       marker.on('click', (event) => {
         L.DomEvent.stop(event.originalEvent || event);
         if (state.draggingPoint || state.dragMoved || state.suppressPointClick) {
@@ -1332,7 +1693,15 @@
           openPointDialog(layer.overlayData.overlay_id);
         }
       });
-
+      marker.on('contextmenu', (event) => {
+        L.DomEvent.stop(event.originalEvent || event);
+        selectOverlay(layer.overlayData.overlay_id);
+        showContextMenu(
+          event.containerPoint,
+          event.latlng,
+          layer.overlayData.overlay_id,
+        );
+      });
     }
 
     function polygonPoints(layer) {
@@ -1504,6 +1873,21 @@
       return merged;
     }
 
+    function flattenLayerLatLngs(values, points = []) {
+      (values || []).forEach((value) => {
+        if (Array.isArray(value)) {
+          flattenLayerLatLngs(value, points);
+        } else if (
+          value
+          && Number.isFinite(Number(value.lat))
+          && Number.isFinite(Number(value.lng))
+        ) {
+          points.push([Number(value.lat), Number(value.lng)]);
+        }
+      });
+      return points;
+    }
+
     function orderedOverlayIds() {
       const known = state.overlayOrder.filter((overlayId) => state.layers.has(overlayId));
       state.layers.forEach((_, overlayId) => {
@@ -1514,14 +1898,85 @@
       return known;
     }
 
-    function refreshMissionRoute() {
-      const routePoints = [];
-      routeLayers()
-        .forEach((layer) => {
-          const center = layerCenter(layer);
-          routePoints.push([center.lat, center.lon]);
+    function homeReferenceLatLng() {
+      if (!homeReferenceMarker) {
+        return null;
+      }
+      const point = homeReferenceMarker.getLatLng();
+      return (
+        Number.isFinite(Number(point?.lat))
+        && Number.isFinite(Number(point?.lng))
+      ) ? L.latLng(Number(point.lat), Number(point.lng)) : null;
+    }
+
+    function syncRtlMarkersToHome() {
+      const home = homeReferenceLatLng();
+      if (!home) {
+        return;
+      }
+      state.layers.forEach((layer) => {
+        if (
+          normalizeType(layer.overlayData?.overlay_type) === 'rtl'
+          && layer instanceof L.Circle
+        ) {
+          layer.setLatLng(home);
+          updateLabel(layer, state.selectedId === layer.overlayData.overlay_id);
+        }
       });
+    }
+
+    function refreshMissionRoute() {
+      if (!missionRouteLine) {
+        return;
+      }
+      const orderedLayers = routeLayers();
+      const routePoints = [];
+      const repeatablePoints = [];
+      let hasTerminalItem = false;
+      let rtlOrigin = null;
+      let rtlDestination = null;
+      for (const layer of orderedLayers) {
+        const type = normalizeType(layer.overlayData.overlay_type);
+        if (type === 'rtl') {
+          hasTerminalItem = true;
+          const lastRoutePoint = routePoints.at(-1);
+          const vehiclePoint = ownVehicleLatLng();
+          rtlOrigin = lastRoutePoint
+            ? L.latLng(lastRoutePoint[0], lastRoutePoint[1])
+            : vehiclePoint;
+          rtlDestination = homeReferenceLatLng();
+          break;
+        }
+        const layerPoints = type === 'route' && layer.getLatLngs
+          ? mergeUniquePoints(flattenLayerLatLngs(layer.getLatLngs()))
+          : (() => {
+              const center = layerCenter(layer);
+              return [[center.lat, center.lon]];
+            })();
+        routePoints.push(...layerPoints);
+        if (['waypoint', 'route'].includes(type)) {
+          repeatablePoints.push(...layerPoints);
+        }
+        if (['land', 'loiter'].includes(type)) {
+          hasTerminalItem = true;
+          break;
+        }
+      }
+      if (
+        state.missionLoop
+        && !hasTerminalItem
+        && repeatablePoints.length > 1
+      ) {
+        routePoints.push(repeatablePoints[0]);
+      }
       missionRouteLine.setLatLngs(mergeUniquePoints(routePoints));
+      if (rtlReturnLine) {
+        rtlReturnLine.setLatLngs(
+          rtlOrigin && rtlDestination
+            ? [rtlOrigin, rtlDestination]
+            : [],
+        );
+      }
     }
 
     function routeOrderFor(layer) {
@@ -1549,9 +2004,7 @@
           return;
         }
         L.DomEvent.stop(event.originalEvent || event);
-        if (state.activeTool === 'pan'
-            && POINT_TYPES.has(layer.overlayData.overlay_type)
-            && isEditableLayer(layer)) {
+        if (state.activeTool === 'pan' && isDraggablePointLayer(layer)) {
           beginPointDrag(layer, event);
         }
       });
@@ -1571,7 +2024,11 @@
       layer.on('contextmenu', (event) => {
         L.DomEvent.stop(event.originalEvent || event);
         selectOverlay(layer.overlayData.overlay_id);
-        showContextMenu(event.containerPoint, event.latlng);
+        showContextMenu(
+          event.containerPoint,
+          event.latlng,
+          layer.overlayData.overlay_id,
+        );
       });
 
       if (layer instanceof L.Marker && layer.dragging) {
@@ -1605,52 +2062,102 @@
     }
 
     function beginPointDrag(layer, event) {
-      if (!isPrimaryPointerEvent(event) || !isEditableLayer(layer)) {
+      if (
+        !isPrimaryPointerEvent(event)
+        || !isDraggablePointLayer(layer)
+        || state.draggingPoint
+      ) {
         return;
       }
-      L.DomEvent.stop(event.originalEvent || event);
+      const originalEvent = originalPointerEvent(event);
+      L.DomEvent.stop(originalEvent);
+      if (originalEvent?.preventDefault) {
+        originalEvent.preventDefault();
+      }
       selectOverlay(layer.overlayData.overlay_id);
       hideDialogs();
       state.draggingPoint = layer.overlayData.overlay_id;
       state.dragMoved = false;
+      const containerRect = map.getContainer().getBoundingClientRect();
+      const eventContainerPoint = event?.containerPoint;
+      const startClientX = Number.isFinite(Number(originalEvent?.clientX))
+        ? Number(originalEvent.clientX)
+        : containerRect.left + Number(eventContainerPoint?.x || 0);
+      const startClientY = Number.isFinite(Number(originalEvent?.clientY))
+        ? Number(originalEvent.clientY)
+        : containerRect.top + Number(eventContainerPoint?.y || 0);
+      const movementThresholdSquared = 9;
+      let pendingLatLng = null;
+      let dragFrame = 0;
       if (map.dragging) {
         map.dragging.disable();
       }
-      const move = (moveEvent) => {
+
+      const renderPendingPosition = () => {
+        dragFrame = 0;
         if (!state.draggingPoint || !state.layers.has(state.draggingPoint)) {
           return;
         }
         const current = state.layers.get(state.draggingPoint);
-        if (current instanceof L.Circle) {
-          state.dragMoved = true;
-          current.setLatLng(moveEvent.latlng);
+        if (current instanceof L.Circle && pendingLatLng) {
+          current.setLatLng(pendingLatLng);
           updateLabel(current, true);
           refreshMissionRoute();
         }
       };
+
+      const move = (moveEvent) => {
+        if (!state.draggingPoint) {
+          return;
+        }
+        const deltaX = Number(moveEvent.clientX) - startClientX;
+        const deltaY = Number(moveEvent.clientY) - startClientY;
+        if (!state.dragMoved && deltaX * deltaX + deltaY * deltaY < movementThresholdSquared) {
+          return;
+        }
+        state.dragMoved = true;
+        const latestRect = map.getContainer().getBoundingClientRect();
+        pendingLatLng = map.containerPointToLatLng([
+          Number(moveEvent.clientX) - latestRect.left,
+          Number(moveEvent.clientY) - latestRect.top,
+        ]);
+        if (!dragFrame) {
+          dragFrame = window.requestAnimationFrame(renderPendingPosition);
+        }
+        moveEvent.preventDefault();
+      };
+
       const finish = () => {
-        map.off('mousemove', move);
-        document.removeEventListener('mouseup', finish);
-        const current = state.layers.get(state.draggingPoint);
-        if (current) {
+        document.removeEventListener('mousemove', move, true);
+        document.removeEventListener('mouseup', finish, true);
+        window.removeEventListener('blur', finish);
+        if (dragFrame) {
+          window.cancelAnimationFrame(dragFrame);
+          renderPendingPosition();
+        }
+        const draggedOverlayId = state.draggingPoint;
+        const moved = state.dragMoved;
+        state.draggingPoint = null;
+        const current = state.layers.get(draggedOverlayId);
+        if (current && moved) {
           updateLabel(current, true);
           refreshMissionRoute();
           emitOverlay(current);
         }
-        if (state.dragMoved) {
+        if (moved) {
           state.suppressPointClick = true;
           window.setTimeout(() => {
             state.suppressPointClick = false;
           }, 180);
         }
-        state.draggingPoint = null;
         state.dragMoved = false;
         if (map.dragging) {
           map.dragging.enable();
         }
       };
-      map.on('mousemove', move);
-      document.addEventListener('mouseup', finish, { once: true });
+      document.addEventListener('mousemove', move, true);
+      document.addEventListener('mouseup', finish, true);
+      window.addEventListener('blur', finish, { once: true });
     }
 
     function attachLayer(layer, orderIndex = null) {
@@ -1681,9 +2188,13 @@
           : (ALTITUDE_TYPES.has(type) ? defaultAltitudeFor(type) : null));
       let layer = null;
       if (POINT_TYPES.has(type)) {
-        layer = L.circle(points[0], {
+        const point = type === 'rtl'
+          ? (homeReferenceLatLng() || points[0])
+          : points[0];
+        layer = L.circle(point, {
           ...styleFor(type, false),
           radius: data.radius_m || radiusFor(type),
+          bubblingMouseEvents: false,
         });
       } else if (type === 'route') {
         layer = L.polyline(points, styleFor(type, false));
@@ -1782,9 +2293,13 @@
 
     function addPointOverlay(type, latlng) {
       const normalized = normalizeType(type);
-      const layer = L.circle(latlng, {
+      const point = normalized === 'rtl'
+        ? (homeReferenceLatLng() || latlng)
+        : latlng;
+      const layer = L.circle(point, {
         ...styleFor(normalized, false),
         radius: radiusFor(normalized),
+        bubblingMouseEvents: false,
       });
       finishNewLayer(layer, normalized);
       if (normalized === 'land') {
@@ -1821,22 +2336,40 @@
       document.getElementById('context-menu').style.display = 'none';
     }
 
-    function showContextMenu(containerPoint, latlng) {
+    function showContextMenu(containerPoint, latlng, overlayId = null) {
       contextPoint = latlng;
+      contextOverlayId = overlayId;
       const menu = document.getElementById('context-menu');
-      menu.style.left = `${containerPoint.x}px`;
-      menu.style.top = `${containerPoint.y}px`;
-      menu.style.display = 'block';
-      const selected = state.selectedId ? state.layers.get(state.selectedId) : null;
-      menu.querySelector('[data-action="delete"]').style.display = selected && isEditableLayer(selected)
+      const selected = overlayId ? state.layers.get(overlayId) : null;
+      const deletable = Boolean(
+        selected
+        && POINT_TYPES.has(selected.overlayData.overlay_type)
+        && isEditableLayer(selected)
+      );
+      if (selected && !deletable) {
+        hideContextMenu();
+        return;
+      }
+      ['goto', 'center', 'set_home'].forEach((action) => {
+        menu.querySelector(`[data-action="${action}"]`).style.display = deletable
+          ? 'none'
+          : 'flex';
+      });
+      menu.querySelector('[data-action="delete"]').style.display = deletable
         ? 'flex'
         : 'none';
+      menu.style.display = 'block';
+      const maxLeft = Math.max(0, map.getContainer().clientWidth - menu.offsetWidth - 6);
+      const maxTop = Math.max(0, map.getContainer().clientHeight - menu.offsetHeight - 6);
+      menu.style.left = `${Math.max(6, Math.min(containerPoint.x, maxLeft))}px`;
+      menu.style.top = `${Math.max(6, Math.min(containerPoint.y, maxTop))}px`;
     }
 
     function emitBounds() {
       const center = map.getCenter();
       const bounds = map.getBounds();
       document.querySelector('#zoom-readout strong').textContent = String(map.getZoom());
+      updateScaleReadout();
       if (bridge && bridge.boundsChanged) {
         bridge.boundsChanged(JSON.stringify({
           center: { lat: center.lat, lng: center.lng },
@@ -1846,6 +2379,37 @@
           zoom: map.getZoom(),
         }));
       }
+    }
+
+    function updateScaleReadout() {
+      const readout = document.querySelector('#scale-readout strong');
+      if (!readout || !map) {
+        return;
+      }
+      const size = map.getSize();
+      const sampleWidth = Math.min(100, Math.max(1, size.x));
+      const sampleY = Math.max(0, size.y / 2);
+      const maxMeters = map.distance(
+        map.containerPointToLatLng([0, sampleY]),
+        map.containerPointToLatLng([sampleWidth, sampleY]),
+      );
+      if (!Number.isFinite(maxMeters) || maxMeters <= 0) {
+        readout.textContent = '--';
+        return;
+      }
+      const magnitude = 10 ** Math.floor(Math.log10(maxMeters));
+      const normalized = maxMeters / magnitude;
+      const step = normalized >= 5
+        ? 5
+        : normalized >= 3
+          ? 3
+          : normalized >= 2
+            ? 2
+            : 1;
+      const roundedMeters = step * magnitude;
+      readout.textContent = roundedMeters >= 1000
+        ? `${roundedMeters / 1000} km`
+        : `${roundedMeters} m`;
     }
 
     function updateCursor(latlng) {
@@ -2060,6 +2624,7 @@
     function hideDialogs() {
       document.getElementById('point-dialog').style.display = 'none';
       document.getElementById('mission-dialog').style.display = 'none';
+      setMissionDialogButtonState(false);
     }
 
     function typeOptions(types, current) {
@@ -2074,6 +2639,8 @@
       if (!layer || !POINT_TYPES.has(layer.overlayData.overlay_type) || !isEditableLayer(layer)) {
         return;
       }
+      document.getElementById('mission-dialog').style.display = 'none';
+      setMissionDialogButtonState(false);
       const dialog = document.getElementById('point-dialog');
       const typeInput = document.getElementById('point-type-input');
       const radiusInput = document.getElementById('point-radius-input');
@@ -2117,11 +2684,97 @@
       };
       if (layer instanceof L.Circle) {
         layer.setRadius(nextRadius);
+        if (nextType === 'rtl') {
+          const home = homeReferenceLatLng();
+          if (home) {
+            layer.setLatLng(home);
+          }
+        }
       }
       setLayerVisual(layer, state.selectedId === layer.overlayData.overlay_id);
       refreshMissionRoute();
       emitOverlay(layer);
       hideDialogs();
+    }
+
+    function updatePointRowNumbers(container) {
+      const routeRows = container.id === 'route-point-list';
+      container.querySelectorAll('.point-list-row').forEach((row, index) => {
+        const order = row.querySelector('.point-order');
+        if (order) {
+          order.textContent = routeRows ? String(index + 1) : '--';
+        }
+      });
+    }
+
+    function installPointListReordering(container) {
+      let draggedRow = null;
+
+      container.querySelectorAll('.point-list-row').forEach((row) => {
+        const handle = row.querySelector('.point-drag-handle');
+        handle.title = state.ui.pointList.dragHint;
+        handle.setAttribute('aria-label', state.ui.pointList.dragHint);
+        handle.addEventListener('click', (event) => event.stopPropagation());
+        handle.addEventListener('dragstart', (event) => {
+          draggedRow = row;
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('text/plain', row.dataset.overlayId);
+          window.requestAnimationFrame(() => row.classList.add('is-dragging'));
+        });
+        handle.addEventListener('dragend', () => {
+          row.classList.remove('is-dragging');
+          draggedRow = null;
+          updatePointRowNumbers(container);
+        });
+        handle.addEventListener('keydown', (event) => {
+          if (!['ArrowUp', 'ArrowDown'].includes(event.key)) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          const sibling = event.key === 'ArrowUp'
+            ? row.previousElementSibling
+            : row.nextElementSibling;
+          if (!sibling || !sibling.classList.contains('point-list-row')) {
+            return;
+          }
+          if (event.key === 'ArrowUp') {
+            container.insertBefore(row, sibling);
+          } else {
+            container.insertBefore(sibling, row);
+          }
+          updatePointRowNumbers(container);
+          handle.focus();
+        });
+      });
+
+      container.addEventListener('dragover', (event) => {
+        if (!draggedRow || draggedRow.parentElement !== container) {
+          return;
+        }
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        const target = event.target.closest('.point-list-row');
+        if (!target || target === draggedRow || target.parentElement !== container) {
+          return;
+        }
+        const insertAfter = event.clientY > target.getBoundingClientRect().top
+          + target.getBoundingClientRect().height / 2;
+        container.insertBefore(
+          draggedRow,
+          insertAfter ? target.nextElementSibling : target,
+        );
+        updatePointRowNumbers(container);
+      });
+      container.addEventListener('drop', (event) => {
+        if (!draggedRow || draggedRow.parentElement !== container) {
+          return;
+        }
+        event.preventDefault();
+        draggedRow.classList.remove('is-dragging');
+        draggedRow = null;
+        updatePointRowNumbers(container);
+      });
     }
 
     function renderPointRows(containerId, layers, routeRows) {
@@ -2140,26 +2793,81 @@
           : typeOptions(layer instanceof L.Circle ? ['hss'] : ['no_fly', 'safe_zone'], type);
         return `
           <div class="point-list-row" data-overlay-id="${layer.overlayData.overlay_id}">
-            <strong>${routeRows ? order : '--'}</strong>
+            <span class="point-drag-handle" draggable="true" role="button" tabindex="0">
+              <svg viewBox="0 0 12 18" aria-hidden="true">
+                <circle cx="3" cy="3" r="1.2"/><circle cx="9" cy="3" r="1.2"/>
+                <circle cx="3" cy="9" r="1.2"/><circle cx="9" cy="9" r="1.2"/>
+                <circle cx="3" cy="15" r="1.2"/><circle cx="9" cy="15" r="1.2"/>
+              </svg>
+            </span>
+            <strong class="point-order">${routeRows ? order : '--'}</strong>
             <select data-field="type">${choices}</select>
             <input data-field="radius" type="number" min="5" max="1000" value="${radius}" ${layer instanceof L.Circle ? '' : 'disabled'}>
             <input data-field="altitude" aria-label="Irtifa (m)" title="Irtifa (m)" type="number" min="0" max="10000" value="${altitude ?? ''}" ${routeRows && ALTITUDE_TYPES.has(type) ? '' : 'disabled'}>
-            <input data-field="order" type="number" min="1" max="999" value="${order}" ${routeRows ? '' : 'disabled'}>
           </div>
         `;
       }).join('');
+      installPointListReordering(container);
+      updatePointRowNumbers(container);
+    }
+
+    function setMissionDialogButtonState(open) {
+      const button = document.querySelector(
+        '#tool-dock .tool-button[data-tool="mission_list"]',
+      );
+      if (!button) {
+        return;
+      }
+      button.classList.toggle('dialog-open', open);
+      button.setAttribute('aria-expanded', String(open));
+    }
+
+    function toggleMissionDialog() {
+      const dialog = document.getElementById('mission-dialog');
+      if (dialog.style.display === 'block') {
+        dialog.style.display = 'none';
+        setMissionDialogButtonState(false);
+        return;
+      }
+      openMissionDialog();
     }
 
     function openMissionDialog() {
+      document.getElementById('point-dialog').style.display = 'none';
       renderPointRows('route-point-list', routeLayers(), true);
       renderPointRows('free-point-list', freeLayers(), false);
       const dialog = document.getElementById('mission-dialog');
       dialog.style.left = '14px';
       dialog.style.top = '94px';
       dialog.style.display = 'block';
+      setMissionDialogButtonState(true);
+    }
+
+    function commitPointListOrder(containerId) {
+      const orderedIds = Array.from(
+        document.querySelectorAll(`#${containerId} .point-list-row`),
+        (row) => row.dataset.overlayId,
+      );
+      if (!orderedIds.length) {
+        return;
+      }
+      const reordered = new Set(orderedIds);
+      let nextIndex = 0;
+      state.overlayOrder = orderedOverlayIds().map((overlayId) => (
+        reordered.has(overlayId) ? orderedIds[nextIndex++] : overlayId
+      ));
     }
 
     function applyMissionDialog() {
+      emitAction({ type: 'history_batch_begin', label: 'mission-list' });
+      const routeOrders = new Map(
+        Array.from(
+          document.querySelectorAll('#route-point-list .point-list-row'),
+          (row, index) => [row.dataset.overlayId, index + 1],
+        ),
+      );
+      commitPointListOrder('route-point-list');
+      commitPointListOrder('free-point-list');
       document.querySelectorAll('.point-list-row').forEach((row) => {
         const layer = state.layers.get(row.dataset.overlayId);
         if (!layer || !isArchivableLayer(layer)) {
@@ -2167,9 +2875,8 @@
         }
         const type = row.querySelector('[data-field="type"]').value;
         const radius = Number(row.querySelector('[data-field="radius"]').value || radiusFor(type));
-        const orderInput = row.querySelector('[data-field="order"]');
         const altitudeInput = row.querySelector('[data-field="altitude"]');
-        const order = Number(orderInput.value || 999);
+        const order = routeOrders.get(row.dataset.overlayId) || 999;
         const requestedAltitude = altitudeInput.value.trim() === '' ? NaN : Number(altitudeInput.value);
         layer.overlayData.overlay_type = type;
         layer.overlayData.color = colorFor(type);
@@ -2193,6 +2900,7 @@
       });
       refreshMissionRoute();
       hideDialogs();
+      emitAction({ type: 'history_batch_end' });
     }
 
     function clearAllLocal() {
@@ -2225,6 +2933,29 @@
       if (bridge && bridge.overlaySelected) {
         bridge.overlaySelected('');
       }
+    }
+
+    function bindHistoryShortcuts() {
+      document.addEventListener('keydown', (event) => {
+        const target = event.target;
+        const editingText = target && (
+          target.matches?.('input, textarea, select')
+          || target.isContentEditable
+        );
+        if (
+          editingText
+          || event.altKey
+          || !(event.ctrlKey || event.metaKey)
+          || String(event.key).toLowerCase() !== 'z'
+        ) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        emitAction({
+          type: event.shiftKey ? 'history_redo' : 'history_undo',
+        });
+      }, true);
     }
 
     function createVehicleMarker() {
@@ -2280,9 +3011,7 @@
         }
         const type = event.target.value;
         const altitudeInput = row.querySelector('[data-field="altitude"]');
-        const orderInput = row.querySelector('[data-field="order"]');
         altitudeInput.disabled = !ALTITUDE_TYPES.has(type);
-        orderInput.disabled = !ROUTE_TYPES.has(type);
         if (ALTITUDE_TYPES.has(type) && altitudeInput.value.trim() === '') {
           altitudeInput.value = defaultAltitudeFor(type);
         }
@@ -2290,7 +3019,7 @@
       missionDialog.addEventListener('click', (event) => {
         const action = event.target.dataset.missionAction;
         const row = event.target.closest('.point-list-row');
-        if (row && !action) {
+        if (row && !action && !event.target.closest('.point-drag-handle')) {
           selectOverlay(row.dataset.overlayId);
         }
         if (!action) {
@@ -2342,6 +3071,15 @@
         lineCap: 'round',
         lineJoin: 'round',
       }).addTo(map);
+      rtlReturnLine = L.polyline([], {
+        color: colorFor('rtl'),
+        weight: 2.2,
+        opacity: 0.88,
+        dashArray: '7 6',
+        lineCap: 'round',
+        lineJoin: 'round',
+        interactive: false,
+      }).addTo(map);
       labelGroup = L.layerGroup().addTo(map);
       contactGroup = L.layerGroup().addTo(map);
       trailLine = L.polyline([], {
@@ -2352,16 +3090,18 @@
         lineJoin: 'round',
       }).addTo(map);
       vehicleMarker = createVehicleMarker();
-      L.control.scale({ imperial: false }).addTo(map);
+      homeReferenceMarker = createHomeReferenceMarker(map.getCenter()).addTo(map);
 
       buildLayerToggle();
-      buildMissionModeToggle();
       buildToolDock();
+      observeToolDockSpacing();
       bindDialogEvents();
+      bindHistoryShortcuts();
 
       map.on('mousemove', (event) => queueCursorUpdate(event.latlng));
       map.on('moveend', emitBounds);
       map.on('zoomend', emitBounds);
+      map.on('resize', updateScaleReadout);
 
       map.on('click', (event) => {
         hideContextMenu();
@@ -2404,14 +3144,6 @@
         hideContextMenu();
         if (action === 'goto') {
           addGotoCommand(contextPoint);
-        } else if (action === 'takeoff') {
-          addPointOverlay('takeoff', contextPoint);
-        } else if (action === 'waypoint') {
-          addPointOverlay('waypoint', contextPoint);
-        } else if (action === 'loiter') {
-          addPointOverlay('loiter', contextPoint);
-        } else if (action === 'land') {
-          addPointOverlay('land', contextPoint);
         } else if (action === 'center') {
           const ownLatLng = ownVehicleLatLng();
           if (ownLatLng) {
@@ -2419,8 +3151,10 @@
             map.setView(ownLatLng, Math.max(map.getZoom(), state.centerMinZoom), { animate: false });
             emitAction({ type: 'center_vehicle' });
           }
-        } else if (action === 'delete' && state.selectedId) {
-          removeOverlayById(state.selectedId, true);
+        } else if (action === 'set_home') {
+          setHomeReference(contextPoint, true);
+        } else if (action === 'delete' && contextOverlayId) {
+          removeOverlayById(contextOverlayId, true);
         }
       });
 
@@ -2432,6 +3166,7 @@
         state.ui = {
           layers: config.layers || state.ui.layers,
           missionMode: config.missionMode || state.ui.missionMode,
+          pointList: config.pointList || state.ui.pointList,
           tools: config.tools || state.ui.tools,
           context: config.context || state.ui.context,
           primaryTools: config.toolOrder?.primary || state.ui.primaryTools || PRIMARY_TOOLS,
@@ -2508,6 +3243,7 @@
       setMissionLoop(loop) {
         state.missionLoop = Boolean(loop);
         syncMissionModeState();
+        refreshMissionRoute();
       },
 
       setActiveTool(tool) {
@@ -2523,6 +3259,25 @@
         orderedOverlayIds().forEach((overlayId) => removeOverlayById(overlayId, false));
         state.overlayOrder = [];
         (items || []).forEach((item) => upsertOverlay(item));
+      },
+
+      applyStateDelta(delta) {
+        const changes = delta || {};
+        (changes.removeOverlays || []).forEach((overlayId) => {
+          removeOverlayById(overlayId, false);
+        });
+        (changes.upsertOverlays || []).forEach((item) => {
+          upsertOverlay(item);
+        });
+        (changes.removeContacts || []).forEach((contactId) => {
+          removeContact(contactId);
+        });
+        (changes.upsertContacts || []).forEach((contact) => {
+          upsertContact(contact);
+        });
+        if (Array.isArray(changes.overlayOrder)) {
+          setOverlayOrder(changes.overlayOrder);
+        }
       },
 
       upsertOverlay(data) {
@@ -2595,15 +3350,106 @@
         clearAllLocal();
       },
 
+      prepareHomeHistoryReference(latitude, longitude) {
+        if (!homeReferenceMarker || state.homeReferencePending) {
+          return false;
+        }
+        const lat = Number(latitude);
+        const lon = Number(longitude);
+        if (
+          !Number.isFinite(lat)
+          || !Number.isFinite(lon)
+          || lat < -90
+          || lat > 90
+          || lon < -180
+          || lon > 180
+        ) {
+          return false;
+        }
+        const previous = homeReferenceMarker.getLatLng();
+        state.homeReferenceRollbackLatLng = L.latLng(
+          previous.lat,
+          previous.lng,
+        );
+        state.homeReferenceCommandedLatLng = null;
+        state.homeReferencePending = true;
+        state.homeReferencePendingUntil = Date.now() + 15000;
+        if (homeReferenceMarker.dragging) {
+          homeReferenceMarker.dragging.disable();
+        }
+        setHomeReference(L.latLng(lat, lon), false);
+        emitAction({
+          type: 'history_home_command',
+          lat,
+          lon,
+        });
+        return true;
+      },
+
+      resolveHomeReference(success, latitude = null, longitude = null) {
+        if (!homeReferenceMarker) {
+          return;
+        }
+        if (homeReferenceMarker.dragging) {
+          homeReferenceMarker.dragging.enable();
+        }
+        if (success) {
+          const accepted = homeReferenceMarker.getLatLng();
+          state.homeReferencePending = false;
+          state.homeReferencePendingUntil = 0;
+          state.homeReferenceRollbackLatLng = null;
+          state.homeReferenceCommandedLatLng = L.latLng(
+            accepted.lat,
+            accepted.lng,
+          );
+          if (map && !map.hasLayer(homeReferenceMarker)) {
+            homeReferenceMarker.addTo(map);
+          }
+          return;
+        }
+        state.homeReferencePending = false;
+        state.homeReferencePendingUntil = 0;
+        state.homeReferenceCommandedLatLng = null;
+        const hasFallback = (
+          latitude !== null
+          && latitude !== undefined
+          && longitude !== null
+          && longitude !== undefined
+          && String(latitude).trim() !== ''
+          && String(longitude).trim() !== ''
+        );
+        const lat = hasFallback ? Number(latitude) : Number.NaN;
+        const lon = hasFallback ? Number(longitude) : Number.NaN;
+        const fallbackIsValid = (
+          Number.isFinite(lat)
+          && Number.isFinite(lon)
+          && lat >= -90
+          && lat <= 90
+          && lon >= -180
+          && lon <= 180
+        );
+        const restorePosition = fallbackIsValid
+          ? L.latLng(lat, lon)
+          : state.homeReferenceRollbackLatLng;
+        state.homeReferenceRollbackLatLng = null;
+        if (restorePosition) {
+          setHomeReference(restorePosition, false);
+        } else if (map && !map.hasLayer(homeReferenceMarker)) {
+          homeReferenceMarker.addTo(map);
+        }
+      },
+
       pushTelemetry(payload) {
         if (payload && Object.prototype.hasOwnProperty.call(payload, 'commandAvailable')) {
           window.ykiMap.setCommandAvailable(payload.commandAvailable);
         }
         updateGpsSummary(payload || {});
+        updateHomeReference(payload || {});
         const localReadout = document.querySelector('#local-readout');
         const localNorth = Number(payload && payload.localNorth);
         const localEast = Number(payload && payload.localEast);
         const localDown = Number(payload && payload.localDown);
+        let localReadoutText;
         if (
           payload
           && payload.localPositionAvailable
@@ -2612,18 +3458,29 @@
           && Number.isFinite(localDown)
         ) {
           const signed = (value) => `${value >= 0 ? '+' : ''}${value.toFixed(1)}`;
-          localReadout.innerHTML = `LOCAL NED <strong>N ${signed(localNorth)} · E ${signed(localEast)} · D ${signed(localDown)} m</strong>`;
+          localReadoutText = `LOCAL NED <strong>N ${signed(localNorth)} · E ${signed(localEast)} · D ${signed(localDown)} m</strong>`;
         } else {
-          localReadout.innerHTML = 'LOCAL NED <strong>N -- · E -- · D -- m</strong>';
+          localReadoutText = 'LOCAL NED <strong>N -- · E -- · D -- m</strong>';
+        }
+        if (state.telemetryDisplay.localReadout !== localReadoutText) {
+          state.telemetryDisplay.localReadout = localReadoutText;
+          localReadout.innerHTML = localReadoutText;
         }
         if (!payload || !payload.active) {
           if (vehicleMarker && map.hasLayer(vehicleMarker)) {
             map.removeLayer(vehicleMarker);
           }
-          trailLine.setLatLngs([]);
+          if (trailLine.getLatLngs().length) {
+            trailLine.setLatLngs([]);
+          }
           state.initialCentered = false;
           state.lastVehicleLatLng = null;
-          document.querySelector('#vehicle-readout').innerHTML = 'UAV LAT <strong>--</strong> LON <strong>--</strong>';
+          state.telemetryDisplay.heading = null;
+          const emptyReadout = 'UAV LAT <strong>--</strong> LON <strong>--</strong>';
+          if (state.telemetryDisplay.vehicleReadout !== emptyReadout) {
+            state.telemetryDisplay.vehicleReadout = emptyReadout;
+            document.querySelector('#vehicle-readout').innerHTML = emptyReadout;
+          }
           return;
         }
         const latitude = Number(payload.lat);
@@ -2640,6 +3497,9 @@
           return;
         }
         const latlng = L.latLng(latitude, longitude);
+        if (!state.homeReferenceInitialized && !state.homeReferencePending) {
+          setHomeReference(latlng, false);
+        }
         if (payload.resetTrack) {
           trailLine.setLatLngs([]);
           state.lastVehicleLatLng = null;
@@ -2648,18 +3508,30 @@
         if (!map.hasLayer(vehicleMarker)) {
           vehicleMarker.addTo(map);
         }
-        vehicleMarker.setLatLng(latlng);
-        vehicleMarker.setIcon(L.divIcon({
-          className: 'vehicle-icon',
-          html: `<div class="aircraft-icon" style="--aircraft-color:var(--accent);transform:rotate(${payload.heading || 0}deg)">${aircraftSvg()}</div>`,
-          iconSize: [31, 31],
-          iconAnchor: [15, 15],
-        }));
+        const markerPosition = vehicleMarker.getLatLng();
+        if (markerPosition.lat !== latitude || markerPosition.lng !== longitude) {
+          vehicleMarker.setLatLng(latlng);
+        }
+        const heading = Number(payload.heading) || 0;
+        if (state.telemetryDisplay.heading !== heading) {
+          state.telemetryDisplay.heading = heading;
+          const markerElement = vehicleMarker.getElement();
+          const aircraftElement = markerElement
+            ? markerElement.querySelector('.aircraft-icon')
+            : null;
+          if (aircraftElement) {
+            aircraftElement.style.transform = `rotate(${heading}deg)`;
+          }
+        }
         if (!state.lastVehicleLatLng || state.lastVehicleLatLng.distanceTo(latlng) >= 0.25) {
           trailLine.setLatLngs(trimTrail(trailLine.getLatLngs().concat([latlng]), state.vehicleTrailLimit));
           state.lastVehicleLatLng = latlng;
         }
-        document.querySelector('#vehicle-readout').innerHTML = `UAV LAT <strong>${latitude.toFixed(5)}</strong> LON <strong>${longitude.toFixed(5)}</strong>`;
+        const vehicleReadout = `UAV LAT <strong>${latitude.toFixed(5)}</strong> LON <strong>${longitude.toFixed(5)}</strong>`;
+        if (state.telemetryDisplay.vehicleReadout !== vehicleReadout) {
+          state.telemetryDisplay.vehicleReadout = vehicleReadout;
+          document.querySelector('#vehicle-readout').innerHTML = vehicleReadout;
+        }
         if (!state.initialCentered) {
           map.setView(latlng, Math.max(map.getZoom(), state.centerMinZoom));
           state.initialCentered = true;

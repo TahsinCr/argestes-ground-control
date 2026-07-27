@@ -1,1 +1,1 @@
-"""Modüler yer kontrol istasyonu uygulaması."""
+"""Modular ground control station application."""

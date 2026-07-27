@@ -11,7 +11,7 @@ T = TypeVar("T")
 
 @dataclass(slots=True)
 class Subscription:
-    """Bir olay aboneliğinin sahipliğini ve iptalini temsil eder."""
+    """Represent ownership and cancellation of an event subscription."""
 
     _cancel: Callable[[], None]
     _active: bool = True
@@ -34,7 +34,7 @@ class Subscription:
 
 
 class EventStream(Generic[T]):
-    """Qt, asyncio veya başka bir arayüze bağlı olmayan thread-safe olay akışı."""
+    """Thread-safe event stream independent from Qt, asyncio or another UI."""
 
     def __init__(self) -> None:
         self._subscribers: dict[int, Callable[[T], None]] = {}
@@ -60,7 +60,7 @@ class EventStream(Generic[T]):
             callback(value)
 
     def publish_isolated(self, value: T) -> tuple[Exception, ...]:
-        """Bir hatalı tüketicinin diğer aboneleri engellemediği yayın biçimi."""
+        """Publish without allowing one failing consumer to block subscribers."""
         with self._lock:
             callbacks = tuple(self._subscribers.values())
         errors: list[Exception] = []

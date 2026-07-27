@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from src.ui.config.i18n import t
+from src.ui.i18n import t
 from src.services.mission_archive import MissionArchiveService
 from src.ui.themes.style import ThemePalette
 from src.ui.widgets.title_bar import AppTitleBar

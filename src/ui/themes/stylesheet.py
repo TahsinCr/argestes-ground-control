@@ -270,6 +270,62 @@ def build_stylesheet(theme: ThemePalette) -> str:
         selection-background-color: {theme.accent};
         selection-color: #ffffff;
     }}
+    #LogLevelFilter {{
+        min-height: 28px;
+        max-height: 28px;
+        padding: 0 28px 0 9px;
+        background: {theme.surface_alt};
+        border: 1px solid {theme.border};
+        border-radius: 6px;
+        color: {theme.text};
+        font-size: 10px;
+        font-weight: 800;
+    }}
+    #LogLevelFilter:hover {{
+        background: {theme.surface_hover};
+        border-color: {theme.border_strong};
+    }}
+    #LogLevelFilter:focus,
+    #LogLevelFilter:on {{
+        background: {theme.surface_hover};
+        border-color: {theme.accent};
+    }}
+    #LogLevelFilter::drop-down {{
+        subcontrol-origin: padding;
+        subcontrol-position: top right;
+        width: 24px;
+        border: none;
+        border-left: 1px solid {theme.border};
+        border-top-right-radius: 6px;
+        border-bottom-right-radius: 6px;
+    }}
+    #LogLevelFilter::down-arrow {{
+        width: 8px;
+        height: 8px;
+    }}
+    #LogLevelFilter QAbstractItemView {{
+        background: {theme.surface_alt};
+        border: 1px solid {theme.border_strong};
+        border-radius: 5px;
+        padding: 4px;
+        color: {theme.text};
+        outline: 0;
+        selection-background-color: {theme.accent_dim};
+        selection-color: {theme.text};
+    }}
+    #LogLevelFilter QAbstractItemView::item {{
+        min-height: 25px;
+        padding: 3px 8px;
+        border: none;
+        border-radius: 3px;
+    }}
+    #LogLevelFilter QAbstractItemView::item:hover {{
+        background: {theme.surface_hover};
+    }}
+    #LogLevelFilter QAbstractItemView::item:selected {{
+        background: {theme.accent_dim};
+        color: {theme.text};
+    }}
     QTableWidget {{
         background: {theme.background_alt};
         gridline-color: transparent;

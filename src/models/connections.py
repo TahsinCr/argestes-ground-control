@@ -8,7 +8,7 @@ from src.core.abstracts import Model
 
 @dataclass(frozen=True, slots=True)
 class ConnectionStatus(Model):
-    """Bir bağlantı kanalının arayüzden bağımsız anlık durumu."""
+    """UI-independent current state of a connection channel."""
 
     channel: str
     connected: bool

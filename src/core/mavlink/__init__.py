@@ -1,4 +1,4 @@
-"""ArduPilot tabanlı araçlarda ortak kullanılabilen MAVLink altyapısı."""
+"""Reusable MAVLink infrastructure for ArduPilot-based vehicles."""
 
 from src.core.mavlink.cache import MessageCache
 from src.core.mavlink.channel import MavlinkAsyncChannel

@@ -66,7 +66,7 @@ class ServiceLogHandler(logging.Handler):
 
 
 class LoggingService(LogService):
-    """Birden çok arayüzün dinleyebildiği yapılandırılmış merkezi log servisi."""
+    """Central structured logging service consumable by multiple interfaces."""
 
     def __init__(
         self,
@@ -148,6 +148,17 @@ class LoggingService(LogService):
     def log_path(self) -> Path | None:
         return self._log_path
 
+    def flush(self) -> None:
+        if self._log_path is None or not self._log_path.exists():
+            return
+        with self._lock:
+            try:
+                with self._log_path.open("a", encoding="utf-8") as handle:
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except OSError:
+                return
+
     def _persist(self, entry: LogEntry) -> None:
         if self._log_path is None:
             return
@@ -155,11 +166,15 @@ class LoggingService(LogService):
         encoded_size = len(payload.encode("utf-8")) + 1
         if self._log_path.exists() and self._log_path.stat().st_size + encoded_size > self._max_file_bytes:
             self._rotate_files()
+        # Closing the handle makes each record immediately visible while the
+        # kernel performs physical disk writeback. A synchronous fsync here
+        # used to block whichever thread emitted the log, including Qt's GUI
+        # thread, at roughly one-second intervals. Runtime shutdown calls
+        # flush() once to provide the durability boundary without an idle
+        # writer thread or periodic UI stalls.
         with self._log_path.open("a", encoding="utf-8") as handle:
             handle.write(payload)
             handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
 
     def _rotate_files(self) -> None:
         if self._log_path is None:

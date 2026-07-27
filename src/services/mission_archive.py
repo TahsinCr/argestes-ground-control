@@ -47,6 +47,7 @@ class MissionArchiveService(MissionArchiveRepository):
             ),
             "overlays": [overlay.to_dict() for overlay in overlays],
             "revision": state.revision,
+            "mission_loop": state.mission_loop,
             "contacts": [],
         }
         save_json_file(path, payload)
@@ -62,6 +63,7 @@ class MissionArchiveService(MissionArchiveRepository):
             base_layer=payload.get("base_layer", "vector"),
             selected_overlay_id=payload.get("selected_overlay_id"),
             revision=int(payload.get("revision", 0)),
+            mission_loop=bool(payload.get("mission_loop", False)),
         )
 
     def delete_plan(self, source: str | Path) -> None:

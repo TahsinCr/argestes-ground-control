@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import secrets
 import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from src.core.events import EventStream, Subscription
@@ -23,6 +25,44 @@ from src.models.vehicle import VehicleConnectionState
 from src.services.contracts.orin import OrinService
 from src.services.contracts.vehicle import VehicleService
 from src.services.logging_service import ServiceLogger
+
+
+def configured_orin_commands(config_path: Path) -> tuple[str, ...]:
+    """Validate and return Orin task names configured for the GCS.
+
+    The GCS reads task names only. Command paths and security validation belong
+    to the onboard Orin application.
+    """
+
+    path = Path(config_path)
+    if not path.exists():
+        return ()
+    try:
+        payload: Any = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Orin config JSON geçersiz: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Orin config kökü bir nesne olmalı")
+    commands = payload.get("commands", {})
+    if not isinstance(commands, dict):
+        raise ValueError("Orin config commands bölümü bir nesne olmalı")
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_name, command in commands.items():
+        name = str(raw_name).strip().upper()
+        if not name:
+            raise ValueError("Orin komut adı boş olamaz")
+        if not isinstance(command, str) and not (
+            isinstance(command, list)
+            and command
+            and all(isinstance(item, str) for item in command)
+        ):
+            raise ValueError(f"Orin komutu string veya string listesi olmalı: {name}")
+        if name not in seen:
+            normalized.append(name)
+            seen.add(name)
+    return tuple(normalized)
 
 
 @dataclass(slots=True)
@@ -70,7 +110,7 @@ class NullOrinService(OrinService):
 
 
 class MavlinkOrinService(OrinService):
-    """RFD/Pixhawk rotası üzerinden araç üstü Orin uygulama kanalını yönetir."""
+    """Manage the onboard Orin application channel over the RFD/Pixhawk route."""
 
     HEARTBEAT_TYPES = frozenset({"system.heartbeat", "system.pong"})
     RESPONSE_TYPES = frozenset({"system.ack", "system.error"})

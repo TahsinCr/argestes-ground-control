@@ -20,8 +20,8 @@ class AutonomousCommand:
     label_key: str
 
 
-# YKİ'nin varsayılan aracı sabit kanat ArduPlane'dir. QLAND yalnızca
-# QuadPlane/VTOL içindir; sabit kanadın doğrudan iniş modu AUTOLAND'dir.
+# The default GCS aircraft is fixed-wing ArduPlane. QLAND is exclusive to
+# QuadPlane/VTOL; AUTOLAND is the direct landing mode for fixed-wing aircraft.
 FLIGHT_MODES = (
     "GUIDED",
     "AUTO",
@@ -48,8 +48,8 @@ AUTONOMOUS_COMMANDS = (
     AutonomousCommand("SURVEY_AREA", "command.survey"),
 )
 
-# Yapılandırmadan gelen komutlar varsayılan listeye eklenmez; yalnızca
-# ekranda daha açık bir adla gösterilebilmeleri için etiketleri burada tutulur.
+# Commands supplied by configuration are not added to the default list. Their
+# labels live here only so the UI can present clearer names when they appear.
 TASK_LABEL_KEYS = {
     **{command.code: command.label_key for command in AUTONOMOUS_COMMANDS},
     "PING_TEST": "command.ping_test",

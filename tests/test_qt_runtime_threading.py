@@ -12,8 +12,9 @@ from PyQt6.QtWidgets import QApplication
 
 from src.core.events import EventStream
 from src.models.telemetry import TelemetrySnapshot
+from src.models.video import VideoFrame, VideoStreamStats
 from src.ui.adapters.runtime import QtRuntimeServices
-from src.ui.adapters.services import QtTelemetryService
+from src.ui.adapters.services import QtTelemetryService, QtVideoService
 
 
 class _TelemetryBackend:
@@ -45,6 +46,14 @@ class _BlockingBackend:
     def stop(self) -> None:
         self.stopped.set()
         self.release.set()
+
+
+class _VideoBackend:
+    def __init__(self) -> None:
+        self.frames = EventStream[VideoFrame]()
+        self.stats_changed = EventStream[VideoStreamStats]()
+        self.connected = False
+        self.stats = VideoStreamStats()
 
 
 class _AdapterStub:
@@ -90,6 +99,59 @@ class QtRuntimeThreadingTests(unittest.TestCase):
         adapter.deleteLater()
         self.app.processEvents()
 
+    def test_telemetry_burst_is_coalesced_to_latest_ui_frame(self) -> None:
+        backend = _TelemetryBackend()
+        adapter = QtTelemetryService(backend)
+        received: list[TelemetrySnapshot] = []
+        adapter.telemetry_updated.connect(received.append)
+        self.assertFalse(adapter._frame_timer.isActive())
+        self.assertFalse(hasattr(adapter, "_dispatch_timer"))
+
+        for packets_in in range(5_000):
+            backend.updated.publish(
+                TelemetrySnapshot.zero().copy(packets_in=packets_in)
+            )
+
+        self.assertEqual(received, [])
+        QTest.qWait(50)
+        self.assertGreaterEqual(len(received), 1)
+        self.assertLessEqual(len(received), 2)
+        self.assertEqual(received[-1].packets_in, 4_999)
+        self.assertFalse(adapter._frame_timer.isActive())
+        adapter.close()
+        backend.updated.publish(TelemetrySnapshot.zero().copy(packets_in=9_999))
+        QTest.qWait(25)
+        self.assertEqual(received[-1].packets_in, 4_999)
+        adapter.deleteLater()
+        self.app.processEvents()
+
+    def test_video_burst_keeps_only_the_latest_ui_frame(self) -> None:
+        backend = _VideoBackend()
+        adapter = QtVideoService(backend)
+        received = []
+        adapter.frame_ready.connect(received.append)
+
+        for marker in range(5_000):
+            channel = marker % 256
+            backend.frames.publish(
+                VideoFrame(
+                    width=1,
+                    height=1,
+                    pixel_format="rgba8888",
+                    data=bytes((channel, 0, 0, 255)),
+                )
+            )
+
+        self.assertEqual(received, [])
+        QTest.qWait(80)
+        self.assertGreaterEqual(len(received), 1)
+        self.assertLessEqual(len(received), 2)
+        self.assertEqual(received[-1].pixelColor(0, 0).red(), 4_999 % 256)
+        self.assertFalse(adapter._video_frame_timer.isActive())
+        adapter.close()
+        adapter.deleteLater()
+        self.app.processEvents()
+
     def test_backend_start_does_not_block_the_gui_thread(self) -> None:
         backend = _BlockingBackend()
         adapters = [_AdapterStub() for _index in range(9)]
@@ -98,7 +160,7 @@ class QtRuntimeThreadingTests(unittest.TestCase):
             log_service=adapters[0],
             settings_service=adapters[1],
             telemetry_service=adapters[2],
-            mission_service=adapters[3],
+            planner_service=adapters[3],
             command_service=adapters[4],
             parameter_service=adapters[5],
             video_service=adapters[6],

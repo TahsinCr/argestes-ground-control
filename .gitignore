@@ -13,8 +13,7 @@ build/
 dist/
 *.egg-info/
 
-data/map-cache/
-data/logs/
+data/
 
 .idea/
 .vscode/

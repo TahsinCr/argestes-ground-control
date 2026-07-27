@@ -12,15 +12,17 @@ class ChoiceSpec:
 
 @dataclass(frozen=True, slots=True)
 class FieldSpec:
-    """Desteklenen bir alanı dialog koduna dokunmadan üretir."""
+    """Describe a supported field without changing dialog code."""
 
     path: str
     label_key: str
-    kind: Literal["combo", "check", "spin", "text"]
+    kind: Literal["combo", "check", "spin", "double", "text"]
     choices: tuple[ChoiceSpec, ...] = ()
-    minimum: int | None = None
-    maximum: int | None = None
+    minimum: float | None = None
+    maximum: float | None = None
     suffix: str = ""
+    decimals: int = 1
+    single_step: float = 0.1
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +96,52 @@ SETTINGS_SECTIONS = (
         ),
     ),
     SectionSpec(
+        "dialog.settings.section.battery_alarm",
+        (
+            FieldSpec(
+                "backend.battery_alarm.warning_mode",
+                "dialog.settings.battery_warning_mode",
+                "combo",
+                (
+                    ChoiceSpec("percent", "battery.alarm.mode.percent"),
+                    ChoiceSpec("voltage", "battery.alarm.mode.voltage"),
+                ),
+            ),
+            FieldSpec(
+                "backend.battery_alarm.warning_threshold",
+                "dialog.settings.battery_warning_threshold",
+                "double",
+                minimum=0.1,
+                maximum=100.0,
+                decimals=1,
+                single_step=0.1,
+            ),
+            FieldSpec(
+                "backend.battery_alarm.failsafe_enabled",
+                "dialog.settings.battery_failsafe_enabled",
+                "check",
+            ),
+            FieldSpec(
+                "backend.battery_alarm.failsafe_mode",
+                "dialog.settings.battery_failsafe_mode",
+                "combo",
+                (
+                    ChoiceSpec("percent", "battery.alarm.mode.percent"),
+                    ChoiceSpec("voltage", "battery.alarm.mode.voltage"),
+                ),
+            ),
+            FieldSpec(
+                "backend.battery_alarm.failsafe_threshold",
+                "dialog.settings.battery_failsafe_threshold",
+                "double",
+                minimum=0.1,
+                maximum=100.0,
+                decimals=1,
+                single_step=0.1,
+            ),
+        ),
+    ),
+    SectionSpec(
         "dialog.settings.section.mission",
         (
             FieldSpec(
@@ -131,6 +179,11 @@ SETTINGS_SECTIONS = (
     SectionSpec(
         "dialog.settings.section.video",
         (
+            FieldSpec(
+                "backend.video_auto_connect",
+                "dialog.settings.video_auto_connect",
+                "check",
+            ),
             FieldSpec("backend.video_source_type", "dialog.settings.video_type", "combo", (
                 ChoiceSpec("mock", "video.source.mock"),
                 ChoiceSpec("http", "video.source.http"),

@@ -36,7 +36,7 @@ class MavlinkSettings:
     endpoint: str = "udp:127.0.0.1:14550"
     baud: int = 115200
     heartbeat_timeout: int = 10
-    auto_connect: bool = True
+    auto_connect: bool = False
     dialect: str = "ardupilotmega"
     source_system: int = 255
     source_component: int = 0
@@ -86,8 +86,50 @@ class MissionDefaults:
 
 
 @dataclass(slots=True)
+class BatteryAlarmSettings:
+    warning_mode: str = "percent"
+    warning_threshold: float = 20.0
+    failsafe_enabled: bool = False
+    failsafe_mode: str = "percent"
+    failsafe_threshold: float = 10.0
+
+    def __post_init__(self) -> None:
+        self.failsafe_enabled = bool(self.failsafe_enabled)
+        self.warning_mode = self._validate_threshold(
+            self.warning_mode,
+            self.warning_threshold,
+            "uyarı",
+        )
+        self.warning_threshold = float(self.warning_threshold)
+        self.failsafe_mode = self._validate_threshold(
+            self.failsafe_mode,
+            self.failsafe_threshold,
+            "failsafe",
+        )
+        self.failsafe_threshold = float(self.failsafe_threshold)
+
+    @staticmethod
+    def _validate_threshold(mode: str, threshold: float, name: str) -> str:
+        normalized_mode = str(mode).strip().lower()
+        normalized_threshold = float(threshold)
+        if normalized_mode not in {"percent", "voltage"}:
+            raise ValueError(
+                f"Desteklenmeyen batarya {name} birimi: {normalized_mode}"
+            )
+        if normalized_threshold <= 0.0:
+            raise ValueError(f"Batarya {name} eşiği pozitif olmalı")
+        if normalized_threshold > 100.0:
+            suffix = "%" if normalized_mode == "percent" else "V"
+            raise ValueError(
+                f"Batarya {name} eşiği 100 {suffix} değerini aşamaz"
+            )
+        return normalized_mode
+
+
+@dataclass(slots=True)
 class BackendSettings:
     mock_mode: bool = False
+    video_auto_connect: bool = False
     video_source_type: str = "udp"
     video_source_uri: str = ""
     video_codec: str = "h265"
@@ -98,8 +140,10 @@ class BackendSettings:
     orin: OrinLinkConfig = field(default_factory=OrinLinkConfig)
     competition: CompetitionServerConfig = field(default_factory=CompetitionServerConfig)
     mission: MissionDefaults = field(default_factory=MissionDefaults)
+    battery_alarm: BatteryAlarmSettings = field(default_factory=BatteryAlarmSettings)
 
     def __post_init__(self) -> None:
+        self.video_auto_connect = bool(self.video_auto_connect)
         self.video_source_type = self.video_source_type.strip().lower()
         self.video_source_uri = self.video_source_uri.strip()
         self.video_codec = self.video_codec.strip().lower()
@@ -141,7 +185,7 @@ class UiSettings:
 
 @dataclass(slots=True)
 class SettingsModel(Model):
-    """Backend ve arayüz ayarlarını ayrı sahipliklerde tutan kök model."""
+    """Root model keeping backend and UI settings under separate ownership."""
 
     backend: BackendSettings = field(default_factory=BackendSettings)
     ui: UiSettings = field(default_factory=UiSettings)
@@ -160,6 +204,24 @@ class SettingsModel(Model):
             competition = CompetitionServerConfig(
                 **_known(CompetitionServerConfig, backend_payload.pop("competition", {}))
             )
+            battery_payload = dict(backend_payload.pop("battery_alarm", {}))
+            legacy_mode = battery_payload.pop("mode", None)
+            legacy_threshold = battery_payload.pop("threshold", None)
+            if legacy_mode is not None:
+                battery_payload.setdefault("warning_mode", legacy_mode)
+                battery_payload.setdefault("failsafe_mode", legacy_mode)
+            if legacy_threshold is not None:
+                battery_payload.setdefault(
+                    "warning_threshold",
+                    legacy_threshold,
+                )
+                battery_payload.setdefault(
+                    "failsafe_threshold",
+                    legacy_threshold,
+                )
+            battery_alarm = BatteryAlarmSettings(
+                **_known(BatteryAlarmSettings, battery_payload)
+            )
             mission_payload = dict(backend_payload.pop("mission", {}))
             radii = dict(DEFAULT_RADII)
             radii.update({key: int(value) for key, value in mission_payload.get("radii", {}).items()})
@@ -169,6 +231,7 @@ class SettingsModel(Model):
                 mavlink=mavlink,
                 orin=orin,
                 competition=competition,
+                battery_alarm=battery_alarm,
                 mission=MissionDefaults(
                     radii=radii,
                     default_altitude_m=int(mission_payload.get("default_altitude_m", 100)),
@@ -187,6 +250,7 @@ class SettingsModel(Model):
         return cls(
             backend=BackendSettings(
                 mock_mode=bool(payload.get("mock_mode", False)),
+                video_auto_connect=bool(payload.get("video_auto_connect", False)),
                 video_source_type=str(payload.get("video_source_type", "udp")),
                 video_source_uri=str(payload.get("video_source_uri", "")),
                 video_codec=str(payload.get("video_codec", "h265")),
@@ -254,6 +318,8 @@ class SettingsModel(Model):
     @property
     def mock_mode(self) -> bool: return self.backend.mock_mode
     @property
+    def video_auto_connect(self) -> bool: return self.backend.video_auto_connect
+    @property
     def video_source_type(self) -> str: return self.backend.video_source_type
     @property
     def video_source_uri(self) -> str: return self.backend.video_source_uri
@@ -296,6 +362,7 @@ _LEGACY_PATHS = {
     "vehicle_trail_limit": "ui.vehicle_trail_limit",
     "contact_trail_limit": "ui.contact_trail_limit",
     "mock_mode": "backend.mock_mode",
+    "video_auto_connect": "backend.video_auto_connect",
     "video_source_type": "backend.video_source_type",
     "video_source_uri": "backend.video_source_uri",
     "video_codec": "backend.video_codec",

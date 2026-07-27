@@ -3,7 +3,6 @@ from src.services.contracts.connections import ConnectionControlService
 from src.services.contracts.competition import CompetitionService
 from src.services.contracts.archive import MissionArchiveRepository
 from src.services.contracts.logging import LogService
-from src.services.contracts.mission import MissionService
 from src.services.contracts.orin import OrinService
 from src.services.contracts.parameters import ParameterService
 from src.services.contracts.telemetry import TelemetryService
@@ -18,7 +17,6 @@ __all__ = [
     "CompetitionService",
     "LogService",
     "MissionArchiveRepository",
-    "MissionService",
     "OrinService",
     "ParameterService",
     "TelemetryService",

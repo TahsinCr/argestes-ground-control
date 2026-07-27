@@ -11,7 +11,7 @@ K = TypeVar("K", bound=Hashable)
 
 
 class MessageCache(Generic[T, K]):
-    """Mesajları anahtar bazında sınırlı geçmişle saklayan thread-safe cache."""
+    """Thread-safe cache storing bounded message history per key."""
 
     def __init__(self, key: Callable[[T], K], *, per_key_limit: int = 64) -> None:
         if per_key_limit <= 0:

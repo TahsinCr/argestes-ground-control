@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
+import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen
 
 from src.core.events import Subscription
@@ -18,7 +20,7 @@ from src.models.telemetry import TelemetrySnapshot
 from src.models.video import VideoFrame
 from src.services.contracts.commands import CommandService
 from src.services.contracts.connections import ConnectionControlService
-from src.services.contracts.mission import MissionService
+from src.services.planner import PlannerService
 from src.services.contracts.parameters import ParameterService
 from src.services.contracts.telemetry import TelemetryService
 from src.services.contracts.video import VideoService
@@ -28,8 +30,10 @@ from src.services.tile_cache import TileCacheServer
 
 
 class _QtAdapter(QObject):
-    _DISPATCH_INTERVAL_MS = 8
-    _MAX_DISPATCH_BATCH = 512
+    # Bound work performed by a single queued callback so a burst of logs or
+    # service events cannot monopolize the GUI event loop for a whole frame.
+    _MAX_DISPATCH_BATCH = 32
+    _dispatch_requested = pyqtSignal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -37,43 +41,126 @@ class _QtAdapter(QObject):
         self._pending_events: queue.SimpleQueue[
             tuple[Callable[..., None], tuple[Any, ...]]
         ] = queue.SimpleQueue()
-        self._dispatch_timer = QTimer(self)
-        self._dispatch_timer.setInterval(self._DISPATCH_INTERVAL_MS)
-        self._dispatch_timer.timeout.connect(self._drain_events)
-        self._dispatch_timer.start()
+        self._dispatch_lock = threading.Lock()
+        self._dispatch_scheduled = False
+        self._closed = False
+        self._worker_lock = threading.Lock()
+        self._workers: set[threading.Thread] = set()
+        self._dispatch_requested.connect(
+            self._drain_events,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self.destroyed.connect(self._cancel_subscriptions)
 
     def _subscribe(self, stream, callback: Callable[[Any], None]) -> None:
-        """Backend olayını Qt API'sine dokunmadan GUI kuyruğuna aktarır."""
+        """Move a backend event to the GUI queue without touching the Qt API."""
 
         self._subscriptions.append(
             stream.subscribe(lambda value: self._post(callback, value))
         )
 
     def _post(self, callback: Callable[..., None], *args: Any) -> None:
-        """Worker thread'lerin çağırabileceği saf Python aktarım noktası."""
+        """Pure-Python dispatch point safe for worker threads to call."""
 
-        self._pending_events.put((callback, args))
+        should_schedule = False
+        with self._dispatch_lock:
+            if self._closed:
+                return
+            self._pending_events.put((callback, args))
+            if not self._dispatch_scheduled:
+                self._dispatch_scheduled = True
+                should_schedule = True
+        if should_schedule:
+            self._dispatch_requested.emit()
 
     @pyqtSlot()
     def _drain_events(self) -> None:
-        """Bekleyen backend olaylarını yalnızca Qt ana thread'inde çalıştırır."""
+        """Run pending backend events only on the Qt main thread."""
 
+        with self._dispatch_lock:
+            if self._closed:
+                self._dispatch_scheduled = False
+                return
         for _index in range(self._MAX_DISPATCH_BATCH):
             try:
                 callback, args = self._pending_events.get_nowait()
             except queue.Empty:
                 break
-            callback(*args)
+            try:
+                callback(*args)
+            except Exception:
+                # Never let a Python exception escape a Qt slot. PyQt may
+                # abort the process when that happens, especially while the
+                # widget tree is being destroyed.
+                traceback.print_exc()
+        schedule_next = False
+        with self._dispatch_lock:
+            if self._closed:
+                self._dispatch_scheduled = False
+            elif self._pending_events.empty():
+                self._dispatch_scheduled = False
+            else:
+                schedule_next = True
+        if schedule_next:
+            self._dispatch_requested.emit()
 
     def close(self) -> None:
+        with self._dispatch_lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._dispatch_scheduled = False
         self._cancel_subscriptions()
-        self._dispatch_timer.stop()
         while True:
             try:
                 self._pending_events.get_nowait()
             except queue.Empty:
                 break
+
+    def _start_worker(
+        self,
+        target: Callable[..., None],
+        *,
+        name: str,
+        args: tuple[Any, ...] = (),
+    ) -> threading.Thread:
+        """Start a tracked short-lived operation worker."""
+
+        def run() -> None:
+            try:
+                target(*args)
+            finally:
+                with self._worker_lock:
+                    self._workers.discard(threading.current_thread())
+
+        thread = threading.Thread(target=run, name=name, daemon=True)
+        with self._dispatch_lock:
+            if self._closed:
+                return thread
+            with self._worker_lock:
+                self._workers.add(thread)
+            try:
+                thread.start()
+            except Exception:
+                with self._worker_lock:
+                    self._workers.discard(thread)
+                raise
+        return thread
+
+    def wait_for_workers(self, timeout: float = 1.0) -> None:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            with self._worker_lock:
+                workers = tuple(self._workers)
+            if not workers:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            worker = workers[0]
+            if worker is threading.current_thread():
+                return
+            worker.join(timeout=min(remaining, 0.1))
 
     def _cancel_subscriptions(self, *_args: object) -> None:
         for subscription in self._subscriptions:
@@ -120,11 +207,69 @@ class QtSettingsService(_QtAdapter):
 
 class QtTelemetryService(_QtAdapter):
     telemetry_updated = pyqtSignal(object)
+    # The backend may ingest MAVLink considerably faster than the screen needs
+    # to be laid out. The attitude widget interpolates at 60 Hz independently;
+    # the remaining panels only need the freshest snapshot once per UI frame.
+    _UI_FRAME_INTERVAL_MS = 33
 
     def __init__(self, backend: TelemetryService, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.backend = backend
-        self._subscribe(backend.updated, self.telemetry_updated.emit)
+        self._latest_lock = threading.Lock()
+        self._latest_snapshot: TelemetrySnapshot | None = None
+        self._frame_scheduled = False
+        self._subscriptions.append(
+            backend.updated.subscribe(self._capture_latest_snapshot)
+        )
+        self._frame_timer = QTimer(self)
+        self._frame_timer.setSingleShot(True)
+        self._frame_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._frame_timer.setInterval(self._UI_FRAME_INTERVAL_MS)
+        self._frame_timer.timeout.connect(self._emit_latest_snapshot)
+
+    def _capture_latest_snapshot(self, snapshot: TelemetrySnapshot) -> None:
+        """Keep backend throughput independent from the GUI render queue."""
+
+        should_schedule = False
+        with self._latest_lock:
+            self._latest_snapshot = snapshot
+            if not self._frame_scheduled:
+                self._frame_scheduled = True
+                should_schedule = True
+        if should_schedule:
+            self._post(self._start_frame_timer)
+
+    @pyqtSlot()
+    def _start_frame_timer(self) -> None:
+        if not self._closed and not self._frame_timer.isActive():
+            self._frame_timer.start()
+
+    @pyqtSlot()
+    def _emit_latest_snapshot(self) -> None:
+        with self._latest_lock:
+            snapshot = self._latest_snapshot
+            self._latest_snapshot = None
+            self._frame_scheduled = False
+        if snapshot is not None:
+            self.telemetry_updated.emit(snapshot)
+        should_schedule = False
+        with self._latest_lock:
+            if (
+                not self._closed
+                and self._latest_snapshot is not None
+                and not self._frame_scheduled
+            ):
+                self._frame_scheduled = True
+                should_schedule = True
+        if should_schedule:
+            self._post(self._start_frame_timer)
+
+    def close(self) -> None:
+        self._frame_timer.stop()
+        with self._latest_lock:
+            self._latest_snapshot = None
+            self._frame_scheduled = False
+        super().close()
 
     @property
     def current(self) -> TelemetrySnapshot: return self.backend.current
@@ -133,13 +278,13 @@ class QtTelemetryService(_QtAdapter):
     def push(self, snapshot: TelemetrySnapshot) -> None: self.backend.push(snapshot)
 
 
-class QtMissionService(_QtAdapter):
-    mission_state_changed = pyqtSignal(object)
+class QtPlannerService(_QtAdapter):
+    planner_changed = pyqtSignal(object)
 
-    def __init__(self, backend: MissionService, parent: QObject | None = None) -> None:
+    def __init__(self, backend: PlannerService, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.backend = backend
-        self._subscribe(backend.changed, self.mission_state_changed.emit)
+        self._subscribe(backend.changed, self.planner_changed.emit)
 
     @property
     def state(self) -> MissionState: return self.backend.state
@@ -150,6 +295,7 @@ class QtMissionService(_QtAdapter):
     def set_default_radii(self, values: dict) -> None: self.backend.set_default_radii(values)
     def set_base_layer(self, layer: str) -> None: self.backend.set_base_layer(layer)
     def set_active_tool(self, tool: str) -> None: self.backend.set_active_tool(tool)
+    def set_mission_loop(self, enabled: bool) -> None: self.backend.set_mission_loop(enabled)
     def set_overlays(self, overlays) -> None: self.backend.set_overlays(overlays)
     def replace_source_overlays(self, source: str, overlays) -> None:
         self.backend.replace_source_overlays(source, overlays)
@@ -159,6 +305,8 @@ class QtMissionService(_QtAdapter):
     def clear_all(self) -> None: self.backend.clear_all()
     def select_overlay(self, overlay_id: str | None) -> None: self.backend.select_overlay(overlay_id)
     def load_state(self, state: MissionState) -> None: self.backend.load_state(state)
+    def replace_local_plan(self, overlays, *, mission_loop: bool) -> None:
+        self.backend.replace_local_plan(overlays, mission_loop=mission_loop)
     def upsert_contact(self, contact: MapContact) -> None: self.backend.upsert_contact(contact)
     def remove_contact(self, contact_id: str) -> None: self.backend.remove_contact(contact_id)
     def clear_contacts(self) -> None: self.backend.clear_contacts()
@@ -181,16 +329,17 @@ class QtCommandService(_QtAdapter):
     def available_tasks(self) -> tuple[str, ...]:
         return self.backend.available_tasks
 
-    def issue_command(self, command: str, params: dict | None = None):
-        thread = threading.Thread(
-            target=self.backend.issue_command,
-            args=(command, params),
-            kwargs={"source": "qt-ui"},
+    def issue_command(
+        self,
+        command: str,
+        params: dict | None = None,
+        *,
+        source: str = "qt-ui",
+    ):
+        return self._start_worker(
+            lambda: self.backend.issue_command(command, params, source=source),
             name=f"QtCommand-{command}",
-            daemon=True,
         )
-        thread.start()
-        return thread
 
 
 class QtConnectionControlService(_QtAdapter):
@@ -226,14 +375,11 @@ class QtConnectionControlService(_QtAdapter):
         options: dict[str, object],
     ) -> threading.Thread:
         self.operation_started.emit(channel)
-        thread = threading.Thread(
-            target=self._execute,
-            args=(action, channel, dict(options)),
+        return self._start_worker(
+            self._execute,
             name=f"QtConnection-{action}-{channel}",
-            daemon=True,
+            args=(action, channel, dict(options)),
         )
-        thread.start()
-        return thread
 
     def _execute(self, action: str, channel: str, options: dict[str, object]) -> None:
         try:
@@ -270,28 +416,23 @@ class QtParameterService(_QtAdapter):
     def replace(self, parameters) -> None: self.backend.replace(parameters)
     def upsert(self, parameter) -> None: self.backend.upsert(parameter)
     def update_values(self, changes: dict[str, object]) -> threading.Thread:
-        thread = threading.Thread(
-            target=self._update_values,
-            args=(changes,),
+        return self._start_worker(
+            self._update_values,
             name="QtParameterWrite",
-            daemon=True,
+            args=(changes,),
         )
-        thread.start()
-        return thread
+
     def refresh(self) -> threading.Thread:
-        thread = threading.Thread(
-            target=self._refresh,
+        return self._start_worker(
+            self._refresh,
             name="QtParameterRefresh",
-            daemon=True,
         )
-        thread.start()
-        return thread
 
     def _update_values(self, changes: dict[str, object]) -> None:
         try:
             self.backend.update_values(changes)
         except Exception:
-            # Alan servisi başarısızlığı yapılandırılmış backend loguna yazar.
+            # The domain service writes failures to the structured backend log.
             return
 
     def _refresh(self) -> None:
@@ -303,6 +444,7 @@ class QtParameterService(_QtAdapter):
 class QtVideoService(_QtAdapter):
     frame_ready = pyqtSignal(QImage)
     stats_updated = pyqtSignal(object)
+    _UI_FRAME_INTERVAL_MS = 33
 
     def __init__(
         self,
@@ -318,7 +460,20 @@ class QtVideoService(_QtAdapter):
         self._frame_index = 0
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._emit_mock_frame)
-        self._subscribe(backend.frames, self._on_frame)
+        self._latest_frame_lock = threading.Lock()
+        self._latest_frame: VideoFrame | None = None
+        self._video_frame_scheduled = False
+        self._video_frame_timer = QTimer(self)
+        self._video_frame_timer.setSingleShot(True)
+        self._video_frame_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._video_frame_timer.setInterval(self._UI_FRAME_INTERVAL_MS)
+        self._video_frame_timer.timeout.connect(self._emit_latest_frame)
+        # Do not enqueue every camera frame in Qt. A camera can outpace the GUI
+        # briefly; retaining only its newest frame keeps latency and memory
+        # bounded without throttling the capture pipeline.
+        self._subscriptions.append(
+            backend.frames.subscribe(self._capture_latest_frame)
+        )
         self._subscribe(backend.stats_changed, self.stats_updated.emit)
 
     @property
@@ -335,12 +490,53 @@ class QtVideoService(_QtAdapter):
 
     def stop(self) -> None:
         self._timer.stop()
+        self._video_frame_timer.stop()
+        with self._latest_frame_lock:
+            self._latest_frame = None
+            self._video_frame_scheduled = False
 
     @pyqtSlot(object)
     def consume_snapshot(self, snapshot: TelemetrySnapshot) -> None:
         self._last_snapshot = snapshot
 
-    def _on_frame(self, frame: VideoFrame) -> None:
+    def _capture_latest_frame(self, frame: VideoFrame) -> None:
+        should_schedule = False
+        with self._latest_frame_lock:
+            self._latest_frame = frame
+            if not self._video_frame_scheduled:
+                self._video_frame_scheduled = True
+                should_schedule = True
+        if should_schedule:
+            self._post(self._start_video_frame_timer)
+
+    @pyqtSlot()
+    def _start_video_frame_timer(self) -> None:
+        if not self._closed and not self._video_frame_timer.isActive():
+            self._video_frame_timer.start()
+
+    @pyqtSlot()
+    def _emit_latest_frame(self) -> None:
+        with self._latest_frame_lock:
+            frame = self._latest_frame
+            self._latest_frame = None
+            self._video_frame_scheduled = False
+        if frame is not None:
+            self.frame_ready.emit(self._image_from_frame(frame))
+
+        should_schedule = False
+        with self._latest_frame_lock:
+            if (
+                not self._closed
+                and self._latest_frame is not None
+                and not self._video_frame_scheduled
+            ):
+                self._video_frame_scheduled = True
+                should_schedule = True
+        if should_schedule:
+            self._post(self._start_video_frame_timer)
+
+    @staticmethod
+    def _image_from_frame(frame: VideoFrame) -> QImage:
         formats = {
             "rgba8888": QImage.Format.Format_RGBA8888,
             "rgb888": QImage.Format.Format_RGB888,
@@ -349,8 +545,21 @@ class QtVideoService(_QtAdapter):
         }
         bytes_per_pixel = {"rgba8888": 4, "rgb888": 3, "bgr888": 3, "gray8": 1}
         stride = frame.stride or frame.width * bytes_per_pixel[frame.pixel_format]
-        image = QImage(frame.data, frame.width, frame.height, stride, formats[frame.pixel_format]).copy()
-        self.frame_ready.emit(image)
+        return QImage(
+            frame.data,
+            frame.width,
+            frame.height,
+            stride,
+            formats[frame.pixel_format],
+        ).copy()
+
+    def close(self) -> None:
+        self._timer.stop()
+        self._video_frame_timer.stop()
+        with self._latest_frame_lock:
+            self._latest_frame = None
+            self._video_frame_scheduled = False
+        super().close()
 
     def _emit_mock_frame(self) -> None:
         width, height = 1280, 720

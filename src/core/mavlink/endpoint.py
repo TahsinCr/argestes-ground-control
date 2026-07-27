@@ -35,7 +35,7 @@ class MavlinkEndpoint:
 
     @staticmethod
     def normalize_uri(uri: str) -> str:
-        """Açık bir şema yoksa ``host:port`` adresini TCP istemcisi sayar."""
+        """Treat ``host:port`` as a TCP client address when no scheme is given."""
         normalized = uri.strip()
         if normalized.count(":") != 1:
             return normalized

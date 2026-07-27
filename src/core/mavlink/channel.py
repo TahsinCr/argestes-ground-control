@@ -11,7 +11,7 @@ from src.core.mavlink.router import MavlinkMessageRouter
 
 
 class MavlinkAsyncChannel(Service):
-    """Router thread'inden asyncio dünyasına bounded ve filtreli mesaj köprüsü."""
+    """Bounded, filtered bridge from the router thread into asyncio."""
 
     def __init__(
         self,

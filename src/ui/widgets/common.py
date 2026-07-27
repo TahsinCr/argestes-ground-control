@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QMouseEvent
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QMouseEvent
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.ui.i18n import t
 from src.ui.themes.style import ThemePalette
 
 
@@ -142,7 +143,7 @@ class StatusChip(QFrame):
         layout.addWidget(self.text_label)
         self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip("Bağlantı ayrıntıları ve yeniden bağlanma")
+        self.setToolTip(t("connection.tooltip.open", "tr"))
 
     @property
     def state(self) -> str:
@@ -160,10 +161,14 @@ class StatusChip(QFrame):
         self._restyle()
 
     def set_label(self, text: str) -> None:
+        if text == self._label:
+            return
         self._label = text
         self.text_label.setText(text)
 
     def set_state(self, state: str) -> None:
+        if state == self._state:
+            return
         self._state = state
         self._restyle()
 
@@ -206,6 +211,8 @@ class SignalMeter(QFrame):
         self._theme: ThemePalette | None = None
         self._value = 0
         self._label = label
+        self._detail_text = ""
+        self._available = True
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 3, 8, 3)
         layout.setSpacing(6)
@@ -222,22 +229,49 @@ class SignalMeter(QFrame):
         self._restyle()
 
     def set_label(self, text: str) -> None:
+        if text == self._label:
+            return
         self._label = text
         self.label.setText(text)
 
     def set_value(self, value: int, detail: str = "") -> None:
-        self._value = max(0, min(100, int(value)))
-        self.value.setText(f"{self._value}%")
-        self.detail.setText(detail)
-        self.detail.setVisible(bool(detail))
-        self._restyle()
+        normalized = max(0, min(100, int(value)))
+        if (
+            self._available
+            and normalized == self._value
+            and detail == self._detail_text
+        ):
+            return
+        was_available = self._available
+        previous_color = self._level_color()
+        value_changed = normalized != self._value or not was_available
+        detail_changed = detail != self._detail_text
+        self._available = True
+        self._value = normalized
+        self._detail_text = detail
+        if value_changed:
+            self.value.setText(f"{self._value}%")
+        if detail_changed:
+            self.detail.setText(detail)
+            self.detail.setVisible(bool(detail))
+        if not was_available or previous_color != self._level_color():
+            self._restyle()
 
     def set_unavailable(self, detail: str = "") -> None:
+        if not self._available and detail == self._detail_text:
+            return
+        was_available = self._available
+        detail_changed = detail != self._detail_text
+        self._available = False
         self._value = 0
-        self.value.setText("--%")
-        self.detail.setText(detail)
-        self.detail.setVisible(bool(detail))
-        self._restyle()
+        self._detail_text = detail
+        if was_available:
+            self.value.setText("--%")
+        if detail_changed:
+            self.detail.setText(detail)
+            self.detail.setVisible(bool(detail))
+        if was_available:
+            self._restyle()
 
     def _level_color(self) -> str:
         if not self._theme:
@@ -284,7 +318,28 @@ class SignalMeter(QFrame):
 
 
 class BatteryMeter(SignalMeter):
-    """Alt durum çubuğu için kompakt, eşik renkli batarya göstergesi."""
+    """Compact threshold-colored battery indicator for the bottom status bar."""
+
+    def __init__(self, label: str, parent: QWidget | None = None) -> None:
+        super().__init__(label, parent)
+        self._language = "tr"
+        self._alarm_active = False
+        self._alarm_phase = False
+        self._alarm_timer = QTimer(self)
+        self._alarm_timer.setInterval(450)
+        self._alarm_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._alarm_timer.timeout.connect(self._toggle_alarm_phase)
+
+    @property
+    def alarm_active(self) -> bool:
+        return self._alarm_active
+
+    def set_language(self, language: str) -> None:
+        self._language = language
+        if self._value <= 0:
+            tooltip = t("battery.tooltip.waiting", self._language)
+            if tooltip != self.toolTip():
+                self.setToolTip(tooltip)
 
     def set_battery(
         self,
@@ -298,15 +353,52 @@ class BatteryMeter(SignalMeter):
             details.append(f"{current_amps:0.1f} A")
         self.set_value(percent, " · ".join(details))
 
-        tooltip = [f"Batarya: %{max(0, min(100, int(percent)))}"]
+        tooltip = [
+            t(
+                "battery.tooltip.summary",
+                self._language,
+                percent=max(0, min(100, int(percent))),
+            )
+        ]
         tooltip.extend(details)
         if consumed_mah is not None:
-            tooltip.append(f"Tüketim: {consumed_mah} mAh")
-        self.setToolTip("\n".join(tooltip))
+            tooltip.append(
+                t(
+                    "battery.tooltip.consumed",
+                    self._language,
+                    mah=consumed_mah,
+                )
+            )
+        tooltip_text = "\n".join(tooltip)
+        if tooltip_text != self.toolTip():
+            self.setToolTip(tooltip_text)
+
+    def set_alarm(self, active: bool) -> None:
+        normalized = bool(active)
+        if normalized == self._alarm_active:
+            return
+        self._alarm_active = normalized
+        self.value.setProperty("batteryAlarm", normalized)
+        if normalized:
+            self._alarm_phase = True
+            self._alarm_timer.start()
+        else:
+            self._alarm_timer.stop()
+            self._alarm_phase = False
+        self._restyle()
+
+    def _toggle_alarm_phase(self) -> None:
+        if not self._alarm_active:
+            return
+        self._alarm_phase = not self._alarm_phase
+        self._restyle()
 
     def set_unavailable(self, detail: str = "") -> None:
+        self.set_alarm(False)
         super().set_unavailable(detail)
-        self.setToolTip("Batarya telemetrisi bekleniyor")
+        tooltip = t("battery.tooltip.waiting", self._language)
+        if tooltip != self.toolTip():
+            self.setToolTip(tooltip)
 
     def _level_color(self) -> str:
         if not self._theme:
@@ -316,6 +408,32 @@ class BatteryMeter(SignalMeter):
         if self._value < 30:
             return self._theme.warning
         return self._theme.success
+
+    def _restyle(self) -> None:
+        super()._restyle()
+        if not self._theme or not self._alarm_active:
+            return
+        danger = QColor(self._theme.danger)
+        if self._alarm_phase:
+            color = self._theme.danger
+            border = self._theme.danger
+            background = (
+                f"rgba({danger.red()}, {danger.green()}, {danger.blue()}, 0.28)"
+            )
+        else:
+            color = self._theme.muted_text
+            border = "transparent"
+            background = "transparent"
+        self.value.setStyleSheet(
+            f"""
+            color: {color};
+            background: {background};
+            border: 1px solid {border};
+            border-radius: 4px;
+            padding: 1px 6px;
+            font-weight: 900;
+            """
+        )
 
 
 def action_button(text: str, role: str = "") -> QPushButton:

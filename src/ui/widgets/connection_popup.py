@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 from src.models.connections import ConnectionStatus
+from src.ui.i18n import connection_status_text, t
 from src.ui.themes.style import ThemePalette
 
 
@@ -29,33 +30,34 @@ class ConnectionPopup(QDialog):
     disconnect_requested = pyqtSignal(str)
     settings_requested = pyqtSignal()
 
-    TITLES = {
-        "server": "TEKNOFEST SUNUCU BAĞLANTISI",
-        "telemetry": "TELEMETRİ BAĞLANTISI",
-        "video": "VİDEO BAĞLANTISI",
-        "autopilot": "OTOPİLOT BAĞLANTISI",
-        "gps": "GPS BAĞLANTISI",
-        "orin": "ORIN UYGULAMA BAĞLANTISI",
-    }
-
-    def __init__(self, theme: ThemePalette, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        theme: ThemePalette,
+        parent: QWidget | None = None,
+        *,
+        language: str = "tr",
+    ) -> None:
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setObjectName("ConnectionPopup")
         self.setMinimumWidth(370)
         self._theme = theme
+        self._language = language
         self._channel = ""
+        self._status: ConnectionStatus | None = None
         self._busy = False
         self._can_disconnect = False
         self._build_ui()
         self.set_theme(theme)
+        self._retranslate_static()
 
     @property
     def channel(self) -> str:
         return self._channel
 
     def show_status(self, status: ConnectionStatus) -> None:
+        self._status = status
         self._channel = status.channel
-        self.title_label.setText(self.TITLES.get(status.channel, status.channel.upper()))
+        self._retranslate_channel()
         self._apply_status(status)
         self.endpoint_input.setText(status.endpoint)
         self.timeout_input.setValue(max(0.1, float(status.timeout_s or 5.0)))
@@ -65,18 +67,41 @@ class ConnectionPopup(QDialog):
         is_server = status.channel == "server"
         self.endpoint_input.setReadOnly(False)
         self.endpoint_label.setText(
-            "TEKNOFEST adresi" if is_server else ("Kaynak URI" if is_video else "MAVLink adresi")
+            t(
+                "connection.label.server_address"
+                if is_server
+                else (
+                    "connection.label.video_source"
+                    if is_video
+                    else "connection.label.mavlink_address"
+                ),
+                self._language,
+            )
         )
-        self.timeout_label.setText("Akış zaman aşımı" if is_video else "Zaman aşımı")
+        self.timeout_label.setText(
+            t(
+                "connection.label.stream_timeout"
+                if is_video
+                else "connection.label.timeout",
+                self._language,
+            )
+        )
         self.timeout_input.setSuffix(" s")
 
         self.baud_label.setVisible(is_vehicle)
         self.baud_input.setVisible(is_vehicle)
-        self.auto_connect.setVisible(is_vehicle or is_server)
+        self.auto_connect.setVisible(is_vehicle or is_server or is_video)
         self.auto_connect.setText(
-            "Uygulama açıldığında AREF telemetri hattına otomatik bağlan"
-            if is_vehicle
-            else "Uygulama açıldığında otomatik bağlan"
+            t(
+                "connection.auto.vehicle"
+                if is_vehicle
+                else (
+                    "connection.auto.video"
+                    if is_video
+                    else "connection.auto.default"
+                ),
+                self._language,
+            )
         )
         self.baud_input.setValue(int(status.options.get("baud", 115200)))
         self.auto_connect.setChecked(bool(status.options.get("auto_connect", False)))
@@ -94,7 +119,9 @@ class ConnectionPopup(QDialog):
             widget.setVisible(is_server)
         self.username_input.setText(str(status.options.get("username", "")))
         self.password_input.clear()
-        self.password_input.setPlaceholderText("Değiştirmemek için boş bırakın")
+        self.password_input.setPlaceholderText(
+            t("connection.password.keep", self._language)
+        )
         self.team_number_input.setValue(int(status.options.get("team_number", 1)))
         self.telemetry_period_input.setValue(
             int(status.options.get("telemetry_period_ms", 1000))
@@ -115,10 +142,19 @@ class ConnectionPopup(QDialog):
         self._sync_reconnect_label(status)
         self.set_busy(False)
 
+    def set_language(self, language: str) -> None:
+        self._language = language
+        self._retranslate_static()
+        self._retranslate_channel()
+        if self._status is not None:
+            self._apply_status(self._status)
+            self._sync_reconnect_label(self._status)
+
     def refresh_status(self, status: ConnectionStatus) -> None:
-        """Canlı sağlık bilgisini, kullanıcının form değerlerini ezmeden yeniler."""
+        """Refresh live health without overwriting operator-edited form values."""
         if status.channel != self._channel:
             return
+        self._status = status
         self._apply_status(status)
         self._can_disconnect = status.can_disconnect
         if not self._busy:
@@ -145,12 +181,14 @@ class ConnectionPopup(QDialog):
             """
         )
 
-    def set_busy(self, busy: bool, message: str = "Bağlantı deneniyor…") -> None:
+    def set_busy(self, busy: bool, message: str | None = None) -> None:
         self._busy = bool(busy)
         self.reconnect_button.setDisabled(busy)
         self.disconnect_button.setDisabled(busy or not self._can_disconnect)
         if busy:
-            self.result_label.setText(message)
+            self.result_label.setText(
+                message or t("connection.busy.connecting", self._language)
+            )
             self.result_label.setStyleSheet(f"color: {self._theme.warning};")
 
     def finish_operation(
@@ -191,11 +229,11 @@ class ConnectionPopup(QDialog):
         form.setContentsMargins(0, 0, 0, 0)
         form.setHorizontalSpacing(10)
         form.setVerticalSpacing(6)
-        self.endpoint_label = QLabel("Adres", self)
+        self.endpoint_label = QLabel(self)
         self.endpoint_input = QLineEdit(self)
         form.addRow(self.endpoint_label, self.endpoint_input)
 
-        self.timeout_label = QLabel("Zaman aşımı", self)
+        self.timeout_label = QLabel(self)
         self.timeout_input = QDoubleSpinBox(self)
         self.timeout_input.setRange(1.0, 120.0)
         self.timeout_input.setDecimals(0)
@@ -203,53 +241,53 @@ class ConnectionPopup(QDialog):
         self.timeout_input.setSuffix(" s")
         form.addRow(self.timeout_label, self.timeout_input)
 
-        self.username_label = QLabel("Kullanıcı adı", self)
+        self.username_label = QLabel(self)
         self.username_input = QLineEdit(self)
         form.addRow(self.username_label, self.username_input)
 
-        self.password_label = QLabel("Şifre", self)
+        self.password_label = QLabel(self)
         self.password_input = QLineEdit(self)
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
         form.addRow(self.password_label, self.password_input)
 
-        self.team_number_label = QLabel("Takım numarası", self)
+        self.team_number_label = QLabel(self)
         self.team_number_input = QSpinBox(self)
         self.team_number_input.setRange(1, 9999)
         form.addRow(self.team_number_label, self.team_number_input)
 
-        self.telemetry_period_label = QLabel("Telemetri periyodu", self)
+        self.telemetry_period_label = QLabel(self)
         self.telemetry_period_input = QSpinBox(self)
         self.telemetry_period_input.setRange(500, 60_000)
         self.telemetry_period_input.setSingleStep(100)
         self.telemetry_period_input.setSuffix(" ms")
         form.addRow(self.telemetry_period_label, self.telemetry_period_input)
 
-        self.baud_label = QLabel("Baud", self)
+        self.baud_label = QLabel(self)
         self.baud_input = QSpinBox(self)
         self.baud_input.setRange(1200, 4_000_000)
         self.baud_input.setSingleStep(9600)
         form.addRow(self.baud_label, self.baud_input)
 
-        self.source_type_label = QLabel("Kaynak türü", self)
+        self.source_type_label = QLabel(self)
         self.source_type_input = QComboBox(self)
         self.source_type_input.addItems(
             ["http", "udp", "rtsp", "usb", "file", "pipeline"]
         )
         form.addRow(self.source_type_label, self.source_type_input)
 
-        self.codec_label = QLabel("Codec", self)
+        self.codec_label = QLabel(self)
         self.codec_input = QComboBox(self)
         self.codec_input.addItems(["mjpeg", "h265", "h264"])
         form.addRow(self.codec_label, self.codec_input)
 
-        self.video_latency_label = QLabel("Pipeline gecikmesi", self)
+        self.video_latency_label = QLabel(self)
         self.video_latency_input = QSpinBox(self)
         self.video_latency_input.setRange(0, 10_000)
         self.video_latency_input.setSuffix(" ms")
         form.addRow(self.video_latency_label, self.video_latency_input)
         root.addLayout(form)
 
-        self.auto_connect = QCheckBox("Uygulama açıldığında otomatik bağlan", self)
+        self.auto_connect = QCheckBox(self)
         root.addWidget(self.auto_connect)
         self.result_label = QLabel("", self)
         self.result_label.setWordWrap(True)
@@ -258,10 +296,10 @@ class ConnectionPopup(QDialog):
 
         buttons = QHBoxLayout()
         buttons.setSpacing(6)
-        self.settings_button = QPushButton("Tüm Ayarlar", self)
-        self.disconnect_button = QPushButton("Bağlantıyı Kes", self)
+        self.settings_button = QPushButton(self)
+        self.disconnect_button = QPushButton(self)
         self.disconnect_button.setProperty("role", "danger")
-        self.reconnect_button = QPushButton("Tekrar Dene", self)
+        self.reconnect_button = QPushButton(self)
         self.reconnect_button.setProperty("role", "primary")
         buttons.addWidget(self.settings_button)
         buttons.addStretch(1)
@@ -291,6 +329,7 @@ class ConnectionPopup(QDialog):
                 codec=self.codec_input.currentText(),
                 latency_ms=self.video_latency_input.value(),
                 frame_timeout_s=self.timeout_input.value(),
+                auto_connect=self.auto_connect.isChecked(),
             )
         elif self._channel == "server":
             options.update(
@@ -305,9 +344,85 @@ class ConnectionPopup(QDialog):
     def _apply_status(self, status: ConnectionStatus) -> None:
         marker = "●"
         color = self._theme.success if status.connected else self._theme.danger
-        self.summary_label.setText(f"{marker}  {status.summary}")
+        summary, detail = connection_status_text(status, self._language)
+        self.summary_label.setText(f"{marker}  {summary}")
         self.summary_label.setStyleSheet(f"color: {color}; font-weight: 700;")
-        self.detail_label.setText(status.detail)
+        self.detail_label.setText(detail)
 
     def _sync_reconnect_label(self, status: ConnectionStatus) -> None:
-        self.reconnect_button.setText("Yeniden Bağlan" if status.connected else "Bağlan")
+        self.reconnect_button.setText(
+            t(
+                "connection.action.reconnect"
+                if status.connected
+                else "connection.action.connect",
+                self._language,
+            )
+        )
+
+    def _retranslate_static(self) -> None:
+        self.endpoint_label.setText(t("connection.label.address", self._language))
+        self.timeout_label.setText(t("connection.label.timeout", self._language))
+        self.username_label.setText(t("connection.label.username", self._language))
+        self.password_label.setText(t("connection.label.password", self._language))
+        self.team_number_label.setText(t("connection.label.team_number", self._language))
+        self.telemetry_period_label.setText(
+            t("connection.label.telemetry_period", self._language)
+        )
+        self.baud_label.setText(t("connection.label.baud", self._language))
+        self.source_type_label.setText(t("connection.label.source_type", self._language))
+        self.codec_label.setText(t("connection.label.codec", self._language))
+        self.video_latency_label.setText(
+            t("connection.label.pipeline_latency", self._language)
+        )
+        self.password_input.setPlaceholderText(
+            t("connection.password.keep", self._language)
+        )
+        self.auto_connect.setText(t("connection.auto.default", self._language))
+        self.settings_button.setText(t("connection.action.settings", self._language))
+        self.disconnect_button.setText(
+            t("connection.action.disconnect", self._language)
+        )
+        if self._status is None:
+            self.reconnect_button.setText(t("connection.action.retry", self._language))
+
+    def _retranslate_channel(self) -> None:
+        if not self._channel:
+            return
+        self.title_label.setText(
+            t(f"connection.title.{self._channel}", self._language)
+        )
+        is_vehicle = self._channel in VEHICLE_CHANNELS
+        is_video = self._channel == "video"
+        is_server = self._channel == "server"
+        self.endpoint_label.setText(
+            t(
+                "connection.label.server_address"
+                if is_server
+                else (
+                    "connection.label.video_source"
+                    if is_video
+                    else "connection.label.mavlink_address"
+                ),
+                self._language,
+            )
+        )
+        self.timeout_label.setText(
+            t(
+                "connection.label.stream_timeout"
+                if is_video
+                else "connection.label.timeout",
+                self._language,
+            )
+        )
+        self.auto_connect.setText(
+            t(
+                "connection.auto.vehicle"
+                if is_vehicle
+                else (
+                    "connection.auto.video"
+                    if is_video
+                    else "connection.auto.default"
+                ),
+                self._language,
+            )
+        )

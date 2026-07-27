@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
 )
 
 from src.models.video import VideoStreamStats
-from src.ui.config.i18n import t
+from src.ui.i18n import t
 from src.ui.themes.style import ThemePalette
 from src.ui.widgets.common import PanelFrame
 

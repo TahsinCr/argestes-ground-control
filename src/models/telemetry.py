@@ -10,7 +10,7 @@ from src.core.abstracts import Model
 
 @dataclass(frozen=True, slots=True)
 class TargetTrack(Model):
-    """SİHA görüntü işleme hattının ürettiği hedef kutusu."""
+    """Target box produced by the aircraft vision pipeline."""
 
     locked: bool = False
     center_x: int = 0
@@ -83,6 +83,9 @@ class TelemetrySnapshot(Model):
     position_received_at: datetime | None = None
     uav_time_received_at: datetime | None = None
     link_quality_received_at: datetime | None = None
+    attitude_received_at: datetime | None = None
+    global_position_received_at: datetime | None = None
+    hud_received_at: datetime | None = None
     home_latitude: float | None = None
     home_longitude: float | None = None
     radio_local_rssi: int | None = None
@@ -207,6 +210,14 @@ class TelemetrySnapshot(Model):
             payload["uav_time_received_at"] = self.uav_time_received_at.isoformat()
         if self.link_quality_received_at is not None:
             payload["link_quality_received_at"] = self.link_quality_received_at.isoformat()
+        if self.attitude_received_at is not None:
+            payload["attitude_received_at"] = self.attitude_received_at.isoformat()
+        if self.global_position_received_at is not None:
+            payload["global_position_received_at"] = (
+                self.global_position_received_at.isoformat()
+            )
+        if self.hud_received_at is not None:
+            payload["hud_received_at"] = self.hud_received_at.isoformat()
         return payload
 
     @classmethod

@@ -14,7 +14,7 @@ from src.core.mavlink.filter import (
 
 @dataclass(frozen=True, slots=True)
 class MavlinkMessageEnvelope:
-    """Bir mesajın bir kez çıkarılan routing metadata'sı ve ham pymavlink nesnesi."""
+    """Once-extracted routing metadata and the raw pymavlink message."""
 
     sequence: int
     message: Any

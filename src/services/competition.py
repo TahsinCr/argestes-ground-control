@@ -22,7 +22,7 @@ from src.models.competition import (
 )
 from src.models.telemetry import TelemetrySnapshot
 from src.services.contracts.competition import CompetitionService
-from src.services.contracts.mission import MissionService
+from src.services.planner import PlannerService
 from src.services.contracts.telemetry import TelemetryService
 from src.services.contracts.vehicle import VehicleService
 from src.services.logging_service import ServiceLogger
@@ -33,15 +33,16 @@ class CompetitionProtocolError(RuntimeError):
 
 
 class TeknofestCompetitionService(CompetitionService):
-    """2026 TEKNOFEST HTTP protokolünü merkezi backend durumuna bağlar."""
+    """Connect the 2026 TEKNOFEST HTTP protocol to central backend state."""
 
-    REFERENCE_REFRESH_PERIOD_S = 5.0
+    HSS_REFRESH_PERIOD_S = 1.0
+    QR_REFRESH_PERIOD_S = 5.0
 
     def __init__(
         self,
         config: CompetitionServerConfig,
         telemetry: TelemetryService,
-        mission: MissionService,
+        planner: PlannerService,
         vehicle: VehicleService,
         logger: ServiceLogger | None = None,
         *,
@@ -51,7 +52,7 @@ class TeknofestCompetitionService(CompetitionService):
             raise ValueError("Telemetri tazelik zaman aşımı pozitif olmalı")
         self._config = config
         self._telemetry = telemetry
-        self._mission = mission
+        self._planner = planner
         self._vehicle = vehicle
         self._logger = logger
         self._telemetry_freshness_timeout_s = telemetry_freshness_timeout_s
@@ -75,7 +76,10 @@ class TeknofestCompetitionService(CompetitionService):
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._opener = self._new_opener()
-        self._last_reference_refresh = 0.0
+        self._last_hss_refresh = 0.0
+        self._last_qr_refresh = 0.0
+        self._last_connection_error_signature = ""
+        self._last_connection_error_log_at = 0.0
 
     @property
     def state(self) -> CompetitionConnectionState:
@@ -149,16 +153,17 @@ class TeknofestCompetitionService(CompetitionService):
             self._thread = None
             self._opener = self._new_opener()
             self._telemetry.patch(server_link=False, server_time=None)
-            self._mission.replace_contacts((), source="teknofest")
-            self._mission.replace_source_overlays("teknofest-hss", ())
-            self._mission.replace_source_overlays("teknofest-qr", ())
+            self._planner.replace_contacts((), source="teknofest")
+            self._planner.replace_source_overlays("teknofest-hss", ())
+            self._planner.replace_source_overlays("teknofest-qr", ())
             with self._lock:
                 had_hss = bool(self._hss_zones)
                 had_qr = self._qr_coordinate is not None
                 self._competitors = ()
                 self._hss_zones = ()
                 self._qr_coordinate = None
-                self._last_reference_refresh = 0.0
+                self._last_hss_refresh = 0.0
+                self._last_qr_refresh = 0.0
             if had_hss:
                 self._hss_updated.publish_isolated(())
             if had_qr:
@@ -182,6 +187,9 @@ class TeknofestCompetitionService(CompetitionService):
             return
         self._stop_event.clear()
         self._opener = self._new_opener()
+        with self._lock:
+            self._last_connection_error_signature = ""
+            self._last_connection_error_log_at = 0.0
         self._publish_state(running=True, last_error="")
         self._thread = threading.Thread(
             target=self._run,
@@ -225,80 +233,104 @@ class TeknofestCompetitionService(CompetitionService):
                         severity="success",
                         details={"endpoint": self.config.base_url, "team_number": self.config.team_number},
                     )
-                self._refresh_reference_data_if_due(force=True)
+                initial_snapshot = self._telemetry.current
+                initial_source_timeout_s = self._source_timeout_s()
+                initial_feed_ready = (
+                    self._vehicle.connected
+                    and initial_snapshot.has_fresh_vehicle_telemetry(
+                        initial_source_timeout_s
+                    )
+                    and self._vehicle_time(initial_snapshot) is not None
+                )
+                # When live vehicle data is already available, let the fake
+                # server see the ownship position before requesting nearby
+                # reference data. Real competition servers are unaffected.
+                if not initial_feed_ready:
+                    self._refresh_reference_data_if_due(force=True)
                 first_telemetry_sent = False
+                next_telemetry_at = 0.0
 
                 while not self._stop_event.is_set():
                     started = time.monotonic()
-                    snapshot = self._telemetry.current
-                    vehicle_time = self._vehicle_time(snapshot)
-                    source_timeout_s = self._source_timeout_s()
-                    vehicle_connected = self._vehicle.connected
-                    feed_ready = (
-                        vehicle_connected
-                        and snapshot.has_fresh_vehicle_telemetry(source_timeout_s)
-                    )
-                    if feed_ready and vehicle_time is not None:
-                        outbound = self._telemetry_payload(snapshot, vehicle_time)
-                        self._log_telemetry_tx(outbound)
-                        response = self._request_json(
-                            "POST",
-                            "/api/telemetri_gonder",
-                            outbound,
-                        )
-                        self._consume_telemetry_response(response)
-                        if not first_telemetry_sent:
-                            first_telemetry_sent = True
-                            self._refresh_reference_data_if_due(force=True)
-                        announced_waiting_for_vehicle_data = False
-                    elif not announced_waiting_for_vehicle_data:
-                        announced_waiting_for_vehicle_data = True
-                        if self._logger:
-                            self._logger.event(
-                                "competition.telemetry_blocked",
-                                "TEKNOFEST telemetri TX durduruldu; canlı SİHA telemetri hattı bekleniyor",
-                                severity="warning",
-                                details={
-                                    "reason": self._feed_block_reason(snapshot, source_timeout_s),
-                                    "vehicle_connected": vehicle_connected,
-                                    "source_timeout_s": source_timeout_s,
-                                },
-                            )
-                    if not feed_ready or vehicle_time is None:
-                        if self.state.telemetry_tx_active:
-                            self._publish_state(telemetry_tx_active=False)
-                        self._log_protocol(
-                            "competition.server_time_request_tx",
-                            "TX TEKNOFEST bağlantı sağlığı/saat isteği gönderiliyor",
-                            {},
-                            severity="debug",
-                        )
-                        health = self._request_json("GET", "/api/sunucusaati")
-                        health_time = self._server_time(health)
-                        self._telemetry.patch(
-                            server_link=True,
-                            server_time=health_time,
-                        )
-                        self._log_protocol(
-                            "competition.server_time_rx",
-                            "RX TEKNOFEST sunucu saati/bağlantı sağlığı alındı",
-                            {"server_time": health_time.isoformat() if health_time else None},
-                            severity="debug",
-                        )
-                        self._publish_state(
-                            connected=True,
-                            authenticated=True,
-                            running=True,
-                            last_error="",
-                            last_success_at=datetime.now(UTC),
-                        )
-                    self._refresh_reference_data_if_due()
                     period_s = self.config.telemetry_period_ms / 1000.0
-                    self._stop_event.wait(max(0.0, period_s - (time.monotonic() - started)))
+                    if started >= next_telemetry_at:
+                        snapshot = self._telemetry.current
+                        vehicle_time = self._vehicle_time(snapshot)
+                        source_timeout_s = self._source_timeout_s()
+                        vehicle_connected = self._vehicle.connected
+                        feed_ready = (
+                            vehicle_connected
+                            and snapshot.has_fresh_vehicle_telemetry(source_timeout_s)
+                        )
+                        if feed_ready and vehicle_time is not None:
+                            outbound = self._telemetry_payload(snapshot, vehicle_time)
+                            self._log_telemetry_tx(outbound)
+                            response = self._request_json(
+                                "POST",
+                                "/api/telemetri_gonder",
+                                outbound,
+                            )
+                            self._consume_telemetry_response(response)
+                            if not first_telemetry_sent:
+                                first_telemetry_sent = True
+                                self._refresh_reference_data_if_due(force=True)
+                            announced_waiting_for_vehicle_data = False
+                        elif not announced_waiting_for_vehicle_data:
+                            announced_waiting_for_vehicle_data = True
+                            if self._logger:
+                                self._logger.event(
+                                    "competition.telemetry_blocked",
+                                    "TEKNOFEST telemetri TX durduruldu; canlı SİHA telemetri hattı bekleniyor",
+                                    severity="warning",
+                                    details={
+                                        "reason": self._feed_block_reason(snapshot, source_timeout_s),
+                                        "vehicle_connected": vehicle_connected,
+                                        "source_timeout_s": source_timeout_s,
+                                    },
+                                )
+                        if not feed_ready or vehicle_time is None:
+                            if self.state.telemetry_tx_active:
+                                self._publish_state(telemetry_tx_active=False)
+                            self._log_protocol(
+                                "competition.server_time_request_tx",
+                                "TX TEKNOFEST bağlantı sağlığı/saat isteği gönderiliyor",
+                                {},
+                                severity="debug",
+                            )
+                            health = self._request_json("GET", "/api/sunucusaati")
+                            health_time = self._server_time(health)
+                            self._telemetry.patch(
+                                server_link=True,
+                                server_time=health_time,
+                            )
+                            self._log_protocol(
+                                "competition.server_time_rx",
+                                "RX TEKNOFEST sunucu saati/bağlantı sağlığı alındı",
+                                {"server_time": health_time.isoformat() if health_time else None},
+                                severity="debug",
+                            )
+                            self._publish_state(
+                                connected=True,
+                                authenticated=True,
+                                running=True,
+                                last_error="",
+                                last_success_at=datetime.now(UTC),
+                            )
+                        next_telemetry_at = started + period_s
+                    self._refresh_reference_data_if_due()
+                    now = time.monotonic()
+                    with self._lock:
+                        next_hss_at = (
+                            self._last_hss_refresh + self.HSS_REFRESH_PERIOD_S
+                        )
+                    next_wakeup = min(next_telemetry_at, next_hss_at)
+                    self._stop_event.wait(max(0.0, next_wakeup - now))
             except Exception as exc:
                 if self._stop_event.is_set():
                     break
                 message = str(exc) or exc.__class__.__name__
+                self._replace_hss_zones(())
+                self._replace_qr_coordinate(None)
                 self._telemetry.patch(server_link=False, server_time=None)
                 self._publish_state(
                     connected=False,
@@ -307,13 +339,7 @@ class TeknofestCompetitionService(CompetitionService):
                     telemetry_tx_active=False,
                     last_error=message,
                 )
-                if self._logger:
-                    self._logger.event(
-                        "competition.connection_failed",
-                        f"TEKNOFEST sunucu bağlantısı kesildi: {message}",
-                        severity="danger",
-                        details={"endpoint": self.config.base_url},
-                    )
+                self._log_connection_failure(message)
                 self._opener = self._new_opener()
                 self._stop_event.wait(2.0)
 
@@ -406,7 +432,7 @@ class TeknofestCompetitionService(CompetitionService):
         with self._lock:
             previous_count = len(self._competitors)
             self._competitors = result
-        self._mission.replace_contacts(
+        self._planner.replace_contacts(
             (contact.to_map_contact() for contact in result),
             source="teknofest",
         )
@@ -457,18 +483,18 @@ class TeknofestCompetitionService(CompetitionService):
             "takim_numarasi": self.config.team_number,
             "iha_enlem": round(snapshot.latitude, 7),
             "iha_boylam": round(snapshot.longitude, 7),
-            "iha_irtifa": round(snapshot.altitude_agl, 2),
+            "iha_irtifa": round(max(0.0, snapshot.altitude_agl), 2),
             "iha_dikilme": round(snapshot.pitch, 2),
             "iha_yonelme": round(snapshot.heading % 360.0, 2),
             "iha_yatis": round(snapshot.roll, 2),
-            "iha_hiz": round(snapshot.ground_speed, 2),
+            "iha_hiz": round(max(0.0, snapshot.ground_speed), 2),
             "iha_batarya": max(0, min(100, int(snapshot.battery_percent))),
             "iha_otonom": int(autonomous),
             "iha_kilitlenme": int(track.locked),
-            "hedef_merkez_X": int(track.center_x),
-            "hedef_merkez_Y": int(track.center_y),
-            "hedef_genislik": int(track.width),
-            "hedef_yukseklik": int(track.height),
+            "hedef_merkez_X": max(0, int(track.center_x)),
+            "hedef_merkez_Y": max(0, int(track.center_y)),
+            "hedef_genislik": max(0, int(track.width)),
+            "hedef_yukseklik": max(0, int(track.height)),
             "gps_saati": {
                 "saat": timestamp.hour,
                 "dakika": timestamp.minute,
@@ -533,78 +559,108 @@ class TeknofestCompetitionService(CompetitionService):
     def _refresh_reference_data_if_due(self, *, force: bool = False) -> None:
         now = time.monotonic()
         with self._lock:
-            if not force and now - self._last_reference_refresh < self.REFERENCE_REFRESH_PERIOD_S:
-                return
-            self._last_reference_refresh = now
+            poll_hss = (
+                force
+                or now - self._last_hss_refresh >= self.HSS_REFRESH_PERIOD_S
+            )
+            poll_qr = (
+                force
+                or now - self._last_qr_refresh >= self.QR_REFRESH_PERIOD_S
+            )
+            if poll_hss:
+                self._last_hss_refresh = now
+            if poll_qr:
+                self._last_qr_refresh = now
+        if not poll_hss and not poll_qr:
+            return
 
-        self._log_protocol(
-            "competition.hss_request_tx",
-            "TX TEKNOFEST HSS koordinat isteği gönderiliyor",
-            {},
-            severity="debug",
-        )
-        hss_payload = self._request_json("GET", "/api/hss_koordinatlari")
-        if not isinstance(hss_payload, dict):
-            raise CompetitionProtocolError("HSS yanıtı JSON nesnesi değil")
-        raw_hss = hss_payload.get("hss_koordinat_bilgileri", [])
-        if not isinstance(raw_hss, list):
-            raise CompetitionProtocolError("hss_koordinat_bilgileri liste olmalı")
-        zones: list[HssZone] = []
-        for item in raw_hss:
-            if not isinstance(item, dict):
-                continue
+        if poll_hss:
+            self._log_protocol(
+                "competition.hss_request_tx",
+                "TX TEKNOFEST HSS koordinat isteği gönderiliyor",
+                {},
+                severity="debug",
+            )
+            hss_payload = self._request_json("GET", "/api/hss_koordinatlari")
+            if not isinstance(hss_payload, dict):
+                raise CompetitionProtocolError("HSS yanıtı JSON nesnesi değil")
+            raw_hss = hss_payload.get("hss_koordinat_bilgileri", [])
+            if not isinstance(raw_hss, list):
+                raise CompetitionProtocolError("hss_koordinat_bilgileri liste olmalı")
+            zones: list[HssZone] = []
+            for item in raw_hss:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    zones.append(HssZone.from_payload(item))
+                except (KeyError, TypeError, ValueError):
+                    continue
+            zones.sort(key=lambda item: item.identifier)
+            hss_result = tuple(zones)
+            self._replace_hss_zones(hss_result)
+            self._log_protocol(
+                "competition.hss_rx",
+                f"RX TEKNOFEST HSS koordinatları alındı ({len(hss_result)})",
+                {"hss_count": len(hss_result)},
+                severity="debug",
+            )
+
+        if poll_qr:
+            self._log_protocol(
+                "competition.qr_request_tx",
+                "TX TEKNOFEST QR koordinat isteği gönderiliyor",
+                {},
+                severity="debug",
+            )
+            qr_payload = self._request_json("GET", "/api/qr_koordinati")
+            if not isinstance(qr_payload, dict):
+                raise CompetitionProtocolError("QR koordinatı yanıtı JSON nesnesi değil")
             try:
-                zones.append(HssZone.from_payload(item))
-            except (KeyError, TypeError, ValueError):
-                continue
-        zones.sort(key=lambda item: item.identifier)
-        hss_result = tuple(zones)
-        self._mission.replace_source_overlays(
-            "teknofest-hss",
-            (zone.to_overlay() for zone in hss_result),
-        )
-        with self._lock:
-            hss_changed = hss_result != self._hss_zones
-            self._hss_zones = hss_result
-        if hss_changed:
-            self._hss_updated.publish_isolated(hss_result)
-        self._log_protocol(
-            "competition.hss_rx",
-            f"RX TEKNOFEST HSS koordinatları alındı ({len(hss_result)})",
-            {"hss_count": len(hss_result)},
-            severity="debug",
-        )
+                qr = QrCoordinate.from_payload(qr_payload)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise CompetitionProtocolError("QR koordinatı geçersiz") from exc
+            self._replace_qr_coordinate(qr)
+            self._log_protocol(
+                "competition.qr_rx",
+                "RX TEKNOFEST QR koordinatı alındı",
+                {"latitude": qr.latitude, "longitude": qr.longitude},
+                severity="debug",
+            )
 
-        self._log_protocol(
-            "competition.qr_request_tx",
-            "TX TEKNOFEST QR koordinat isteği gönderiliyor",
-            {},
-            severity="debug",
-        )
-        qr_payload = self._request_json("GET", "/api/qr_koordinati")
-        if not isinstance(qr_payload, dict):
-            raise CompetitionProtocolError("QR koordinatı yanıtı JSON nesnesi değil")
-        try:
-            qr = QrCoordinate.from_payload(qr_payload)
-        except (KeyError, TypeError, ValueError) as exc:
-            raise CompetitionProtocolError("QR koordinatı geçersiz") from exc
-        self._mission.replace_source_overlays("teknofest-qr", (qr.to_overlay(),))
         with self._lock:
-            qr_changed = qr != self._qr_coordinate
-            self._qr_coordinate = qr
-        if qr_changed:
-            self._qr_updated.publish_isolated(qr)
-        self._log_protocol(
-            "competition.qr_rx",
-            "RX TEKNOFEST QR koordinatı alındı",
-            {"latitude": qr.latitude, "longitude": qr.longitude},
-            severity="debug",
-        )
+            hss_count = len(self._hss_zones)
+            qr_available = self._qr_coordinate is not None
         self._publish_state(
-            hss_count=len(hss_result),
-            qr_available=True,
+            hss_count=hss_count,
+            qr_available=qr_available,
             last_success_at=datetime.now(UTC),
         )
+
+    def _replace_hss_zones(self, zones: tuple[HssZone, ...]) -> bool:
+        with self._lock:
+            if zones == self._hss_zones:
+                return False
+        self._planner.replace_source_overlays(
+            "teknofest-hss",
+            (zone.to_overlay() for zone in zones),
+        )
+        with self._lock:
+            self._hss_zones = zones
+        self._hss_updated.publish_isolated(zones)
+        self._publish_state(hss_count=len(zones))
+        return True
+
+    def _replace_qr_coordinate(self, qr: QrCoordinate | None) -> bool:
+        with self._lock:
+            if qr == self._qr_coordinate:
+                return False
+        overlays = () if qr is None else (qr.to_overlay(),)
+        self._planner.replace_source_overlays("teknofest-qr", overlays)
+        with self._lock:
+            self._qr_coordinate = qr
+        self._qr_updated.publish_isolated(qr)
+        self._publish_state(qr_available=qr is not None)
+        return True
 
     def _require_connected(self) -> None:
         state = self.state
@@ -684,6 +740,26 @@ class TeknofestCompetitionService(CompetitionService):
 
     def _publish_state(self, **changes: Any) -> None:
         with self._lock:
-            self._state = replace(self._state, **changes)
+            updated = replace(self._state, **changes)
+            if updated == self._state:
+                return
+            self._state = updated
             snapshot = replace(self._state)
         self._changed.publish_isolated(snapshot)
+
+    def _log_connection_failure(self, message: str) -> None:
+        if self._logger is None:
+            return
+        now = time.monotonic()
+        with self._lock:
+            repeated = message == self._last_connection_error_signature
+            if repeated and now - self._last_connection_error_log_at < 30.0:
+                return
+            self._last_connection_error_signature = message
+            self._last_connection_error_log_at = now
+        self._logger.event(
+            "competition.connection_failed",
+            f"TEKNOFEST sunucu bağlantısı kesildi: {message}",
+            severity="danger",
+            details={"endpoint": self.config.base_url},
+        )

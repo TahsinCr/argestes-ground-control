@@ -47,11 +47,11 @@ class _Route:
 
 
 class MavlinkMessageRouter(Service):
-    """Bağlantının tek okuyucusu ve filtreli MAVLink mesaj omurgası.
+    """Single connection reader and filtered MAVLink message backbone.
 
-    `messages` eski filtresiz abonelikler için korunur. Yeni tüketiciler `subscribe`
-    ile MAVLink metadata filtresi vermelidir; böylece yalnızca ilgili callback'ler
-    çalıştırılır.
+    ``messages`` remains available for legacy unfiltered subscriptions. New
+    consumers should pass MAVLink metadata filters to ``subscribe`` so only
+    relevant callbacks run.
     """
 
     def __init__(
@@ -106,7 +106,7 @@ class MavlinkMessageRouter(Service):
 
     @property
     def sequence(self) -> int:
-        """Bir istek gönderilmeden önce cevap sınırı almak için son sıra."""
+        """Return the last sequence used as a response boundary before a request."""
         with self._condition:
             return self._sequence
 
@@ -164,7 +164,7 @@ class MavlinkMessageRouter(Service):
         callback: Callable[[Any], None],
         message_filter: MavlinkMessageFilter | MessageTypeInput | None = None,
     ) -> Subscription:
-        """Callback'i tip/kaynak/component/msg-id/condition filtresiyle bağlar."""
+        """Bind a callback with type, source, component, ID and condition filters."""
         if not callable(callback):
             raise TypeError("MAVLink callback callable olmalı")
         normalized_filter = coerce_message_filter(message_filter)
@@ -306,8 +306,8 @@ class MavlinkMessageRouter(Service):
             self._delivery_window.append((1, 0))
             return
         delta = (sequence - previous) & 0xFF
-        # 64'ten büyük ters sıçramalar yeniden başlama veya sırasız paket kabul
-        # edilir; gerçek kayıp olarak sayılıp yüzdeyi yanlış düşürmez.
+        # Backward jumps larger than 64 indicate a restart or out-of-order
+        # packet and must not be counted as real loss that lowers the metric.
         dropped = delta - 1 if 1 < delta <= 64 else 0
         self._estimated_dropped_messages += dropped
         self._delivery_window.append((1, dropped))

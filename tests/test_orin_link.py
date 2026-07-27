@@ -18,18 +18,18 @@ from src.models.competition import CompetitionConnectionState
 from src.models.orin import OrinCommandReceipt, OrinConnectionState
 from src.models.vehicle import VehicleConnectionState
 from src.services.logging_service import LoggingService
-from src.services.catalogs import configured_orin_commands
-from src.services.orchestration.commands import DispatchCommandService
-from src.services.orchestration.connections import BackendConnectionControlService
-from src.services.processing.parameters import MutableParameterService
-from src.services.processing.telemetry import MutableTelemetryService
+from src.services.vehicle.orin import configured_orin_commands
+from src.services.commands import DispatchCommandService
+from src.services.connections import BackendConnectionControlService
+from src.services.vehicle.parameters import MutableParameterService
+from src.services.vehicle.telemetry import MutableTelemetryService
 from src.services.settings import SettingsService
 from src.services.vehicle.orin import MavlinkOrinService
 from src.services.video import MutableVideoService
 
 
 class OrinLinkTests(unittest.TestCase):
-    def test_yki_catalog_reads_configured_orin_command_names(self) -> None:
+    def test_yki_reads_configured_orin_command_names(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "config.json"
             config_path.write_text(

@@ -33,12 +33,12 @@ _MAX_PACKET_BYTES = _CHUNK_SIZE * _MAX_FRAGMENT_COUNT
 
 
 class MavlinkApplicationProtocolError(ValueError):
-    """Uygulama kanalındaki bozuk veya uyumsuz bir paketi bildirir."""
+    """Report a malformed or incompatible application-channel packet."""
 
 
 @dataclass(frozen=True, slots=True)
 class MavlinkApplicationPacket:
-    """MAVLink taşıyıcısından bağımsız, genişletilebilir uygulama paketi."""
+    """Extensible application packet independent from MAVLink transport."""
 
     packet_type: str
     payload: dict[str, Any] = field(default_factory=dict)
@@ -87,7 +87,7 @@ class _Assembly:
 
 
 class MavlinkApplicationCodec:
-    """V2_EXTENSION'ın 249 baytlık alanında JSON paketlerini güvenle parçalar."""
+    """Safely fragment JSON packets across V2_EXTENSION's 249-byte payload."""
 
     max_packet_bytes = _MAX_PACKET_BYTES
     chunk_size = _CHUNK_SIZE
@@ -190,7 +190,7 @@ class MavlinkApplicationCodec:
 
 
 class MavlinkApplicationAssembler:
-    """Sırası değişebilen fragmentleri kaynak kimliği bazında tek pakette toplar."""
+    """Reassemble out-of-order fragments into one packet per source identity."""
 
     def __init__(self, *, fragment_timeout: float = 10.0) -> None:
         if fragment_timeout <= 0:
@@ -262,10 +262,10 @@ class MavlinkApplicationAssembler:
 
 
 class MavlinkApplicationChannel(Service):
-    """Mevcut MAVLink router üzerinde hedefli, çift yönlü uygulama kanalı.
+    """Targeted bidirectional application channel over an existing MAVLink router.
 
-    Yeni bir seri okuyucu açmaz. Uçuş mesajlarıyla aynı MAVLink bağlantısını ve
-    V2_EXTENSION'ın hedef system/component alanlarını kullanır.
+    It opens no additional serial reader and shares the MAVLink connection and
+    V2_EXTENSION target system/component fields with flight messages.
     """
 
     def __init__(

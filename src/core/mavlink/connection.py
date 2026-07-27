@@ -19,7 +19,7 @@ class MavlinkUnavailableError(RuntimeError):
 
 
 class MavlinkConnection(Service):
-    """pymavlink bağlantısının sahipliğini ve thread-safe I/O erişimini yönetir."""
+    """Own a pymavlink connection and provide thread-safe I/O access."""
 
     def __init__(
         self,
@@ -65,7 +65,7 @@ class MavlinkConnection(Service):
 
     @property
     def mavlink(self) -> Any:
-        """Yüklenen dialect'in MAVLink sabit ve temel mesaj sınıfları."""
+        """MAVLink constants and base message classes from the loaded dialect."""
         return self._load_mavutil().mavlink
 
     @property
@@ -98,7 +98,7 @@ class MavlinkConnection(Service):
         self.connection_changed.publish_isolated(True)
 
     def _wait_vehicle_heartbeat(self, connection: Any) -> Any:
-        """Companion/GCS heartbeat'lerini bağlantı hedefi sanmadan otopilotu bekler."""
+        """Wait for the autopilot without accepting companion or GCS heartbeats."""
         deadline = time.monotonic() + self.endpoint.heartbeat_timeout
         classifier = getattr(connection, "probably_vehicle_heartbeat", None)
         while True:
@@ -123,9 +123,10 @@ class MavlinkConnection(Service):
         blocking: bool = False,
         timeout: float | None = None,
     ) -> Any | None:
-        """pymavlink recv_match type/condition filtrelerini doğrudan sunar.
+        """Expose pymavlink ``recv_match`` type and condition filters directly.
 
-        Router çalışırken doğrudan çağrılmamalıdır; tek okuyucu router olmalıdır.
+        Do not call this directly while the router is running; the router must
+        remain the only reader.
         """
         normalized_types = normalize_message_types(message_types)
         native_types: str | list[str] | None
@@ -161,8 +162,50 @@ class MavlinkConnection(Service):
     def send_named(self, message_name: str, **parameters: Any) -> None:
         self.call_mav(f"{message_name.strip().lower()}_send", **parameters)
 
+    def request_message_rate(
+        self,
+        message_id: int,
+        frequency_hz: float,
+        *,
+        target_system: int | None = None,
+        target_component: int | None = None,
+    ) -> int:
+        """Send the standard command requesting a MAVLink message rate.
+
+        The return value is the period sent to the flight controller in
+        microseconds. Sending is thread-safe; the vehicle layer can monitor
+        command acceptance.
+        """
+
+        normalized_message_id = int(message_id)
+        normalized_frequency = float(frequency_hz)
+        if normalized_message_id < 0:
+            raise ValueError("MAVLink mesaj kimliği negatif olamaz")
+        if not 0.01 <= normalized_frequency <= 1_000.0:
+            raise ValueError("MAVLink mesaj frekansı 0.01..1000 Hz aralığında olmalı")
+        interval_us = max(1, round(1_000_000.0 / normalized_frequency))
+        mavlink = self.mavlink
+        command = int(getattr(mavlink, "MAV_CMD_SET_MESSAGE_INTERVAL", 511))
+        self.call_mav(
+            "command_long_send",
+            self.target_system if target_system is None else int(target_system),
+            self.target_component
+            if target_component is None
+            else int(target_component),
+            command,
+            0,
+            float(normalized_message_id),
+            float(interval_us),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        )
+        return interval_us
+
     def call_mav(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
-        """Bütün pymavlink `raw.mav.*` yazmalarını aynı kilitten geçirir."""
+        """Serialize every pymavlink ``raw.mav.*`` write through one lock."""
         try:
             with self._send_lock:
                 sender_name = method_name.strip()
@@ -177,7 +220,7 @@ class MavlinkConnection(Service):
             raise
 
     def call_raw(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
-        """set_mode gibi mav nesnesi dışındaki yazma işlemlerini serialize eder."""
+        """Serialize writes outside the mav object, such as ``set_mode``."""
         try:
             with self._send_lock:
                 method = getattr(self.raw, method_name.strip(), None)

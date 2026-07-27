@@ -16,12 +16,13 @@ from src.models.parameters import Parameter
 from src.models.telemetry import TelemetrySnapshot
 from src.models.vehicle import VehicleConnectionState, VehicleTransportStats
 from src.services.logging_service import LoggingService
-from src.services.orchestration.commands import DispatchCommandService
-from src.services.processing.parameters import MutableParameterService
-from src.services.processing.parameters import VehicleParameterService
-from src.services.processing.telemetry import TelemetryDecoder, VehicleTelemetryService
+from src.services.commands import DispatchCommandService
+from src.services.vehicle.parameters import MutableParameterService
+from src.services.vehicle.parameters import VehicleParameterService
+from src.services.vehicle.telemetry import TelemetryDecoder, VehicleTelemetryService
 from src.services.vehicle.mavlink import MavlinkVehicleService
 from src.services.video import GStreamerVideoService
+from src.ui.i18n import localized_log_message
 
 
 class _Message(SimpleNamespace):
@@ -78,7 +79,6 @@ class VehicleServiceTests(unittest.TestCase):
         vehicle = _FakeVehicle()
         telemetry = VehicleTelemetryService(vehicle)  # type: ignore[arg-type]
         parameters = VehicleParameterService(
-            [Parameter("KNOWN", 1, "-", "test", "Known")],
             vehicle,  # type: ignore[arg-type]
         )
         telemetry.start()
@@ -111,6 +111,7 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertTrue(snapshot.position_valid)
         self.assertTrue(snapshot.has_valid_position)
         self.assertIsNotNone(snapshot.position_received_at)
+        self.assertIsNotNone(snapshot.global_position_received_at)
 
         snapshot = TelemetryDecoder().apply(
             snapshot,
@@ -124,6 +125,59 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertAlmostEqual(snapshot.local_north_m or 0.0, 145.25)
         self.assertAlmostEqual(snapshot.local_east_m or 0.0, -32.5)
         self.assertAlmostEqual(snapshot.local_down_m or 0.0, -114.6)
+
+    def test_vehicle_requests_a_safe_fast_telemetry_profile(self) -> None:
+        message_types = tuple(MavlinkVehicleService.DEFAULT_STREAM_RATES_HZ)
+        mavlink = SimpleNamespace(
+            **{
+                f"MAVLINK_MSG_ID_{message_type}": index + 1
+                for index, message_type in enumerate(message_types)
+            }
+        )
+
+        class Client:
+            endpoint = SimpleNamespace(uri="test")
+            connection = SimpleNamespace(target_system=7, target_component=1)
+            is_connected = True
+
+            def __init__(self) -> None:
+                self.mavlink = mavlink
+                self.requests: list[tuple[int, float, int, int]] = []
+
+            def request_message_rate(
+                self,
+                message_id,
+                frequency_hz,
+                *,
+                target_system,
+                target_component,
+            ) -> int:
+                self.requests.append(
+                    (
+                        int(message_id),
+                        float(frequency_hz),
+                        int(target_system),
+                        int(target_component),
+                    )
+                )
+                return round(1_000_000 / float(frequency_hz))
+
+        client = Client()
+        vehicle = MavlinkVehicleService(client)  # type: ignore[arg-type]
+        vehicle._state = VehicleConnectionState(True, "test", 7, 1)
+        vehicle._request_telemetry_streams()
+
+        requested_rates = {
+            message_types[message_id - 1]: rate
+            for message_id, rate, system, component in client.requests
+            if system == 7 and component == 1
+        }
+        self.assertEqual(
+            requested_rates,
+            MavlinkVehicleService.DEFAULT_STREAM_RATES_HZ,
+        )
+        self.assertEqual(requested_rates["ATTITUDE"], 20.0)
+        self.assertLessEqual(sum(requested_rates.values()), 80.0)
 
     def test_telemetry_decoder_exposes_critical_flight_readouts(self) -> None:
         decoder = TelemetryDecoder()
@@ -166,6 +220,7 @@ class VehicleServiceTests(unittest.TestCase):
             ),
         )
         self.assertEqual(snapshot.air_speed, 27.5)
+        self.assertIsNotNone(snapshot.hud_received_at)
         self.assertEqual(snapshot.throttle_percent, 63)
         self.assertEqual(snapshot.rc_rssi, 200)
         self.assertTrue(snapshot.ekf_ok)
@@ -403,10 +458,9 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertTrue(service._is_active_connection_message(rf_status))
         self.assertFalse(service._is_active_connection_message(foreign_message))
 
-    def test_parameter_catalog_and_write_are_confirmed_by_vehicle_echo(self) -> None:
+    def test_parameter_list_and_write_are_confirmed_by_vehicle_echo(self) -> None:
         vehicle = _FakeVehicle()
         service = VehicleParameterService(
-            [Parameter("KNOWN", 1, "-", "test", "Known")],
             vehicle,  # type: ignore[arg-type]
         )
         published: list[tuple[Parameter, ...]] = []
@@ -441,11 +495,33 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertGreaterEqual(len(published), 2)
         service.stop()
 
-    def test_incomplete_parameter_catalog_is_retried_and_reported(self) -> None:
+    def test_parameter_list_is_cleared_when_vehicle_disconnects(self) -> None:
+        vehicle = _FakeVehicle()
+        service = VehicleParameterService(vehicle)  # type: ignore[arg-type]
+        service.start()
+        vehicle.publish(
+            _Message(
+                message_type="PARAM_VALUE",
+                param_id=b"ARSPD_FBW_MIN\x00",
+                param_value=17.0,
+                param_count=1,
+                param_index=0,
+                param_type=9,
+            )
+        )
+        self.assertEqual([item.key for item in service.current], ["ARSPD_FBW_MIN"])
+
+        vehicle.connected = False
+        vehicle.state = VehicleConnectionState(False, "test", 1, 1)
+        vehicle.connection_changed.publish(vehicle.state)
+
+        self.assertEqual(service.current, ())
+        service.stop()
+
+    def test_incomplete_parameter_list_is_retried_and_reported(self) -> None:
         vehicle = _FakeVehicle()
         logs = LoggingService()
         service = VehicleParameterService(
-            [],
             vehicle,  # type: ignore[arg-type]
             logs.child("PARAMETER"),
             write_timeout=0.03,
@@ -455,7 +531,7 @@ class VehicleServiceTests(unittest.TestCase):
         time.sleep(0.12)
         service.stop()
         self.assertEqual(vehicle.parameter_requests, 2)
-        self.assertEqual(logs.history[-1].action, "parameter.catalog_failed")
+        self.assertEqual(logs.history[-1].action, "parameter.sync_failed")
 
     def test_application_specific_vehicle_command_can_be_injected(self) -> None:
         received: list[CommandRequest] = []
@@ -467,6 +543,56 @@ class VehicleServiceTests(unittest.TestCase):
         request = CommandRequest("target_lock", {"target_id": 17}, "test")
         vehicle.execute(request)
         self.assertEqual(received, [request])
+
+    def test_home_reference_is_sent_with_acknowledged_mavlink_command(self) -> None:
+        mavlink = SimpleNamespace(
+            MAV_CMD_DO_SET_HOME=179,
+            MAV_RESULT_IN_PROGRESS=5,
+            MAV_RESULT_ACCEPTED=0,
+        )
+
+        class Client:
+            endpoint = SimpleNamespace(uri="test")
+            connection = SimpleNamespace(target_system=7, target_component=1)
+            router = SimpleNamespace(sequence=12)
+            is_connected = True
+
+            def __init__(self) -> None:
+                self.mavlink = mavlink
+                self.sent: list[tuple[str, tuple]] = []
+
+            def call_mav(self, method: str, *args) -> None:
+                self.sent.append((method, args))
+
+            def wait_for(self, *_args, **_kwargs):
+                return SimpleNamespace(command=179, result=0)
+
+            def latest(self, _message_type):
+                return None
+
+        client = Client()
+        vehicle = MavlinkVehicleService(client)  # type: ignore[arg-type]
+        vehicle._state = VehicleConnectionState(True, "test", 7, 1)
+
+        confirmed = vehicle.execute(
+            CommandRequest(
+                "SET_HOME",
+                {
+                    "latitude": 39.925533,
+                    "longitude": 32.836974,
+                    "altitude": 938.4,
+                },
+            )
+        )
+
+        self.assertTrue(confirmed)
+        self.assertEqual(client.sent[0][0], "command_long_send")
+        arguments = client.sent[0][1]
+        self.assertEqual(arguments[:4], (7, 1, 179, 0))
+        self.assertEqual(arguments[4:8], (0.0, 0.0, 0.0, 0.0))
+        self.assertAlmostEqual(arguments[8], 39.925533)
+        self.assertAlmostEqual(arguments[9], 32.836974)
+        self.assertAlmostEqual(arguments[10], 938.4)
 
     def test_unacknowledged_transport_is_logged_as_sent_not_confirmed(self) -> None:
         class Vehicle:
@@ -558,6 +684,60 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertFalse(vehicle.loop)
         self.assertIn("1 görev öğesi", result.message)
         self.assertEqual(logs.history[-1].details["item_count"], 1)
+        self.assertEqual(logs.history[-1].details["vehicle_item_count"], 1)
+        self.assertEqual(logs.history[-1].details["requested_item_count"], 1)
+        self.assertEqual(logs.history[-1].details["repeat_mode"], "once")
+        self.assertEqual(logs.history[-1].details["item_types"], {"waypoint": 1})
+        self.assertEqual(
+            localized_log_message(logs.history[-1], "tr"),
+            "1 görev öğeli tek seferlik plan uçuş cihazı tarafından kabul edildi",
+        )
+
+    def test_failed_mission_upload_log_preserves_plan_summary(self) -> None:
+        class Vehicle:
+            connected = True
+            state = VehicleConnectionState(True, "test", 1, 1)
+
+            def upload_mission(self, _overlays, *, loop: bool = False) -> int:
+                self.loop = loop
+                raise TimeoutError("MISSION_ACK zaman aşımı")
+
+        logs = LoggingService()
+        commands = DispatchCommandService(
+            Vehicle(),  # type: ignore[arg-type]
+            MutableParameterService(),
+            logs.child("COMMAND"),
+        )
+        result = commands.dispatch(
+            CommandRequest(
+                "MISSION_UPLOAD",
+                {
+                    "overlays": [
+                        MapOverlay(
+                            "wp-1",
+                            "waypoint",
+                            "WP 1",
+                            [[39.1, 32.1]],
+                            "#fff",
+                            35,
+                        ).to_dict(),
+                    ],
+                    "loop": True,
+                },
+            )
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.details["vehicle_item_count"], 1)
+        self.assertTrue(result.details["loop"])
+        self.assertEqual(result.details["repeat_mode"], "loop")
+        failure = logs.history[-1]
+        self.assertEqual(failure.action, "command.failed")
+        self.assertEqual(failure.details["error"], "MISSION_ACK zaman aşımı")
+        self.assertEqual(
+            localized_log_message(failure, "tr"),
+            "1 görev öğeli döngü planı gönderilemedi: MISSION_ACK zaman aşımı",
+        )
 
     def test_auto_mode_changes_mode_without_uploading_the_mission(self) -> None:
         class Vehicle:
@@ -576,29 +756,10 @@ class VehicleServiceTests(unittest.TestCase):
                 self.calls.append(("execute", request))
                 return True
 
-        overlay = MapOverlay(
-            "wp-1",
-            "waypoint",
-            "WP 1",
-            [[39.1, 32.1, 100.0]],
-            "#fff",
-            35,
-        )
         vehicle = Vehicle()
-        hss = MapOverlay(
-            "teknofest-hss-1",
-            "hss",
-            "HSS 1",
-            [[39.2, 32.2]],
-            "#f00",
-            100,
-            {"source": "teknofest-hss", "read_only": True, "mission_upload": False},
-        )
-        mission = SimpleNamespace(state=MissionState(overlays=[hss, overlay]))
         commands = DispatchCommandService(
             vehicle,  # type: ignore[arg-type]
             MutableParameterService(),
-            mission=mission,  # type: ignore[arg-type]
         )
 
         result = commands.dispatch(CommandRequest("APPLY_MODE", {"mode": "AUTO"}))
@@ -810,6 +971,52 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(jump[1][7], 2.0)
         self.assertEqual(jump[1][8], -1.0)
         self.assertEqual(client.sent[-1], ("mission_set_current_send", (1, 1, 1)))
+
+    def test_mission_structure_respects_navigation_command_phases(self) -> None:
+        waypoint = MapOverlay(
+            "wp",
+            "waypoint",
+            "WP",
+            [[39.1, 32.1, 100.0]],
+            "#fff",
+            metadata={"route_order": 1},
+        )
+        takeoff_second = MapOverlay(
+            "takeoff",
+            "takeoff",
+            "Takeoff",
+            [[39.0, 32.0, 60.0]],
+            "#fff",
+            metadata={"route_order": 2},
+        )
+        with self.assertRaisesRegex(ValueError, "TAKEOFF.*ilk"):
+            MavlinkVehicleService._validate_mission_structure(
+                [waypoint, takeoff_second],
+                loop=False,
+            )
+
+        land_first = MapOverlay(
+            "land",
+            "land",
+            "Land",
+            [[39.2, 32.2, 0.0]],
+            "#fff",
+            metadata={"route_order": 1},
+        )
+        waypoint_second = waypoint.with_changes(metadata={"route_order": 2})
+        with self.assertRaisesRegex(ValueError, "LAND.*sonunda"):
+            MavlinkVehicleService._validate_mission_structure(
+                [land_first, waypoint_second],
+                loop=False,
+            )
+
+        land_last = land_first.with_changes(metadata={"route_order": 2})
+        waypoint_first = waypoint.with_changes(metadata={"route_order": 1})
+        with self.assertRaisesRegex(ValueError, "Döngü.*terminal"):
+            MavlinkVehicleService._validate_mission_structure(
+                [waypoint_first, land_last],
+                loop=True,
+            )
 
     def test_mission_conversion_sorts_route_items_and_retains_areas_locally(self) -> None:
         mavlink = SimpleNamespace(

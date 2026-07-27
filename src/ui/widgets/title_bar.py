@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen
+from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer
+from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPen
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
 
 from src.ui.themes.style import ThemePalette
 
 
 class AppMark(QWidget):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        icon: QIcon | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._icon = icon or QIcon()
         self._accent = QColor("#f0a024")
         self._text = QColor("#1f1f1f")
         self.setFixedSize(24, 24)
@@ -22,6 +27,15 @@ class AppMark(QWidget):
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if not self._icon.isNull():
+            pixmap = self._icon.pixmap(self.size())
+            painter.drawPixmap(
+                (self.width() - pixmap.width()) // 2,
+                (self.height() - pixmap.height()) // 2,
+                pixmap,
+            )
+            painter.end()
+            return
         painter.setPen(QPen(self._accent.darker(120), 1))
         painter.setBrush(self._accent)
         painter.drawRoundedRect(self.rect().adjusted(2, 2, -2, -2), 5, 5)
@@ -113,21 +127,35 @@ class FramelessResizeController(QObject):
     def __init__(self, window: QWidget, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._window = window
-        self._border = 7
+        self._border = 8
         self._resizing = False
         self._resize_edges = None
         self._start_pos = QPoint()
         self._start_geometry = QRect()
+        self._pending_resize_pos: QPoint | None = None
         self._cursor_active = False
         self._app = QApplication.instance()
         self._filter_installed = False
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(16)
+        self._resize_timer.timeout.connect(self._flush_pending_resize)
+        self._edge_handles = self._create_edge_handles()
+        self._window.setMouseTracking(True)
         if self._app:
             self._app.installEventFilter(self)
             self._app.aboutToQuit.connect(self._remove_filter)
             self._filter_installed = True
         self._window.destroyed.connect(self._remove_filter)
+        self._layout_edge_handles()
 
     def eventFilter(self, obj, event) -> bool:
+        if obj is self._window and event.type() in {
+            QEvent.Type.Resize,
+            QEvent.Type.Show,
+            QEvent.Type.WindowStateChange,
+        }:
+            self._layout_edge_handles()
         if not isinstance(obj, QWidget) or obj.window() is not self._window:
             if self._cursor_active and event.type() in {
                 QEvent.Type.MouseMove,
@@ -141,7 +169,7 @@ class FramelessResizeController(QObject):
             return False
         if event.type() == QEvent.Type.MouseMove:
             if self._resizing:
-                self._resize_to(event.globalPosition().toPoint())
+                self._queue_resize(event.globalPosition().toPoint())
                 return True
             self._set_cursor(self._edge_at(event.globalPosition().toPoint()))
         elif event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
@@ -156,10 +184,11 @@ class FramelessResizeController(QObject):
                 self._resize_edges = edges
                 self._start_pos = event.globalPosition().toPoint()
                 self._start_geometry = self._window.geometry()
+                self._pending_resize_pos = None
+                self._window.grabMouse()
                 return True
         elif event.type() == QEvent.Type.MouseButtonRelease:
-            self._resizing = False
-            self._resize_edges = None
+            self._finish_manual_resize(event.globalPosition().toPoint())
             self._clear_cursor()
         elif event.type() in {QEvent.Type.Leave, QEvent.Type.WindowDeactivate, QEvent.Type.Hide}:
             if not self._resizing:
@@ -201,8 +230,9 @@ class FramelessResizeController(QObject):
     def _clear_cursor(self) -> None:
         if not self._cursor_active:
             return
-        # unsetCursor senkron bir CursorChange olayı üretir. Global eventFilter
-        # bu olayı görmeden bayrağı kapatmazsak _clear_cursor tekrar çağrılır.
+        # unsetCursor emits a synchronous CursorChange event. Keep the guard
+        # active until the global eventFilter has observed that event, or
+        # _clear_cursor will be called recursively.
         self._cursor_active = False
         self._window.unsetCursor()
 
@@ -210,7 +240,35 @@ class FramelessResizeController(QObject):
         if self._app and self._filter_installed:
             self._app.removeEventFilter(self)
             self._filter_installed = False
+        self._resize_timer.stop()
+        self._pending_resize_pos = None
+        if QWidget.mouseGrabber() is self._window:
+            self._window.releaseMouse()
         self._cursor_active = False
+
+    def _queue_resize(self, global_pos: QPoint) -> None:
+        self._pending_resize_pos = QPoint(global_pos)
+        if not self._resize_timer.isActive():
+            self._resize_timer.start()
+
+    def _flush_pending_resize(self) -> None:
+        position = self._pending_resize_pos
+        self._pending_resize_pos = None
+        if self._resizing and position is not None:
+            self._resize_to(position)
+
+    def _finish_manual_resize(self, global_pos: QPoint | None = None) -> None:
+        if not self._resizing:
+            return
+        self._resize_timer.stop()
+        position = global_pos or self._pending_resize_pos
+        self._pending_resize_pos = None
+        if position is not None:
+            self._resize_to(position)
+        self._resizing = False
+        self._resize_edges = None
+        if QWidget.mouseGrabber() is self._window:
+            self._window.releaseMouse()
 
     def _resize_to(self, global_pos: QPoint) -> None:
         if not self._resize_edges:
@@ -230,6 +288,63 @@ class FramelessResizeController(QObject):
             geometry.setBottom(max(geometry.top() + minimum.height(), geometry.bottom() + delta.y()))
         self._window.setGeometry(geometry)
 
+    def _create_edge_handles(self) -> list[tuple[QWidget, Qt.Edge]]:
+        edge_sets = (
+            Qt.Edge.TopEdge,
+            Qt.Edge.BottomEdge,
+            Qt.Edge.LeftEdge,
+            Qt.Edge.RightEdge,
+            Qt.Edge.TopEdge | Qt.Edge.LeftEdge,
+            Qt.Edge.TopEdge | Qt.Edge.RightEdge,
+            Qt.Edge.BottomEdge | Qt.Edge.LeftEdge,
+            Qt.Edge.BottomEdge | Qt.Edge.RightEdge,
+        )
+        handles: list[tuple[QWidget, Qt.Edge]] = []
+        for edges in edge_sets:
+            handle = QWidget(self._window)
+            handle.setObjectName("FramelessResizeHandle")
+            handle.setStyleSheet("background: transparent; border: none;")
+            handle.setMouseTracking(True)
+            handle.setCursor(self._cursor_for_edges(edges))
+            handles.append((handle, edges))
+        return handles
+
+    def _layout_edge_handles(self) -> None:
+        hidden = self._window.isMaximized() or self._window.isFullScreen()
+        width = self._window.width()
+        height = self._window.height()
+        border = self._border
+        geometries = (
+            QRect(border, 0, max(0, width - 2 * border), border),
+            QRect(border, max(0, height - border), max(0, width - 2 * border), border),
+            QRect(0, border, border, max(0, height - 2 * border)),
+            QRect(max(0, width - border), border, border, max(0, height - 2 * border)),
+            QRect(0, 0, border, border),
+            QRect(max(0, width - border), 0, border, border),
+            QRect(0, max(0, height - border), border, border),
+            QRect(max(0, width - border), max(0, height - border), border, border),
+        )
+        for (handle, _edges), geometry in zip(self._edge_handles, geometries):
+            handle.setGeometry(geometry)
+            handle.setVisible(not hidden)
+            if not hidden:
+                handle.raise_()
+
+    @staticmethod
+    def _cursor_for_edges(edges: Qt.Edge) -> Qt.CursorShape:
+        horizontal = bool(edges & (Qt.Edge.LeftEdge | Qt.Edge.RightEdge))
+        vertical = bool(edges & (Qt.Edge.TopEdge | Qt.Edge.BottomEdge))
+        if horizontal and vertical:
+            if edges in (
+                Qt.Edge.TopEdge | Qt.Edge.LeftEdge,
+                Qt.Edge.BottomEdge | Qt.Edge.RightEdge,
+            ):
+                return Qt.CursorShape.SizeFDiagCursor
+            return Qt.CursorShape.SizeBDiagCursor
+        if horizontal:
+            return Qt.CursorShape.SizeHorCursor
+        return Qt.CursorShape.SizeVerCursor
+
 
 class AppTitleBar(QWidget):
     def __init__(self, window: QWidget, theme: ThemePalette, parent: QWidget | None = None) -> None:
@@ -246,7 +361,7 @@ class AppTitleBar(QWidget):
         layout.setContentsMargins(10, 0, 0, 0)
         layout.setSpacing(9)
 
-        self.mark = AppMark(self)
+        self.mark = AppMark(window.windowIcon(), self)
         self.mark.set_theme(theme)
         layout.addWidget(self.mark)
 

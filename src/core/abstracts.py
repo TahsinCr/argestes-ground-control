@@ -5,27 +5,27 @@ from typing import Any, Protocol, TypeVar, runtime_checkable
 
 
 class Model(ABC):
-    """UI ve depolama teknolojisinden bağımsız domain modeli sözleşmesi."""
+    """Domain model contract independent from UI and storage technologies."""
 
     __slots__ = ()
 
     @abstractmethod
     def to_dict(self) -> dict[str, Any]:
-        """Modelin taşıma/depolama için güvenli temsilini döndürür."""
+        """Return a representation safe for transport and persistence."""
 
 
 class Service(ABC):
-    """Yaşam döngüsü olan servislerin evrensel sözleşmesi."""
+    """Universal contract for services with a lifecycle."""
 
     __slots__ = ()
 
     @abstractmethod
     def start(self) -> None:
-        """Servisi kullanıma hazır hâle getirir."""
+        """Prepare the service for use."""
 
     @abstractmethod
     def stop(self) -> None:
-        """Servisin sahip olduğu kaynakları güvenli biçimde kapatır."""
+        """Close resources owned by the service safely."""
 
 
 T_co = TypeVar("T_co", covariant=True)
@@ -33,7 +33,7 @@ T_co = TypeVar("T_co", covariant=True)
 
 @runtime_checkable
 class ReadableValue(Protocol[T_co]):
-    """Son değeri sunan genel okuma sözleşmesi."""
+    """Generic read contract exposing the latest value."""
 
     @property
     def current(self) -> T_co: ...

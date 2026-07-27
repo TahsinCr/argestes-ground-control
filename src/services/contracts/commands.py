@@ -9,7 +9,7 @@ from src.models.commands import CommandRequest, CommandResult
 class CommandService(ABC):
     @property
     def available_tasks(self) -> tuple[str, ...]:
-        """Backend tarafından desteklenen görev/aksiyon kodları."""
+        """Task and action codes supported by the backend."""
 
         return ()
 

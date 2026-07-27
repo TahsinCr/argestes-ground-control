@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""TEKNOFEST 2026 Savaşan İHA HTTP protokolü için yerel test sunucusu.
+"""Local test server for the TEKNOFEST 2026 Combat UAV HTTP protocol.
 
-Uygulamadan ayrı bir süreç olarak çalıştırılır:
+Run it as a process separate from the application:
     python fake_teknofest_server.py
+    python fake_teknofest_server.py --lang tr
 """
 
 from __future__ import annotations
@@ -26,6 +27,82 @@ from urllib.parse import urlparse
 
 
 EARTH_RADIUS_M = 6_371_000.0
+HSS_MIN_CENTER_DISTANCE_M = 280.0
+HSS_MAX_CENTER_DISTANCE_M = 900.0
+HSS_RADII_M = (50, 75, 100, 150)
+
+LOG_MESSAGES: dict[str, dict[str, str]] = {
+    "en": {
+        "server_ready": (
+            "Server ready at http://%s:%d | team=%d | competitors=%d | user=%s"
+        ),
+        "server_stopping": "Server is shutting down",
+        "control_time_request": "CONTROL RX SERVER_TIME_REQUEST team=%d",
+        "control_time_response": "CONTROL TX SERVER_TIME team=%d",
+        "reference_qr_request": "REFERENCE RX QR_COORDINATE_REQUEST team=%d",
+        "reference_qr_response": (
+            "REFERENCE TX QR_COORDINATE team=%d position=%.7f,%.7f"
+        ),
+        "reference_hss_request": "REFERENCE RX HSS_COORDINATES_REQUEST team=%d",
+        "reference_hss_response": "REFERENCE TX HSS_COORDINATES team=%d hss=%d",
+        "login_received": "RX LOGIN user=%s client=%s",
+        "login_rejected": "TX LOGIN_REJECTED user=%s client=%s",
+        "login_accepted": "TX LOGIN_ACK team=%d client=%s",
+        "telemetry_received": (
+            "TELEMETRY RX UAV_TELEMETRY team=%d position=%.7f,%.7f "
+            "gps=%s locked=%d"
+        ),
+        "telemetry_response": (
+            "TELEMETRY TX COMPETITOR_TELEMETRY team=%d competitors=%d "
+            "data_age=%d..%d ms"
+        ),
+        "telemetry_rejected": (
+            "TELEMETRY REJECTED team=%d HTTP=%d message=%s"
+        ),
+        "lock_received": "RX TARGET_LOCK team=%d data=%s",
+        "lock_accepted": "TX TARGET_LOCK_ACK team=%d",
+        "kamikaze_received": "RX KAMIKAZE team=%d data=%s",
+        "kamikaze_accepted": "TX KAMIKAZE_ACK team=%d",
+    },
+    "tr": {
+        "server_ready": (
+            "Sunucu hazır http://%s:%d | takım=%d | rakip=%d | kullanıcı=%s"
+        ),
+        "server_stopping": "Sunucu kapatılıyor",
+        "control_time_request": "KONTROL RX SUNUCU_SAATI_İSTEĞİ takım=%d",
+        "control_time_response": "KONTROL TX SUNUCU_SAATİ takım=%d",
+        "reference_qr_request": "REFERANS RX QR_KOORDİNATI_İSTEĞİ takım=%d",
+        "reference_qr_response": (
+            "REFERANS TX QR_KOORDİNATI takım=%d konum=%.7f,%.7f"
+        ),
+        "reference_hss_request": "REFERANS RX HSS_KOORDİNATLARI_İSTEĞİ takım=%d",
+        "reference_hss_response": "REFERANS TX HSS_KOORDİNATLARI takım=%d hss=%d",
+        "login_received": "RX GİRİŞ kullanıcı=%s istemci=%s",
+        "login_rejected": "TX GİRİŞ_RED kullanıcı=%s istemci=%s",
+        "login_accepted": "TX GİRİŞ_ONAY takım=%d istemci=%s",
+        "telemetry_received": (
+            "TELEMETRİ RX SİHA_TELEMETRİ takım=%d konum=%.7f,%.7f "
+            "gps=%s kilit=%d"
+        ),
+        "telemetry_response": (
+            "TELEMETRİ TX RAKİP_TELEMETRİ takım=%d rakip=%d "
+            "veri_yaşı=%d..%d ms"
+        ),
+        "telemetry_rejected": (
+            "TELEMETRİ RED takım=%d HTTP=%d mesaj=%s"
+        ),
+        "lock_received": "RX KİLİTLENME takım=%d veri=%s",
+        "lock_accepted": "TX KİLİTLENME_ONAY takım=%d",
+        "kamikaze_received": "RX KAMİKAZE takım=%d veri=%s",
+        "kamikaze_accepted": "TX KAMİKAZE_ONAY takım=%d",
+    },
+}
+
+
+def log_message(language: str, key: str) -> str:
+    """Return a localized console message template."""
+
+    return LOG_MESSAGES[language][key]
 
 
 def server_time(now: datetime | None = None) -> dict[str, int]:
@@ -81,9 +158,9 @@ class CompetitorSample:
             )
             self.next_update_at = now_wall + self.update_period_s
         else:
-            # Rakip akışı HTTP sorguları arasında da ilerler. Kaçırılan
-            # periyotları burada tamamlamak, zaman_farki değerini istek
-            # sıklığından bağımsız ve gerçek bir örnek yaşı hâline getirir.
+            # Advance competitor samples between HTTP requests. Catching up
+            # missed periods keeps zaman_farki independent from request
+            # frequency and makes it represent the real sample age.
             while now_wall >= self.next_update_at:
                 scheduled_at = self.next_update_at
                 self.update_index += 1
@@ -139,21 +216,32 @@ class FakeTeknofestState:
         own_team_number: int,
         competitor_count: int,
         seed: int,
+        hss_seed: int | None = None,
         quiet: bool = False,
+        language: str = "en",
     ) -> None:
         self.username = username
         self.password = password
         self.own_team_number = own_team_number
         self.competitor_count = competitor_count
         self.quiet = quiet
+        self.language = language
         self.sessions: dict[str, int] = {}
         self.last_telemetry_at: dict[int, float] = {}
-        self.anchor = (39.8680, 32.7485, 1100.0)
+        self.initial_anchor = (39.8680, 32.7485, 1100.0)
+        self.anchor = self.initial_anchor
         self.last_own_telemetry: dict[str, Any] | None = None
         self.telemetry_history: deque[dict[str, Any]] = deque(maxlen=200)
         self.received_lock_events: list[dict[str, Any]] = []
         self.received_kamikaze_events: list[dict[str, Any]] = []
         self.lock = threading.RLock()
+        self._hss_seed = (
+            int(hss_seed)
+            if hss_seed is not None
+            else random.SystemRandom().randrange(0, 2**63)
+        )
+        self._hss_anchor_locked = False
+        self.hss_zones: tuple[dict[str, int | float], ...] = ()
         rng = random.Random(seed)
         team_numbers: list[int] = []
         candidate = 1
@@ -171,6 +259,47 @@ class FakeTeknofestState:
             )
             for index, team in enumerate(team_numbers)
         ]
+
+    def _generate_hss_zones(
+        self,
+        rng: random.Random,
+        anchor: tuple[float, float, float],
+    ) -> tuple[dict[str, int | float], ...]:
+        latitude, longitude, _altitude = anchor
+        longitude_scale = max(0.05, math.cos(math.radians(latitude)))
+        sector_width = math.tau / len(HSS_RADII_M)
+        rotation = rng.uniform(0.0, math.tau)
+        zones: list[dict[str, int | float]] = []
+        for identifier, radius_m in enumerate(HSS_RADII_M):
+            angle = (
+                rotation
+                + identifier * sector_width
+                + rng.uniform(-sector_width * 0.22, sector_width * 0.22)
+            )
+            center_distance_m = rng.uniform(
+                HSS_MIN_CENTER_DISTANCE_M,
+                HSS_MAX_CENTER_DISTANCE_M,
+            )
+            north_m = center_distance_m * math.cos(angle)
+            east_m = center_distance_m * math.sin(angle)
+            zones.append(
+                {
+                    "id": identifier,
+                    "hssEnlem": round(
+                        latitude + math.degrees(north_m / EARTH_RADIUS_M),
+                        8,
+                    ),
+                    "hssBoylam": round(
+                        longitude
+                        + math.degrees(
+                            east_m / (EARTH_RADIUS_M * longitude_scale)
+                        ),
+                        8,
+                    ),
+                    "hssYaricap": radius_m,
+                }
+            )
+        return tuple(zones)
 
     def login(self, username: str, password: str) -> str | None:
         if username != self.username or password != self.password:
@@ -243,6 +372,12 @@ class FakeTeknofestState:
                 valid = False
             if not valid:
                 return 400, {"hata_kodu": 2, "mesaj": "Telemetri değeri izin verilen aralık dışı"}
+            if not self._hss_anchor_locked:
+                self.hss_zones = self._generate_hss_zones(
+                    random.Random(self._hss_seed),
+                    (latitude, longitude, altitude),
+                )
+                self._hss_anchor_locked = True
             self.anchor = (latitude, longitude, altitude)
             self.last_own_telemetry = dict(payload)
             self.telemetry_history.append(dict(payload))
@@ -257,26 +392,15 @@ class FakeTeknofestState:
 
     def hss_payload(self) -> dict[str, Any]:
         with self.lock:
-            latitude, longitude, _altitude = self.anchor
-        offsets = ((520, 180, 50), (-420, 640, 75), (900, -310, 100), (-760, -540, 150))
-        values = []
-        longitude_scale = max(0.05, math.cos(math.radians(latitude)))
-        for identifier, (north_m, east_m, radius_m) in enumerate(offsets):
-            values.append(
-                {
-                    "id": identifier,
-                    "hssEnlem": round(latitude + math.degrees(north_m / EARTH_RADIUS_M), 8),
-                    "hssBoylam": round(
-                        longitude + math.degrees(east_m / (EARTH_RADIUS_M * longitude_scale)), 8
-                    ),
-                    "hssYaricap": radius_m,
-                }
-            )
+            values = [dict(zone) for zone in self.hss_zones]
         return {"sunucusaati": server_time(), "hss_koordinat_bilgileri": values}
 
-    def log(self, message: str, *args: Any) -> None:
+    def log(self, key: str, *args: Any) -> None:
         if not self.quiet:
-            logging.getLogger("fake-teknofest").info(message, *args)
+            logging.getLogger("fake-teknofest").info(
+                log_message(self.language, key),
+                *args,
+            )
 
 
 class FakeTeknofestHandler(BaseHTTPRequestHandler):
@@ -295,24 +419,24 @@ class FakeTeknofestHandler(BaseHTTPRequestHandler):
             self._send(401, {"mesaj": "Önce /api/giris ile oturum açılmalı"})
             return
         if path == "/api/sunucusaati":
-            self.state.log("KONTROL RX SUNUCU_SAATI_REQUEST takım=%d", self._authenticated_team())
-            self.state.log("KONTROL TX SUNUCU_SAATI takım=%d", self._authenticated_team())
+            self.state.log("control_time_request", self._authenticated_team())
+            self.state.log("control_time_response", self._authenticated_team())
             self._send(200, server_time())
         elif path == "/api/qr_koordinati":
             latitude, longitude, _altitude = self.state.anchor
-            self.state.log("REFERANS RX QR_KOORDINATI_REQUEST takım=%d", self._authenticated_team())
+            self.state.log("reference_qr_request", self._authenticated_team())
             self.state.log(
-                "REFERANS TX QR_KOORDINATI takım=%d konum=%.7f,%.7f",
+                "reference_qr_response",
                 self._authenticated_team(),
                 latitude + 0.0012,
                 longitude - 0.0012,
             )
             self._send(200, {"qrEnlem": latitude + 0.0012, "qrBoylam": longitude - 0.0012})
         elif path == "/api/hss_koordinatlari":
-            self.state.log("REFERANS RX HSS_KOORDINATLARI_REQUEST takım=%d", self._authenticated_team())
+            self.state.log("reference_hss_request", self._authenticated_team())
             payload = self.state.hss_payload()
             self.state.log(
-                "REFERANS TX HSS_KOORDINATLARI takım=%d hss=%d",
+                "reference_hss_response",
                 self._authenticated_team(),
                 len(payload["hss_koordinat_bilgileri"]),
             )
@@ -327,16 +451,24 @@ class FakeTeknofestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/giris":
             self.state.log(
-                "RX LOGIN kullanıcı=%s istemci=%s",
+                "login_received",
                 payload.get("kadi"),
                 self.client_address[0],
             )
             token = self.state.login(str(payload.get("kadi", "")), str(payload.get("sifre", "")))
             if token is None:
-                self.state.log("TX LOGIN_RED kullanıcı=%s istemci=%s", payload.get("kadi"), self.client_address[0])
+                self.state.log(
+                    "login_rejected",
+                    payload.get("kadi"),
+                    self.client_address[0],
+                )
                 self._send(400, {"hata_kodu": 1, "mesaj": "Kullanıcı adı veya şifre hatalı"})
                 return
-            self.state.log("TX LOGIN_ACK takım=%d istemci=%s", self.state.own_team_number, self.client_address[0])
+            self.state.log(
+                "login_accepted",
+                self.state.own_team_number,
+                self.client_address[0],
+            )
             self._send(
                 200,
                 {"takim_numarasi": self.state.own_team_number},
@@ -355,7 +487,7 @@ class FakeTeknofestHandler(BaseHTTPRequestHandler):
             if status == 200:
                 ages = [int(item["zaman_farki"]) for item in response["konumBilgileri"]]
                 self.state.log(
-                    "TELEMETRI RX SIHA_TELEMETRI takım=%d konum=%.7f,%.7f gps=%s kilit=%d",
+                    "telemetry_received",
                     team,
                     float(payload["iha_enlem"]),
                     float(payload["iha_boylam"]),
@@ -363,14 +495,19 @@ class FakeTeknofestHandler(BaseHTTPRequestHandler):
                     int(payload.get("iha_kilitlenme", 0)),
                 )
                 self.state.log(
-                    "TELEMETRI TX RAKIP_TELEMETRI takım=%d rakip=%d veri_yasi=%d..%d ms",
+                    "telemetry_response",
                     team,
                     len(response["konumBilgileri"]),
                     min(ages, default=0),
                     max(ages, default=0),
                 )
             else:
-                self.state.log("TELEMETRI RED takım=%d HTTP=%d mesaj=%s", team, status, response.get("mesaj"))
+                self.state.log(
+                    "telemetry_rejected",
+                    team,
+                    status,
+                    response.get("mesaj"),
+                )
             self._send(status, response)
         elif path == "/api/kilitlenme_bilgisi":
             try:
@@ -382,8 +519,12 @@ class FakeTeknofestHandler(BaseHTTPRequestHandler):
                 return
             with self.state.lock:
                 self.state.received_lock_events.append(dict(payload))
-            self.state.log("RX KILITLENME takım=%d veri=%s", team, json.dumps(payload, ensure_ascii=False))
-            self.state.log("TX KILITLENME_ACK takım=%d", team)
+            self.state.log(
+                "lock_received",
+                team,
+                json.dumps(payload, ensure_ascii=False),
+            )
+            self.state.log("lock_accepted", team)
             self._send(200, {"durum": "kaydedildi"})
         elif path == "/api/kamikaze_bilgisi":
             if (
@@ -395,8 +536,12 @@ class FakeTeknofestHandler(BaseHTTPRequestHandler):
                 return
             with self.state.lock:
                 self.state.received_kamikaze_events.append(dict(payload))
-            self.state.log("RX KAMIKAZE takım=%d veri=%s", team, json.dumps(payload, ensure_ascii=False))
-            self.state.log("TX KAMIKAZE_ACK takım=%d", team)
+            self.state.log(
+                "kamikaze_received",
+                team,
+                json.dumps(payload, ensure_ascii=False),
+            )
+            self.state.log("kamikaze_accepted", team)
             self._send(200, {"durum": "kaydedildi"})
         else:
             self._send(404, {"mesaj": "Geçersiz URL"})
@@ -458,10 +603,14 @@ def create_server(
     team_number: int = 1,
     competitor_count: int = 27,
     seed: int = 2026,
+    hss_seed: int | None = None,
     quiet: bool = False,
+    language: str = "en",
 ) -> FakeTeknofestServer:
     if competitor_count <= 0:
-        raise ValueError("Rakip İHA sayısı pozitif olmalı")
+        raise ValueError("Competitor UAV count must be positive")
+    if language not in LOG_MESSAGES:
+        raise ValueError(f"Unsupported console language: {language}")
     return FakeTeknofestServer(
         (host, port),
         FakeTeknofestState(
@@ -470,13 +619,17 @@ def create_server(
             own_team_number=team_number,
             competitor_count=competitor_count,
             seed=seed,
+            hss_seed=hss_seed,
             quiet=quiet,
+            language=language,
         ),
     )
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="TEKNOFEST 2026 sahte haberleşme sunucusu")
+    parser = argparse.ArgumentParser(
+        description="TEKNOFEST 2026 fake communication server"
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5000)
     parser.add_argument("--username", default="kirlangic")
@@ -484,10 +637,16 @@ def main() -> int:
     parser.add_argument("--team-number", type=int, default=1)
     parser.add_argument("--competitors", type=int, default=27)
     parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument(
+        "--lang",
+        choices=tuple(LOG_MESSAGES),
+        default="en",
+        help="console log language (default: en)",
+    )
     args = parser.parse_args()
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s.%(msecs)03dZ [SAHTE-TEKNOFEST] %(message)s",
+        format="%(asctime)s.%(msecs)03dZ [FAKE-TEKNOFEST] %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
     logging.Formatter.converter = time.gmtime
@@ -499,10 +658,11 @@ def main() -> int:
         team_number=args.team_number,
         competitor_count=args.competitors,
         seed=args.seed,
+        language=args.lang,
     )
     host, port = server.server_address[:2]
     logging.getLogger("fake-teknofest").info(
-        "Sunucu hazır http://%s:%d | takım=%d | rakip=%d | kullanıcı=%s",
+        log_message(args.lang, "server_ready"),
         host,
         port,
         args.team_number,
@@ -512,7 +672,9 @@ def main() -> int:
     try:
         server.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:
-        logging.getLogger("fake-teknofest").info("Sunucu kapatılıyor")
+        logging.getLogger("fake-teknofest").info(
+            log_message(args.lang, "server_stopping")
+        )
     finally:
         server.server_close()
     return 0

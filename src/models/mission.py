@@ -26,7 +26,7 @@ class MissionItemType(StrEnum):
 
 @dataclass(slots=True)
 class MapOverlay(Model):
-    """Harita ile backend arasında taşınan görev öğesi."""
+    """Mission item transferred between the map and backend."""
 
     overlay_id: str
     overlay_type: str
@@ -143,7 +143,7 @@ class MapContact(Model):
 
 @dataclass(slots=True)
 class MissionState(Model):
-    """Birden fazla arayüzün okuyup değiştirebildiği merkezi görev durumu."""
+    """Central mission state shared by multiple read/write interfaces."""
 
     overlays: list[MapOverlay] = field(default_factory=list)
     contacts: list[MapContact] = field(default_factory=list)
@@ -151,6 +151,7 @@ class MissionState(Model):
     base_layer: str = "vector"
     selected_overlay_id: str | None = None
     revision: int = 0
+    mission_loop: bool = False
 
     def copy(self, **changes: Any) -> "MissionState":
         changes.setdefault("overlays", list(self.overlays))
@@ -165,6 +166,7 @@ class MissionState(Model):
             "base_layer": self.base_layer,
             "selected_overlay_id": self.selected_overlay_id,
             "revision": self.revision,
+            "mission_loop": self.mission_loop,
         }
 
     @classmethod
@@ -176,4 +178,5 @@ class MissionState(Model):
             base_layer=str(payload.get("base_layer", "vector")),
             selected_overlay_id=payload.get("selected_overlay_id"),
             revision=int(payload.get("revision", 0)),
+            mission_loop=bool(payload.get("mission_loop", False)),
         )

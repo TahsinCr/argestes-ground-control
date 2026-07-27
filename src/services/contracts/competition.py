@@ -16,7 +16,7 @@ from src.models.competition import (
 
 
 class CompetitionService(Service):
-    """TEKNOFEST yarışma sunucusu için arayüzden bağımsız port."""
+    """UI-independent port for the TEKNOFEST competition server."""
 
     @property
     @abstractmethod

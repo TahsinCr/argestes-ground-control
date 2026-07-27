@@ -21,7 +21,7 @@ def clone_snapshot(snapshot: TelemetrySnapshot) -> TelemetrySnapshot:
 
 
 class MutableTelemetryService(TelemetryService):
-    """Herhangi bir giriş adapterinin veri basabildiği merkezi telemetri servisi."""
+    """Central telemetry service writable by any input adapter."""
 
     def __init__(self, logger: ServiceLogger | None = None) -> None:
         self._current = TelemetrySnapshot.zero()
@@ -60,7 +60,7 @@ class MutableTelemetryService(TelemetryService):
 
 
 class TelemetryDecoder:
-    """Uçuş cihazı mesajlarını UI'dan bağımsız telemetri modeline dönüştürür."""
+    """Convert flight-controller messages into the UI-independent telemetry model."""
 
     STANDARD_GRAVITY_MPS2 = 9.80665
     FIX_TYPES = {0: "NO GPS", 1: "NO FIX", 2: "2D FIX", 3: "3D FIX", 4: "DGPS", 5: "RTK FLOAT", 6: "RTK"}
@@ -115,6 +115,7 @@ class TelemetryDecoder:
                 climb_rate=-float(getattr(message, "vz", 0.0)) / 100.0,
                 heading=float(getattr(message, "hdg", 0.0)) / 100.0,
                 position_received_at=received_at,
+                global_position_received_at=received_at,
             )
             home_metrics = self._home_metrics(
                 latitude,
@@ -135,6 +136,7 @@ class TelemetryDecoder:
                 roll=math.degrees(float(message.roll)),
                 pitch=math.degrees(float(message.pitch)),
                 yaw=math.degrees(float(message.yaw)) % 360.0,
+                attitude_received_at=received_at,
             )
         elif message_type == "VFR_HUD":
             updates.update(
@@ -144,6 +146,7 @@ class TelemetryDecoder:
                 throttle_percent=float(message.throttle),
                 altitude_msl=float(message.alt),
                 climb_rate=float(message.climb),
+                hud_received_at=received_at,
             )
         elif message_type == "SYS_STATUS":
             remaining = int(getattr(message, "battery_remaining", -1))
@@ -275,8 +278,8 @@ class TelemetryDecoder:
             microseconds = int(value)
         except (TypeError, ValueError):
             return None
-        # ArduPilot bazı mesajlarda boot süresini aynı alanda taşır. Yalnızca
-        # 2000 ve sonrasındaki UNIX zamanını doğrudan SİHA/GPS saati sayıyoruz.
+        # ArduPilot uses this field for boot time in some messages. Only UNIX
+        # timestamps from 2000 onward are accepted as direct aircraft/GPS time.
         if microseconds < 946_684_800_000_000:
             return None
         try:
@@ -363,11 +366,11 @@ class TelemetryDecoder:
 
     @classmethod
     def _radio_link_quality(cls, message: Any) -> int:
-        """SiK/RFD RADIO_STATUS alanlarından RF hat sağlığını yüzdeye çevirir.
+        """Convert SiK/RFD RADIO_STATUS fields into RF link health.
 
-        RSSI ve noise aynı modem ölçeğindedir. SiK/RFD ailesindeki yaklaşık
-        1.9 birim/dB dönüşümüyle yerel ve uzak SNR hesaplanır; hattın zayıf
-        tarafı ve gönderim tamponu sonucu sınırlar.
+        RSSI and noise share the same modem scale. Local and remote SNR use the
+        approximate 1.9 units/dB conversion for the SiK/RFD family; the weaker
+        side and transmit buffer limit the result.
         """
 
         margins: list[float] = []
@@ -528,6 +531,9 @@ class VehicleTelemetryService(MutableTelemetryService):
                     position_valid=False,
                     position_received_at=None,
                     uav_time_received_at=None,
+                    attitude_received_at=None,
+                    global_position_received_at=None,
+                    hud_received_at=None,
                     link_quality=0,
                     link_quality_source="",
                     link_quality_received_at=None,
@@ -646,6 +652,9 @@ class MockTelemetryService(MutableTelemetryService):
             position_received_at=vehicle_now,
             uav_time_received_at=vehicle_now,
             link_quality_received_at=vehicle_now,
+            attitude_received_at=vehicle_now,
+            global_position_received_at=vehicle_now,
+            hud_received_at=vehicle_now,
             battery_current_amps=8.4 + math.sin(phase * 0.33) * 1.2,
             battery_consumed_mah=max(0, int(phase * 18.0)),
             barometric_pressure_hpa=898.0 + math.sin(phase * 0.18) * 1.4,

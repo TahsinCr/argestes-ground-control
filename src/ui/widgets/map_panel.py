@@ -1,19 +1,21 @@
 from __future__ import annotations
 
+from collections import deque
 import json
+import math
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QElapsedTimer, QObject, QTimer, QUrl, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
-from src.ui.config.i18n import t
+from src.ui.i18n import t
 from src.models.commands import CommandResult
 from src.models.geometry import Point
 from src.ui.config.map import TOOL_LABEL_KEYS, map_tool_config
 from src.models.mission import MapOverlay, MissionState
 from src.models.telemetry import TelemetrySnapshot
-from src.services.contracts import MissionService
+from src.services.planner import PlannerService
 from src.services.settings import SettingsService
 from src.ui.themes.style import ThemePalette
 from src.ui.widgets.common import PanelFrame
@@ -77,7 +79,9 @@ class MapWebBridge(QObject):
 
     @pyqtSlot(str)
     def overlayChanged(self, payload: str) -> None:
-        self.overlay_changed.emit(json.loads(payload))
+        parsed = self._parse_object(payload)
+        if parsed is not None:
+            self.overlay_changed.emit(parsed)
 
     @pyqtSlot(str)
     def overlayRemoved(self, overlay_id: str) -> None:
@@ -89,11 +93,23 @@ class MapWebBridge(QObject):
 
     @pyqtSlot(str)
     def mapAction(self, payload: str) -> None:
-        self.map_action.emit(json.loads(payload))
+        parsed = self._parse_object(payload)
+        if parsed is not None:
+            self.map_action.emit(parsed)
 
     @pyqtSlot(str)
     def boundsChanged(self, payload: str) -> None:
-        self.bounds_changed.emit(json.loads(payload))
+        parsed = self._parse_object(payload)
+        if parsed is not None:
+            self.bounds_changed.emit(parsed)
+
+    @staticmethod
+    def _parse_object(payload: str) -> dict[str, Any] | None:
+        try:
+            value = json.loads(payload)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, dict) else None
 
 
 class MapPanel(PanelFrame):
@@ -101,6 +117,9 @@ class MapPanel(PanelFrame):
     info_generated = pyqtSignal(str, str)
     storage_requested = pyqtSignal(str)
     _VEHICLE_MISSION_TYPES = {"takeoff", "waypoint", "loiter", "rtl", "land", "route"}
+    _TELEMETRY_RENDER_INTERVAL_MS = 33
+    _MAX_STARTUP_SCRIPTS = 256
+    _MAX_HISTORY_ENTRIES = 100
 
     def __init__(
         self,
@@ -110,7 +129,7 @@ class MapPanel(PanelFrame):
         theme: ThemePalette,
         language: str,
         base_dir: Path,
-        mission_service: MissionService,
+        planner_service: PlannerService,
         settings_service: SettingsService,
         tile_cache_service,
         parent=None,
@@ -119,19 +138,18 @@ class MapPanel(PanelFrame):
         self._theme = theme
         self._language = language
         self._base_dir = base_dir
-        self._mission_service = mission_service
+        self._planner_service = planner_service
         self._settings_service = settings_service
         self._js_ready = False
-        self._script_queue: list[str] = []
+        self._script_queue: deque[str] = deque(maxlen=self._MAX_STARTUP_SCRIPTS)
         self._base_layer = settings_service.current.map_layer
         self._align_initial_base_layer()
         self._cache_index_path = self._cache_index_file()
         self._tile_cache = tile_cache_service
         self._tile_cache.cache_changed.connect(self._on_tile_cache_changed)
-        self.destroyed.connect(lambda: self._tile_cache.stop())
+        tile_cache_backend = getattr(tile_cache_service, "backend", tile_cache_service)
+        self.destroyed.connect(lambda: tile_cache_backend.stop())
         self._migrate_legacy_cache_index()
-        self._cache_entries = self._tile_cache.entries()
-        self._cache_keys = {entry["key"] for entry in self._cache_entries if "key" in entry}
         self._pending_cache_count = self._tile_cache.count_tiles()
         self._cache_count_timer = QTimer(self)
         self._cache_count_timer.setSingleShot(True)
@@ -140,18 +158,45 @@ class MapPanel(PanelFrame):
         self._contact_cache: dict[str, dict[str, Any]] = {}
         self._selected_overlay_id: str | None = None
         self._active_tool = "pan"
-        self._mission_loop = False
+        self._mission_loop = bool(
+            getattr(
+                getattr(self._planner_service, "state", MissionState()),
+                "mission_loop",
+                False,
+            )
+        )
         self._mission_upload_pending = False
         self._pending_mission_signature: str | None = None
         self._last_uploaded_mission_signature: str | None = None
         self._mission_transfer_state = "idle"
+        self._history_undo: deque[dict[str, Any]] = deque(
+            maxlen=self._MAX_HISTORY_ENTRIES
+        )
+        self._history_redo: deque[dict[str, Any]] = deque(
+            maxlen=self._MAX_HISTORY_ENTRIES
+        )
+        self._history_batch_before: dict[str, Any] | None = None
+        self._history_batch_label = ""
+        self._history_mutation_in_progress = False
+        self._pending_home_record: dict[str, Any] | None = None
+        self._pending_home_navigation: dict[str, Any] | None = None
+        self._history_known_plan = self._capture_local_plan()
         self._last_vehicle_point: Point | None = None
         self._last_vehicle_timestamp = None
+        self._last_telemetry_payload: dict[str, Any] | None = None
+        self._pending_telemetry_payload: dict[str, Any] | None = None
+        self._telemetry_push_clock = QElapsedTimer()
+        self._telemetry_push_clock.start()
+        self._last_telemetry_push_ms = -self._TELEMETRY_RENDER_INTERVAL_MS
+        self._telemetry_push_timer = QTimer(self)
+        self._telemetry_push_timer.setSingleShot(True)
+        self._telemetry_push_timer.timeout.connect(self._flush_telemetry_payload)
         self._profile = None
         self._page = None
         self._view = None
         self._bridge = None
         self._interceptor = None
+        self._shutting_down = False
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -164,21 +209,64 @@ class MapPanel(PanelFrame):
         self._build_webview()
         self.retranslate(language)
 
-        mission_service.mission_state_changed.connect(self._sync_mission_state)
+        planner_service.planner_changed.connect(self._sync_mission_state)
         settings_service.cache_cleared.connect(self._on_cache_cleared)
 
+    def shutdown(self) -> None:
+        """Stop WebEngine activity before Qt tears down the application."""
+
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        self._js_ready = False
+        self._script_queue.clear()
+        self._pending_telemetry_payload = None
+        self._cache_count_timer.stop()
+        self._telemetry_push_timer.stop()
+        bridge = self._bridge
+        self._bridge = None
+        if bridge is not None:
+            bridge.blockSignals(True)
+        page = self._page
+        self._page = None
+        if page is not None:
+            page.setWebChannel(None)
+        view = self._view
+        self._view = None
+        if view is not None:
+            view.stop()
+            view.hide()
+            self._web_layout.removeWidget(view)
+            view.setParent(None)
+            view.deleteLater()
+        if page is not None:
+            page.deleteLater()
+        self._profile = None
+        self._interceptor = None
+
     def _align_initial_base_layer(self) -> None:
-        state = getattr(self._mission_service, "state", MissionState())
+        state = getattr(self._planner_service, "state", MissionState())
         preferred_layer = self._settings_service.current.map_layer
         if preferred_layer in {"vector", "satellite"} and state.base_layer != preferred_layer:
-            if hasattr(self._mission_service, "set_base_layer"):
-                self._mission_service.set_base_layer(preferred_layer)
+            if hasattr(self._planner_service, "set_base_layer"):
+                self._planner_service.set_base_layer(preferred_layer)
 
     def retranslate(self, language: str) -> None:
         self._language = language
         self._send_ui_config()
-        state = getattr(self._mission_service, "state", MissionState())
+        state = getattr(self._planner_service, "state", MissionState())
         self._update_summary(state)
+        message_key = {
+            "pending": "map.transfer.sending",
+            "idle": "map.transfer.empty",
+            "success": "map.transfer.synced",
+            "dirty": "map.transfer.dirty",
+        }.get(self._mission_transfer_state)
+        if message_key:
+            self._set_mission_transfer_state(
+                self._mission_transfer_state,
+                t(message_key, self._language),
+            )
 
     def set_theme(self, theme: ThemePalette) -> None:
         self._theme = theme
@@ -219,6 +307,20 @@ class MapPanel(PanelFrame):
             self._last_vehicle_point = None
             self._last_vehicle_timestamp = None
 
+        home_latitude = snapshot.home_latitude
+        home_longitude = snapshot.home_longitude
+        home_position_available = bool(
+            home_latitude is not None
+            and home_longitude is not None
+            and math.isfinite(float(home_latitude))
+            and math.isfinite(float(home_longitude))
+            and -90.0 <= float(home_latitude) <= 90.0
+            and -180.0 <= float(home_longitude) <= 180.0
+            and (
+                abs(float(home_latitude)) > 1e-9
+                or abs(float(home_longitude)) > 1e-9
+            )
+        )
         payload = {
             "active": active,
             "commandAvailable": bool(snapshot.autopilot_link),
@@ -247,8 +349,45 @@ class MapPanel(PanelFrame):
             "localNorth": snapshot.local_north_m,
             "localEast": snapshot.local_east_m,
             "localDown": snapshot.local_down_m,
+            "homePositionAvailable": home_position_available,
+            "homeLat": home_latitude if home_position_available else None,
+            "homeLon": home_longitude if home_position_available else None,
         }
-        self._run_script(f"window.ykiMap && window.ykiMap.pushTelemetry({json.dumps(payload)});")
+        if payload == self._last_telemetry_payload:
+            return
+        self._last_telemetry_payload = payload
+        self._pending_telemetry_payload = payload
+        if not self._js_ready:
+            return
+        self._schedule_telemetry_payload()
+
+    def _schedule_telemetry_payload(self) -> None:
+        if self._shutting_down or self._pending_telemetry_payload is None:
+            return
+        elapsed_ms = (
+            self._telemetry_push_clock.elapsed() - self._last_telemetry_push_ms
+        )
+        remaining_ms = self._TELEMETRY_RENDER_INTERVAL_MS - elapsed_ms
+        if remaining_ms <= 0:
+            self._flush_telemetry_payload()
+        elif not self._telemetry_push_timer.isActive():
+            self._telemetry_push_timer.start(max(1, remaining_ms))
+
+    def _flush_telemetry_payload(self) -> None:
+        if self._shutting_down or not self._js_ready:
+            return
+        payload = self._pending_telemetry_payload
+        self._pending_telemetry_payload = None
+        if payload is None:
+            return
+        self._last_telemetry_push_ms = self._telemetry_push_clock.elapsed()
+        self._push_telemetry_payload(payload)
+
+    def _push_telemetry_payload(self, payload: dict[str, Any]) -> None:
+        self._run_script(
+            "window.ykiMap && window.ykiMap.pushTelemetry("
+            f"{json.dumps(payload)});"
+        )
 
     def command_started(self, code: str, parameters: dict[str, Any]) -> None:
         normalized = code.strip().upper()
@@ -257,7 +396,7 @@ class MapPanel(PanelFrame):
         self._mission_upload_pending = True
         overlays = parameters.get("overlays")
         if overlays is None:
-            state = getattr(self._mission_service, "state", MissionState())
+            state = getattr(self._planner_service, "state", MissionState())
             overlays = state.overlays
         loop = bool(parameters.get("loop", False))
         self._pending_mission_signature = self._vehicle_mission_signature(
@@ -266,16 +405,32 @@ class MapPanel(PanelFrame):
         )
         self._set_mission_transfer_state(
             "pending",
-            "Görev planı uçuş cihazına gönderiliyor…",
+            t("map.transfer.sending", self._language),
         )
 
     def command_completed(self, result: CommandResult) -> None:
+        if result.request.code == "SET_HOME":
+            self._complete_home_history(result.accepted)
+            fallback_latitude = None
+            fallback_longitude = None
+            if self._last_telemetry_payload:
+                fallback_latitude = self._last_telemetry_payload.get("homeLat")
+                fallback_longitude = self._last_telemetry_payload.get("homeLon")
+            self._run_script(
+                "window.ykiMap && window.ykiMap.resolveHomeReference("
+                f"{json.dumps(result.accepted)}, "
+                f"{json.dumps(fallback_latitude)}, "
+                f"{json.dumps(fallback_longitude)});"
+            )
+            return
         if result.request.code != "MISSION_UPLOAD":
             return
         self._mission_upload_pending = False
         state = "success" if result.accepted else "danger"
         if result.accepted:
             self._mission_loop = bool(result.request.parameters.get("loop", False))
+            if hasattr(self._planner_service, "set_mission_loop"):
+                self._planner_service.set_mission_loop(self._mission_loop)
             self._run_script(
                 "window.ykiMap && window.ykiMap.setMissionLoop("
                 f"{json.dumps(self._mission_loop)});"
@@ -288,7 +443,15 @@ class MapPanel(PanelFrame):
                 )
             )
         self._pending_mission_signature = None
-        self._set_mission_transfer_state(state, result.message)
+        self._set_mission_transfer_state(
+            state,
+            t(
+                "map.transfer.uploaded"
+                if result.accepted
+                else "map.transfer.failed",
+                self._language,
+            ),
+        )
 
     def _set_mission_transfer_state(self, state: str, message: str) -> None:
         self._mission_transfer_state = state
@@ -307,8 +470,6 @@ class MapPanel(PanelFrame):
             limit_mb=settings.cache_limit_mb,
         )
         self._tile_cache.start()
-        self._cache_entries = self._tile_cache.entries()
-        self._cache_keys = {entry["key"] for entry in self._cache_entries if "key" in entry}
         if self._view:
             self._view.deleteLater()
             self._view = None
@@ -325,7 +486,10 @@ class MapPanel(PanelFrame):
                 widget.deleteLater()
 
         if not WEBENGINE_AVAILABLE:
-            placeholder = QLabel("PyQt6-WebEngine bulunamadi. Harita baslatilamadi.", self)
+            placeholder = QLabel(
+                t("map.webengine.unavailable", self._language),
+                self,
+            )
             placeholder.setWordWrap(True)
             self._web_layout.addWidget(placeholder)
             self._view = None
@@ -382,6 +546,8 @@ class MapPanel(PanelFrame):
         self._selected_overlay_id = None
         self._active_tool = ""
         self._base_layer = ""
+        self._last_telemetry_payload = None
+        self._pending_telemetry_payload = None
         html_path = self._base_dir / "src" / "ui" / "web" / "map.html"
         self._view.load(QUrl.fromLocalFile(str(html_path)))
 
@@ -394,19 +560,37 @@ class MapPanel(PanelFrame):
             enabled=settings.cache_enabled,
             limit_mb=settings.cache_limit_mb,
         )
-        self._cache_entries = self._tile_cache.entries()
-        self._cache_keys = {entry["key"] for entry in self._cache_entries if "key" in entry}
         self._build_webview()
-        state = getattr(self._mission_service, "state", MissionState())
+        state = getattr(self._planner_service, "state", MissionState())
         self._sync_mission_state(state)
 
     def _on_js_ready(self) -> None:
         self._js_ready = True
+        # Rebuild one authoritative map snapshot instead of replaying every
+        # startup mutation. This keeps a slow WebEngine boot from accumulating
+        # stale scripts and guarantees that no bounded-queue eviction can omit
+        # an overlay.
+        self._script_queue.clear()
+        self._overlay_cache = {}
+        self._contact_cache = {}
+        self._selected_overlay_id = None
+        self._active_tool = ""
+        self._base_layer = ""
         self._send_ui_config()
-        state = getattr(self._mission_service, "state", MissionState())
+        state = getattr(self._planner_service, "state", MissionState())
         self._sync_mission_state(state)
-        while self._script_queue:
-            self._run_script(self._script_queue.pop(0))
+        message_key = {
+            "pending": "map.transfer.sending",
+            "idle": "map.transfer.empty",
+            "success": "map.transfer.synced",
+            "dirty": "map.transfer.dirty",
+        }.get(self._mission_transfer_state)
+        if message_key:
+            self._set_mission_transfer_state(
+                self._mission_transfer_state,
+                t(message_key, self._language),
+            )
+        self._schedule_telemetry_payload()
 
     def _send_ui_config(self) -> None:
         config = self._ui_config()
@@ -416,7 +600,7 @@ class MapPanel(PanelFrame):
 
     def _ui_config(self) -> dict[str, Any]:
         settings = self._settings_service.current
-        state = getattr(self._mission_service, "state", MissionState())
+        state = getattr(self._planner_service, "state", MissionState())
         current_layer = state.base_layer or settings.map_layer
         tool_config = map_tool_config()
         return {
@@ -430,6 +614,9 @@ class MapPanel(PanelFrame):
                 "onceHint": t("map.mission.once_hint", self._language),
                 "loopHint": t("map.mission.loop_hint", self._language),
             },
+            "pointList": {
+                "dragHint": t("map.point_list.drag_hint", self._language),
+            },
             "missionLoop": self._mission_loop,
             "tools": {key: t(label_key, self._language) for key, label_key in TOOL_LABEL_KEYS.items()},
             "toolOrder": {
@@ -439,11 +626,8 @@ class MapPanel(PanelFrame):
             "missionTypes": tool_config["missionTypes"],
             "context": {
                 "goto": t("map.context.goto", self._language),
-                "takeoff": t("map.context.takeoff", self._language),
-                "waypoint": t("map.context.waypoint", self._language),
-                "loiter": t("map.context.loiter", self._language),
-                "land": t("map.context.land", self._language),
                 "center": t("map.context.center", self._language),
+                "set_home": t("map.context.set_home", self._language),
                 "delete": t("map.context.delete", self._language),
             },
             "theme": {
@@ -485,54 +669,57 @@ class MapPanel(PanelFrame):
         }
 
     def _sync_mission_state(self, state: MissionState) -> None:
-        vehicle_items = [
-            overlay
-            for overlay in state.overlays
-            if overlay.is_vehicle_mission
-            and overlay.source == "flight-controller"
-        ]
-        if vehicle_items and len(vehicle_items) == len(
-            [overlay for overlay in state.overlays if overlay.is_vehicle_mission]
+        incoming_local_plan = self._capture_local_plan(state)
+        if (
+            incoming_local_plan != self._history_known_plan
+            and not self._history_mutation_in_progress
         ):
-            downloaded_loop = any(
-                bool(overlay.metadata.get("mission_loop", False))
-                for overlay in vehicle_items
+            self._discard_plan_history()
+        self._history_known_plan = incoming_local_plan
+        planned_loop = bool(getattr(state, "mission_loop", False))
+        if planned_loop != self._mission_loop:
+            self._mission_loop = planned_loop
+            self._run_script(
+                "window.ykiMap && window.ykiMap.setMissionLoop("
+                f"{json.dumps(planned_loop)});"
             )
-            if downloaded_loop != self._mission_loop:
-                self._mission_loop = downloaded_loop
-                self._run_script(
-                    "window.ykiMap && window.ykiMap.setMissionLoop("
-                    f"{json.dumps(downloaded_loop)});"
-                )
         overlays = [overlay.to_dict() for overlay in state.overlays]
         contacts = [contact.to_dict() for contact in getattr(state, "contacts", [])]
         overlay_lookup = {item["overlay_id"]: item for item in overlays}
         contact_lookup = {item["contact_id"]: item for item in contacts}
 
-        removed_overlays = set(self._overlay_cache) - set(overlay_lookup)
-        for overlay_id in removed_overlays:
-            self._run_script(
-                f"window.ykiMap && window.ykiMap.removeOverlayById({json.dumps(overlay_id)}, false);"
-            )
-
-        for payload in overlays:
-            overlay_id = payload["overlay_id"]
-            if self._overlay_cache.get(overlay_id) != payload:
-                self._run_script(f"window.ykiMap && window.ykiMap.upsertOverlay({json.dumps(payload)});")
-
-        removed_contacts = set(self._contact_cache) - set(contact_lookup)
-        for contact_id in removed_contacts:
-            self._run_script(
-                f"window.ykiMap && window.ykiMap.removeContact({json.dumps(contact_id)});"
-            )
-
-        for payload in contacts:
-            contact_id = payload["contact_id"]
-            if self._contact_cache.get(contact_id) != payload:
-                self._run_script(f"window.ykiMap && window.ykiMap.upsertContact({json.dumps(payload)});")
-
+        removed_overlays = sorted(set(self._overlay_cache) - set(overlay_lookup))
+        changed_overlays = [
+            payload
+            for payload in overlays
+            if self._overlay_cache.get(payload["overlay_id"]) != payload
+        ]
+        removed_contacts = sorted(set(self._contact_cache) - set(contact_lookup))
+        changed_contacts = [
+            payload
+            for payload in contacts
+            if self._contact_cache.get(payload["contact_id"]) != payload
+        ]
         overlay_order = [overlay["overlay_id"] for overlay in overlays]
-        self._run_script(f"window.ykiMap && window.ykiMap.setOverlayOrder({json.dumps(overlay_order)});")
+        overlay_order_changed = list(self._overlay_cache) != overlay_order
+        if (
+            removed_overlays
+            or changed_overlays
+            or removed_contacts
+            or changed_contacts
+            or overlay_order_changed
+        ):
+            delta = {
+                "removeOverlays": removed_overlays,
+                "upsertOverlays": changed_overlays,
+                "removeContacts": removed_contacts,
+                "upsertContacts": changed_contacts,
+                "overlayOrder": overlay_order if overlay_order_changed else None,
+            }
+            self._run_script(
+                "window.ykiMap && window.ykiMap.applyStateDelta("
+                f"{json.dumps(delta)});"
+            )
 
         if state.selected_overlay_id != self._selected_overlay_id:
             self._run_script(
@@ -564,7 +751,10 @@ class MapPanel(PanelFrame):
         if not relevant:
             self._last_uploaded_mission_signature = None
             if self._mission_transfer_state not in {"idle", "danger"}:
-                self._set_mission_transfer_state("idle", "Görev planı boş")
+                self._set_mission_transfer_state(
+                    "idle",
+                    t("map.transfer.empty", self._language),
+                )
             return
 
         signature = self._vehicle_mission_signature(relevant, loop=self._mission_loop)
@@ -575,13 +765,13 @@ class MapPanel(PanelFrame):
             self._last_uploaded_mission_signature = signature
             self._set_mission_transfer_state(
                 "success",
-                "Görev planı uçuş cihazından senkronize edildi",
+                t("map.transfer.synced", self._language),
             )
             return
         if signature != self._last_uploaded_mission_signature:
             self._set_mission_transfer_state(
                 "dirty",
-                "Haritadaki görev planı değişti veya henüz uçuş cihazına gönderilmedi",
+                t("map.transfer.dirty", self._language),
             )
 
     @classmethod
@@ -599,7 +789,6 @@ class MapPanel(PanelFrame):
 
     def _update_summary(self, state: MissionState) -> None:
         del state
-        self._cache_entries = self._tile_cache.entries()
         self._run_script(
             f"window.ykiMap && window.ykiMap.setCacheCount({json.dumps(self._tile_cache.count_tiles())});"
         )
@@ -607,16 +796,15 @@ class MapPanel(PanelFrame):
     def _on_tile_cache_changed(self, count: int) -> None:
         self._pending_cache_count = count
         if not self._cache_count_timer.isActive():
-            self._cache_count_timer.start(250)
+            self._cache_count_timer.start(500)
 
     def _flush_cache_count(self) -> None:
-        self._cache_entries = self._tile_cache.entries()
         self._run_script(
             f"window.ykiMap && window.ykiMap.setCacheCount({json.dumps(self._pending_cache_count)});"
         )
 
     def _run_script(self, script: str) -> None:
-        if not self._view:
+        if self._shutting_down or not self._view:
             return
         if not self._js_ready:
             self._script_queue.append(script)
@@ -637,8 +825,11 @@ class MapPanel(PanelFrame):
             metadata=payload.get("metadata", {}),
         )
         self._overlay_cache[overlay.overlay_id] = overlay.to_dict()
-        if hasattr(self._mission_service, "upsert_overlay"):
-            self._mission_service.upsert_overlay(overlay)
+        if hasattr(self._planner_service, "upsert_overlay"):
+            self._mutate_local_plan(
+                lambda: self._planner_service.upsert_overlay(overlay),
+                label="overlay",
+            )
 
     def _remove_overlay(self, overlay_id: str) -> None:
         existing_payload = self._overlay_cache.get(overlay_id)
@@ -647,32 +838,38 @@ class MapPanel(PanelFrame):
         self._overlay_cache.pop(overlay_id, None)
         if self._selected_overlay_id == overlay_id:
             self._selected_overlay_id = None
-        if hasattr(self._mission_service, "remove_overlay"):
-            self._mission_service.remove_overlay(overlay_id)
+        if hasattr(self._planner_service, "remove_overlay"):
+            self._mutate_local_plan(
+                lambda: self._planner_service.remove_overlay(overlay_id),
+                label="delete",
+            )
 
     def _select_overlay(self, overlay_id: str | None) -> None:
         self._selected_overlay_id = overlay_id
-        if hasattr(self._mission_service, "select_overlay"):
-            self._mission_service.select_overlay(overlay_id)
+        if hasattr(self._planner_service, "select_overlay"):
+            self._planner_service.select_overlay(overlay_id)
 
     def _on_map_action(self, payload: dict[str, Any]) -> None:
         action = payload.get("type")
         if action == "tool_changed":
             tool = payload.get("tool", "pan")
             if tool == "clear":
-                if hasattr(self._mission_service, "clear_dynamic_overlays"):
-                    self._mission_service.clear_dynamic_overlays()
+                if hasattr(self._planner_service, "clear_dynamic_overlays"):
+                    self._mutate_local_plan(
+                        self._planner_service.clear_dynamic_overlays,
+                        label="clear",
+                    )
                 return
             self._active_tool = tool
-            if hasattr(self._mission_service, "set_active_tool"):
-                self._mission_service.set_active_tool(tool)
+            if hasattr(self._planner_service, "set_active_tool"):
+                self._planner_service.set_active_tool(tool)
         elif action == "storage_request":
             request = payload.get("action")
             if request in {"archive", "save", "load"}:
                 self.storage_requested.emit(request)
         elif action == "mission_send_request":
             self._mission_loop = bool(payload.get("loop", self._mission_loop))
-            state = getattr(self._mission_service, "state", MissionState())
+            state = getattr(self._planner_service, "state", MissionState())
             overlays = [overlay for overlay in state.overlays if overlay.is_vehicle_mission]
             self.command_requested.emit(
                 "MISSION_UPLOAD",
@@ -684,21 +881,68 @@ class MapPanel(PanelFrame):
             )
         elif action == "mission_loop_changed":
             self._mission_loop = bool(payload.get("loop", False))
-            state = getattr(self._mission_service, "state", MissionState())
+            if hasattr(self._planner_service, "set_mission_loop"):
+                self._mutate_local_plan(
+                    lambda: self._planner_service.set_mission_loop(
+                        self._mission_loop
+                    ),
+                    label="mission-loop",
+                )
+            state = getattr(self._planner_service, "state", MissionState())
             self._sync_mission_transfer_freshness(state.overlays)
+        elif action == "history_batch_begin":
+            self._begin_history_batch(str(payload.get("label", "map-edit")))
+        elif action == "history_batch_end":
+            self._end_history_batch()
+        elif action == "history_undo":
+            self._navigate_history("undo")
+        elif action == "history_redo":
+            self._navigate_history("redo")
+        elif action == "history_home_command":
+            if self._pending_home_navigation is not None:
+                parameters = {
+                    "latitude": float(payload["lat"]),
+                    "longitude": float(payload["lon"]),
+                }
+                if self._last_vehicle_point is not None:
+                    parameters["altitude"] = self._last_vehicle_point.altitude
+                self.command_requested.emit("SET_HOME", parameters)
         elif action == "layer_changed":
             layer = payload.get("layer", "vector")
             self._base_layer = layer
-            if hasattr(self._mission_service, "set_base_layer"):
-                self._mission_service.set_base_layer(layer)
+            if hasattr(self._planner_service, "set_base_layer"):
+                self._planner_service.set_base_layer(layer)
             self._settings_service.patch(map_layer=layer)
         elif action == "mission_item_created":
             return
         elif action == "goto_request":
             self.command_requested.emit("GOTO", {"latitude": payload["lat"], "longitude": payload["lon"]})
+        elif action == "set_home_reference":
+            previous = {
+                "latitude": float(payload.get("previous_lat", payload["lat"])),
+                "longitude": float(payload.get("previous_lon", payload["lon"])),
+            }
+            current = {
+                "latitude": float(payload["lat"]),
+                "longitude": float(payload["lon"]),
+            }
+            self._pending_home_record = {
+                "kind": "home",
+                "label": "home",
+                "before": previous,
+                "after": current,
+            }
+            parameters = {
+                "latitude": payload["lat"],
+                "longitude": payload["lon"],
+            }
+            if self._last_vehicle_point is not None:
+                parameters["altitude"] = self._last_vehicle_point.altitude
+            self.command_requested.emit("SET_HOME", parameters)
         elif action in {"land_request", "takeoff_request"}:
-            # JS aynı anda MapOverlay oluşturur; nokta, açıkça görev gönderilene kadar
-            # yalnızca merkezi görev planında kalır ve ani uçuş komutu üretmez.
+            # JavaScript creates the MapOverlay at the same time. The point
+            # remains in the central plan and produces no immediate vehicle
+            # command until the operator explicitly sends the plan.
             return
         elif action == "center_vehicle":
             return
@@ -706,8 +950,167 @@ class MapPanel(PanelFrame):
             message = payload.get("message", "Harita katmani gecici olarak ulasilamiyor")
             self.info_generated.emit("warning", message)
 
-    def _load_cache_entries(self) -> list[dict[str, Any]]:
-        return self._tile_cache.entries()
+    def _capture_local_plan(
+        self,
+        state: MissionState | None = None,
+    ) -> dict[str, Any]:
+        snapshot = state or getattr(self._planner_service, "state", MissionState())
+        return {
+            "overlays": [
+                overlay.to_dict()
+                for overlay in snapshot.overlays
+                if not overlay.is_source_managed
+            ],
+            "mission_loop": bool(getattr(snapshot, "mission_loop", False)),
+        }
+
+    def _mutate_local_plan(self, mutation, *, label: str) -> None:
+        before = self._capture_local_plan()
+        self._history_mutation_in_progress = True
+        try:
+            mutation()
+        finally:
+            self._history_mutation_in_progress = False
+        after = self._capture_local_plan()
+        self._history_known_plan = after
+        if self._history_batch_before is None:
+            self._record_plan_history(before, after, label=label)
+
+    def _record_plan_history(
+        self,
+        before: dict[str, Any],
+        after: dict[str, Any],
+        *,
+        label: str,
+    ) -> None:
+        if before == after:
+            return
+        self._push_history(
+            {
+                "kind": "plan",
+                "label": label,
+                "before": before,
+                "after": after,
+            }
+        )
+
+    def _push_history(self, entry: dict[str, Any]) -> None:
+        if entry.get("before") == entry.get("after"):
+            return
+        self._history_undo.append(entry)
+        self._history_redo.clear()
+
+    def _begin_history_batch(self, label: str) -> None:
+        if self._history_batch_before is not None:
+            return
+        self._history_batch_before = self._capture_local_plan()
+        self._history_batch_label = label
+
+    def _end_history_batch(self) -> None:
+        before = self._history_batch_before
+        if before is None:
+            return
+        label = self._history_batch_label or "map-edit"
+        self._history_batch_before = None
+        self._history_batch_label = ""
+        after = self._capture_local_plan()
+        self._history_known_plan = after
+        self._record_plan_history(before, after, label=label)
+
+    def _discard_plan_history(self) -> None:
+        self._history_undo = deque(
+            (entry for entry in self._history_undo if entry.get("kind") == "home"),
+            maxlen=self._MAX_HISTORY_ENTRIES,
+        )
+        self._history_redo = deque(
+            (entry for entry in self._history_redo if entry.get("kind") == "home"),
+            maxlen=self._MAX_HISTORY_ENTRIES,
+        )
+        self._history_batch_before = None
+        self._history_batch_label = ""
+
+    def _restore_local_plan(self, snapshot: dict[str, Any]) -> None:
+        overlays = [
+            MapOverlay.from_dict(payload)
+            for payload in snapshot.get("overlays", [])
+        ]
+        self._history_mutation_in_progress = True
+        try:
+            if hasattr(self._planner_service, "replace_local_plan"):
+                self._planner_service.replace_local_plan(
+                    overlays,
+                    mission_loop=bool(snapshot.get("mission_loop", False)),
+                )
+            else:
+                self._planner_service.load_state(
+                    MissionState(
+                        overlays=overlays,
+                        mission_loop=bool(snapshot.get("mission_loop", False)),
+                    )
+                )
+        finally:
+            self._history_mutation_in_progress = False
+        self._history_known_plan = self._capture_local_plan()
+
+    def _navigate_history(self, direction: str) -> None:
+        if self._pending_home_navigation is not None or self._pending_home_record is not None:
+            return
+        source = self._history_undo if direction == "undo" else self._history_redo
+        if not source:
+            return
+        entry = source[-1]
+        if entry.get("kind") == "home":
+            target_key = "before" if direction == "undo" else "after"
+            target = entry[target_key]
+            self._pending_home_navigation = {
+                "direction": direction,
+                "entry": entry,
+            }
+            self._run_script(
+                "window.ykiMap && window.ykiMap.prepareHomeHistoryReference("
+                f"{json.dumps(target['latitude'])}, "
+                f"{json.dumps(target['longitude'])});"
+            )
+            return
+
+        target_key = "before" if direction == "undo" else "after"
+        try:
+            self._restore_local_plan(entry[target_key])
+        except Exception as exc:
+            self.info_generated.emit("danger", str(exc))
+            return
+        source.pop()
+        destination = self._history_redo if direction == "undo" else self._history_undo
+        destination.append(entry)
+        self.info_generated.emit(
+            "info",
+            t(f"map.history.{direction}", self._language),
+        )
+
+    def _complete_home_history(self, accepted: bool) -> None:
+        navigation = self._pending_home_navigation
+        record = self._pending_home_record
+        self._pending_home_navigation = None
+        self._pending_home_record = None
+        if not accepted:
+            return
+        if navigation is not None:
+            direction = str(navigation["direction"])
+            entry = navigation["entry"]
+            source = self._history_undo if direction == "undo" else self._history_redo
+            if source and source[-1] == entry:
+                source.pop()
+                destination = (
+                    self._history_redo if direction == "undo" else self._history_undo
+                )
+                destination.append(entry)
+                self.info_generated.emit(
+                    "info",
+                    t(f"map.history.{direction}", self._language),
+                )
+            return
+        if record is not None:
+            self._push_history(record)
 
     def _cache_index_file(self) -> Path:
         return Path(self._settings_service.current.cache_path) / "cache-index.json"
@@ -723,22 +1126,14 @@ class MapPanel(PanelFrame):
         except OSError:
             return
 
-    def _save_cache_entries(self) -> None:
-        self._cache_entries = self._tile_cache.entries()
-        self._cache_keys = {entry["key"] for entry in self._cache_entries if "key" in entry}
-
     def _on_bounds_changed(self, payload: dict[str, Any]) -> None:
         del payload
-        state = getattr(self._mission_service, "state", MissionState())
-        self._update_summary(state)
 
     def _on_cache_cleared(self) -> None:
         self._cache_index_path = self._cache_index_file()
-        self._cache_entries = []
-        self._cache_keys = set()
         self._tile_cache.clear()
         if self._profile:
             self._profile.clearHttpCache()
             self._profile.clearAllVisitedLinks()
-        state = getattr(self._mission_service, "state", MissionState())
+        state = getattr(self._planner_service, "state", MissionState())
         self._update_summary(state)

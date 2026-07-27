@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from src.ui.adapters.services import (
     QtCommandService,
     QtConnectionControlService,
     QtLoggingService,
-    QtMissionService,
+    QtPlannerService,
     QtParameterService,
     QtSettingsService,
     QtTelemetryService,
@@ -24,7 +25,7 @@ class QtRuntimeServices:
     log_service: QtLoggingService
     settings_service: QtSettingsService
     telemetry_service: QtTelemetryService
-    mission_service: QtMissionService
+    planner_service: QtPlannerService
     command_service: QtCommandService
     parameter_service: QtParameterService
     video_service: QtVideoService
@@ -74,6 +75,11 @@ class QtRuntimeServices:
         for adapter in self._adapters():
             adapter.close()
         self.backend.stop()
+        deadline = time.monotonic() + 1.0
+        for adapter in self._adapters():
+            wait_for_workers = getattr(adapter, "wait_for_workers", None)
+            if wait_for_workers is not None:
+                wait_for_workers(max(0.0, deadline - time.monotonic()))
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=1.0)
         with self._lifecycle_lock:
@@ -96,7 +102,7 @@ class QtRuntimeServices:
             self.log_service,
             self.settings_service,
             self.telemetry_service,
-            self.mission_service,
+            self.planner_service,
             self.command_service,
             self.parameter_service,
             self.video_service,
@@ -112,7 +118,7 @@ def create_qt_runtime_services(base_dir: Path) -> QtRuntimeServices:
         log_service=QtLoggingService(backend.log_service),
         settings_service=QtSettingsService(backend.settings_service),
         telemetry_service=QtTelemetryService(backend.telemetry_service),
-        mission_service=QtMissionService(backend.mission_service),
+        planner_service=QtPlannerService(backend.planner_service),
         command_service=QtCommandService(backend.command_service),
         parameter_service=QtParameterService(backend.parameter_service),
         video_service=QtVideoService(

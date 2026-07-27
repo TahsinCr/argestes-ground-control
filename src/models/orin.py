@@ -9,7 +9,7 @@ from src.core.abstracts import Model
 
 @dataclass(frozen=True, slots=True)
 class OrinLinkConfig(Model):
-    enabled: bool = True
+    enabled: bool = False
     component_id: int = 191
     network_id: int = 77
     message_type: int = 42_000

@@ -112,7 +112,7 @@ class MutableVideoService(VideoService):
 
 
 class GStreamerVideoService(MutableVideoService):
-    """GStreamer appsink karelerini ortak VideoFrame modeline dönüştürür."""
+    """Convert GStreamer appsink frames into the shared VideoFrame model."""
 
     def __init__(
         self,

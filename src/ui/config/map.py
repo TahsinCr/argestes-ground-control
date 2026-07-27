@@ -23,8 +23,8 @@ MAP_TOOLS = (
     MapToolSpec("rtl", "map.tool.rtl", geometry="point", route_item=True, editable=True),
     MapToolSpec("no_fly", "map.tool.no_fly", geometry="polygon", editable=True),
     MapToolSpec("safe_zone", "map.tool.safe_zone", geometry="polygon", editable=True),
-    # HSS ve QR hedefi TEKNOFEST servisinden gelir. Harita bunlari render eder,
-    # fakat kullanici bunlari olusturamaz veya duzenleyemez.
+    # HSS and QR targets come from the TEKNOFEST service. The map renders them,
+    # but the operator cannot create or edit them.
     MapToolSpec("hss", "map.tool.hss", geometry="point", creatable=False),
     MapToolSpec("target", "map.tool.target", geometry="point", creatable=False),
     MapToolSpec("land", "map.tool.land", geometry="point", route_item=True, editable=True),

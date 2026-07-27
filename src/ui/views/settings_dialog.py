@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -20,7 +21,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from src.ui.config.i18n import t
+from src.ui.i18n import t
 from src.ui.config.settings_schema import FieldSpec, SETTINGS_SECTIONS, SectionSpec, iter_fields
 from src.models.settings import SettingsModel
 from src.ui.themes.style import ThemePalette
@@ -108,12 +109,25 @@ class SettingsDialog(QDialog):
         if field.kind == "spin":
             spin = QSpinBox(self)
             if field.minimum is not None:
-                spin.setMinimum(field.minimum)
+                spin.setMinimum(int(field.minimum))
             if field.maximum is not None:
-                spin.setMaximum(field.maximum)
+                spin.setMaximum(int(field.maximum))
             if field.suffix:
                 spin.setSuffix(field.suffix)
             spin.setValue(int(current_value))
+            return spin
+
+        if field.kind == "double":
+            spin = QDoubleSpinBox(self)
+            if field.minimum is not None:
+                spin.setMinimum(float(field.minimum))
+            if field.maximum is not None:
+                spin.setMaximum(float(field.maximum))
+            spin.setDecimals(field.decimals)
+            spin.setSingleStep(field.single_step)
+            if field.suffix:
+                spin.setSuffix(field.suffix)
+            spin.setValue(float(current_value))
             return spin
 
         line_edit = QLineEdit(str(current_value), self)
@@ -134,6 +148,8 @@ class SettingsDialog(QDialog):
             return widget.isChecked()
         if isinstance(widget, QSpinBox):
             return int(widget.value())
+        if isinstance(widget, QDoubleSpinBox):
+            return float(widget.value())
         if isinstance(widget, QLineEdit):
             return widget.text().strip()
         raise TypeError(f"Unsupported settings widget for path: {path}")

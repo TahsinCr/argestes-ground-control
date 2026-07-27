@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from src.ui.config.i18n import t
+from src.ui.i18n import t
 from src.ui.config.commands import (
     AUTONOMOUS_COMMANDS,
     FLIGHT_MODES,
@@ -108,6 +108,7 @@ class TelemetryPanel(PanelFrame):
         self.readouts: dict[str, QLabel] = {}
         self.readout_labels: dict[str, QLabel] = {}
         self.section_titles: dict[str, QLabel] = {}
+        self._readout_cache: dict[str, str] = {}
         for section_key, items in self.SECTION_SPECS:
             self._add_readout_section(section_key, items)
         self.content_layout.addStretch(1)
@@ -168,49 +169,69 @@ class TelemetryPanel(PanelFrame):
     def update_snapshot(self, snapshot: TelemetrySnapshot) -> None:
         connected = bool(snapshot.telemetry_link and snapshot.autopilot_link)
         if not connected:
-            for readout in self.readouts.values():
-                readout.setText("--")
-                readout.setToolTip("")
-            self.readouts["flight_mode"].setText(snapshot.flight_mode)
+            values = {key: "--" for key in self.readouts}
+            values["flight_mode"] = snapshot.flight_mode
+            self._set_readout_values(values)
             return
 
         arm_state = "ARMED" if snapshot.armed else "DISARMED"
-        self.readouts["flight_mode"].setText(snapshot.flight_mode)
-        self.readouts["vehicle_state"].setText(
-            f"{arm_state} · {snapshot.system_status}"
+        self._set_readout_values(
+            {
+                "flight_mode": snapshot.flight_mode,
+                "vehicle_state": f"{arm_state} · {snapshot.system_status}",
+                "altitude_agl": f"{snapshot.altitude_agl:0.1f} m",
+                "altitude_msl": f"{snapshot.altitude_msl:0.1f} m",
+                "climb_rate": f"{snapshot.climb_rate:+0.1f} m/s",
+                "throttle": f"{snapshot.throttle_percent:0.0f}%",
+                "load_factor": self._format_optional(
+                    snapshot.load_factor_g,
+                    "g",
+                    2,
+                ),
+                "waypoint": (
+                    f"{snapshot.wp_distance:0.0f} m · "
+                    f"{snapshot.nav_bearing:03.0f}°"
+                ),
+                "home": (
+                    f"{snapshot.home_distance:0.0f} m · "
+                    f"{snapshot.home_heading:03.0f}°"
+                ),
+                "mission": f"{snapshot.mission_index}/{snapshot.mission_total}",
+                "roll": f"{snapshot.roll:+0.1f}°",
+                "pitch": f"{snapshot.pitch:+0.1f}°",
+                "yaw": f"{snapshot.yaw % 360:03.0f}°",
+                "acceleration_x": self._format_optional(
+                    snapshot.acceleration_x_mps2,
+                    "m/s²",
+                    2,
+                ),
+                "acceleration_y": self._format_optional(
+                    snapshot.acceleration_y_mps2,
+                    "m/s²",
+                    2,
+                ),
+                "acceleration_z": self._format_optional(
+                    snapshot.acceleration_z_mps2,
+                    "m/s²",
+                    2,
+                ),
+                "wind": (
+                    f"{snapshot.wind_speed:0.1f} m/s · "
+                    f"{snapshot.wind_heading:03.0f}°"
+                ),
+                "ekf": "OK" if snapshot.ekf_ok else "WAIT",
+            }
         )
-        self.readouts["altitude_agl"].setText(f"{snapshot.altitude_agl:0.1f} m")
-        self.readouts["altitude_msl"].setText(f"{snapshot.altitude_msl:0.1f} m")
-        self.readouts["climb_rate"].setText(f"{snapshot.climb_rate:+0.1f} m/s")
-        self.readouts["throttle"].setText(f"{snapshot.throttle_percent:0.0f}%")
-        self.readouts["load_factor"].setText(
-            self._format_optional(snapshot.load_factor_g, "g", 2)
-        )
-        self.readouts["waypoint"].setText(
-            f"{snapshot.wp_distance:0.0f} m · {snapshot.nav_bearing:03.0f}°"
-        )
-        self.readouts["home"].setText(
-            f"{snapshot.home_distance:0.0f} m · {snapshot.home_heading:03.0f}°"
-        )
-        self.readouts["mission"].setText(
-            f"{snapshot.mission_index}/{snapshot.mission_total}"
-        )
-        self.readouts["roll"].setText(f"{snapshot.roll:+0.1f}°")
-        self.readouts["pitch"].setText(f"{snapshot.pitch:+0.1f}°")
-        self.readouts["yaw"].setText(f"{snapshot.yaw % 360:03.0f}°")
-        self.readouts["acceleration_x"].setText(
-            self._format_optional(snapshot.acceleration_x_mps2, "m/s²", 2)
-        )
-        self.readouts["acceleration_y"].setText(
-            self._format_optional(snapshot.acceleration_y_mps2, "m/s²", 2)
-        )
-        self.readouts["acceleration_z"].setText(
-            self._format_optional(snapshot.acceleration_z_mps2, "m/s²", 2)
-        )
-        self.readouts["wind"].setText(
-            f"{snapshot.wind_speed:0.1f} m/s · {snapshot.wind_heading:03.0f}°"
-        )
-        self.readouts["ekf"].setText("OK" if snapshot.ekf_ok else "WAIT")
+
+    def _set_readout_values(self, values: dict[str, str]) -> None:
+        for key, text in values.items():
+            if self._readout_cache.get(key) == text:
+                continue
+            self._readout_cache[key] = text
+            readout = self.readouts[key]
+            readout.setText(text)
+            if readout.toolTip():
+                readout.setToolTip("")
 
     @staticmethod
     def _format_optional(value: float | None, unit: str, decimals: int) -> str:
@@ -238,6 +259,7 @@ class CommandPanel(PanelFrame):
         self._requested_mode: str | None = None
         self._requested_armed: bool | None = None
         self._mode_selection_dirty = False
+        self._arm_render_signature: tuple[object, ...] | None = None
         self.setMinimumWidth(300)
 
         self.mode_label = QLabel(self)
@@ -326,6 +348,7 @@ class CommandPanel(PanelFrame):
 
     def set_language(self, language: str) -> None:
         self._language = language
+        self._arm_render_signature = None
         self.mode_label.setText(t("command.quick", language).upper())
         self.profile_label.setText("")
         self.tasks_label.setText(t("command.tasks", language).upper())
@@ -385,8 +408,6 @@ class CommandPanel(PanelFrame):
             self._requested_armed = None
         elif self._requested_armed is not None and snapshot.armed is self._requested_armed:
             self._requested_armed = None
-        self._sync_arm_controls()
-
         if was_connected != self._vehicle_connected and not self._pending_commands:
             self._set_command_status(
                 t(
@@ -404,9 +425,9 @@ class CommandPanel(PanelFrame):
             self._mode_selection_dirty = False
             self._sync_mode_combo(self._telemetry_mode)
         elif self._requested_mode is not None:
-            # SET_MODE arka planda yeni HEARTBEAT'i bekler. Eski telemetri
-            # karelerinin kullanıcı seçimini veya doğrulanmış sonucu ezmesine
-            # izin verme; yeni mod telemetride göründüğünde tekrar senkronize ol.
+            # SET_MODE waits for a new HEARTBEAT in the background. Do not let
+            # stale telemetry overwrite the operator selection or confirmed
+            # result; synchronize again when telemetry reports the new mode.
             if self._telemetry_mode == self._requested_mode:
                 self._requested_mode = None
                 self._mode_selection_dirty = False
@@ -458,28 +479,47 @@ class CommandPanel(PanelFrame):
             button_text_key = "command.arm_button.ready"
             button_role = "success"
             tooltip_key = "command.arm.tooltip"
-        self.arm_label.setText(t(state_key, self._language).upper())
-        self.arm_toggle_button.setText(t(button_text_key, self._language))
-        self.arm_toggle_button.setToolTip(t(tooltip_key, self._language))
-        self.arm_toggle_button.setProperty(
-            "currentState",
+        arm_label = t(state_key, self._language).upper()
+        button_text = t(button_text_key, self._language)
+        tooltip = t(tooltip_key, self._language)
+        current_state = (
             self._vehicle_connected
             and self._requested_armed is None
-            and self._armed,
+            and self._armed
         )
-        self.arm_toggle_button.setProperty(
-            "pendingState",
-            self._requested_armed is not None,
-        )
-        self.arm_toggle_button.setProperty("role", button_role)
-        self.arm_toggle_button.style().unpolish(self.arm_toggle_button)
-        self.arm_toggle_button.style().polish(self.arm_toggle_button)
-
+        pending_state = self._requested_armed is not None
         available = (
             self._vehicle_connected
             and not self._pending_commands
             and self._requested_armed is None
         )
+        render_signature = (
+            arm_label,
+            button_text,
+            tooltip,
+            button_role,
+            current_state,
+            pending_state,
+            available,
+        )
+        if render_signature == self._arm_render_signature:
+            return
+        self._arm_render_signature = render_signature
+        self.arm_label.setText(arm_label)
+        self.arm_toggle_button.setText(button_text)
+        self.arm_toggle_button.setToolTip(tooltip)
+        self.arm_toggle_button.setProperty(
+            "currentState",
+            current_state,
+        )
+        self.arm_toggle_button.setProperty(
+            "pendingState",
+            pending_state,
+        )
+        self.arm_toggle_button.setProperty("role", button_role)
+        self.arm_toggle_button.style().unpolish(self.arm_toggle_button)
+        self.arm_toggle_button.style().polish(self.arm_toggle_button)
+
         self.arm_toggle_button.setEnabled(available)
 
     def _toggle_arm_state(self) -> None:
@@ -534,7 +574,13 @@ class CommandPanel(PanelFrame):
             )
         else:
             self._set_command_status(
-                result.message,
+                t(
+                    "command.result.success"
+                    if result.accepted
+                    else "command.result.failed",
+                    self._language,
+                    command=code,
+                ),
                 "success" if result.accepted else "danger",
             )
         self._sync_command_availability()
@@ -546,8 +592,10 @@ class CommandPanel(PanelFrame):
             self.profile_apply_button,
             self.task_apply_button,
         ):
-            button.setEnabled(available)
-        self.mode_combo.setEnabled(available)
+            if button.isEnabled() != available:
+                button.setEnabled(available)
+        if self.mode_combo.isEnabled() != available:
+            self.mode_combo.setEnabled(available)
         self._sync_arm_controls()
 
     def _set_command_status(self, message: str, state: str) -> None:

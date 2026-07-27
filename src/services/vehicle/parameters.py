@@ -80,11 +80,10 @@ class _PendingWrite:
 
 
 class VehicleParameterService(MutableParameterService):
-    """Araç parametre kataloğunu alır ve yazmaları araç geri bildirimiyle doğrular."""
+    """Fetch vehicle parameters and confirm writes from vehicle feedback."""
 
     def __init__(
         self,
-        parameters: Iterable[Parameter],
         vehicle: VehicleService,
         logger: ServiceLogger | None = None,
         *,
@@ -92,7 +91,7 @@ class VehicleParameterService(MutableParameterService):
         refresh_on_connect: bool = True,
         max_refresh_attempts: int = 3,
     ) -> None:
-        super().__init__(parameters)
+        super().__init__()
         if write_timeout <= 0:
             raise ValueError("Parametre yazma zaman aşımı pozitif olmalı")
         self._vehicle = vehicle
@@ -101,7 +100,7 @@ class VehicleParameterService(MutableParameterService):
         self._refresh_on_connect = refresh_on_connect
         self._max_refresh_attempts = max(1, int(max_refresh_attempts))
         self._subscriptions: list[Subscription] = []
-        self._catalog_buffer: dict[str, Parameter] = {}
+        self._parameter_buffer: dict[str, Parameter] = {}
         self._received_indexes: set[int] = set()
         self._expected_count = 0
         self._loading = False
@@ -136,10 +135,11 @@ class VehicleParameterService(MutableParameterService):
 
     def refresh(self) -> None:
         if not self._vehicle.connected:
-            raise ConnectionError("Parametre kataloğu için uçuş cihazı bağlı değil")
+            raise ConnectionError("Parametre listesi için uçuş cihazı bağlı değil")
+        self.replace(())
         with self._sync_lock:
             self._cancel_refresh_timer()
-            self._catalog_buffer.clear()
+            self._parameter_buffer.clear()
             self._received_indexes.clear()
             self._expected_count = 0
             self._loading = True
@@ -230,6 +230,7 @@ class VehicleParameterService(MutableParameterService):
                 self._loading = False
                 for pending in self._pending_writes.values():
                     pending.event.set()
+            self.replace(())
 
     def _consume_message(self, message: Any) -> None:
         if str(message.get_type()).upper() != "PARAM_VALUE":
@@ -257,24 +258,24 @@ class VehicleParameterService(MutableParameterService):
             loading = self._loading
             complete = False
             if loading:
-                self._catalog_buffer[key] = parameter
+                self._parameter_buffer[key] = parameter
                 if index >= 0:
                     self._received_indexes.add(index)
                 self._expected_count = max(self._expected_count, count)
                 complete = self._expected_count > 0 and (
                     len(self._received_indexes) >= self._expected_count
-                    or len(self._catalog_buffer) >= self._expected_count
+                    or len(self._parameter_buffer) >= self._expected_count
                 )
                 if complete:
-                    catalog = tuple(self._catalog_buffer.values())
-                    self._catalog_buffer.clear()
+                    received_parameters = tuple(self._parameter_buffer.values())
+                    self._parameter_buffer.clear()
                     self._received_indexes.clear()
                     self._loading = False
                     self._cancel_refresh_timer()
                 else:
-                    catalog = ()
+                    received_parameters = ()
             else:
-                catalog = ()
+                received_parameters = ()
             pending = self._pending_writes.get(key)
             confirmed = pending is not None and math.isclose(
                 raw_value,
@@ -286,12 +287,12 @@ class VehicleParameterService(MutableParameterService):
                 pending.confirmed = True
 
         if complete:
-            self.replace(catalog)
+            self.replace(received_parameters)
             self._event(
-                "parameter.catalog_received",
-                f"Uçuş cihazından {len(catalog)} parametrenin tamamı alındı",
+                "parameter.sync_received",
+                f"Uçuş cihazından {len(received_parameters)} parametrenin tamamı alındı",
                 severity="success",
-                details={"parameter_count": len(catalog)},
+                details={"parameter_count": len(received_parameters)},
             )
         elif not loading:
             previous = existing.value if existing is not None else None
@@ -372,11 +373,11 @@ class VehicleParameterService(MutableParameterService):
         with self._sync_lock:
             if not self._loading:
                 return
-            received = len(self._received_indexes) or len(self._catalog_buffer)
+            received = len(self._received_indexes) or len(self._parameter_buffer)
             expected = self._expected_count
             if self._refresh_attempt >= self._max_refresh_attempts or not self._vehicle.connected:
                 self._loading = False
-                self._catalog_buffer.clear()
+                self._parameter_buffer.clear()
                 self._received_indexes.clear()
                 self._refresh_timer = None
                 retry = False
@@ -387,15 +388,15 @@ class VehicleParameterService(MutableParameterService):
                 retry = True
         if not retry:
             self._event(
-                "parameter.catalog_failed",
-                "Araç parametre kataloğu eksiksiz alınamadı",
+                "parameter.sync_failed",
+                "Araç parametre listesi eksiksiz alınamadı",
                 severity="danger",
                 details={"received_count": received, "expected_count": expected},
             )
             return
         self._event(
-            "parameter.catalog_retry",
-            f"Eksik parametre kataloğu yeniden isteniyor ({attempt}/{self._max_refresh_attempts})",
+            "parameter.sync_retry",
+            f"Eksik parametre listesi yeniden isteniyor ({attempt}/{self._max_refresh_attempts})",
             severity="warning",
             details={"received_count": received, "expected_count": expected},
         )
@@ -403,8 +404,8 @@ class VehicleParameterService(MutableParameterService):
             self._vehicle.request_parameters()
         except Exception as exc:
             self._event(
-                "parameter.catalog_retry_failed",
-                f"Parametre kataloğu yeniden istenemedi: {exc}",
+                "parameter.sync_retry_failed",
+                f"Parametre listesi yeniden istenemedi: {exc}",
                 severity="danger",
             )
         self._arm_refresh_timer()

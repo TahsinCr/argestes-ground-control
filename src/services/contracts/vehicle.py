@@ -16,7 +16,7 @@ from src.models.vehicle import (
 
 
 class VehicleService(Service):
-    """Uçuş cihazını MAVLink, simülatör veya başka bir taşıyıcıdan soyutlar."""
+    """Abstract the flight controller from MAVLink, simulators or other transports."""
 
     @property
     @abstractmethod
@@ -61,7 +61,7 @@ class VehicleService(Service):
 
     @abstractmethod
     def execute(self, request: CommandRequest) -> bool:
-        """İşlemi yürütür; protokol seviyesinde doğrulandıysa True döndürür."""
+        """Execute the operation and return True after protocol-level confirmation."""
         ...
 
     @abstractmethod

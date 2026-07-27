@@ -11,8 +11,8 @@ from src.core.events import EventStream
 from src.models.competition import CompetitionConnectionState
 from src.models.telemetry import TelemetrySnapshot
 from src.models.vehicle import VehicleConnectionState
-from src.services.orchestration.connections import BackendConnectionControlService
-from src.services.processing.telemetry import MutableTelemetryService
+from src.services.connections import BackendConnectionControlService
+from src.services.vehicle.telemetry import MutableTelemetryService
 from src.services.settings import SettingsService
 from src.services.video import MutableVideoService
 
@@ -175,14 +175,42 @@ class ConnectionHealthTests(unittest.TestCase):
                         "codec": "h265",
                         "latency_ms": 120,
                         "frame_timeout_s": 4,
+                        "auto_connect": True,
                     },
                 )
 
             persisted = SettingsService(Path(directory)).current.backend
+            self.assertTrue(persisted.video_auto_connect)
             self.assertEqual(persisted.video_source_type, "udp")
             self.assertEqual(persisted.video_source_uri, "0.0.0.0:5601")
             self.assertEqual(persisted.video_latency_ms, 120)
             self.assertEqual(persisted.video_frame_timeout_s, 4)
+
+    def test_video_disconnect_disables_saved_auto_connect(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = SettingsService(Path(directory))
+            settings.set_value("backend.video_auto_connect", True)
+            video = MutableVideoService()
+            video.start()
+            vehicle = SimpleNamespace(
+                connected=False,
+                state=VehicleConnectionState(False, ""),
+                connection_changed=EventStream(),
+            )
+            service = BackendConnectionControlService(
+                settings=settings,
+                vehicle=vehicle,
+                telemetry=MutableTelemetryService(),
+                video=video,
+                competition=self._competition(),
+            )
+
+            status = service.status("video")
+            self.assertTrue(status.options["auto_connect"])
+            service.disconnect("video")
+
+            self.assertFalse(video.connected)
+            self.assertFalse(settings.current.backend.video_auto_connect)
 
     def test_serial_permission_status_is_structured_for_the_ui(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -213,7 +241,7 @@ class ConnectionHealthTests(unittest.TestCase):
                     "_serial_device_path",
                     return_value=device,
                 ),
-                patch("src.services.orchestration.connections.os.access", return_value=False),
+                patch("src.services.connections.os.access", return_value=False),
             ):
                 status = service.status("telemetry")
 
@@ -255,7 +283,7 @@ class ConnectionHealthTests(unittest.TestCase):
                 patch.object(service, "_serial_device_path", return_value=device),
                 patch.object(service, "_grant_serial_acl") as grant_acl,
                 patch(
-                    "src.services.orchestration.connections.os.access",
+                    "src.services.connections.os.access",
                     side_effect=lambda *_args: next(checks, True),
                 ),
             ):
@@ -274,11 +302,11 @@ class ConnectionHealthTests(unittest.TestCase):
         completed = SimpleNamespace(returncode=0, stdout="", stderr="")
         with (
             patch(
-                "src.services.orchestration.connections.shutil.which",
+                "src.services.connections.shutil.which",
                 side_effect=lambda command: f"/usr/bin/{command}",
             ),
             patch(
-                "src.services.orchestration.connections.subprocess.run",
+                "src.services.connections.subprocess.run",
                 return_value=completed,
             ) as run,
         ):

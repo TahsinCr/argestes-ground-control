@@ -9,7 +9,7 @@ from src.models.orin import OrinCommandReceipt, OrinConnectionState, OrinLinkCon
 
 
 class OrinService(Service):
-    """Araç üstü bilgisayarın UI ve MAVLink ayrıntılarından bağımsız sözleşmesi."""
+    """Onboard-computer contract independent from UI and MAVLink details."""
 
     @property
     @abstractmethod

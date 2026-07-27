@@ -1,4 +1,4 @@
-"""UI ve ürün detaylarından bağımsız tekrar kullanılabilir çekirdek."""
+"""Reusable core independent from UI and product details."""
 
 from src.core.abstracts import Model, Service
 from src.core.dependency import DependencyContainer, Lifetime

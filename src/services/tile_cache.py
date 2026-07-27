@@ -55,6 +55,36 @@ class TileResult(NamedTuple):
 class _TileHttpServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    block_on_close = False
+
+    def __init__(self, *args: Any, max_workers: int = 8, **kwargs: Any) -> None:
+        self._worker_gate = threading.BoundedSemaphore(max_workers)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self._worker_gate.acquire(timeout=0.25):
+            try:
+                request.sendall(
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Content-Length: 0\r\n"
+                    b"Connection: close\r\n\r\n"
+                )
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._worker_gate.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._worker_gate.release()
 
 
 class _TileHandler(BaseHTTPRequestHandler):
@@ -74,7 +104,7 @@ class _TileHandler(BaseHTTPRequestHandler):
         try:
             self.wfile.write(result.payload)
         except (BrokenPipeError, ConnectionResetError):
-            # WebEngine kapanırken devam eden tile isteğini iptal edebilir.
+            # WebEngine may cancel an in-flight tile request while shutting down.
             return
 
     def log_message(self, _format: str, *_args: Any) -> None:
@@ -137,25 +167,49 @@ class TileCacheServer(TileCacheService):
             self._enabled = enabled
             self._limit_mb = limit_mb
             self._load_from_disk_locked()
+        if not enabled:
+            self.stop()
         self.cache_changed.publish(self.count_tiles())
 
     def start(self) -> None:
-        if self._server:
-            return
-        self._server = _TileHttpServer(("127.0.0.1", 0), _TileHandler)
-        self._server.cache = self  # type: ignore[attr-defined]
-        self._thread = threading.Thread(target=self._server.serve_forever, name="YKITileCache", daemon=True)
-        self._thread.start()
+        with self._lock:
+            if not self._enabled or self._server:
+                return
+            try:
+                server = _TileHttpServer(("127.0.0.1", 0), _TileHandler)
+            except OSError:
+                # A hardened runtime may forbid local sockets. The map already
+                # falls back to direct provider URLs when base_url is empty, so
+                # cache availability must never prevent the UI from opening.
+                self._server = None
+                self._thread = None
+                return
+            server.cache = self  # type: ignore[attr-defined]
+            thread = threading.Thread(
+                target=server.serve_forever,
+                name="YKITileCache",
+                daemon=True,
+            )
+            self._server = server
+            self._thread = thread
+            thread.start()
 
     def stop(self) -> None:
-        if not self._server:
+        with self._lock:
+            server = self._server
+            thread = self._thread
+        if server is None:
             return
-        self._server.shutdown()
-        self._server.server_close()
+        server.shutdown()
+        server.server_close()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
         with self._lock:
             self._persist_index_locked()
-        self._server = None
-        self._thread = None
+            if self._server is server:
+                self._server = None
+            if self._thread is thread:
+                self._thread = None
 
     def restart(self) -> None:
         self.stop()

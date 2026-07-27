@@ -12,7 +12,7 @@ from src.core.mavlink.router import MavlinkMessageRouter
 
 
 class MavlinkClient(Service):
-    """Connection + router yaşam döngüsünü tek modüler kullanım yüzeyinde toplar."""
+    """Combine connection and router lifecycles behind one modular interface."""
 
     def __init__(
         self,
@@ -55,7 +55,7 @@ class MavlinkClient(Service):
         self.router.stop()
 
     def configure_endpoint(self, endpoint: MavlinkEndpoint) -> None:
-        """Kapalı istemcinin taşıyıcı ayarlarını bir sonraki bağlantı için değiştirir."""
+        """Change transport settings of a closed client for its next connection."""
         if self.router.running or self.connection.is_connected:
             raise RuntimeError("Çalışan MAVLink istemcisi yeniden yapılandırılamaz")
         self.connection.endpoint = endpoint
@@ -95,6 +95,21 @@ class MavlinkClient(Service):
 
     def send_named(self, message_name: str, **parameters: Any) -> None:
         self.connection.send_named(message_name, **parameters)
+
+    def request_message_rate(
+        self,
+        message_id: int,
+        frequency_hz: float,
+        *,
+        target_system: int | None = None,
+        target_component: int | None = None,
+    ) -> int:
+        return self.connection.request_message_rate(
+            message_id,
+            frequency_hz,
+            target_system=target_system,
+            target_component=target_component,
+        )
 
     def call_mav(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
         return self.connection.call_mav(method_name, *args, **kwargs)

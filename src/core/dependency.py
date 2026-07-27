@@ -43,7 +43,7 @@ class _Provider:
 
 
 class DependencyContainer:
-    """Constructor injection ve yaşam döngüsü destekleyen küçük DI container."""
+    """Small DI container supporting constructor injection and lifecycles."""
 
     def __init__(self, *, parent: "DependencyContainer | None" = None) -> None:
         self._parent = parent

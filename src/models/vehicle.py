@@ -22,7 +22,7 @@ class VehicleConnectionConfig:
 
 @dataclass(frozen=True, slots=True)
 class VehicleTransportStats(Model):
-    """Aktif araç taşıyıcısının UI'dan bağımsız paket sağlığı."""
+    """UI-independent packet health for the active vehicle transport."""
 
     received_packets: int = 0
     sent_packets: int = 0

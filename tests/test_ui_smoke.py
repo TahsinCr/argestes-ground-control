@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --no-sandbox")
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
@@ -18,7 +19,7 @@ from src.models.mission import MapOverlay
 from src.models.telemetry import TelemetrySnapshot
 from src.models.video import VideoStreamStats
 from src.ui.adapters.runtime import create_qt_runtime_services
-from src.ui.config.i18n import t
+from src.ui.i18n import t
 from src.ui.themes.manager import apply_theme
 from src.ui.views.main_window import MainWindow
 
@@ -40,7 +41,7 @@ class UiSmokeTests(unittest.TestCase):
                 log_service=runtime.log_service,
                 settings_service=runtime.settings_service,
                 telemetry_service=runtime.telemetry_service,
-                mission_service=runtime.mission_service,
+                planner_service=runtime.planner_service,
                 command_service=runtime.command_service,
                 parameter_service=runtime.parameter_service,
                 video_service=runtime.video_service,
@@ -57,12 +58,242 @@ class UiSmokeTests(unittest.TestCase):
                     break
                 QTest.qWait(100)
             self.assertTrue(window.isVisible())
+            self.assertFalse(window.windowIcon().isNull())
+            self.assertEqual(
+                window.workspace_splitter.orientation(),
+                Qt.Orientation.Vertical,
+            )
+            for splitter in (
+                window.main_splitter,
+                window.workspace_splitter,
+                window.visuals_splitter,
+                window.bottom_splitter,
+            ):
+                self.assertFalse(splitter.opaqueResize())
+                self.assertEqual(splitter.handleWidth(), 5)
             self.assertTrue(window.map_panel._js_ready)
             self.assertIsNotNone(window.map_panel)
-            self.assertGreater(window.parameters_panel.table.rowCount(), 0)
+            self.assertEqual(window.parameters_panel.table.rowCount(), 0)
             self.assertEqual(window.bottom_status["video"].state, "danger")
             self.assertIn(theme.danger, window.bottom_status["video"].text_label.styleSheet())
             self.assertEqual(window.bottom_status["orin"].state, "danger")
+
+            home_reference_result: list[object] = []
+            window.map_panel._view.page().runJavaScript(
+                "setHomeReference(L.latLng(39.8672, 32.7481), false);"
+                "state.homeReferenceRollbackLatLng = L.latLng(39.8672, 32.7481);"
+                "homeReferenceMarker.setLatLng(L.latLng(39.8710, 32.7520));"
+                "map.removeLayer(homeReferenceMarker);"
+                "window.ykiMap.resolveHomeReference(false, null, null);"
+                "(() => {"
+                "  const point = homeReferenceMarker.getLatLng();"
+                "  return {"
+                "    lat: point.lat,"
+                "    lon: point.lng,"
+                "    visible: map.hasLayer(homeReferenceMarker)"
+                "  };"
+                "})()",
+                home_reference_result.append,
+            )
+            for _attempt in range(20):
+                QTest.qWait(25)
+                if home_reference_result:
+                    break
+            self.assertEqual(
+                home_reference_result,
+                [{"lat": 39.8672, "lon": 32.7481, "visible": True}],
+            )
+
+            drag_telemetry_result: list[object] = []
+            window.map_panel._view.page().runJavaScript(
+                "setHomeReference(L.latLng(39.8672, 32.7481), false);"
+                "state.homeReferenceDragging = true;"
+                "homeReferenceMarker.setLatLng(L.latLng(39.8750, 32.7600));"
+                "updateHomeReference({"
+                "  homePositionAvailable: true,"
+                "  homeLat: 39.8672,"
+                "  homeLon: 32.7481"
+                "});"
+                "(() => {"
+                "  const point = homeReferenceMarker.getLatLng();"
+                "  state.homeReferenceDragging = false;"
+                "  return {lat: point.lat, lon: point.lng};"
+                "})()",
+                drag_telemetry_result.append,
+            )
+            for _attempt in range(20):
+                QTest.qWait(25)
+                if drag_telemetry_result:
+                    break
+            self.assertEqual(
+                drag_telemetry_result,
+                [{"lat": 39.875, "lon": 32.76}],
+            )
+
+            map_interaction_result: list[object] = []
+            window.map_panel._view.page().runJavaScript(
+                "setHomeReference(L.latLng(39.8672, 32.7481), false);"
+                "window.ykiMap.setMissionLoop(false);"
+                "window.ykiMap.setOverlays(["
+                "{overlay_id:'route-takeoff',overlay_type:'takeoff',label:'TKF 1',"
+                "points:[[39.8660,32.7460,80]],radius_m:35,color:'#78b7ff',"
+                "metadata:{route_order:1}},"
+                "{overlay_id:'route-waypoint',overlay_type:'waypoint',label:'WP 2',"
+                "points:[[39.8680,32.7500,100]],radius_m:35,color:'#74d99f',"
+                "metadata:{route_order:2}},"
+                "{overlay_id:'route-rtl',overlay_type:'rtl',label:'RTL 3',"
+                "points:[[40.0000,33.0000]],radius_m:75,color:'#f4b942',"
+                "metadata:{route_order:3}},"
+                "{overlay_id:'route-after-rtl',overlay_type:'waypoint',label:'WP 4',"
+                "points:[[39.9000,32.9000,100]],radius_m:35,color:'#74d99f',"
+                "metadata:{route_order:4}}"
+                "]);"
+                "(() => {"
+                " const solid = missionRouteLine.getLatLngs();"
+                " const returned = rtlReturnLine.getLatLngs();"
+                " const rtl = state.layers.get('route-rtl').getLatLng();"
+                " const wp = state.layers.get('route-waypoint').getLatLng();"
+                " const cp = map.latLngToContainerPoint(wp);"
+                " showContextMenu(cp, wp, 'route-waypoint');"
+                " const pointMenu = Object.fromEntries("
+                "   [...document.querySelectorAll('#context-menu button')].map("
+                "     (button) => [button.dataset.action, button.style.display]"
+                "   )"
+                " );"
+                " showContextMenu(cp, wp, null);"
+                " const mapMenu = Object.fromEntries("
+                "   [...document.querySelectorAll('#context-menu button')].map("
+                "     (button) => [button.dataset.action, button.style.display]"
+                "   )"
+                " );"
+                " return {"
+                "   solidCount: solid.length,"
+                "   solidEndsAtWaypoint: solid.length === 2"
+                "     && Math.abs(solid[1].lat - wp.lat) < 0.000001"
+                "     && Math.abs(solid[1].lng - wp.lng) < 0.000001,"
+                "   returnCount: returned.length,"
+                "   returnStartsAtWaypoint: returned.length === 2"
+                "     && Math.abs(returned[0].lat - wp.lat) < 0.000001"
+                "     && Math.abs(returned[0].lng - wp.lng) < 0.000001,"
+                "   returnEndsAtHome: returned.length === 2"
+                "     && Math.abs(returned[1].lat - 39.8672) < 0.000001"
+                "     && Math.abs(returned[1].lng - 32.7481) < 0.000001,"
+                "   rtlAtHome: Math.abs(rtl.lat - 39.8672) < 0.000001"
+                "     && Math.abs(rtl.lng - 32.7481) < 0.000001,"
+                "   pointMenu,"
+                "   mapMenu"
+                " };"
+                "})()",
+                map_interaction_result.append,
+            )
+            for _attempt in range(20):
+                QTest.qWait(25)
+                if map_interaction_result:
+                    break
+            self.assertEqual(
+                map_interaction_result,
+                [{
+                    "solidCount": 2,
+                    "solidEndsAtWaypoint": True,
+                    "returnCount": 2,
+                    "returnStartsAtWaypoint": True,
+                    "returnEndsAtHome": True,
+                    "rtlAtHome": True,
+                    "pointMenu": {
+                        "goto": "none",
+                        "center": "none",
+                        "set_home": "none",
+                        "delete": "flex",
+                    },
+                    "mapMenu": {
+                        "goto": "flex",
+                        "center": "flex",
+                        "set_home": "flex",
+                        "delete": "none",
+                    },
+                }],
+            )
+
+            point_drag_result: list[object] = []
+            window.map_panel._view.page().runJavaScript(
+                "window.ykiMap.setOverlays([{"
+                "overlay_id:'drag-waypoint',overlay_type:'waypoint',label:'WP 1',"
+                "points:[[39.8680,32.7500,100]],radius_m:35,color:'#74d99f',"
+                "metadata:{route_order:1}"
+                "}]);"
+                "(() => {"
+                " const layer = state.layers.get('drag-waypoint');"
+                " const before = layer.getLatLng();"
+                " const point = map.latLngToContainerPoint(before);"
+                " const rect = map.getContainer().getBoundingClientRect();"
+                " const savedBridge = bridge;"
+                " bridge = null;"
+                " beginPointDrag(layer, {"
+                "   containerPoint: point,"
+                "   latlng: before,"
+                "   originalEvent: new MouseEvent('mousedown', {"
+                "     bubbles:true,button:0,buttons:1,"
+                "     clientX:rect.left+point.x,clientY:rect.top+point.y"
+                "   })"
+                " });"
+                " document.dispatchEvent(new MouseEvent('mousemove', {"
+                "   bubbles:true,button:0,buttons:1,"
+                "   clientX:rect.left+point.x+36,clientY:rect.top+point.y+18"
+                " }));"
+                " document.dispatchEvent(new MouseEvent('mouseup', {"
+                "   bubbles:true,button:0,clientX:rect.left+point.x+36,"
+                "   clientY:rect.top+point.y+18"
+                " }));"
+                " bridge = savedBridge;"
+                " const after = layer.getLatLng();"
+                " const result = {"
+                "   moved: before.distanceTo(after) > 1,"
+                "   finished: state.draggingPoint === null,"
+                "   mapDragRestored: map.dragging.enabled()"
+                " };"
+                " window.ykiMap.setOverlays([]);"
+                " return result;"
+                "})()",
+                point_drag_result.append,
+            )
+            for _attempt in range(20):
+                QTest.qWait(25)
+                if point_drag_result:
+                    break
+            self.assertEqual(
+                point_drag_result,
+                [{"moved": True, "finished": True, "mapDragRestored": True}],
+            )
+
+            loop_action_result: list[object] = []
+            window.map_panel._view.page().runJavaScript(
+                "window.ykiMap.setMissionLoop(true);"
+                "emitAction({type:'mission_loop_changed',loop:true});"
+                "document.querySelector('.mission-mode-button').dataset.mode;",
+                loop_action_result.append,
+            )
+            for _attempt in range(20):
+                QTest.qWait(25)
+                if (
+                    loop_action_result
+                    and runtime.facade.mission_snapshot().mission_loop
+                ):
+                    break
+            self.assertEqual(loop_action_result, ["loop"])
+            self.assertTrue(runtime.facade.mission_snapshot().mission_loop)
+            runtime.planner_service.set_active_tool("waypoint")
+            QTest.qWait(50)
+            loop_after_sync: list[object] = []
+            window.map_panel._view.page().runJavaScript(
+                "document.querySelector('.mission-mode-button').dataset.mode;",
+                loop_after_sync.append,
+            )
+            for _attempt in range(20):
+                QTest.qWait(25)
+                if loop_after_sync:
+                    break
+            self.assertEqual(loop_after_sync, ["loop"])
+            runtime.planner_service.set_active_tool("pan")
 
             map_scripts: list[str] = []
             original_run_script = window.map_panel._run_script
@@ -72,7 +303,10 @@ class UiSmokeTests(unittest.TestCase):
                 autopilot_link=True,
             )
             window.map_panel.update_snapshot(waiting_position)
-            self.assertIn('"active": false', map_scripts[-1])
+            telemetry_scripts = [
+                script for script in map_scripts if ".pushTelemetry(" in script
+            ]
+            self.assertIn('"active": false', telemetry_scripts[-1])
             first_position = waiting_position.copy(
                 latitude=39.9,
                 longitude=32.8,
@@ -85,16 +319,31 @@ class UiSmokeTests(unittest.TestCase):
                 local_down_m=-114.6,
             )
             window.map_panel.update_snapshot(first_position)
-            self.assertIn('"active": true', map_scripts[-1])
-            self.assertIn('"gpsSatellites": 14', map_scripts[-1])
-            self.assertIn('"gpsHdop": 0.82', map_scripts[-1])
-            self.assertIn('"localPositionAvailable": true', map_scripts[-1])
-            self.assertIn('"localNorth": 145.25', map_scripts[-1])
-            self.assertIn('"localEast": -32.5', map_scripts[-1])
-            self.assertIn('"localDown": -114.6', map_scripts[-1])
+            QTest.qWait(window.map_panel._TELEMETRY_RENDER_INTERVAL_MS + 10)
+            telemetry_scripts = [
+                script for script in map_scripts if ".pushTelemetry(" in script
+            ]
+            self.assertIn('"active": true', telemetry_scripts[-1])
+            self.assertIn('"gpsSatellites": 14', telemetry_scripts[-1])
+            self.assertIn('"gpsHdop": 0.82', telemetry_scripts[-1])
+            self.assertIn('"localPositionAvailable": true', telemetry_scripts[-1])
+            self.assertIn('"localNorth": 145.25', telemetry_scripts[-1])
+            self.assertIn('"localEast": -32.5', telemetry_scripts[-1])
+            self.assertIn('"localDown": -114.6', telemetry_scripts[-1])
+            self.assertIn('"homePositionAvailable": false', telemetry_scripts[-1])
+            map_update_count = len(telemetry_scripts)
+            window.map_panel.update_snapshot(first_position)
+            self.assertEqual(
+                len([script for script in map_scripts if ".pushTelemetry(" in script]),
+                map_update_count,
+            )
             jumped_position = first_position.copy(latitude=-35.36, longitude=149.16)
             window.map_panel.update_snapshot(jumped_position)
-            self.assertIn('"resetTrack": true', map_scripts[-1])
+            QTest.qWait(window.map_panel._TELEMETRY_RENDER_INTERVAL_MS + 10)
+            telemetry_scripts = [
+                script for script in map_scripts if ".pushTelemetry(" in script
+            ]
+            self.assertIn('"resetTrack": true', telemetry_scripts[-1])
             window.map_panel._run_script = original_run_script
 
             telemetry_chip = window.bottom_status["telemetry"]
@@ -264,6 +513,72 @@ class UiSmokeTests(unittest.TestCase):
             self.assertTrue(any('"dirty"' in script for script in transfer_scripts))
             window.map_panel._run_script = original_run_script
 
+            history_commands: list[tuple[str, dict]] = []
+            window.map_panel.command_requested.connect(
+                lambda code, parameters: history_commands.append(
+                    (code, parameters)
+                )
+            )
+            window.map_panel._history_undo.clear()
+            window.map_panel._history_redo.clear()
+            history_overlay = MapOverlay(
+                "history-waypoint",
+                "waypoint",
+                "HISTORY WP",
+                [[39.93, 32.83, 130]],
+                "#74d99f",
+                35,
+                {"route_order": 99},
+            )
+            window.map_panel._on_overlay_changed(history_overlay.to_dict())
+            self.assertTrue(
+                any(
+                    item.overlay_id == history_overlay.overlay_id
+                    for item in runtime.planner_service.state.overlays
+                )
+            )
+
+            window.map_panel._view.page().runJavaScript(
+                "document.dispatchEvent(new KeyboardEvent('keydown', {"
+                "key: 'z', ctrlKey: true, bubbles: true, cancelable: true"
+                "}));"
+            )
+            for _attempt in range(20):
+                QTest.qWait(25)
+                if not any(
+                    item.overlay_id == history_overlay.overlay_id
+                    for item in runtime.planner_service.state.overlays
+                ):
+                    break
+            self.assertFalse(
+                any(
+                    item.overlay_id == history_overlay.overlay_id
+                    for item in runtime.planner_service.state.overlays
+                )
+            )
+            self.assertEqual(history_commands, [])
+
+            window.map_panel._view.page().runJavaScript(
+                "document.dispatchEvent(new KeyboardEvent('keydown', {"
+                "key: 'z', ctrlKey: true, shiftKey: true,"
+                "bubbles: true, cancelable: true"
+                "}));"
+            )
+            for _attempt in range(20):
+                QTest.qWait(25)
+                if any(
+                    item.overlay_id == history_overlay.overlay_id
+                    for item in runtime.planner_service.state.overlays
+                ):
+                    break
+            self.assertTrue(
+                any(
+                    item.overlay_id == history_overlay.overlay_id
+                    for item in runtime.planner_service.state.overlays
+                )
+            )
+            self.assertEqual(history_commands, [])
+
             force_requests: list[tuple[str, dict]] = []
             window._last_snapshot = TelemetrySnapshot.zero().copy(
                 telemetry_link=True,
@@ -291,6 +606,20 @@ class UiSmokeTests(unittest.TestCase):
             window._confirm_force_arm = lambda _result: False  # type: ignore[method-assign]
             window._on_command_completed(failed_arm)
             self.assertEqual(force_requests, [])
+
+            runtime.settings_service.set_value("ui.language", "en")
+            QTest.qWait(50)
+            self.assertEqual(window.language, "en")
+            self.assertEqual(window.telemetry_panel.title_label.text(), "Flight Telemetry")
+            self.assertEqual(window.parameters_panel.title_label.text(), "Parameters")
+            self.assertEqual(
+                window.connection_popup.settings_button.text(),
+                "All Settings",
+            )
+            self.assertEqual(
+                window.log_panel.table.horizontalHeaderItem(3).text(),
+                "MESSAGE",
+            )
 
             window.close()
             runtime.stop()

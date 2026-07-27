@@ -231,6 +231,33 @@ class MavlinkCoreTests(unittest.TestCase):
         self.assertEqual(states, [True, False])
         self.assertTrue(raw.closed)
 
+    def test_client_requests_standard_mavlink_message_rate(self) -> None:
+        raw = _RawConnection()
+        mavutil = SimpleNamespace(
+            mavlink=SimpleNamespace(MAV_CMD_SET_MESSAGE_INTERVAL=511),
+        )
+        connection = MavlinkConnection(
+            MavlinkEndpoint(heartbeat_timeout=0.1),
+            connection_factory=lambda _endpoint: raw,
+            mavutil_module=mavutil,
+        )
+        client = MavlinkClient(connection=connection)
+        client.start()
+        interval_us = client.request_message_rate(
+            30,
+            20.0,
+            target_system=17,
+            target_component=1,
+        )
+        client.stop()
+
+        self.assertEqual(interval_us, 50_000)
+        method, arguments, keywords = raw.mav.calls[-1]
+        self.assertEqual(method, "command_long_send")
+        self.assertEqual(arguments[:4], (17, 1, 511, 0))
+        self.assertEqual(arguments[4:6], (30.0, 50_000.0))
+        self.assertEqual(keywords, {})
+
     def test_filtered_router_isolates_callback_errors_and_keeps_history(self) -> None:
         raw = _RawConnection()
         connection = MavlinkConnection(

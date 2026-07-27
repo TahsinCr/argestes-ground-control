@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from src.ui.config.i18n import t
+from src.ui.i18n import t
 from src.models.parameters import Parameter
 from src.ui.widgets.common import PanelFrame, compact_button, horizontal_row
 
@@ -39,13 +39,13 @@ class ParametersPanel(PanelFrame):
         self.search_input.textChanged.connect(self._rebuild_table)
 
         self.category_combo = QComboBox(self)
-        self.category_combo.addItem("ALL", "all")
+        self.category_combo.addItem("", "all")
         self.category_combo.currentIndexChanged.connect(self._rebuild_table)
 
         self.body_layout.addWidget(horizontal_row(self.search_input, self.category_combo))
 
         self.table = QTableWidget(0, 5, self)
-        self.table.setHorizontalHeaderLabels(["KEY", "VALUE", "UNIT", "CATEGORY", "DESCRIPTION"])
+        self.table.setHorizontalHeaderLabels(["", "", "", "", ""])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
@@ -76,6 +76,19 @@ class ParametersPanel(PanelFrame):
         self._language = language
         self.apply_button.setText(t("parameters.apply", language).upper())
         self.reset_button.setText(t("parameters.reset", language).upper())
+        self.table.setHorizontalHeaderLabels(
+            [
+                t("table.parameters.key", language),
+                t("table.parameters.value", language),
+                t("table.parameters.unit", language),
+                t("table.parameters.category", language),
+                t("table.parameters.description", language),
+            ]
+        )
+        if self.category_combo.count():
+            self.category_combo.setItemText(
+                0, t("table.parameters.all", language)
+            )
         self._update_footer()
 
     def set_parameters(self, parameters: Iterable[Parameter]) -> None:
@@ -85,7 +98,7 @@ class ParametersPanel(PanelFrame):
         categories = sorted({item.category for item in self._parameters})
         self.category_combo.blockSignals(True)
         self.category_combo.clear()
-        self.category_combo.addItem("ALL", "all")
+        self.category_combo.addItem(t("table.parameters.all", self._language), "all")
         for category in categories:
             self.category_combo.addItem(category.upper(), category)
         self.category_combo.blockSignals(False)

@@ -31,7 +31,7 @@ ALL_CHANNELS = frozenset({"server", "video", *VEHICLE_CHANNELS})
 
 
 class BackendConnectionControlService(ConnectionControlService):
-    """Tüm bağlantı aksiyonlarını UI teknolojisinden bağımsız yürütür."""
+    """Execute every connection action independently from UI technology."""
 
     def __init__(
         self,
@@ -68,7 +68,6 @@ class BackendConnectionControlService(ConnectionControlService):
             [
                 self._vehicle.connection_changed.subscribe(self._on_vehicle_changed),
                 self._video.connection_changed.subscribe(lambda _connected: self._publish("video")),
-                self._telemetry.updated.subscribe(self._on_telemetry_updated),
                 self._competition.changed.subscribe(lambda _state: self._publish("server")),
             ]
         )
@@ -145,6 +144,10 @@ class BackendConnectionControlService(ConnectionControlService):
                     "authenticated": state.authenticated,
                     "last_success_age_s": success_age,
                     "freshness_limit_s": freshness_limit,
+                    "competitor_count": state.competitor_count,
+                    "hss_count": state.hss_count,
+                    "qr_available": state.qr_available,
+                    "telemetry_tx_active": state.telemetry_tx_active,
                 },
                 can_disconnect=state.running,
             )
@@ -168,6 +171,7 @@ class BackendConnectionControlService(ConnectionControlService):
                 backend.video_source_uri,
                 float(backend.video_frame_timeout_s),
                 {
+                    "auto_connect": backend.video_auto_connect,
                     "source_type": backend.video_source_type,
                     "codec": backend.video_codec,
                     "latency_ms": backend.video_latency_ms,
@@ -233,6 +237,7 @@ class BackendConnectionControlService(ConnectionControlService):
                     "heartbeat_age_s": heartbeat_age,
                     "orin_heartbeat_timeout_s": orin_timeout,
                     "health": orin_state.health if orin_state is not None else "offline",
+                    "service_available": orin_state is not None,
                     "active_task": orin_state.active_task if orin_state is not None else "",
                     "round_trip_ms": (
                         orin_state.round_trip_ms if orin_state is not None else None
@@ -269,6 +274,7 @@ class BackendConnectionControlService(ConnectionControlService):
                     **self._vehicle_options(settings),
                     "vehicle_connected": connected,
                     "satellites": snapshot.gps_satellites,
+                    "gps_fix": snapshot.gps_fix,
                     "position_valid": snapshot.has_valid_position,
                     "position_age_s": position_age,
                     "freshness_limit_s": freshness_limit,
@@ -395,7 +401,7 @@ class BackendConnectionControlService(ConnectionControlService):
             return result
 
     def repair_serial_access(self, channel: str) -> ConnectionStatus:
-        """Yalnızca mevcut kullanıcıya seri cihaz ACL izni verip yeniden bağlanır."""
+        """Grant serial-device ACL access only to the current user and reconnect."""
 
         key = self._normalize(channel)
         if key not in VEHICLE_CHANNELS:
@@ -466,6 +472,11 @@ class BackendConnectionControlService(ConnectionControlService):
                     )
             elif key == "video":
                 self._video.stop()
+                current = self._settings.current
+                if current.backend.video_auto_connect:
+                    self._settings.save(
+                        current.with_value("backend.video_auto_connect", False)
+                    )
             else:
                 self._vehicle.stop()
                 current = self._settings.current
@@ -506,7 +517,11 @@ class BackendConnectionControlService(ConnectionControlService):
         frame_timeout_s = int(
             options.get("frame_timeout_s", backend.video_frame_timeout_s)
         )
-        updated = current.with_value("backend.video_source_type", source_type)
+        auto_connect = bool(
+            options.get("auto_connect", backend.video_auto_connect)
+        )
+        updated = current.with_value("backend.video_auto_connect", auto_connect)
+        updated = updated.with_value("backend.video_source_type", source_type)
         updated = updated.with_value("backend.video_source_uri", source_uri)
         updated = updated.with_value("backend.video_codec", codec)
         updated = updated.with_value("backend.video_latency_ms", latency_ms)
@@ -614,12 +629,11 @@ class BackendConnectionControlService(ConnectionControlService):
             return
         self._publish(channel)
 
-    def _on_telemetry_updated(self, _snapshot) -> None:
-        self._publish("telemetry")
-        self._publish("gps")
-
     def _watch_health(self) -> None:
-        while not self._health_stop.wait(0.5):
+        # Link state changes are published immediately by their services.
+        # This periodic pass only expires stale health data, so one pass per
+        # second avoids synchronized idle UI wakeups without delaying control.
+        while not self._health_stop.wait(1.0):
             self._publish_all()
 
     def _publish_all(self) -> None:

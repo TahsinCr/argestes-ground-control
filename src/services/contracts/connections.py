@@ -9,7 +9,7 @@ from src.models.connections import ConnectionStatus
 
 
 class ConnectionControlService(Service):
-    """Backend bağlantılarını ortak bir kullanım yüzeyinden yönetir."""
+    """Manage backend connections through one shared interface."""
 
     @property
     @abstractmethod

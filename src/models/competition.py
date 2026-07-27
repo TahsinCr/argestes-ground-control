@@ -12,7 +12,7 @@ from src.models.mission import MapContact
 
 @dataclass(frozen=True, slots=True)
 class CompetitionServerConfig(Model):
-    """TEKNOFEST HTTP sunucusuna ait UI'dan bağımsız bağlantı ayarları."""
+    """UI-independent connection settings for the TEKNOFEST HTTP server."""
 
     base_url: str = "http://127.0.0.1:5000"
     username: str = "kirlangic"
@@ -20,7 +20,7 @@ class CompetitionServerConfig(Model):
     team_number: int = 1
     timeout_s: float = 3.0
     telemetry_period_ms: int = 1000
-    auto_connect: bool = True
+    auto_connect: bool = False
 
     def __post_init__(self) -> None:
         base_url = self.base_url.strip().rstrip("/")

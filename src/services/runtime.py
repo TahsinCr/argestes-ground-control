@@ -9,13 +9,11 @@ from src.core.dependency import DependencyContainer
 from src.core.events import Subscription
 from src.core.mavlink import MavlinkClient, MavlinkEndpoint
 from src.models.mission import MissionState
-from src.services.catalogs import configured_orin_commands, default_parameters
 from src.services.contracts.archive import MissionArchiveRepository
 from src.services.contracts.commands import CommandService
 from src.services.contracts.competition import CompetitionService
 from src.services.contracts.connections import ConnectionControlService
 from src.services.contracts.logging import LogService
-from src.services.contracts.mission import MissionService
 from src.services.contracts.orin import OrinService
 from src.services.contracts.parameters import ParameterService
 from src.services.contracts.settings import SettingsRepository
@@ -27,11 +25,11 @@ from src.services.facade import BackendFacade
 from src.services.competition import TeknofestCompetitionService
 from src.services.logging_service import LoggingService, ServiceLogHandler
 from src.services.mission_archive import MissionArchiveService
-from src.services.orchestration.commands import DispatchCommandService
-from src.services.orchestration.connections import BackendConnectionControlService
-from src.services.processing.mission import MissionStateService
-from src.services.processing.parameters import MutableParameterService, VehicleParameterService
-from src.services.processing.telemetry import (
+from src.services.commands import DispatchCommandService
+from src.services.connections import BackendConnectionControlService
+from src.services.planner import PlannerService
+from src.services.vehicle.parameters import MutableParameterService, VehicleParameterService
+from src.services.vehicle.telemetry import (
     MockTelemetryService,
     MutableTelemetryService,
     VehicleTelemetryService,
@@ -43,6 +41,7 @@ from src.services.vehicle import (
     MavlinkVehicleService,
     NullOrinService,
     NullVehicleService,
+    configured_orin_commands,
 )
 from src.services.video import GStreamerVideoService, MutableVideoService
 
@@ -54,7 +53,7 @@ class RuntimeServices:
     settings_service: SettingsService
     vehicle_service: VehicleService
     telemetry_service: TelemetryService
-    mission_service: MissionService
+    planner_service: PlannerService
     orin_service: OrinService
     command_service: CommandService
     parameter_service: ParameterService
@@ -114,6 +113,27 @@ class RuntimeServices:
         settings = self.settings_service.current
         if (
             not self._stop_requested.is_set()
+            and (
+                settings.backend.mock_mode
+                or settings.backend.video_source_type == "mock"
+                or settings.backend.video_auto_connect
+            )
+        ):
+            try:
+                self.video_service.start()
+            except Exception as exc:
+                self.log_service.event(
+                    "VIDEO",
+                    "runtime.video_start_failed",
+                    f"Video servisi başlatılamadı: {exc}",
+                    severity="danger",
+                    details={
+                        "source_type": settings.backend.video_source_type,
+                        "source_uri": settings.backend.video_source_uri,
+                    },
+                )
+        if (
+            not self._stop_requested.is_set()
             and not settings.backend.mock_mode
             and settings.backend.mavlink.auto_connect
         ):
@@ -149,12 +169,12 @@ class RuntimeServices:
                         severity="danger",
                     )
             self._remove_python_logging()
+            self.log_service.flush()
 
     def _service_start_order(self):
         return (
             ("tile_cache", self.tile_cache_service),
-            ("mission", self.mission_service),
-            ("video", self.video_service),
+            ("planner", self.planner_service),
             ("telemetry", self.telemetry_service),
             ("competition", self.competition_service),
             ("parameters", self.parameter_service),
@@ -169,8 +189,8 @@ class RuntimeServices:
             ("parameters", self.parameter_service),
             ("orin", self.orin_service),
             ("telemetry", self.telemetry_service),
-            ("mission", self.mission_service),
             ("vehicle", self.vehicle_service),
+            ("planner", self.planner_service),
             ("video", self.video_service),
             ("tile_cache", self.tile_cache_service),
         )
@@ -202,8 +222,8 @@ def create_runtime_services(base_dir: Path) -> RuntimeServices:
         orin_command_codes = ()
         log_service.event(
             "ORIN",
-            "orin.command_catalog_failed",
-            f"Orin komut kataloğu yüklenemedi: {exc}",
+            "orin.command_config_failed",
+            f"Orin komut yapılandırması yüklenemedi: {exc}",
             severity="danger",
             details={"config_path": str(base_dir / "config.json")},
         )
@@ -211,7 +231,7 @@ def create_runtime_services(base_dir: Path) -> RuntimeServices:
         if orin_command_codes:
             log_service.event(
                 "ORIN",
-                "orin.command_catalog_loaded",
+                "orin.command_config_loaded",
                 f"{len(orin_command_codes)} yapılandırılmış Orin komutu yüklendi",
                 severity="success",
                 details={"commands": list(orin_command_codes)},
@@ -241,7 +261,6 @@ def create_runtime_services(base_dir: Path) -> RuntimeServices:
             log_service.child("TELEMETRY"),
         )
         parameter_service: ParameterService = VehicleParameterService(
-            default_parameters(),
             vehicle_service,
             log_service.child("PARAMETER"),
             write_timeout=float(mavlink_settings.operation_timeout),
@@ -260,11 +279,11 @@ def create_runtime_services(base_dir: Path) -> RuntimeServices:
             if settings.backend.mock_mode
             else MutableTelemetryService(log_service.child("TELEMETRY"))
         )
-        parameter_service = MutableParameterService(default_parameters())
+        parameter_service = MutableParameterService()
         orin_service = NullOrinService()
 
-    mission_service = MissionStateService(
-        log_service.child("MISSION"),
+    planner_service = PlannerService(
+        log_service.child("PLANNER"),
         initial_state=None if settings.backend.mock_mode else MissionState(),
         default_radii=settings.backend.mission.radii,
         vehicle=vehicle_service if mavlink_client is not None else None,
@@ -274,7 +293,6 @@ def create_runtime_services(base_dir: Path) -> RuntimeServices:
         vehicle_service,
         parameter_service,
         log_service.child("COMMAND"),
-        mission=mission_service,
         orin=orin_service,
         configured_orin_tasks=orin_command_codes,
     )
@@ -288,7 +306,7 @@ def create_runtime_services(base_dir: Path) -> RuntimeServices:
     competition_service = TeknofestCompetitionService(
         settings.backend.competition,
         telemetry_service,
-        mission_service,
+        planner_service,
         vehicle_service,
         log_service.child("TEKNOFEST"),
     )
@@ -307,7 +325,7 @@ def create_runtime_services(base_dir: Path) -> RuntimeServices:
     container.instance(SettingsRepository, settings_service)
     container.instance(VehicleService, vehicle_service)
     container.instance(TelemetryService, telemetry_service)
-    container.instance(MissionService, mission_service)
+    container.instance(PlannerService, planner_service)
     container.instance(OrinService, orin_service)
     container.instance(CommandService, command_service)
     container.instance(ParameterService, parameter_service)
@@ -322,7 +340,7 @@ def create_runtime_services(base_dir: Path) -> RuntimeServices:
     facade = BackendFacade(
         telemetry=container.resolve(TelemetryService),
         competition=container.resolve(CompetitionService),
-        mission=container.resolve(MissionService),
+        planner=container.resolve(PlannerService),
         orin=container.resolve(OrinService),
         commands=container.resolve(CommandService),
         parameters=container.resolve(ParameterService),
@@ -334,7 +352,7 @@ def create_runtime_services(base_dir: Path) -> RuntimeServices:
         settings_service=settings_service,
         vehicle_service=vehicle_service,
         telemetry_service=telemetry_service,
-        mission_service=mission_service,
+        planner_service=planner_service,
         orin_service=orin_service,
         command_service=command_service,
         parameter_service=parameter_service,
@@ -347,7 +365,7 @@ def create_runtime_services(base_dir: Path) -> RuntimeServices:
     )
 
     def apply_settings(updated) -> None:
-        mission_service.set_default_radii(updated.backend.mission.radii)
+        planner_service.set_default_radii(updated.backend.mission.radii)
         vehicle_service.set_default_mission_altitude(
             updated.backend.mission.default_altitude_m
         )

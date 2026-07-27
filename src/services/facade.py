@@ -11,7 +11,7 @@ from src.models.telemetry import TelemetrySnapshot
 from src.models.parameters import Parameter
 from src.services.contracts.commands import CommandService
 from src.services.contracts.competition import CompetitionService
-from src.services.contracts.mission import MissionService
+from src.services.planner import PlannerService
 from src.services.contracts.orin import OrinService
 from src.services.contracts.parameters import ParameterService
 from src.services.contracts.telemetry import TelemetryService
@@ -19,14 +19,14 @@ from src.services.contracts.settings import SettingsRepository
 
 
 class BackendFacade:
-    """Qt, web, CLI ve otomasyonların paylaştığı kararlı backend yüzeyi."""
+    """Stable backend interface shared by Qt, web, CLI and automation clients."""
 
     def __init__(
         self,
         *,
         telemetry: TelemetryService,
         competition: CompetitionService,
-        mission: MissionService,
+        planner: PlannerService,
         orin: OrinService,
         commands: CommandService,
         parameters: ParameterService,
@@ -34,7 +34,7 @@ class BackendFacade:
     ) -> None:
         self.telemetry = telemetry
         self.competition = competition
-        self.mission = mission
+        self.planner = planner
         self.orin = orin
         self.commands = commands
         self.parameters = parameters
@@ -59,7 +59,7 @@ class BackendFacade:
         self.competition.submit_kamikaze_event(event)
 
     def mission_snapshot(self) -> MissionState:
-        return self.mission.state
+        return self.planner.state
 
     def orin_snapshot(self):
         return self.orin.state
@@ -71,13 +71,16 @@ class BackendFacade:
         return self.orin.received.subscribe(callback)
 
     def upsert_mission_item(self, item: MapOverlay) -> None:
-        self.mission.upsert_overlay(item)
+        self.planner.upsert_overlay(item)
 
     def remove_mission_item(self, item_id: str) -> None:
-        self.mission.remove_overlay(item_id)
+        self.planner.remove_overlay(item_id)
+
+    def set_mission_loop(self, enabled: bool) -> None:
+        self.planner.set_mission_loop(enabled)
 
     def upsert_contact(self, contact: MapContact) -> None:
-        self.mission.upsert_contact(contact)
+        self.planner.upsert_contact(contact)
 
     def issue(
         self,
@@ -104,8 +107,12 @@ class BackendFacade:
         self.parameters.refresh()
 
     def upload_current_mission(self, *, source: str = "external") -> CommandResult:
+        state = self.planner.state
         return self.issue(
             "MISSION_UPLOAD",
-            {"overlays": [item.to_dict() for item in self.mission.state.overlays]},
+            {
+                "overlays": [item.to_dict() for item in state.overlays],
+                "loop": state.mission_loop,
+            },
             source=source,
         )

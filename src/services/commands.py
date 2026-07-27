@@ -6,7 +6,6 @@ from src.core.events import EventStream
 from src.models.commands import CommandRequest, CommandResult
 from src.models.mission import MapOverlay
 from src.services.contracts.commands import CommandService
-from src.services.contracts.mission import MissionService
 from src.services.contracts.orin import OrinService
 from src.services.contracts.parameters import ParameterService
 from src.services.contracts.vehicle import VehicleService
@@ -35,14 +34,12 @@ class DispatchCommandService(CommandService):
         vehicle: VehicleService,
         parameters: ParameterService,
         logger: ServiceLogger | None = None,
-        mission: MissionService | None = None,
         orin: OrinService | None = None,
         configured_orin_tasks: Iterable[str] = (),
     ) -> None:
         self._vehicle = vehicle
         self._parameters = parameters
         self._logger = logger
-        self._mission = mission
         self._orin = orin
         configured = tuple(
             dict.fromkeys(
@@ -72,22 +69,32 @@ class DispatchCommandService(CommandService):
 
     def dispatch(self, request: CommandRequest) -> CommandResult:
         self._dispatched.publish(request)
+        request_details = self._request_log_details(request)
         try:
             confirmed, details = self._execute(request)
+            details = {**request_details, **details}
         except NotImplementedError as exc:
-            # Backend davranışı olmayan UI kataloğu girdileri sistem aksiyonu değildir.
+            # UI catalogue entries without backend behavior are not system actions.
             result = CommandResult(
                 request,
                 False,
                 str(exc),
-                {"error_type": exc.__class__.__name__},
+                {
+                    **request_details,
+                    "error": str(exc),
+                    "error_type": exc.__class__.__name__,
+                },
             )
             if self._logger:
                 self._logger.event(
                     "command.rejected",
                     f"{request.code} uygulanamadı: {exc}",
                     severity="warning",
-                    details={"code": request.code, "source": request.source},
+                    details={
+                        "code": request.code,
+                        "source": request.source,
+                        **result.details,
+                    },
                     device_id=self._vehicle.state.device_id if self._vehicle.connected else None,
                 )
         except Exception as exc:
@@ -95,14 +102,22 @@ class DispatchCommandService(CommandService):
                 request,
                 False,
                 str(exc),
-                {"error_type": exc.__class__.__name__},
+                {
+                    **request_details,
+                    "error": str(exc),
+                    "error_type": exc.__class__.__name__,
+                },
             )
             if self._logger:
                 self._logger.event(
                     "command.failed",
                     f"{request.code} işlemi başarısız: {exc}",
                     severity="danger",
-                    details={"code": request.code, "source": request.source},
+                    details={
+                        "code": request.code,
+                        "source": request.source,
+                        **result.details,
+                    },
                     device_id=self._vehicle.state.device_id if self._vehicle.connected else None,
                 )
         else:
@@ -155,9 +170,8 @@ class DispatchCommandService(CommandService):
             loop = bool(request.parameters.get("loop", False))
             item_count = self._vehicle.upload_mission(mission_items, loop=loop)
             return True, {
+                **self._mission_log_details(overlays, loop=loop),
                 "item_count": item_count,
-                "ignored_item_count": len(overlays) - len(mission_items),
-                "loop": loop,
             }
         if request.code == "SET_MISSION_TASK":
             task = str(request.parameters.get("task", "")).strip().upper()
@@ -268,3 +282,75 @@ class DispatchCommandService(CommandService):
         if not changes:
             raise ValueError("Uygulanacak araç profili parametresi bulunamadı")
         return changes
+
+    @classmethod
+    def _request_log_details(
+        cls,
+        request: CommandRequest,
+    ) -> dict[str, object]:
+        if request.code == "APPLY_MODE":
+            return {
+                "mode": str(request.parameters.get("mode", "")).strip().upper()
+                or "-",
+            }
+        if request.code == "MISSION_UPLOAD":
+            raw_overlays = request.parameters.get("overlays", [])
+            overlays: list[MapOverlay] = []
+            if isinstance(raw_overlays, (list, tuple)):
+                for raw_overlay in raw_overlays:
+                    try:
+                        overlays.append(
+                            raw_overlay
+                            if isinstance(raw_overlay, MapOverlay)
+                            else MapOverlay.from_dict(raw_overlay)
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        continue
+            return cls._mission_log_details(
+                overlays,
+                loop=bool(request.parameters.get("loop", False)),
+                requested_item_count=(
+                    len(raw_overlays)
+                    if isinstance(raw_overlays, (list, tuple))
+                    else 0
+                ),
+            )
+        if request.code == "SET_MISSION_TASK":
+            return {
+                "task": str(request.parameters.get("task", "")).strip().upper()
+                or "-",
+            }
+        if request.code in {"GOTO", "SET_HOME"}:
+            return {
+                key: request.parameters[key]
+                for key in ("latitude", "longitude", "altitude")
+                if key in request.parameters
+            }
+        if request.code == "PARAM_APPLY":
+            return {"parameter_count": len(request.parameters)}
+        return {}
+
+    @staticmethod
+    def _mission_log_details(
+        overlays: list[MapOverlay],
+        *,
+        loop: bool,
+        requested_item_count: int | None = None,
+    ) -> dict[str, object]:
+        mission_items = [item for item in overlays if item.is_vehicle_mission]
+        type_counts: dict[str, int] = {}
+        for item in mission_items:
+            type_counts[item.overlay_type] = type_counts.get(item.overlay_type, 0) + 1
+        total_count = (
+            len(overlays)
+            if requested_item_count is None
+            else int(requested_item_count)
+        )
+        return {
+            "requested_item_count": total_count,
+            "vehicle_item_count": len(mission_items),
+            "ignored_item_count": max(0, total_count - len(mission_items)),
+            "item_types": dict(sorted(type_counts.items())),
+            "loop": bool(loop),
+            "repeat_mode": "loop" if loop else "once",
+        }
