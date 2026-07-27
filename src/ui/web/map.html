@@ -947,6 +947,8 @@
       labelLayers: new Map(),
       contacts: new Map(),
       safeMasks: new Map(),
+      overlayBatchDepth: 0,
+      overlayRefreshPending: false,
       defaultRadii: { ...DEFAULT_RADII },
       defaultAltitude: 100,
       centerMinZoom: 16,
@@ -2172,6 +2174,27 @@
       }
       setLayerVisual(layer, state.selectedId === layer.overlayData.overlay_id);
       registerLayerEvents(layer);
+      requestOverlayRefresh();
+    }
+
+    function beginOverlayBatch() {
+      state.overlayBatchDepth += 1;
+    }
+
+    function endOverlayBatch() {
+      state.overlayBatchDepth = Math.max(0, state.overlayBatchDepth - 1);
+      if (state.overlayBatchDepth === 0 && state.overlayRefreshPending) {
+        state.overlayRefreshPending = false;
+        refreshMissionRoute();
+        syncMissionStats();
+      }
+    }
+
+    function requestOverlayRefresh() {
+      if (state.overlayBatchDepth > 0) {
+        state.overlayRefreshPending = true;
+        return;
+      }
       refreshMissionRoute();
       syncMissionStats();
     }
@@ -2231,8 +2254,7 @@
       if (shouldNotify && bridge && bridge.overlayRemoved) {
         bridge.overlayRemoved(id);
       }
-      refreshMissionRoute();
-      syncMissionStats();
+      requestOverlayRefresh();
       return true;
     }
 
@@ -2263,8 +2285,7 @@
         }
       });
       state.overlayOrder = unique;
-      refreshMissionRoute();
-      syncMissionStats();
+      requestOverlayRefresh();
     }
 
     function finishNewLayer(layer, type) {
@@ -3256,27 +3277,37 @@
       },
 
       setOverlays(items) {
-        orderedOverlayIds().forEach((overlayId) => removeOverlayById(overlayId, false));
-        state.overlayOrder = [];
-        (items || []).forEach((item) => upsertOverlay(item));
+        beginOverlayBatch();
+        try {
+          orderedOverlayIds().forEach((overlayId) => removeOverlayById(overlayId, false));
+          state.overlayOrder = [];
+          (items || []).forEach((item) => upsertOverlay(item));
+        } finally {
+          endOverlayBatch();
+        }
       },
 
       applyStateDelta(delta) {
         const changes = delta || {};
-        (changes.removeOverlays || []).forEach((overlayId) => {
-          removeOverlayById(overlayId, false);
-        });
-        (changes.upsertOverlays || []).forEach((item) => {
-          upsertOverlay(item);
-        });
-        (changes.removeContacts || []).forEach((contactId) => {
-          removeContact(contactId);
-        });
-        (changes.upsertContacts || []).forEach((contact) => {
-          upsertContact(contact);
-        });
-        if (Array.isArray(changes.overlayOrder)) {
-          setOverlayOrder(changes.overlayOrder);
+        beginOverlayBatch();
+        try {
+          (changes.removeOverlays || []).forEach((overlayId) => {
+            removeOverlayById(overlayId, false);
+          });
+          (changes.upsertOverlays || []).forEach((item) => {
+            upsertOverlay(item);
+          });
+          (changes.removeContacts || []).forEach((contactId) => {
+            removeContact(contactId);
+          });
+          (changes.upsertContacts || []).forEach((contact) => {
+            upsertContact(contact);
+          });
+          if (Array.isArray(changes.overlayOrder)) {
+            setOverlayOrder(changes.overlayOrder);
+          }
+        } finally {
+          endOverlayBatch();
         }
       },
 
