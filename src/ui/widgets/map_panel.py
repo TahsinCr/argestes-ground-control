@@ -178,6 +178,12 @@ class MapPanel(PanelFrame):
         self._history_batch_before: dict[str, Any] | None = None
         self._history_batch_label = ""
         self._history_mutation_in_progress = False
+        # Planner updates cross the Qt adapter queue. Keep the snapshots caused
+        # by this panel's own mutations so their delayed delivery is not
+        # mistaken for an external plan replacement and allowed to erase undo.
+        self._pending_local_plan_syncs: deque[dict[str, Any]] = deque(
+            maxlen=self._MAX_HISTORY_ENTRIES * 2
+        )
         self._pending_home_record: dict[str, Any] | None = None
         self._pending_home_navigation: dict[str, Any] | None = None
         self._history_known_plan = self._capture_local_plan()
@@ -670,7 +676,13 @@ class MapPanel(PanelFrame):
 
     def _sync_mission_state(self, state: MissionState) -> None:
         incoming_local_plan = self._capture_local_plan(state)
-        if (
+        expected_local_sync = (
+            bool(self._pending_local_plan_syncs)
+            and incoming_local_plan == self._pending_local_plan_syncs[0]
+        )
+        if expected_local_sync:
+            self._pending_local_plan_syncs.popleft()
+        elif (
             incoming_local_plan != self._history_known_plan
             and not self._history_mutation_in_progress
         ):
@@ -973,8 +985,14 @@ class MapPanel(PanelFrame):
             self._history_mutation_in_progress = False
         after = self._capture_local_plan()
         self._history_known_plan = after
+        self._expect_local_plan_sync(after)
         if self._history_batch_before is None:
             self._record_plan_history(before, after, label=label)
+
+    def _expect_local_plan_sync(self, snapshot: dict[str, Any]) -> None:
+        """Preserve history until the queued Qt planner signal arrives."""
+
+        self._pending_local_plan_syncs.append(snapshot)
 
     def _record_plan_history(
         self,
@@ -1028,6 +1046,7 @@ class MapPanel(PanelFrame):
         )
         self._history_batch_before = None
         self._history_batch_label = ""
+        self._pending_local_plan_syncs.clear()
 
     def _restore_local_plan(self, snapshot: dict[str, Any]) -> None:
         overlays = [
@@ -1051,6 +1070,7 @@ class MapPanel(PanelFrame):
         finally:
             self._history_mutation_in_progress = False
         self._history_known_plan = self._capture_local_plan()
+        self._expect_local_plan_sync(self._history_known_plan)
 
     def _navigate_history(self, direction: str) -> None:
         if self._pending_home_navigation is not None or self._pending_home_record is not None:

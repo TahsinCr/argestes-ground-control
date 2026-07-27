@@ -537,6 +537,10 @@ class UiSmokeTests(unittest.TestCase):
                     for item in runtime.planner_service.state.overlays
                 )
             )
+            # The planner update returns through a queued Qt adapter. Undo must
+            # still retain this local operation after that delayed sync.
+            QTest.qWait(100)
+            self.assertEqual(len(window.map_panel._history_undo), 1)
 
             window.map_panel._view.page().runJavaScript(
                 "document.dispatchEvent(new KeyboardEvent('keydown', {"
