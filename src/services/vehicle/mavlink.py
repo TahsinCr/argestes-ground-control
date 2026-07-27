@@ -21,7 +21,7 @@ from src.models.vehicle import (
     VehicleConnectionState,
     VehicleTransportStats,
 )
-from src.services.contracts.vehicle import VehicleService
+from src.services.contracts.vehicle import MissionTransferInterrupted, VehicleService
 from src.services.logging_service import ServiceLogger
 
 
@@ -143,6 +143,8 @@ class MavlinkVehicleService(VehicleService):
         self._subscriptions: list[Subscription] = []
         self._started = False
         self._state_lock = threading.RLock()
+        self._mission_transfer_lock = threading.Lock()
+        self._mission_download_cancel = threading.Event()
         self._last_heartbeat = 0.0
         self._received_packets_baseline = 0
         self._sent_packets_baseline = 0
@@ -472,138 +474,166 @@ class MavlinkVehicleService(VehicleService):
         *,
         loop: bool = False,
     ) -> int:
-        source_items = list(overlays)
-        self._validate_mission_structure(source_items, loop=loop)
-        mavlink = self._client.mavlink
-        route_items, ignored = self._mission_items(
-            source_items,
-            mavlink,
-            default_altitude=self._default_mission_altitude,
-        )
-        if ignored:
-            self._event(
-                "info",
-                "mission.items_retained_locally",
-                f"{len(ignored)} uygulama öğesi yalnızca backend durumunda tutuldu",
-                details={
-                    "count": len(ignored),
-                    "overlay_types": sorted(set(ignored)),
-                },
+        # Operator uploads take precedence over an automatic plan refresh.
+        self._mission_download_cancel.set()
+        with self._mission_transfer_lock:
+            source_items = list(overlays)
+            self._validate_mission_structure(source_items, loop=loop)
+            mavlink = self._client.mavlink
+            route_items, ignored = self._mission_items(
+                source_items,
+                mavlink,
+                default_altitude=self._default_mission_altitude,
             )
-        if not route_items:
-            raise ValueError("Araca gönderilebilecek görev öğesi bulunamadı")
+            if ignored:
+                self._event(
+                    "info",
+                    "mission.items_retained_locally",
+                    f"{len(ignored)} uygulama öğesi yalnızca backend durumunda tutuldu",
+                    details={
+                        "count": len(ignored),
+                        "overlay_types": sorted(set(ignored)),
+                    },
+                )
+            if not route_items:
+                raise ValueError("Araca gönderilebilecek görev öğesi bulunamadı")
 
-        items = [self._mission_home_item(route_items, mavlink), *route_items]
-        if loop:
-            loop_target = self._loop_target_sequence(source_items)
-            items.append(self._mission_jump_item(loop_target, mavlink))
+            items = [self._mission_home_item(route_items, mavlink), *route_items]
+            if loop:
+                loop_target = self._loop_target_sequence(source_items)
+                items.append(self._mission_jump_item(loop_target, mavlink))
 
-        system, component = self._target
-        mission_type = mavlink.MAV_MISSION_TYPE_MISSION
-        boundary = self._client.router.sequence
-        self._client.call_mav("mission_count_send", system, component, len(items), mission_type)
-
-        sent_sequences: set[int] = set()
-        deadline = time.monotonic() + self._operation_timeout * max(2, len(items))
-        while len(sent_sequences) < len(items):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("Görev yükleme isteği zaman aşımına uğradı")
-            request = self._client.wait_for(
-                {"MISSION_REQUEST_INT", "MISSION_REQUEST"},
-                timeout=min(self._operation_timeout, remaining),
-                after_sequence=boundary,
-            )
-            sequence = int(request.seq)
-            if not 0 <= sequence < len(items):
-                raise ValueError(f"Araç geçersiz görev sırası istedi: {sequence}")
+            system, component = self._target
+            mission_type = mavlink.MAV_MISSION_TYPE_MISSION
             boundary = self._client.router.sequence
-            self._client.call_mav(
-                "mission_item_int_send",
-                system,
-                component,
-                sequence,
-                *items[sequence],
-                mission_type,
-            )
-            sent_sequences.add(sequence)
+            self._client.call_mav("mission_count_send", system, component, len(items), mission_type)
 
-        acknowledgement = self._client.wait_for(
-            "MISSION_ACK",
-            timeout=self._operation_timeout,
-            after_sequence=boundary,
-        )
-        if int(acknowledgement.type) != mavlink.MAV_MISSION_ACCEPTED:
-            raise RuntimeError(f"Araç görev planını reddetti: {acknowledgement.type}")
-        self._client.call_mav("mission_set_current_send", system, component, 1)
-        route_item_count = len(route_items)
-        self._event(
-            "success",
-            "mission.upload_confirmed",
-            f"{route_item_count} görev öğesi uçuş cihazı tarafından kabul edildi",
-            details={
-                "item_count": route_item_count,
-                "wire_item_count": len(items),
-                "loop": loop,
-                "start_sequence": 1,
-            },
-        )
-        return route_item_count
+            sent_sequences: set[int] = set()
+            deadline = time.monotonic() + self._operation_timeout * max(2, len(items))
+            while len(sent_sequences) < len(items):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Görev yükleme isteği zaman aşımına uğradı")
+                request = self._client.wait_for(
+                    {"MISSION_REQUEST_INT", "MISSION_REQUEST"},
+                    timeout=min(self._operation_timeout, remaining),
+                    after_sequence=boundary,
+                )
+                sequence = int(request.seq)
+                if not 0 <= sequence < len(items):
+                    raise ValueError(f"Araç geçersiz görev sırası istedi: {sequence}")
+                boundary = self._client.router.sequence
+                self._client.call_mav(
+                    "mission_item_int_send",
+                    system,
+                    component,
+                    sequence,
+                    *items[sequence],
+                    mission_type,
+                )
+                sent_sequences.add(sequence)
 
-    def download_mission(self) -> list[MapOverlay]:
-        mavlink = self._client.mavlink
-        system, component = self._target
-        mission_type = mavlink.MAV_MISSION_TYPE_MISSION
-        boundary = self._client.router.sequence
-        self._client.call_mav("mission_request_list_send", system, component, mission_type)
-        count_message = self._client.wait_for(
-            "MISSION_COUNT",
-            timeout=self._operation_timeout,
-            after_sequence=boundary,
-        )
-        count = int(count_message.count)
-        overlays: list[MapOverlay] = []
-        loop_detected = False
-        for sequence in range(count):
-            boundary = self._client.router.sequence
-            self._client.call_mav(
-                "mission_request_int_send",
-                system,
-                component,
-                sequence,
-                mission_type,
-            )
-            item = self._client.wait_for(
-                {"MISSION_ITEM_INT", "MISSION_ITEM"},
-                predicate=lambda message, expected=sequence: int(message.seq) == expected,
+            acknowledgement = self._client.wait_for(
+                "MISSION_ACK",
                 timeout=self._operation_timeout,
                 after_sequence=boundary,
             )
-            if (
-                int(getattr(item, "command", -1))
-                == int(getattr(mavlink, "MAV_CMD_DO_JUMP", -2))
-                and float(getattr(item, "param2", 0.0)) < 0
-            ):
-                loop_detected = True
-            overlay = self._overlay_from_mission_item(item, mavlink)
-            if overlay is not None:
-                overlays.append(overlay)
-        if loop_detected and overlays:
-            overlays[0].metadata["mission_loop"] = True
-        self._client.call_mav(
-            "mission_ack_send",
-            system,
-            component,
-            mavlink.MAV_MISSION_ACCEPTED,
-            mission_type,
-        )
-        self._event(
-            "success",
-            "mission.download_confirmed",
-            f"Uçuş cihazından {count} görev öğesi alındı",
-            details={"vehicle_item_count": count, "supported_item_count": len(overlays)},
-        )
-        return overlays
+            if int(acknowledgement.type) != mavlink.MAV_MISSION_ACCEPTED:
+                raise RuntimeError(f"Araç görev planını reddetti: {acknowledgement.type}")
+            self._client.call_mav("mission_set_current_send", system, component, 1)
+            route_item_count = len(route_items)
+            self._event(
+                "success",
+                "mission.upload_confirmed",
+                f"{route_item_count} görev öğesi uçuş cihazı tarafından kabul edildi",
+                details={
+                    "item_count": route_item_count,
+                    "wire_item_count": len(items),
+                    "loop": loop,
+                    "start_sequence": 1,
+                },
+            )
+            return route_item_count
+
+    def download_mission(self) -> list[MapOverlay]:
+        with self._mission_transfer_lock:
+            self._mission_download_cancel.clear()
+            mavlink = self._client.mavlink
+            system, component = self._target
+            mission_type = mavlink.MAV_MISSION_TYPE_MISSION
+            boundary = self._client.router.sequence
+            self._client.call_mav("mission_request_list_send", system, component, mission_type)
+            count_message = self._wait_for_mission_download(
+                "MISSION_COUNT",
+                after_sequence=boundary,
+            )
+            count = int(count_message.count)
+            overlays: list[MapOverlay] = []
+            loop_detected = False
+            for sequence in range(count):
+                boundary = self._client.router.sequence
+                self._client.call_mav(
+                    "mission_request_int_send",
+                    system,
+                    component,
+                    sequence,
+                    mission_type,
+                )
+                item = self._wait_for_mission_download(
+                    {"MISSION_ITEM_INT", "MISSION_ITEM"},
+                    predicate=lambda message, expected=sequence: int(message.seq) == expected,
+                    after_sequence=boundary,
+                )
+                if (
+                    int(getattr(item, "command", -1))
+                    == int(getattr(mavlink, "MAV_CMD_DO_JUMP", -2))
+                    and float(getattr(item, "param2", 0.0)) < 0
+                ):
+                    loop_detected = True
+                overlay = self._overlay_from_mission_item(item, mavlink)
+                if overlay is not None:
+                    overlays.append(overlay)
+            if loop_detected and overlays:
+                overlays[0].metadata["mission_loop"] = True
+            self._client.call_mav(
+                "mission_ack_send",
+                system,
+                component,
+                mavlink.MAV_MISSION_ACCEPTED,
+                mission_type,
+            )
+            self._event(
+                "success",
+                "mission.download_confirmed",
+                f"Uçuş cihazından {count} görev öğesi alındı",
+                details={"vehicle_item_count": count, "supported_item_count": len(overlays)},
+            )
+            return overlays
+
+    def _wait_for_mission_download(
+        self,
+        message_types,
+        *,
+        after_sequence: int,
+        predicate=None,
+    ) -> Any:
+        deadline = time.monotonic() + self._operation_timeout
+        while True:
+            if self._mission_download_cancel.is_set():
+                raise MissionTransferInterrupted("Otomatik görev indirme kullanıcı gönderimi için ertelendi")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                expected = sorted(message_types) if isinstance(message_types, set) else [message_types]
+                raise TimeoutError(f"MAVLink mesajı beklenirken zaman aşımı: {expected}")
+            try:
+                return self._client.wait_for(
+                    message_types,
+                    predicate=predicate,
+                    timeout=min(0.25, remaining),
+                    after_sequence=after_sequence,
+                )
+            except TimeoutError:
+                continue
 
     @property
     def _target(self) -> tuple[int, int]:

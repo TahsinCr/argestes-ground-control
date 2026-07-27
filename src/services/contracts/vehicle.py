@@ -15,6 +15,10 @@ from src.models.vehicle import (
 )
 
 
+class MissionTransferInterrupted(RuntimeError):
+    """A background mission read yielded to an operator-initiated upload."""
+
+
 class VehicleService(Service):
     """Abstract the flight controller from MAVLink, simulators or other transports."""
 

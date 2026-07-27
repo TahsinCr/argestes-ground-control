@@ -9,13 +9,14 @@ from src.services.contracts.telemetry import TelemetryService
 from src.services.contracts.settings import SettingsRepository
 from src.services.contracts.tile_cache import TileCacheService
 from src.services.contracts.video import VideoService
-from src.services.contracts.vehicle import VehicleService
+from src.services.contracts.vehicle import MissionTransferInterrupted, VehicleService
 
 __all__ = [
     "CommandService",
     "ConnectionControlService",
     "CompetitionService",
     "LogService",
+    "MissionTransferInterrupted",
     "MissionArchiveRepository",
     "OrinService",
     "ParameterService",

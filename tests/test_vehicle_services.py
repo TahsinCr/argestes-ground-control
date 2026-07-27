@@ -20,6 +20,7 @@ from src.services.commands import DispatchCommandService
 from src.services.vehicle.parameters import MutableParameterService
 from src.services.vehicle.parameters import VehicleParameterService
 from src.services.vehicle.telemetry import TelemetryDecoder, VehicleTelemetryService
+from src.services.contracts.vehicle import MissionTransferInterrupted
 from src.services.vehicle.mavlink import MavlinkVehicleService
 from src.services.video import GStreamerVideoService
 from src.ui.i18n import localized_log_message
@@ -902,6 +903,68 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(client.sent[2][1][2], 1)
         self.assertEqual(client.sent[2][1][11:13], (391_000_000, 321_000_000))
         self.assertEqual(client.sent[3][1], (1, 1, 1))
+
+    def test_operator_upload_preempts_an_incomplete_background_mission_download(self) -> None:
+        mavlink = SimpleNamespace(
+            MAV_CMD_NAV_TAKEOFF=22,
+            MAV_CMD_NAV_WAYPOINT=16,
+            MAV_CMD_NAV_LOITER_UNLIM=17,
+            MAV_CMD_NAV_RETURN_TO_LAUNCH=20,
+            MAV_CMD_NAV_LAND=21,
+            MAV_FRAME_GLOBAL_RELATIVE_ALT_INT=6,
+            MAV_MISSION_TYPE_MISSION=0,
+            MAV_MISSION_ACCEPTED=0,
+        )
+
+        class Client:
+            endpoint = SimpleNamespace(uri="test")
+            connection = SimpleNamespace(target_system=1, target_component=1)
+            router = SimpleNamespace(sequence=0)
+            is_connected = True
+
+            def __init__(self) -> None:
+                self.mavlink = mavlink
+                self.download_waiting = threading.Event()
+                self.responses = [
+                    SimpleNamespace(seq=0),
+                    SimpleNamespace(seq=1),
+                    SimpleNamespace(type=mavlink.MAV_MISSION_ACCEPTED),
+                ]
+
+            def call_mav(self, *_args) -> None:
+                return
+
+            def wait_for(self, message_types, *, timeout, **_kwargs):
+                if message_types == "MISSION_COUNT":
+                    self.download_waiting.set()
+                    time.sleep(min(timeout, 0.01))
+                    raise TimeoutError("mission count not available")
+                return self.responses.pop(0)
+
+        client = Client()
+        vehicle = MavlinkVehicleService(client)  # type: ignore[arg-type]
+        vehicle._state = VehicleConnectionState(True, "test", 1, 1)
+        download_errors: list[Exception] = []
+
+        def download() -> None:
+            try:
+                vehicle.download_mission()
+            except Exception as exc:
+                download_errors.append(exc)
+
+        thread = threading.Thread(target=download)
+        thread.start()
+        self.assertTrue(client.download_waiting.wait(0.5))
+
+        count = vehicle.upload_mission(
+            [MapOverlay("wp", "waypoint", "WP", [[39.1, 32.1]], "#fff", 35)]
+        )
+        thread.join(timeout=0.5)
+
+        self.assertEqual(count, 1)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(download_errors), 1)
+        self.assertIsInstance(download_errors[0], MissionTransferInterrupted)
 
     def test_loop_mission_repeats_waypoints_without_repeating_takeoff(self) -> None:
         mavlink = SimpleNamespace(

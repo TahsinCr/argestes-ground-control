@@ -7,6 +7,7 @@ from pathlib import Path
 
 from src.models.mission import MapContact, MapOverlay, MissionState
 from src.models.vehicle import VehicleConnectionState
+from src.services.contracts.vehicle import MissionTransferInterrupted
 from src.services.mission_archive import MissionArchiveService
 from src.services.planner import PlannerService
 
@@ -269,6 +270,23 @@ class MissionTests(unittest.TestCase):
             {"teknofest-hss-3", "safe-1", "vehicle-waypoint-1"},
         )
         self.assertTrue(service.state.mission_loop)
+
+    def test_vehicle_mission_sync_ignores_a_download_preempted_by_operator_upload(self) -> None:
+        class Vehicle:
+            connected = True
+            state = VehicleConnectionState(True, "test", 1, 1)
+
+            def download_mission(self):
+                raise MissionTransferInterrupted("preempted")
+
+        service = PlannerService(
+            initial_state=MissionState(
+                overlays=[MapOverlay("local-wp", "waypoint", "WP", [[39.7, 32.6]], "#fff", 35)]
+            ),
+            vehicle=Vehicle(),  # type: ignore[arg-type]
+        )
+        service._sync_from_vehicle()
+        self.assertEqual([item.overlay_id for item in service.state.overlays], ["local-wp"])
 
 
 if __name__ == "__main__":

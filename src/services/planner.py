@@ -8,7 +8,7 @@ from typing import Any
 from src.core.abstracts import Service
 from src.core.events import EventStream, Subscription
 from src.models.mission import MapContact, MapOverlay, MissionState
-from src.services.contracts.vehicle import VehicleService
+from src.services.contracts.vehicle import MissionTransferInterrupted, VehicleService
 from src.services.logging_service import ServiceLogger
 
 
@@ -543,6 +543,9 @@ class PlannerService(Service):
                     for item in overlays
                 )
             )
+        except MissionTransferInterrupted:
+            # A manual upload has priority; a future reconnect can refresh the plan.
+            return
         except Exception as exc:
             if self._logger and not self._stop_event.is_set():
                 self._logger.event(
