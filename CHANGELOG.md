@@ -1,6 +1,57 @@
 # **Change Log**
 All notable changes to this project will be documented in this file.
 
+## **[1.1-beta] - 28.07.2026**
+The **"Reliable Mission Workflow Beta"** release. This update improves mission
+editing history, prioritizes operator-initiated MAVLink transfers and removes
+avoidable delays while restoring archived plans to the map.
+
+### Updated
+* **Mission Transfer Coordination**:
+    * Gave operator-initiated mission uploads priority over automatic
+      flight-controller mission synchronization.
+    * Allowed an incomplete background mission download to yield promptly
+      without reporting an operator-triggered interruption as a transfer
+      failure.
+* **Map Rendering Pipeline**:
+    * Batched archived overlay changes so route geometry and mission counters
+      are recalculated once after the complete plan is restored.
+    * Avoided redundant settings persistence and full-interface restyling when
+      a loaded archive already uses the active map layer.
+* **Mission Diagnostics**:
+    * Added archive-load log details for item count, repeat mode and base map
+      layer.
+
+### Fixed
+* **Map Edit History**:
+    * Preserved undo and redo history when a queued planner snapshot confirms
+      the map's own local mutation.
+    * Fixed newly added waypoint, takeoff, land, RTL and area items remaining
+      on the map after `Ctrl+Z`.
+* **Mission Archive Loading**:
+    * Removed repeated route and mission-stat calculations while archived
+      points and areas are inserted into Leaflet.
+    * Prevented unchanged map-layer settings from rewriting the settings file
+      and triggering unnecessary UI work.
+* **ArduPilot Mission Progress**:
+    * Accounted for ArduPilot's sequence-zero home record when displaying the
+      active mission item and total mission count.
+    * Fixed the first executable mission item being presented as item two in
+      the flight telemetry panel.
+
+### Testing
+* **Mission Regression Coverage**:
+    * Added concurrent MAVLink coverage proving that an operator upload
+      preempts an incomplete automatic mission download.
+    * Added planner coverage ensuring a preempted refresh preserves the local
+      mission plan without producing a false failure.
+    * Added regression coverage for queued map history synchronization,
+      batched map rendering, no-op settings updates and ArduPilot mission
+      sequence normalization.
+
+<br>
+
+
 ## **[1.0-beta] - 25.07.2026**
 The **"Operational Ground Control Beta"** release. This release turns the
 initial modular foundation into a configurable, bilingual and high-rate
