@@ -850,12 +850,18 @@ class MainWindow(QMainWindow):
             return
         if hasattr(self.planner_service, "load_state"):
             self.planner_service.load_state(state)
-        self.settings_service.patch(map_layer=state.base_layer)
+        if self.settings_service.current.map_layer != state.base_layer:
+            self.settings_service.patch(map_layer=state.base_layer)
         self.ui_log.event(
             "archive.loaded",
             f"Görev planı yüklendi: {path.name}",
             severity="success",
-            details={"name": path.name},
+            details={
+                "name": path.name,
+                "item_count": len(state.overlays),
+                "loop": state.mission_loop,
+                "base_layer": state.base_layer,
+            },
         )
 
     def _requires_cache_rebuild(self, previous: SettingsModel, updated: SettingsModel) -> bool:

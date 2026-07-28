@@ -228,6 +228,20 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertGreater(snapshot.home_distance, 0)
         self.assertGreaterEqual(snapshot.home_heading, 0)
 
+    def test_telemetry_decoder_normalizes_ardupilot_mission_home_sequence(self) -> None:
+        decoder = TelemetryDecoder()
+        snapshot = decoder.apply(
+            TelemetrySnapshot.zero(),
+            _Message(message_type="MISSION_COUNT", count=6),
+        )
+        snapshot = decoder.apply(
+            snapshot,
+            _Message(message_type="MISSION_CURRENT", seq=1, total=5),
+        )
+
+        self.assertEqual(snapshot.mission_index, 1)
+        self.assertEqual(snapshot.mission_total, 5)
+
     def test_telemetry_decoder_exposes_battery_baro_and_body_axis_acceleration(self) -> None:
         decoder = TelemetryDecoder()
         snapshot = decoder.apply(

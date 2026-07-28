@@ -252,9 +252,14 @@ class TelemetryDecoder:
                 wind_speed=float(getattr(message, "speed", 0.0)),
             )
         elif message_type == "MISSION_CURRENT":
-            updates.update(mission_index=int(getattr(message, "seq", 0)) + 1)
+            sequence = max(0, int(getattr(message, "seq", 0)))
+            updates["mission_index"] = sequence
+            total = int(getattr(message, "total", 0) or 0)
+            if total > 0:
+                updates["mission_total"] = total
         elif message_type == "MISSION_COUNT":
-            updates.update(mission_total=int(getattr(message, "count", 0)))
+            # ArduPilot reserves wire sequence zero for the home item.
+            updates.update(mission_total=max(0, int(getattr(message, "count", 0)) - 1))
         return snapshot.copy(**updates)
 
     @staticmethod

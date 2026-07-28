@@ -54,6 +54,20 @@ class SettingsTests(unittest.TestCase):
             self.assertTrue(payload["backend"]["video_auto_connect"])
             self.assertEqual(len(received), 3)
 
+    def test_unchanged_patch_does_not_rewrite_or_notify_the_ui(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base_dir = Path(directory)
+            service = SettingsService(base_dir)
+            settings_path = base_dir / "data/settings.json"
+            original_mtime = settings_path.stat().st_mtime_ns
+            received: list[SettingsModel] = []
+            service.changed.subscribe(received.append)
+
+            service.patch(map_layer=service.current.map_layer)
+
+            self.assertEqual(settings_path.stat().st_mtime_ns, original_mtime)
+            self.assertEqual(received, [])
+
     def test_missing_data_directory_creates_complete_default_settings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base_dir = Path(directory) / "new-project"

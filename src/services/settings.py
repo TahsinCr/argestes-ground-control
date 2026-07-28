@@ -93,6 +93,8 @@ class SettingsService(SettingsRepository):
         snapshot = SettingsModel.from_dict(settings.to_dict())
         self._prepare_runtime_paths(snapshot)
         previous = self.current if hasattr(self, "_settings") else None
+        if previous is not None and previous.to_dict() == snapshot.to_dict():
+            return
         save_json_file(self._settings_path, snapshot.to_dict())
         with self._lock:
             self._settings = snapshot
