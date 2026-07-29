@@ -63,9 +63,10 @@ class ConnectionPopup(QDialog):
         self.timeout_input.setValue(max(0.1, float(status.timeout_s or 5.0)))
 
         is_vehicle = status.channel in VEHICLE_CHANNELS
+        is_orin = status.channel == "orin"
         is_video = status.channel == "video"
         is_server = status.channel == "server"
-        self.endpoint_input.setReadOnly(False)
+        self.endpoint_input.setReadOnly(is_orin)
         self.endpoint_label.setText(
             t(
                 "connection.label.server_address"
@@ -82,7 +83,11 @@ class ConnectionPopup(QDialog):
             t(
                 "connection.label.stream_timeout"
                 if is_video
-                else "connection.label.timeout",
+                else (
+                    "connection.label.orin_timeout"
+                    if is_orin
+                    else "connection.label.timeout"
+                ),
                 self._language,
             )
         )
@@ -90,7 +95,8 @@ class ConnectionPopup(QDialog):
 
         self.baud_label.setVisible(is_vehicle)
         self.baud_input.setVisible(is_vehicle)
-        self.auto_connect.setVisible(is_vehicle or is_server or is_video)
+        self.baud_input.setEnabled(not is_orin)
+        self.auto_connect.setVisible((is_vehicle and not is_orin) or is_server or is_video)
         self.auto_connect.setText(
             t(
                 "connection.auto.vehicle"
@@ -392,6 +398,7 @@ class ConnectionPopup(QDialog):
             t(f"connection.title.{self._channel}", self._language)
         )
         is_vehicle = self._channel in VEHICLE_CHANNELS
+        is_orin = self._channel == "orin"
         is_video = self._channel == "video"
         is_server = self._channel == "server"
         self.endpoint_label.setText(
@@ -410,7 +417,11 @@ class ConnectionPopup(QDialog):
             t(
                 "connection.label.stream_timeout"
                 if is_video
-                else "connection.label.timeout",
+                else (
+                    "connection.label.orin_timeout"
+                    if is_orin
+                    else "connection.label.timeout"
+                ),
                 self._language,
             )
         )

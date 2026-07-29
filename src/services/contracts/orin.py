@@ -27,8 +27,16 @@ class OrinService(Service):
     @abstractmethod
     def received(self) -> EventStream[OrinMessage]: ...
 
+    @property
+    @abstractmethod
+    def running(self) -> bool: ...
+
     @abstractmethod
     def configure(self, config: OrinLinkConfig) -> None: ...
+
+    @abstractmethod
+    def probe(self) -> int:
+        """Send an immediate liveness probe over the shared MAVLink link."""
 
     @abstractmethod
     def issue(

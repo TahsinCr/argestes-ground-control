@@ -226,9 +226,10 @@ class BackendConnectionControlService(ConnectionControlService):
                 "Orin çalışıyor" if orin_ready else "Orin heartbeat alınmıyor",
                 detail,
                 state.endpoint or settings.backend.mavlink.endpoint,
-                freshness_limit,
+                orin_timeout,
                 {
                     **self._vehicle_options(settings),
+                    "auto_connect": settings.backend.orin.enabled,
                     "shared_vehicle_link": True,
                     "vehicle_connected": connected,
                     "component_id": settings.backend.orin.component_id,
@@ -245,7 +246,10 @@ class BackendConnectionControlService(ConnectionControlService):
                     "packets_in": orin_state.packets_in if orin_state is not None else 0,
                     "packets_out": orin_state.packets_out if orin_state is not None else 0,
                 },
-                can_disconnect=connected,
+                can_disconnect=bool(
+                    self._orin is not None
+                    and getattr(self._orin, "running", connected)
+                ),
             )
         if key == "gps":
             position_age = self._age_seconds(snapshot.position_received_at)
@@ -375,6 +379,8 @@ class BackendConnectionControlService(ConnectionControlService):
                     self._reconnect_server(options)
                 elif key == "video":
                     self._reconnect_video(options)
+                elif key == "orin":
+                    self._reconnect_orin(options)
                 else:
                     self._reconnect_vehicle(options)
             except Exception as exc:
@@ -477,6 +483,14 @@ class BackendConnectionControlService(ConnectionControlService):
                     self._settings.save(
                         current.with_value("backend.video_auto_connect", False)
                     )
+            elif key == "orin":
+                if self._orin is not None:
+                    self._orin.stop()
+                current = self._settings.current
+                if current.backend.orin.enabled:
+                    self._settings.save(
+                        current.with_value("backend.orin.enabled", False)
+                    )
             else:
                 self._vehicle.stop()
                 current = self._settings.current
@@ -491,6 +505,23 @@ class BackendConnectionControlService(ConnectionControlService):
             )
             self._publish_related(key)
             return self.status(key)
+
+    def _reconnect_orin(self, options: dict[str, Any]) -> None:
+        if self._orin is None:
+            raise RuntimeError("Orin servisi bu çalışma kipinde kullanılamıyor")
+        if not self._vehicle.connected:
+            raise ConnectionError(
+                "Orin kanalı mevcut araç telemetrisi bağlı olmadan açılamaz"
+            )
+        current = self._settings.current
+        orin = current.backend.orin
+        timeout = float(options.get("timeout_s", orin.heartbeat_timeout_s))
+        updated = current.with_value("backend.orin.enabled", True)
+        updated = updated.with_value("backend.orin.heartbeat_timeout_s", timeout)
+        self._settings.save(updated)
+        self._orin.configure(updated.backend.orin)
+        self._orin.start()
+        self._orin.probe()
 
     def _reconnect_vehicle(self, options: dict[str, Any]) -> None:
         current = self._settings.current

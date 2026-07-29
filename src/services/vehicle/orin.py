@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-import secrets
 import threading
-import time
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -13,6 +11,8 @@ from src.core.events import EventStream, Subscription
 from src.core.mavlink import (
     MavlinkApplicationChannel,
     MavlinkApplicationPacket,
+    MavlinkApplicationPeer,
+    MavlinkApplicationPeerState,
     MavlinkClient,
 )
 from src.models.orin import (
@@ -65,14 +65,6 @@ def configured_orin_commands(config_path: Path) -> tuple[str, ...]:
     return tuple(normalized)
 
 
-@dataclass(slots=True)
-class _PendingCommand:
-    event: threading.Event
-    started_monotonic: float
-    response: MavlinkApplicationPacket | None = None
-    error: str = ""
-
-
 class NullOrinService(OrinService):
     def __init__(self) -> None:
         self._state = OrinConnectionState()
@@ -104,6 +96,13 @@ class NullOrinService(OrinService):
     def configure(self, config: OrinLinkConfig) -> None:
         del config
 
+    @property
+    def running(self) -> bool:
+        return False
+
+    def probe(self) -> int:
+        raise ConnectionError("Orin MAVLink uygulama kanalı hazır değil")
+
     def issue(self, packet_type: str, payload=None, *, timeout=None) -> OrinCommandReceipt:
         del packet_type, payload, timeout
         raise ConnectionError("Orin MAVLink uygulama kanalı hazır değil")
@@ -112,7 +111,6 @@ class NullOrinService(OrinService):
 class MavlinkOrinService(OrinService):
     """Manage the onboard Orin application channel over the RFD/Pixhawk route."""
 
-    HEARTBEAT_TYPES = frozenset({"system.heartbeat", "system.pong"})
     RESPONSE_TYPES = frozenset({"system.ack", "system.error"})
 
     def __init__(
@@ -133,14 +131,10 @@ class MavlinkOrinService(OrinService):
             component_id=self._config.component_id,
         )
         self._channel: MavlinkApplicationChannel | None = None
+        self._peer: MavlinkApplicationPeer | None = None
         self._subscriptions: list[Subscription] = []
-        self._pending: dict[int, _PendingCommand] = {}
         self._lock = threading.RLock()
         self._started = False
-        self._last_packet_monotonic = 0.0
-        self._last_heartbeat_monotonic = 0.0
-        self._watchdog_stop = threading.Event()
-        self._watchdog_thread: threading.Thread | None = None
 
     @property
     def connected(self) -> bool:
@@ -159,6 +153,11 @@ class MavlinkOrinService(OrinService):
     @property
     def received(self) -> EventStream[OrinMessage]:
         return self._received
+
+    @property
+    def running(self) -> bool:
+        with self._lock:
+            return self._started
 
     def configure(self, config: OrinLinkConfig) -> None:
         restart = False
@@ -180,31 +179,28 @@ class MavlinkOrinService(OrinService):
                 return
             self._channel = self._create_channel()
             channel = self._channel
+            self._peer = self._create_peer(channel)
+            peer = self._peer
             self._started = True
         self._subscriptions.extend(
             [
-                channel.packets.subscribe(self._on_packet),
-                channel.errors.subscribe(self._on_channel_error),
+                peer.packets.subscribe(self._on_packet),
+                peer.changed.subscribe(self._on_peer_changed),
+                peer.errors.subscribe(self._on_channel_error),
                 self._vehicle.connection_changed.subscribe(self._on_vehicle_changed),
             ]
         )
         try:
-            channel.start()
+            peer.start()
         except Exception:
             for subscription in self._subscriptions:
                 subscription.cancel()
             self._subscriptions.clear()
             with self._lock:
                 self._channel = None
+                self._peer = None
                 self._started = False
             raise
-        self._watchdog_stop.clear()
-        self._watchdog_thread = threading.Thread(
-            target=self._watch_health,
-            name="OrinHeartbeatWatchdog",
-            daemon=True,
-        )
-        self._watchdog_thread.start()
         self._publish()
 
     def stop(self) -> None:
@@ -214,22 +210,35 @@ class MavlinkOrinService(OrinService):
             self._started = False
             channel = self._channel
             self._channel = None
-            pending = tuple(self._pending.values())
-            self._pending.clear()
-        self._watchdog_stop.set()
-        thread = self._watchdog_thread
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=1.0)
-        self._watchdog_thread = None
+            peer = self._peer
+            self._peer = None
         for subscription in self._subscriptions:
             subscription.cancel()
         self._subscriptions.clear()
-        if channel is not None:
+        if peer is not None:
+            peer.stop()
+        elif channel is not None:
             channel.stop()
-        for item in pending:
-            item.error = "Orin servisi durduruldu"
-            item.event.set()
         self._mark_unavailable("Orin servisi kapalı")
+
+    def probe(self) -> int:
+        """Trigger an immediate Orin liveness check over the shared vehicle link."""
+
+        if not self._vehicle.connected:
+            raise ConnectionError("Telemetri hattı bağlı değil; Orin yoklanamaz")
+        with self._lock:
+            peer = self._peer
+            started = self._started
+        if not started or peer is None:
+            raise ConnectionError("Orin uygulama kanalı çalışmıyor")
+        packet = peer.probe()
+        self._event(
+            "orin.probe_sent",
+            "Orin bağlantı yoklaması gönderildi",
+            details={"packet_id": packet.packet_id},
+            correlation_id=str(packet.packet_id),
+        )
+        return packet.packet_id
 
     def issue(
         self,
@@ -245,90 +254,76 @@ class MavlinkOrinService(OrinService):
         wait_timeout = float(timeout or self._config.command_timeout_s)
         if wait_timeout <= 0:
             raise ValueError("Orin komut zaman aşımı pozitif olmalı")
-        packet_id = secrets.randbits(32) or 1
-        pending = _PendingCommand(threading.Event(), time.monotonic())
         with self._lock:
-            channel = self._channel
-            if not self._started or channel is None:
+            peer = self._peer
+            if not self._started or peer is None:
                 raise ConnectionError("Orin uygulama kanalı çalışmıyor")
-            self._pending[packet_id] = pending
-        try:
-            packet = channel.send(
-                packet_type,
-                payload,
-                packet_id=packet_id,
-                target_system=self._target_system(),
-                target_component=self._config.component_id,
-            )
-            with self._lock:
-                self._state = replace(self._state, packets_out=self._state.packets_out + 1)
-            self._event(
-                "orin.command_sent",
-                f"Orin komutu gönderildi: {packet.packet_type}",
-                details={"packet_id": packet.packet_id, "packet_type": packet.packet_type},
-                correlation_id=str(packet.packet_id),
-            )
-            if not pending.event.wait(wait_timeout):
-                raise TimeoutError(
-                    f"Orin komut onayı {wait_timeout:g} saniyede alınamadı: {packet.packet_type}"
-                )
-            if pending.error:
-                raise ConnectionError(pending.error)
-            response = pending.response
-            if response is None:
-                raise TimeoutError("Orin komut cevabı boş döndü")
-            accepted = bool(response.payload.get("accepted", response.packet_type != "system.error"))
-            message = str(response.payload.get("message", "Orin komutu kabul edildi"))
-            round_trip_ms = max(0.0, (time.monotonic() - pending.started_monotonic) * 1000.0)
-            with self._lock:
-                self._state = replace(self._state, round_trip_ms=round_trip_ms)
-            receipt = OrinCommandReceipt(
-                packet.packet_id,
-                accepted,
-                message,
-                dict(response.payload),
-                round_trip_ms,
-            )
-            execution = str(response.payload.get("execution", "acknowledged"))
-            task = str(
-                response.payload.get("task")
-                or response.payload.get("active_task")
-                or (payload or {}).get("task", "")
-            ).strip().upper()
-            event_action = (
-                "orin.script_completed"
-                if accepted and execution == "completed"
-                else "orin.script_failed"
-                if execution in {"failed", "timeout", "start_failed", "not_configured"}
-                else "orin.command_acknowledged"
-                if accepted
-                else "orin.command_rejected"
-            )
-            event_message = message
-            if event_action == "orin.script_completed":
-                event_message = f"Orin scripti başarıyla tamamlandı: {task or packet.packet_type}"
-            elif event_action == "orin.script_failed":
-                event_message = f"Orin scripti başarısız: {task or packet.packet_type} · {message}"
-            self._event(
-                event_action,
-                event_message,
-                severity="success" if accepted else "danger",
-                details={
-                    "packet_id": packet.packet_id,
-                    "packet_type": packet.packet_type,
-                    "round_trip_ms": round_trip_ms,
-                    "task": task,
-                    "execution": execution,
-                    "exit_code": response.payload.get("exit_code"),
-                    "stdout": response.payload.get("stdout", ""),
-                    "stderr": response.payload.get("stderr", ""),
-                },
-                correlation_id=str(packet.packet_id),
-            )
-            return receipt
-        finally:
-            with self._lock:
-                self._pending.pop(packet_id, None)
+        exchange = peer.request(
+            packet_type,
+            payload,
+            response_types=self.RESPONSE_TYPES,
+            timeout=wait_timeout,
+            on_sent=self._log_command_sent,
+        )
+        packet = exchange.request
+        response = exchange.response
+        accepted = bool(response.payload.get("accepted", response.packet_type != "system.error"))
+        message = str(response.payload.get("message", "Orin komutu kabul edildi"))
+        round_trip_ms = exchange.round_trip_ms
+        with self._lock:
+            self._state = replace(self._state, round_trip_ms=round_trip_ms)
+        receipt = OrinCommandReceipt(
+            packet.packet_id,
+            accepted,
+            message,
+            dict(response.payload),
+            round_trip_ms,
+        )
+        execution = str(response.payload.get("execution", "acknowledged"))
+        task = str(
+            response.payload.get("task")
+            or response.payload.get("active_task")
+            or (payload or {}).get("task", "")
+        ).strip().upper()
+        event_action = (
+            "orin.script_completed"
+            if accepted and execution == "completed"
+            else "orin.script_failed"
+            if execution in {"failed", "timeout", "start_failed", "not_configured"}
+            else "orin.command_acknowledged"
+            if accepted
+            else "orin.command_rejected"
+        )
+        event_message = message
+        if event_action == "orin.script_completed":
+            event_message = f"Orin scripti başarıyla tamamlandı: {task or packet.packet_type}"
+        elif event_action == "orin.script_failed":
+            event_message = f"Orin scripti başarısız: {task or packet.packet_type} · {message}"
+        self._event(
+            event_action,
+            event_message,
+            severity="success" if accepted else "danger",
+            details={
+                "packet_id": packet.packet_id,
+                "packet_type": packet.packet_type,
+                "round_trip_ms": round_trip_ms,
+                "task": task,
+                "execution": execution,
+                "exit_code": response.payload.get("exit_code"),
+                "stdout": response.payload.get("stdout", ""),
+                "stderr": response.payload.get("stderr", ""),
+            },
+            correlation_id=str(packet.packet_id),
+        )
+        return receipt
+
+    def _log_command_sent(self, packet: MavlinkApplicationPacket) -> None:
+        self._event(
+            "orin.command_sent",
+            f"Orin komutu gönderildi: {packet.packet_type}",
+            details={"packet_id": packet.packet_id, "packet_type": packet.packet_type},
+            correlation_id=str(packet.packet_id),
+        )
 
     def _create_channel(self) -> MavlinkApplicationChannel:
         return MavlinkApplicationChannel(
@@ -342,20 +337,39 @@ class MavlinkOrinService(OrinService):
             fragment_timeout=max(5.0, self._config.heartbeat_timeout_s),
         )
 
+    def _create_peer(
+        self,
+        channel: MavlinkApplicationChannel,
+    ) -> MavlinkApplicationPeer:
+        timeout = float(self._config.heartbeat_timeout_s)
+        interval = min(3.0, max(0.5, timeout / 3.0))
+        if interval >= timeout:
+            interval = max(0.1, timeout / 2.0)
+        return MavlinkApplicationPeer(
+            channel,
+            role="yki",
+            target_system=self._target_system,
+            target_component=lambda: self._config.component_id,
+            transport_available=lambda: self._vehicle.connected,
+            heartbeat_payload=self._heartbeat_payload,
+            heartbeat_interval=interval,
+            heartbeat_timeout=timeout,
+        )
+
+    def _heartbeat_payload(self) -> dict[str, Any]:
+        return {
+            "role": "yki",
+            "health": "ok",
+            "vehicle_system_id": self._target_system(),
+        }
+
     def _on_packet(self, packet: MavlinkApplicationPacket) -> None:
         if packet.source_system not in {None, 0, self._target_system()}:
             return
         now = datetime.now(UTC)
         payload = packet.payload
         with self._lock:
-            was_alive = self._state.alive
-            self._last_packet_monotonic = time.monotonic()
-            is_heartbeat = packet.packet_type in self.HEARTBEAT_TYPES
-            if is_heartbeat:
-                self._last_heartbeat_monotonic = self._last_packet_monotonic
-            heartbeat_at = (
-                now if is_heartbeat else self._state.last_heartbeat_at
-            )
+            is_liveness = packet.packet_type in MavlinkApplicationPeer.LIVENESS_TYPES
             capabilities_value = payload.get("capabilities", self._state.capabilities)
             capabilities = (
                 tuple(str(item) for item in capabilities_value)
@@ -364,7 +378,7 @@ class MavlinkOrinService(OrinService):
             )
             self._state = replace(
                 self._state,
-                alive=True if is_heartbeat else self._state.alive,
+                alive=True if is_liveness else self._state.alive,
                 endpoint=self._client.endpoint.uri,
                 system_id=int(packet.source_system or self._target_system()),
                 component_id=int(packet.source_component or self._config.component_id),
@@ -373,16 +387,10 @@ class MavlinkOrinService(OrinService):
                 version=str(payload.get("version", self._state.version)),
                 uptime_s=float(payload.get("uptime_s", self._state.uptime_s)),
                 capabilities=capabilities,
-                last_heartbeat_at=heartbeat_at,
+                last_heartbeat_at=now if is_liveness else self._state.last_heartbeat_at,
                 last_packet_at=now,
-                packets_in=self._state.packets_in + 1,
                 last_error="",
             )
-            request_id = self._response_request_id(packet)
-            pending = self._pending.get(request_id) if request_id is not None else None
-            if pending is not None and packet.packet_type in self.RESPONSE_TYPES:
-                pending.response = packet
-                pending.event.set()
             state = replace(self._state)
         self._changed.publish_isolated(state)
         self._received.publish_isolated(
@@ -395,6 +403,41 @@ class MavlinkOrinService(OrinService):
                 now,
             )
         )
+
+    def _on_peer_changed(self, peer_state: MavlinkApplicationPeerState) -> None:
+        heartbeat_at = (
+            datetime.fromtimestamp(peer_state.last_liveness_at, UTC)
+            if peer_state.last_liveness_at is not None
+            else None
+        )
+        packet_at = (
+            datetime.fromtimestamp(peer_state.last_seen_at, UTC)
+            if peer_state.last_seen_at is not None
+            else None
+        )
+        with self._lock:
+            was_alive = self._state.alive
+            self._state = replace(
+                self._state,
+                alive=bool(peer_state.alive and self._vehicle.connected),
+                endpoint=self._client.endpoint.uri,
+                system_id=self._target_system(),
+                health=(
+                    self._state.health
+                    if peer_state.alive and self._state.health not in {"unknown", "offline"}
+                    else "ok"
+                    if peer_state.alive
+                    else "offline"
+                ),
+                last_heartbeat_at=heartbeat_at,
+                last_packet_at=packet_at,
+                round_trip_ms=peer_state.round_trip_ms,
+                packets_in=peer_state.packets_in,
+                packets_out=peer_state.packets_out,
+                last_error="" if peer_state.alive else peer_state.last_error,
+            )
+            state = replace(self._state)
+        self._changed.publish_isolated(state)
         if not was_alive and state.alive:
             self._event(
                 "orin.connected",
@@ -402,14 +445,13 @@ class MavlinkOrinService(OrinService):
                 severity="success",
                 details=state.to_dict(),
             )
-
-    @staticmethod
-    def _response_request_id(packet: MavlinkApplicationPacket) -> int | None:
-        value = packet.payload.get("request_id")
-        try:
-            return int(value) if value is not None else None
-        except (TypeError, ValueError):
-            return None
+        elif was_alive and not state.alive:
+            self._event(
+                "orin.disconnected",
+                state.last_error or "Orin heartbeat alınamıyor",
+                severity="warning",
+                details={"device_id": state.device_id},
+            )
 
     def _on_channel_error(self, error: Exception) -> None:
         with self._lock:
@@ -422,30 +464,19 @@ class MavlinkOrinService(OrinService):
         )
 
     def _on_vehicle_changed(self, state: VehicleConnectionState) -> None:
-        if not state.connected:
-            self._mark_unavailable("Telemetri hattı kapalı")
-            return
         with self._lock:
             self._state = replace(
                 self._state,
                 endpoint=state.endpoint,
                 system_id=state.system_id,
             )
+            peer = self._peer
+        if peer is not None:
+            peer.refresh_transport()
+        if not state.connected:
+            self._mark_unavailable("Telemetri hattı kapalı")
+            return
         self._publish()
-
-    def _watch_health(self) -> None:
-        while not self._watchdog_stop.wait(0.5):
-            with self._lock:
-                alive = self._state.alive
-                age = time.monotonic() - self._last_heartbeat_monotonic
-                timeout = self._config.heartbeat_timeout_s
-            if alive and (not self._vehicle.connected or age > timeout):
-                reason = (
-                    "Telemetri hattı kapalı"
-                    if not self._vehicle.connected
-                    else f"Orin heartbeat {age:.1f} saniyedir alınmıyor"
-                )
-                self._mark_unavailable(reason)
 
     def _mark_unavailable(self, reason: str) -> None:
         with self._lock:
