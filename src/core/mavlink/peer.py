@@ -75,7 +75,7 @@ class MavlinkApplicationPeer(Service):
         target_component: TargetValue = 0,
         transport_available: Callable[[], bool] | None = None,
         heartbeat_payload: PayloadFactory | None = None,
-        heartbeat_interval: float = 3.0,
+        heartbeat_interval: float = 1.0,
         heartbeat_timeout: float = 12.0,
     ) -> None:
         normalized_role = str(role).strip().lower()

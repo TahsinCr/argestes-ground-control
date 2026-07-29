@@ -342,7 +342,7 @@ class MavlinkOrinService(OrinService):
         channel: MavlinkApplicationChannel,
     ) -> MavlinkApplicationPeer:
         timeout = float(self._config.heartbeat_timeout_s)
-        interval = min(3.0, max(0.5, timeout / 3.0))
+        interval = min(1.0, max(0.25, timeout / 3.0))
         if interval >= timeout:
             interval = max(0.1, timeout / 2.0)
         return MavlinkApplicationPeer(
