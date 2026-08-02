@@ -1,3 +1,4 @@
+[![Python 3.11+][python-shield]][python-url]
 [![Contributors][contributors-shield]][contributors-url]
 [![Forks][forks-shield]][forks-url]
 [![Stargazers][stars-shield]][stars-url]
@@ -435,6 +436,7 @@ telif kaydı ise [COPYRIGHT](COPYRIGHT) dosyasındadır.
 
 <!-- Badge images -->
 
+[python-shield]: https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white
 [contributors-shield]: https://img.shields.io/github/contributors/Kirlangic-Team/ground-control-station.svg?style=for-the-badge
 [forks-shield]: https://img.shields.io/github/forks/Kirlangic-Team/ground-control-station.svg?style=for-the-badge
 [stars-shield]: https://img.shields.io/github/stars/Kirlangic-Team/ground-control-station.svg?style=for-the-badge
@@ -443,6 +445,7 @@ telif kaydı ise [COPYRIGHT](COPYRIGHT) dosyasındadır.
 
 <!-- Project links -->
 
+[python-url]: https://docs.python.org/3.11/
 [contributors-url]: https://github.com/Kirlangic-Team/ground-control-station/graphs/contributors
 [forks-url]: https://github.com/Kirlangic-Team/ground-control-station/network/members
 [stars-url]: https://github.com/Kirlangic-Team/ground-control-station/stargazers
