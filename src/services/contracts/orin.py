@@ -1,11 +1,24 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from src.core.abstracts import Service
-from src.core.events import EventStream
-from src.models.orin import OrinCommandReceipt, OrinConnectionState, OrinLinkConfig, OrinMessage
+from src.core.events import EventStream, Subscription
+from src.models.orin import (
+    OrinCommandReceipt,
+    OrinConnectionState,
+    OrinLinkConfig,
+    OrinLogRecord,
+    OrinMessage,
+)
+
+
+OrinMessageHandler = Callable[
+    [OrinMessage],
+    Mapping[str, Any] | None,
+]
 
 
 class OrinService(Service):
@@ -29,6 +42,10 @@ class OrinService(Service):
 
     @property
     @abstractmethod
+    def remote_logs(self) -> EventStream[OrinLogRecord]: ...
+
+    @property
+    @abstractmethod
     def running(self) -> bool: ...
 
     @abstractmethod
@@ -39,6 +56,14 @@ class OrinService(Service):
         """Send an immediate liveness probe over the shared MAVLink link."""
 
     @abstractmethod
+    def send(
+        self,
+        packet_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> OrinMessage:
+        """Send a notification to the onboard application."""
+
+    @abstractmethod
     def issue(
         self,
         packet_type: str,
@@ -46,3 +71,11 @@ class OrinService(Service):
         *,
         timeout: float | None = None,
     ) -> OrinCommandReceipt: ...
+
+    @abstractmethod
+    def register_handler(
+        self,
+        packet_type: str,
+        handler: OrinMessageHandler,
+    ) -> Subscription:
+        """Register a handler for requests initiated by the onboard side."""

@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from src.services.runtime import RuntimeServices, create_runtime_services
+from src.services.runtime import RuntimeServices
 from src.ui.adapters.services import (
     QtCommandService,
     QtConnectionControlService,
@@ -112,24 +112,9 @@ class QtRuntimeServices:
 
 
 def create_qt_runtime_services(base_dir: Path) -> QtRuntimeServices:
-    backend = create_runtime_services(base_dir)
-    runtime = QtRuntimeServices(
-        backend=backend,
-        log_service=QtLoggingService(backend.log_service),
-        settings_service=QtSettingsService(backend.settings_service),
-        telemetry_service=QtTelemetryService(backend.telemetry_service),
-        planner_service=QtPlannerService(backend.planner_service),
-        command_service=QtCommandService(backend.command_service),
-        parameter_service=QtParameterService(backend.parameter_service),
-        video_service=QtVideoService(
-            backend.video_service,
-            mock_mode=(
-                backend.settings_service.current.backend.mock_mode
-                or backend.settings_service.current.backend.video_source_type == "mock"
-            ),
-        ),
-        tile_cache_service=QtTileCacheService(backend.tile_cache_service),
-        connection_service=QtConnectionControlService(backend.connection_service),
-    )
-    runtime.telemetry_service.telemetry_updated.connect(runtime.video_service.consume_snapshot)
-    return runtime
+    from src.container import create_container
+    from src.ui.container import UiContainer
+
+    backend = create_container(base_dir)
+    ui = UiContainer(backend.container, base_dir=base_dir)
+    return ui.resolve(QtRuntimeServices)

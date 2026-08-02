@@ -21,6 +21,8 @@ class MavlinkUnavailableError(RuntimeError):
 class MavlinkConnection(Service):
     """Own a pymavlink connection and provide thread-safe I/O access."""
 
+    UDP_DISCOVERY_INTERVAL_S = 1.0
+
     def __init__(
         self,
         endpoint: MavlinkEndpoint,
@@ -101,15 +103,44 @@ class MavlinkConnection(Service):
         """Wait for the autopilot without accepting companion or GCS heartbeats."""
         deadline = time.monotonic() + self.endpoint.heartbeat_timeout
         classifier = getattr(connection, "probably_vehicle_heartbeat", None)
+        requires_probe = self.endpoint.uri.lower().startswith("udpout:")
+        next_probe = 0.0
         while True:
-            remaining = deadline - time.monotonic()
+            now = time.monotonic()
+            remaining = deadline - now
             if remaining <= 0:
                 raise TimeoutError("MAVLink uçuş cihazı heartbeat zaman aşımı")
-            heartbeat = connection.wait_heartbeat(timeout=remaining)
+
+            if requires_probe and now >= next_probe:
+                self._send_discovery_heartbeat(connection)
+                next_probe = now + self.UDP_DISCOVERY_INTERVAL_S
+
+            wait_timeout = remaining
+            if requires_probe:
+                wait_timeout = min(
+                    remaining,
+                    max(0.01, next_probe - time.monotonic()),
+                )
+            heartbeat = connection.wait_heartbeat(timeout=wait_timeout)
             if heartbeat is None:
+                if requires_probe:
+                    continue
                 raise TimeoutError("MAVLink uçuş cihazı heartbeat zaman aşımı")
             if not callable(classifier) or classifier(heartbeat):
                 return heartbeat
+
+    def _send_discovery_heartbeat(self, connection: Any) -> None:
+        """Advertise the GCS endpoint so a UDP server can route telemetry back."""
+
+        mavlink = self._load_mavutil().mavlink
+        connection.mav.heartbeat_send(
+            mavlink.MAV_TYPE_GCS,
+            mavlink.MAV_AUTOPILOT_INVALID,
+            0,
+            0,
+            mavlink.MAV_STATE_ACTIVE,
+        )
+        self._sent_messages += 1
 
     def reconnect(self) -> None:
         self.stop()

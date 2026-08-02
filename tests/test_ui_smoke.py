@@ -13,12 +13,15 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
+from src.container import create_container
+from src.services.runtime import RuntimeServices
+from src.ui.adapters.runtime import QtRuntimeServices
+from src.ui.container import UiContainer
 from src.models.commands import CommandRequest, CommandResult
 from src.models.connections import ConnectionStatus
 from src.models.mission import MapOverlay
 from src.models.telemetry import TelemetrySnapshot
 from src.models.video import VideoStreamStats
-from src.ui.adapters.runtime import create_qt_runtime_services
 from src.ui.i18n import t
 from src.ui.themes.manager import apply_theme
 from src.ui.views.main_window import MainWindow
@@ -35,28 +38,25 @@ class UiSmokeTests(unittest.TestCase):
     def test_main_window_starts_with_the_new_backend_adapters(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base_dir = Path(directory)
-            runtime = create_qt_runtime_services(base_dir)
-            theme = apply_theme(self.app, runtime.settings_service.current.theme)
-            window = MainWindow(
-                log_service=runtime.log_service,
-                settings_service=runtime.settings_service,
-                telemetry_service=runtime.telemetry_service,
-                planner_service=runtime.planner_service,
-                command_service=runtime.command_service,
-                parameter_service=runtime.parameter_service,
-                video_service=runtime.video_service,
-                connection_service=runtime.connection_service,
-                tile_cache_service=runtime.tile_cache_service,
-                archive_service=runtime.archive_service,
+            backend_container = create_container(base_dir)
+            backend = backend_container.resolve(RuntimeServices)
+            theme = apply_theme(self.app, backend.settings_service.current.theme)
+            ui_container = UiContainer(
+                backend_container.container,
                 base_dir=ROOT,
                 theme=theme,
             )
+            runtime = ui_container.resolve(QtRuntimeServices)
+            window = ui_container.resolve(MainWindow)
             window.show()
             runtime.start()
-            for _attempt in range(20):
-                if window.map_panel._js_ready:
+            for _attempt in range(40):
+                if window.map_panel._js_ready and backend._started:
                     break
                 QTest.qWait(100)
+            # Drain the startup telemetry snapshot before asserting manual map
+            # updates so a queued disconnected state cannot win the test race.
+            QTest.qWait(runtime.telemetry_service._UI_FRAME_INTERVAL_MS + 10)
             self.assertTrue(window.isVisible())
             self.assertFalse(window.windowIcon().isNull())
             self.assertEqual(

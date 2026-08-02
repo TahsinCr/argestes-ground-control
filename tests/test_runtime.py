@@ -5,6 +5,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from src.container import VehicleStack
+from src.core.mavlink import MavlinkClient
+from src.models.orin import OrinLogRecord
+from src.services.battery_alarm import BatteryAlarmService
 from src.models.mission import MapOverlay
 from src.services.planner import PlannerService
 from src.services.runtime import create_runtime_services
@@ -12,9 +16,62 @@ from src.services.tile_cache import TileCacheServer
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_orin_remote_logs_enter_the_central_log_history(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = create_runtime_services(Path(directory))
+            runtime.orin_service.remote_logs.publish(
+                OrinLogRecord(
+                    1,
+                    "MISSION",
+                    "mission.transition",
+                    "Target lock mission entered running state",
+                    "success",
+                    details={
+                        "mission_id": "target.lock",
+                        "previous": "starting",
+                        "current": "running",
+                    },
+                    correlation_id="target.lock:1",
+                )
+            )
+
+            entry = runtime.log_service.history[-1]
+            self.assertEqual(entry.source, "ORIN")
+            self.assertEqual(entry.severity, "success")
+            self.assertEqual(
+                entry.action,
+                "orin.remote.mission.transition",
+            )
+            self.assertIn("[MISSION]", entry.message)
+            self.assertEqual(entry.details["remote_sequence"], 1)
+            self.assertEqual(entry.details["mission_id"], "target.lock")
+            self.assertEqual(entry.details["remote_session"], "")
+
+    def test_vehicle_services_share_one_mavlink_client(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = create_runtime_services(Path(directory))
+            stack = runtime.container.resolve(VehicleStack)
+            client = runtime.container.resolve(MavlinkClient)
+
+            self.assertIs(client, stack.client)
+            self.assertIs(runtime.vehicle_service, stack.vehicle)
+            self.assertIs(runtime.telemetry_service, stack.telemetry)
+            self.assertIs(runtime.parameter_service, stack.parameters)
+            self.assertIs(runtime.orin_service, stack.orin)
+            self.assertIs(runtime.vehicle_service._client, client)
+            self.assertIs(runtime.orin_service._client, client)
+
     def test_video_start_respects_saved_auto_connect(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             runtime = create_runtime_services(Path(directory))
+            self.assertIs(
+                runtime.container.resolve(type(runtime)),
+                runtime,
+            )
+            self.assertIsInstance(
+                runtime.container.resolve(BatteryAlarmService),
+                BatteryAlarmService,
+            )
             with patch.object(runtime.video_service, "start") as start:
                 runtime.start()
                 start.assert_not_called()

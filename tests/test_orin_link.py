@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,15 +10,21 @@ from types import SimpleNamespace
 
 from src.core.events import EventStream
 from src.core.mavlink import (
+    MavlinkApplicationAssembler,
+    MavlinkApplicationCodec,
+    MavlinkApplicationDispatcher,
     MavlinkApplicationPeer,
     MavlinkApplicationPacket,
     MavlinkApplicationResponse,
     MavlinkConnection,
     MavlinkEndpoint,
+    MavlinkRemoteLogBatch,
+    MavlinkRemoteLogLevel,
+    MavlinkRemoteLogRecord,
 )
 from src.models.commands import CommandRequest
 from src.models.competition import CompetitionConnectionState
-from src.models.orin import OrinCommandReceipt, OrinConnectionState
+from src.models.orin import OrinCommandReceipt, OrinConnectionState, OrinLogRecord
 from src.models.vehicle import VehicleConnectionState
 from src.services.logging_service import LoggingService
 from src.services.vehicle.orin import configured_orin_commands
@@ -31,6 +38,125 @@ from src.services.video import MutableVideoService
 
 
 class OrinLinkTests(unittest.TestCase):
+    def test_remote_log_batch_roundtrips_structured_records(self) -> None:
+        batch = MavlinkRemoteLogBatch(
+            "orin-test-session",
+            (
+                MavlinkRemoteLogRecord(
+                    1,
+                    "MISSION",
+                    "mission.transition",
+                    "Target lock mission started",
+                    MavlinkRemoteLogLevel.SUCCESS,
+                    details={
+                        "mission_id": "target.lock",
+                        "generation": 2,
+                    },
+                    correlation_id="target.lock:2",
+                ),
+            ),
+        )
+
+        decoded = MavlinkRemoteLogBatch.from_payload(batch.to_payload())
+
+        self.assertEqual(decoded.session_id, "orin-test-session")
+        self.assertEqual(decoded.records[0].source, "MISSION")
+        self.assertEqual(decoded.records[0].level, MavlinkRemoteLogLevel.SUCCESS)
+        self.assertEqual(
+            decoded.records[0].details["mission_id"],
+            "target.lock",
+        )
+
+    def test_orin_service_deduplicates_acknowledged_remote_logs(self) -> None:
+        vehicle = SimpleNamespace(
+            connected=True,
+            state=VehicleConnectionState(True, "COM3", 1, 1),
+            connection_changed=EventStream(),
+        )
+        client = SimpleNamespace(
+            endpoint=SimpleNamespace(
+                uri="COM3",
+                source_system=255,
+                source_component=0,
+            ),
+            connection=SimpleNamespace(target_system=1),
+        )
+        service = MavlinkOrinService(client, vehicle)  # type: ignore[arg-type]
+        received: list[OrinLogRecord] = []
+        service.remote_logs.subscribe(received.append)
+        batch = MavlinkRemoteLogBatch(
+            "orin-dedupe-session",
+            (
+                MavlinkRemoteLogRecord(
+                    7,
+                    "CAMERA",
+                    "camera.connected",
+                    "Camera connected",
+                ),
+                MavlinkRemoteLogRecord(
+                    8,
+                    "MISSION",
+                    "mission.running",
+                    "Mission is running",
+                ),
+            ),
+        )
+        packet = MavlinkApplicationPacket("logs.push", batch.to_payload())
+
+        first = service._handle_remote_logs(packet)
+        duplicate = service._handle_remote_logs(packet)
+
+        self.assertEqual(first["received"], 2)
+        self.assertEqual(duplicate["received"], 0)
+        self.assertEqual(duplicate["duplicates"], 2)
+        self.assertEqual([record.sequence for record in received], [7, 8])
+        self.assertEqual(received[0].session_id, "orin-dedupe-session")
+
+    def test_orin_service_only_advances_log_cursor_after_delivery(self) -> None:
+        vehicle = SimpleNamespace(
+            connected=True,
+            state=VehicleConnectionState(True, "COM3", 1, 1),
+            connection_changed=EventStream(),
+        )
+        client = SimpleNamespace(
+            endpoint=SimpleNamespace(
+                uri="COM3",
+                source_system=255,
+                source_component=0,
+            ),
+            connection=SimpleNamespace(target_system=1),
+        )
+        service = MavlinkOrinService(client, vehicle)  # type: ignore[arg-type]
+        failures = 1
+
+        def persist(record: OrinLogRecord) -> None:
+            nonlocal failures
+            if failures:
+                failures -= 1
+                raise OSError("simulated log storage failure")
+
+        service.remote_logs.subscribe(persist)
+        batch = MavlinkRemoteLogBatch(
+            "orin-retry-session",
+            (
+                MavlinkRemoteLogRecord(
+                    1,
+                    "MISSION",
+                    "mission.failed",
+                    "Mission failed",
+                    MavlinkRemoteLogLevel.ERROR,
+                ),
+            ),
+        )
+        packet = MavlinkApplicationPacket("logs.push", batch.to_payload())
+
+        with self.assertRaises(OSError):
+            service._handle_remote_logs(packet)
+        retried = service._handle_remote_logs(packet)
+
+        self.assertEqual(retried["received"], 1)
+        self.assertEqual(retried["duplicates"], 0)
+
     def test_application_peer_probes_and_correlates_responses(self) -> None:
         class Channel:
             def __init__(self) -> None:
@@ -53,11 +179,13 @@ class OrinLinkTests(unittest.TestCase):
                 packet_id=None,
                 target_system=None,
                 target_component=None,
+                expects_response=False,
             ):
                 packet = MavlinkApplicationPacket(
                     packet_type,
                     payload or {},
                     packet_id or 1,
+                    expects_response=expects_response,
                 )
                 channel_self.sent.append(
                     (packet, int(target_system or 0), int(target_component or 0))
@@ -115,9 +243,177 @@ class OrinLinkTests(unittest.TestCase):
             self.assertEqual(pong.payload["request_id"], 77)
             self.assertTrue(peer.alive)
             self.assertGreaterEqual(peer.state.packets_in, 2)
-            self.assertGreaterEqual(peer.state.packets_out, 4)
+            self.assertGreaterEqual(peer.state.packets_out, 3)
         finally:
             peer.stop()
+
+    def test_application_codec_preserves_request_semantics(self) -> None:
+        packet = MavlinkApplicationPacket(
+            "camera.capture",
+            {"quality": 90},
+            expects_response=True,
+        )
+        assembler = MavlinkApplicationAssembler()
+        decoded = None
+        for fragment in reversed(MavlinkApplicationCodec.encode(packet)):
+            decoded = assembler.accept(
+                fragment,
+                source_system=1,
+                source_component=191,
+            ) or decoded
+        self.assertIsNotNone(decoded)
+        assert decoded is not None
+        self.assertTrue(decoded.expects_response)
+        self.assertEqual(decoded.packet_type, "camera.capture")
+        self.assertEqual(decoded.payload, {"quality": 90})
+
+    def test_dispatcher_routes_commands_and_correlates_acknowledgements(self) -> None:
+        class Peer:
+            def __init__(self) -> None:
+                self.packets = EventStream()
+                self.sent: list[tuple[MavlinkApplicationPacket, int, int]] = []
+
+            def send(
+                peer_self,
+                packet_type,
+                payload=None,
+                *,
+                target_system=None,
+                target_component=None,
+            ):
+                packet = MavlinkApplicationPacket(packet_type, payload or {})
+                peer_self.sent.append(
+                    (packet, int(target_system or 0), int(target_component or 0))
+                )
+                return packet
+
+        peer = Peer()
+        dispatcher = MavlinkApplicationDispatcher(peer)  # type: ignore[arg-type]
+        handled = threading.Event()
+        dispatcher.register(
+            "camera.capture",
+            lambda packet: (
+                handled.set(),
+                {"frame_id": packet.payload["frame_id"]},
+            )[1],
+        )
+        dispatcher.start()
+        try:
+            peer.packets.publish(
+                MavlinkApplicationPacket(
+                    "camera.capture",
+                    {"frame_id": 27},
+                    packet_id=81,
+                    source_system=1,
+                    source_component=191,
+                    expects_response=True,
+                )
+            )
+            self.assertTrue(handled.wait(0.5))
+            deadline = datetime.now(UTC).timestamp() + 0.5
+            while not peer.sent and datetime.now(UTC).timestamp() < deadline:
+                threading.Event().wait(0.01)
+            response, target_system, target_component = peer.sent[-1]
+            self.assertEqual(response.packet_type, "system.ack")
+            self.assertEqual(response.payload["request_id"], 81)
+            self.assertEqual(response.payload["frame_id"], 27)
+            self.assertEqual((target_system, target_component), (1, 191))
+        finally:
+            dispatcher.stop()
+
+    def test_shared_application_protocol_supports_requests_in_both_directions(self) -> None:
+        class LinkedChannel:
+            def __init__(self, system_id: int, component_id: int) -> None:
+                self.system_id = system_id
+                self.component_id = component_id
+                self.packets = EventStream()
+                self.errors = EventStream()
+                self.remote = None
+
+            def start(self) -> None:
+                return
+
+            def stop(self) -> None:
+                return
+
+            def send(
+                channel_self,
+                packet_type,
+                payload=None,
+                *,
+                packet_id=None,
+                target_system=None,
+                target_component=None,
+                expects_response=False,
+            ):
+                del target_system, target_component
+                packet = MavlinkApplicationPacket(
+                    packet_type,
+                    payload or {},
+                    packet_id or 1,
+                    source_system=channel_self.system_id,
+                    source_component=channel_self.component_id,
+                    expects_response=expects_response,
+                )
+                channel_self.remote.packets.publish(packet)
+                return packet
+
+        yki_channel = LinkedChannel(255, 0)
+        orin_channel = LinkedChannel(1, 191)
+        yki_channel.remote = orin_channel
+        orin_channel.remote = yki_channel
+        yki_peer = MavlinkApplicationPeer(  # type: ignore[arg-type]
+            yki_channel,
+            role="yki",
+            target_system=1,
+            target_component=191,
+            heartbeat_interval=60.0,
+            heartbeat_timeout=120.0,
+        )
+        orin_peer = MavlinkApplicationPeer(  # type: ignore[arg-type]
+            orin_channel,
+            role="orin",
+            target_system=255,
+            target_component=0,
+            heartbeat_interval=60.0,
+            heartbeat_timeout=120.0,
+        )
+        yki_dispatcher = MavlinkApplicationDispatcher(yki_peer)
+        orin_dispatcher = MavlinkApplicationDispatcher(orin_peer)
+        orin_dispatcher.register(
+            "camera.capture",
+            lambda packet: {"frame_id": packet.payload["frame_id"]},
+        )
+        yki_dispatcher.register(
+            "operator.confirm",
+            lambda packet: {"confirmed": packet.payload["question"] == "continue"},
+        )
+        yki_dispatcher.start()
+        orin_dispatcher.start()
+        yki_peer.start()
+        orin_peer.start()
+        try:
+            onboard_response = yki_peer.request(
+                "camera.capture",
+                {"frame_id": 27},
+                response_types=frozenset({"system.ack", "system.error"}),
+                timeout=0.5,
+            )
+            gcs_response = orin_peer.request(
+                "operator.confirm",
+                {"question": "continue"},
+                response_types=frozenset({"system.ack", "system.error"}),
+                timeout=0.5,
+            )
+            self.assertEqual(onboard_response.response.payload["frame_id"], 27)
+            self.assertTrue(gcs_response.response.payload["confirmed"])
+            self.assertEqual(onboard_response.response.source_component, 191)
+            self.assertEqual(gcs_response.response.source_system, 255)
+        finally:
+            yki_dispatcher.stop()
+            orin_dispatcher.stop()
+            yki_peer.stop()
+            orin_peer.stop()
 
     def test_yki_reads_configured_orin_command_names(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

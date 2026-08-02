@@ -12,7 +12,7 @@ from src.models.parameters import Parameter
 from src.services.contracts.commands import CommandService
 from src.services.contracts.competition import CompetitionService
 from src.services.planner import PlannerService
-from src.services.contracts.orin import OrinService
+from src.services.contracts.orin import OrinMessageHandler, OrinService
 from src.services.contracts.parameters import ParameterService
 from src.services.contracts.telemetry import TelemetryService
 from src.services.contracts.settings import SettingsRepository
@@ -67,8 +67,18 @@ class BackendFacade:
     def issue_orin(self, packet_type: str, payload: dict | None = None):
         return self.orin.issue(packet_type, payload or {})
 
+    def send_orin(self, packet_type: str, payload: dict | None = None):
+        return self.orin.send(packet_type, payload or {})
+
     def subscribe_orin(self, callback: Callable[[OrinMessage], None]):
         return self.orin.received.subscribe(callback)
+
+    def handle_orin(
+        self,
+        packet_type: str,
+        handler: OrinMessageHandler,
+    ):
+        return self.orin.register_handler(packet_type, handler)
 
     def upsert_mission_item(self, item: MapOverlay) -> None:
         self.planner.upsert_overlay(item)

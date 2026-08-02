@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         connection_service,
         tile_cache_service,
         archive_service: MissionArchiveService,
+        battery_alarm_service: BatteryAlarmService,
         base_dir: Path,
         theme: ThemePalette,
     ) -> None:
@@ -74,11 +75,7 @@ class MainWindow(QMainWindow):
         self.theme = theme
         self.language = settings_service.current.language
         self.ui_log = log_service.child("UI")
-        self.battery_log = log_service.child("BATTERY")
-        self.battery_alarm_service = BatteryAlarmService(
-            self.battery_log,
-            self._request_battery_failsafe,
-        )
+        self.battery_alarm_service = battery_alarm_service
         self.archive_service = archive_service
         self._last_warning_signature = ""
         self._last_snapshot = telemetry_service.current
@@ -357,16 +354,6 @@ class MainWindow(QMainWindow):
                     "normal_arm_error": result.message,
                 },
             )
-
-    def _request_battery_failsafe(self, mode: str) -> object:
-        return self.command_service.issue_command(
-            "APPLY_MODE",
-            {
-                "mode": mode,
-                "battery_failsafe": True,
-            },
-            source="battery-failsafe",
-        )
 
     def _confirm_force_arm(self, result) -> bool:
         dialog = QMessageBox(self)

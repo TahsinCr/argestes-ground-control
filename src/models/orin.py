@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+import time
+from types import MappingProxyType
 from typing import Any
 
 from src.core.abstracts import Model
@@ -83,3 +85,51 @@ class OrinMessage(Model):
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class OrinLogRecord(Model):
+    """Transport-neutral onboard log exposed to YKİ application services."""
+
+    sequence: int
+    source: str
+    action: str
+    message: str
+    level: str
+    emitted_at: float = field(default_factory=time.time)
+    details: dict[str, Any] = field(default_factory=dict)
+    device_id: str | None = None
+    correlation_id: str | None = None
+    session_id: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "sequence", int(self.sequence))
+        object.__setattr__(self, "source", str(self.source).strip().upper())
+        object.__setattr__(self, "action", str(self.action).strip().lower())
+        object.__setattr__(self, "message", str(self.message).strip())
+        object.__setattr__(self, "level", str(self.level).strip().lower())
+        object.__setattr__(self, "emitted_at", float(self.emitted_at))
+        object.__setattr__(self, "session_id", str(self.session_id).strip())
+        object.__setattr__(
+            self,
+            "details",
+            MappingProxyType(dict(self.details)),
+        )
+
+    @property
+    def yki_severity(self) -> str:
+        return "danger" if self.level in {"error", "critical"} else self.level
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sequence": self.sequence,
+            "source": self.source,
+            "action": self.action,
+            "message": self.message,
+            "level": self.level,
+            "emitted_at": self.emitted_at,
+            "details": dict(self.details),
+            "device_id": self.device_id,
+            "correlation_id": self.correlation_id,
+            "session_id": self.session_id,
+        }

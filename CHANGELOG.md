@@ -1,6 +1,89 @@
 # **Change Log**
 All notable changes to this project will be documented in this file.
 
+## **[1.2-beta] - 02.08.2026**
+The **"Unified Onboard Integration Beta"** release. This update establishes a
+single, extensible MAVLink application path between YKİ, the flight controller
+and the onboard computer, and moves application construction to explicit,
+testable dependency containers.
+
+### Added
+* **Dependency Composition Roots**:
+    * Added a reusable dependency container with singleton, transient and
+      scoped lifetimes, constructor injection, explicit providers, priorities,
+      child scopes, warmup and deterministic disposal.
+    * Split YKİ registrations into infrastructure, vehicle, application and UI
+      modules while retaining the existing service contracts and runtime
+      lifecycle.
+    * Added a backend application container and a UI child container so Qt
+      consumes injected backend services without constructing them itself.
+* **Extensible MAVLink Application Dispatch**:
+    * Added a bounded application-message dispatcher and handler registry for
+      future bidirectional Orin commands without adding protocol-specific
+      branches to the vehicle service.
+    * Added success/error response envelopes, request correlation, queue
+      backpressure and isolated handler execution.
+    * Added transport-safe structured remote-log records and bounded batches
+      with protocol validation, sequencing and payload-size limits.
+* **Reusable Mission Foundation**:
+    * Added project-independent mission descriptors, lifecycle phases,
+      priority bands, resource conflicts, prerequisites, queue policies,
+      retries, chains, checkpoints, progress and structured mission events to
+      the shared core.
+
+### Updated
+* **Shared Orin Link**:
+    * Routed YKİ-to-Orin commands, acknowledgements and future application
+      packets through the existing vehicle `MavlinkClient`; no second serial
+      connection or competing MAVLink reader is opened.
+    * Added application-level heartbeat, ping/pong, timeout, latency, packet
+      counters and request/response correlation.
+    * Increased Orin liveness probing to once per second while preserving the
+      configurable health timeout.
+    * Made Orin reconnect and disconnect manage only the application channel,
+      leaving flight telemetry active.
+* **Onboard Log Ingestion**:
+    * Added handler registration and acknowledged `logs.push` ingestion with
+      per-session sequence de-duplication.
+    * Forwarded structured Orin records into the normal YKİ logging service so
+      they are persisted and displayed through the existing log pipeline.
+* **Runtime Construction**:
+    * Replaced the monolithic manual service assembly in `runtime.py` with
+      dependency modules while preserving service startup/shutdown ordering,
+      settings propagation and the backend facade.
+    * Injected battery policy and UI adapters through the composition roots
+      instead of constructing backend behavior inside the main window.
+
+### Fixed
+* **UDP Output Discovery**:
+    * Fixed `udpout:` connections timing out when a MAVLink UDP server waits
+      for the GCS to advertise its return address before streaming telemetry.
+    * Sent a standard GCS heartbeat immediately and at most once per second
+      during connection discovery, while still requiring a real vehicle
+      heartbeat before reporting success.
+    * Kept serial, TCP, `udp` and `udpin` connection behavior unchanged and
+      avoided additional sockets or background threads.
+* **Orin State Reporting**:
+    * Removed transport-only assumptions from Orin health reporting and tied
+      connection state to real application-peer liveness and vehicle-link
+      availability.
+    * Prevented stale or unrelated system/component packets from being
+      accepted as a healthy onboard application response.
+
+### Testing
+* **Integration and Regression Coverage**:
+    * Added dependency lifecycle, container composition, Orin request routing,
+      handler dispatch, remote-log acknowledgement/de-duplication and Qt
+      injection coverage.
+    * Added UDP discovery tests proving that `udpout` advertises the GCS before
+      waiting and passive transports do not emit discovery traffic.
+    * Verified the complete YKİ suite with **169 passing tests**.
+    * Verified a real ArduRover UDP endpoint connects through the production
+      YKİ connection class and supplies live `SYS_STATUS` telemetry.
+
+<br>
+
+
 ## **[1.1-beta] - 28.07.2026**
 The **"Reliable Mission Workflow Beta"** release. This update improves mission
 editing history, prioritizes operator-initiated MAVLink transfers and removes

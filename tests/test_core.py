@@ -6,7 +6,11 @@ import unittest
 from abc import ABC
 
 from src.core.abstracts import Model, Service
-from src.core.dependency import CircularDependencyError, DependencyContainer
+from src.core.dependency import (
+    BaseDependencyContainer,
+    CircularDependencyError,
+    DependencyContainer,
+)
 from src.core.events import EventStream
 from src.core.mavlink.router import MavlinkMessageRouter
 from src.models.geometry import Point
@@ -84,6 +88,15 @@ class CoreTests(unittest.TestCase):
         root.transient("b", lambda a: a, dependencies={"a": "a"})
         with self.assertRaises(CircularDependencyError):
             root.resolve("a")
+
+    def test_application_containers_configure_their_dependency_graph(self) -> None:
+        class ValueContainer(BaseDependencyContainer):
+            def configure(self) -> None:
+                self.singleton(str, factory=lambda: "shared")
+
+        container = ValueContainer(set_as_default=False)
+        self.assertEqual(container.resolve(str), "shared")
+        self.assertIs(container.resolve(str), container.resolve(str))
 
     def test_point_distance_and_bearing(self) -> None:
         ankara = Point(39.9334, 32.8597)

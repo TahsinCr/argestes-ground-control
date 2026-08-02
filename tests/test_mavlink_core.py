@@ -156,6 +156,48 @@ class MavlinkCoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "baud ayrı"):
             MavlinkEndpoint(uri="tcp:127.0.0.1:115200")
 
+    def test_udpout_advertises_gcs_endpoint_before_waiting_for_vehicle(self) -> None:
+        raw = _RawConnection()
+        mavlink = SimpleNamespace(
+            MAV_TYPE_GCS=6,
+            MAV_AUTOPILOT_INVALID=8,
+            MAV_STATE_ACTIVE=4,
+        )
+        connection = MavlinkConnection(
+            MavlinkEndpoint(
+                uri="udpout:192.168.1.30:14550",
+                heartbeat_timeout=0.1,
+            ),
+            connection_factory=lambda _endpoint: raw,
+            mavutil_module=SimpleNamespace(mavlink=mavlink),
+        )
+
+        connection.start()
+
+        method, arguments, keywords = raw.mav.calls[0]
+        self.assertEqual(method, "heartbeat_send")
+        self.assertEqual(arguments, (6, 8, 0, 0, 4))
+        self.assertEqual(keywords, {})
+        self.assertEqual(connection.sent_messages, 1)
+        connection.stop()
+
+    def test_passive_transports_do_not_send_discovery_heartbeat(self) -> None:
+        raw = _RawConnection()
+        connection = MavlinkConnection(
+            MavlinkEndpoint(
+                uri="udpin:0.0.0.0:14550",
+                heartbeat_timeout=0.1,
+            ),
+            connection_factory=lambda _endpoint: raw,
+            mavutil_module=_Mavutil,
+        )
+
+        connection.start()
+
+        self.assertEqual(raw.mav.calls, [])
+        self.assertEqual(connection.sent_messages, 0)
+        connection.stop()
+
     def test_async_channel_reuses_router_and_drops_oldest_when_full(self) -> None:
         async def scenario() -> None:
             raw = _RawConnection()

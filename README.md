@@ -466,7 +466,7 @@ generation, map history, video auto-connect, high-rate telemetry and video
 coalescing, splitter behavior, frameless resizing and offscreen Qt startup.
 The 1.0-beta release preparation suite contains 152 tests.
 
-Release history is maintained in [CHANGELOG.md](CHANGELOG.md).
+Release history is maintained in the [changelog][changelog-url].
 
 ## License
 
@@ -493,4 +493,5 @@ copyright notice.
 [stars-url]: https://github.com/Kirlangic-Team/ground-control-station/stargazers
 [issues-url]: https://github.com/Kirlangic-Team/ground-control-station/issues
 [license-url]: https://github.com/Kirlangic-Team/ground-control-station/blob/main/LICENSE
+[changelog-url]: https://github.com/Kirlangic-Team/ground-control-station/blob/main/CHANGELOG.md
 [lang-tr-url]: https://github.com/Kirlangic-Team/ground-control-station/blob/main/README-TR.md

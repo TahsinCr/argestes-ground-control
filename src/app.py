@@ -18,8 +18,11 @@ _sanitize_graphics_environment()
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
 
+from src.container import create_container
+from src.services.runtime import RuntimeServices
 from src.ui.assets import application_icon
-from src.ui.adapters.runtime import create_qt_runtime_services
+from src.ui.adapters.runtime import QtRuntimeServices
+from src.ui.container import UiContainer
 from src.ui.i18n import t
 from src.ui.themes.manager import apply_theme
 from src.ui.views.main_window import MainWindow
@@ -32,26 +35,19 @@ def run() -> int:
 
     base_dir = Path(__file__).resolve().parent.parent
     app.setWindowIcon(application_icon(base_dir))
-    runtime = create_qt_runtime_services(base_dir)
+    backend_container = create_container(base_dir)
+    backend_runtime = backend_container.resolve(RuntimeServices)
     app.setApplicationName(
-        t("app.title", runtime.settings_service.current.language)
+        t("app.title", backend_runtime.settings_service.current.language)
     )
-    theme = apply_theme(app, runtime.settings_service.current.theme)
-
-    window = MainWindow(
-        log_service=runtime.log_service,
-        settings_service=runtime.settings_service,
-        telemetry_service=runtime.telemetry_service,
-        planner_service=runtime.planner_service,
-        command_service=runtime.command_service,
-        parameter_service=runtime.parameter_service,
-        video_service=runtime.video_service,
-        connection_service=runtime.connection_service,
-        tile_cache_service=runtime.tile_cache_service,
-        archive_service=runtime.archive_service,
+    theme = apply_theme(app, backend_runtime.settings_service.current.ui.theme)
+    ui_container = UiContainer(
+        backend_container.container,
         base_dir=base_dir,
         theme=theme,
     )
+    runtime = ui_container.resolve(QtRuntimeServices)
+    window = ui_container.resolve(MainWindow)
     window.show()
 
     shutdown_signal = threading.Event()

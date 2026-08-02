@@ -421,7 +421,7 @@ pipeline üretimini, yüksek hızlı telemetri/video birleştirmesini, ayırıc�
 çerçevesiz pencere boyutlandırmasını ve offscreen Qt açılışını kapsar.
 1.0-beta sürüm hazırlığı paketi 152 test içerir.
 
-Sürüm geçmişi [CHANGELOG.md](CHANGELOG.md) dosyasında tutulur.
+Sürüm geçmişi [değişiklik günlüğünde][changelog-url] tutulur.
 
 ## Lisans
 
@@ -448,4 +448,5 @@ telif kaydı ise [COPYRIGHT](COPYRIGHT) dosyasındadır.
 [stars-url]: https://github.com/Kirlangic-Team/ground-control-station/stargazers
 [issues-url]: https://github.com/Kirlangic-Team/ground-control-station/issues
 [license-url]: https://github.com/Kirlangic-Team/ground-control-station/blob/main/LICENSE
+[changelog-url]: https://github.com/Kirlangic-Team/ground-control-station/blob/main/CHANGELOG.md
 [lang-en-url]: https://github.com/Kirlangic-Team/ground-control-station/blob/main/README.md

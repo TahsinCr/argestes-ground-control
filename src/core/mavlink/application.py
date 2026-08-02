@@ -46,6 +46,7 @@ class MavlinkApplicationPacket:
     sent_at: float = field(default_factory=time.time)
     source_system: int | None = None
     source_component: int | None = None
+    expects_response: bool = False
 
     def __post_init__(self) -> None:
         normalized_type = self.packet_type.strip().lower()
@@ -57,6 +58,7 @@ class MavlinkApplicationPacket:
         object.__setattr__(self, "payload", dict(self.payload))
         object.__setattr__(self, "packet_id", int(self.packet_id))
         object.__setattr__(self, "sent_at", float(self.sent_at))
+        object.__setattr__(self, "expects_response", bool(self.expects_response))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -66,6 +68,7 @@ class MavlinkApplicationPacket:
             "sent_at": self.sent_at,
             "source_system": self.source_system,
             "source_component": self.source_component,
+            "expects_response": self.expects_response,
         }
 
 
@@ -100,6 +103,7 @@ class MavlinkApplicationCodec:
                     "type": packet.packet_type,
                     "payload": packet.payload,
                     "sent_at": packet.sent_at,
+                    "reply": packet.expects_response,
                 },
                 ensure_ascii=False,
                 allow_nan=False,
@@ -186,6 +190,7 @@ class MavlinkApplicationCodec:
             float(decoded.get("sent_at", 0.0)),
             source_system,
             source_component,
+            bool(decoded.get("reply", False)),
         )
 
 
@@ -345,11 +350,13 @@ class MavlinkApplicationChannel(Service):
         packet_id: int | None = None,
         target_system: int | None = None,
         target_component: int | None = None,
+        expects_response: bool = False,
     ) -> MavlinkApplicationPacket:
         packet = MavlinkApplicationPacket(
             packet_type,
             dict(payload or {}),
             packet_id if packet_id is not None else (secrets.randbits(32) or 1),
+            expects_response=expects_response,
         )
         system = self.target_system if target_system is None else int(target_system)
         component = self.target_component if target_component is None else int(target_component)

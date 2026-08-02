@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections import OrderedDict
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,19 +11,25 @@ from typing import Any
 from src.core.events import EventStream, Subscription
 from src.core.mavlink import (
     MavlinkApplicationChannel,
+    MavlinkApplicationDispatcher,
+    MavlinkApplicationHandlerRegistry,
     MavlinkApplicationPacket,
     MavlinkApplicationPeer,
     MavlinkApplicationPeerState,
     MavlinkClient,
+    MavlinkRemoteLogBatch,
+    MavlinkRemoteLogRecord,
+    REMOTE_LOG_PACKET_TYPE,
 )
 from src.models.orin import (
     OrinCommandReceipt,
     OrinConnectionState,
     OrinLinkConfig,
+    OrinLogRecord,
     OrinMessage,
 )
 from src.models.vehicle import VehicleConnectionState
-from src.services.contracts.orin import OrinService
+from src.services.contracts.orin import OrinMessageHandler, OrinService
 from src.services.contracts.vehicle import VehicleService
 from src.services.logging_service import ServiceLogger
 
@@ -70,6 +77,7 @@ class NullOrinService(OrinService):
         self._state = OrinConnectionState()
         self._changed = EventStream[OrinConnectionState]()
         self._received = EventStream[OrinMessage]()
+        self._remote_logs = EventStream[OrinLogRecord]()
 
     @property
     def connected(self) -> bool:
@@ -87,6 +95,10 @@ class NullOrinService(OrinService):
     def received(self) -> EventStream[OrinMessage]:
         return self._received
 
+    @property
+    def remote_logs(self) -> EventStream[OrinLogRecord]:
+        return self._remote_logs
+
     def start(self) -> None:
         return
 
@@ -103,9 +115,21 @@ class NullOrinService(OrinService):
     def probe(self) -> int:
         raise ConnectionError("Orin MAVLink uygulama kanalı hazır değil")
 
+    def send(self, packet_type: str, payload=None) -> OrinMessage:
+        del packet_type, payload
+        raise ConnectionError("Orin MAVLink uygulama kanalı hazır değil")
+
     def issue(self, packet_type: str, payload=None, *, timeout=None) -> OrinCommandReceipt:
         del packet_type, payload, timeout
         raise ConnectionError("Orin MAVLink uygulama kanalı hazır değil")
+
+    def register_handler(
+        self,
+        packet_type: str,
+        handler: OrinMessageHandler,
+    ) -> Subscription:
+        del packet_type, handler
+        return Subscription(lambda: None)
 
 
 class MavlinkOrinService(OrinService):
@@ -126,12 +150,20 @@ class MavlinkOrinService(OrinService):
         self._logger = logger
         self._changed = EventStream[OrinConnectionState]()
         self._received = EventStream[OrinMessage]()
+        self._remote_logs = EventStream[OrinLogRecord]()
         self._state = OrinConnectionState(
             endpoint=client.endpoint.uri,
             component_id=self._config.component_id,
         )
         self._channel: MavlinkApplicationChannel | None = None
         self._peer: MavlinkApplicationPeer | None = None
+        self._handlers = MavlinkApplicationHandlerRegistry()
+        self._remote_log_sessions: OrderedDict[str, int] = OrderedDict()
+        self._remote_log_handler = self._handlers.register(
+            REMOTE_LOG_PACKET_TYPE,
+            self._handle_remote_logs,
+        )
+        self._dispatcher: MavlinkApplicationDispatcher | None = None
         self._subscriptions: list[Subscription] = []
         self._lock = threading.RLock()
         self._started = False
@@ -153,6 +185,10 @@ class MavlinkOrinService(OrinService):
     @property
     def received(self) -> EventStream[OrinMessage]:
         return self._received
+
+    @property
+    def remote_logs(self) -> EventStream[OrinLogRecord]:
+        return self._remote_logs
 
     @property
     def running(self) -> bool:
@@ -181,24 +217,34 @@ class MavlinkOrinService(OrinService):
             channel = self._channel
             self._peer = self._create_peer(channel)
             peer = self._peer
+            self._dispatcher = MavlinkApplicationDispatcher(
+                peer,
+                handlers=self._handlers,
+                thread_name="YkiOrinDispatch",
+            )
+            dispatcher = self._dispatcher
             self._started = True
         self._subscriptions.extend(
             [
                 peer.packets.subscribe(self._on_packet),
                 peer.changed.subscribe(self._on_peer_changed),
                 peer.errors.subscribe(self._on_channel_error),
+                dispatcher.errors.subscribe(self._on_channel_error),
                 self._vehicle.connection_changed.subscribe(self._on_vehicle_changed),
             ]
         )
         try:
+            dispatcher.start()
             peer.start()
         except Exception:
+            dispatcher.stop()
             for subscription in self._subscriptions:
                 subscription.cancel()
             self._subscriptions.clear()
             with self._lock:
                 self._channel = None
                 self._peer = None
+                self._dispatcher = None
                 self._started = False
             raise
         self._publish()
@@ -212,9 +258,13 @@ class MavlinkOrinService(OrinService):
             self._channel = None
             peer = self._peer
             self._peer = None
+            dispatcher = self._dispatcher
+            self._dispatcher = None
         for subscription in self._subscriptions:
             subscription.cancel()
         self._subscriptions.clear()
+        if dispatcher is not None:
+            dispatcher.stop()
         if peer is not None:
             peer.stop()
         elif channel is not None:
@@ -239,6 +289,23 @@ class MavlinkOrinService(OrinService):
             correlation_id=str(packet.packet_id),
         )
         return packet.packet_id
+
+    def send(
+        self,
+        packet_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> OrinMessage:
+        """Send an unacknowledged event through the shared vehicle transport."""
+
+        if not self._vehicle.connected:
+            raise ConnectionError("Telemetri hattı bağlı değil; Orin'e veri gönderilemez")
+        if not self.connected:
+            raise ConnectionError("Orin heartbeat alınmıyor; veri gönderilmedi")
+        with self._lock:
+            peer = self._peer
+        if peer is None:
+            raise ConnectionError("Orin uygulama kanalı çalışmıyor")
+        return self._message(peer.send(packet_type, payload))
 
     def issue(
         self,
@@ -317,6 +384,61 @@ class MavlinkOrinService(OrinService):
         )
         return receipt
 
+    def register_handler(
+        self,
+        packet_type: str,
+        handler: OrinMessageHandler,
+    ) -> Subscription:
+        """Handle future Orin-to-YKİ commands without changing this service."""
+
+        return self._handlers.register(
+            packet_type,
+            lambda packet: handler(self._message(packet)),
+        )
+
+    def _handle_remote_logs(
+        self,
+        packet: MavlinkApplicationPacket,
+    ) -> dict[str, Any]:
+        """Validate, de-duplicate and acknowledge one onboard log batch."""
+
+        batch = MavlinkRemoteLogBatch.from_payload(packet.payload)
+        with self._lock:
+            last_sequence = self._remote_log_sessions.get(batch.session_id, 0)
+        received = 0
+        duplicates = 0
+        for record in batch.records:
+            if record.sequence <= last_sequence:
+                duplicates += 1
+                continue
+            self._remote_logs.publish(
+                OrinLogRecord(
+                    sequence=record.sequence,
+                    source=record.source,
+                    action=record.action,
+                    message=record.message,
+                    level=record.level.value,
+                    emitted_at=record.emitted_at,
+                    details=dict(record.details),
+                    device_id=record.device_id,
+                    correlation_id=record.correlation_id,
+                    session_id=batch.session_id,
+                )
+            )
+            last_sequence = record.sequence
+            received += 1
+            with self._lock:
+                self._remote_log_sessions[batch.session_id] = last_sequence
+                self._remote_log_sessions.move_to_end(batch.session_id)
+                while len(self._remote_log_sessions) > 8:
+                    self._remote_log_sessions.popitem(last=False)
+        return {
+            "session": batch.session_id,
+            "received": received,
+            "duplicates": duplicates,
+            "last_sequence": last_sequence,
+        }
+
     def _log_command_sent(self, packet: MavlinkApplicationPacket) -> None:
         self._event(
             "orin.command_sent",
@@ -361,6 +483,11 @@ class MavlinkOrinService(OrinService):
             "role": "yki",
             "health": "ok",
             "vehicle_system_id": self._target_system(),
+            "capabilities": [
+                "application.notify",
+                "application.request",
+                *self._handlers.packet_types,
+            ],
         }
 
     def _on_packet(self, packet: MavlinkApplicationPacket) -> None:
@@ -394,14 +521,7 @@ class MavlinkOrinService(OrinService):
             state = replace(self._state)
         self._changed.publish_isolated(state)
         self._received.publish_isolated(
-            OrinMessage(
-                packet.packet_type,
-                packet.payload,
-                packet.packet_id,
-                int(packet.source_system or 0),
-                int(packet.source_component or 0),
-                now,
-            )
+            self._message(packet, received_at=now)
         )
 
     def _on_peer_changed(self, peer_state: MavlinkApplicationPeerState) -> None:
@@ -507,6 +627,21 @@ class MavlinkOrinService(OrinService):
             return int(self._client.connection.target_system)
         except ConnectionError:
             return 1
+
+    @staticmethod
+    def _message(
+        packet: MavlinkApplicationPacket,
+        *,
+        received_at: datetime | None = None,
+    ) -> OrinMessage:
+        return OrinMessage(
+            packet.packet_type,
+            packet.payload,
+            packet.packet_id,
+            int(packet.source_system or 0),
+            int(packet.source_component or 0),
+            received_at,
+        )
 
     def _publish(self) -> None:
         self._changed.publish_isolated(self.state)

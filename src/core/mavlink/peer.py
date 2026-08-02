@@ -201,6 +201,7 @@ class MavlinkApplicationPeer(Service):
         packet_id: int | None = None,
         target_system: int | None = None,
         target_component: int | None = None,
+        expects_response: bool = False,
     ) -> MavlinkApplicationPacket:
         with self._lock:
             if not self._state.running:
@@ -223,6 +224,7 @@ class MavlinkApplicationPeer(Service):
                 if target_component is None
                 else int(target_component)
             ),
+            expects_response=expects_response,
         )
         with self._lock:
             last_error = self._state.last_error
@@ -271,6 +273,7 @@ class MavlinkApplicationPeer(Service):
                 packet_id=packet_id,
                 target_system=target_system,
                 target_component=target_component,
+                expects_response=True,
             )
             if on_sent is not None:
                 try:
@@ -296,20 +299,18 @@ class MavlinkApplicationPeer(Service):
                 self._pending.pop(packet_id, None)
 
     def probe(self) -> MavlinkApplicationPacket:
-        """Send the local heartbeat and an active peer-liveness probe."""
+        """Send one status-bearing liveness probe and measure its round trip."""
 
-        heartbeat_payload = dict(self._payload())
-        heartbeat_payload.setdefault("role", self._role)
-        heartbeat_payload.setdefault("health", "ok")
-        self.send("system.heartbeat", heartbeat_payload)
-
+        probe_payload = dict(self._payload())
+        probe_payload.setdefault("role", self._role)
+        probe_payload.setdefault("health", "ok")
         probe_id = self._reserve_packet_id()
         with self._lock:
             self._probes[probe_id] = time.monotonic()
         try:
             return self.send(
                 "system.ping",
-                {"role": self._role},
+                probe_payload,
                 packet_id=probe_id,
             )
         except Exception:
