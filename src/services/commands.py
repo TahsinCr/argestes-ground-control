@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterable
 
-from src.core.events import EventStream
+from src.core.events import EventBus
 from src.models.commands import CommandRequest, CommandResult
 from src.models.mission import MapOverlay
 from src.services.contracts.commands import CommandService
 from src.services.contracts.orin import OrinService
+from src.services.contracts.onboard import OnboardMissionServiceContract
 from src.services.contracts.parameters import ParameterService
 from src.services.contracts.vehicle import VehicleService
 from src.services.logging_service import ServiceLogger
@@ -35,12 +37,14 @@ class DispatchCommandService(CommandService):
         parameters: ParameterService,
         logger: ServiceLogger | None = None,
         orin: OrinService | None = None,
+        onboard: OnboardMissionServiceContract | None = None,
         configured_orin_tasks: Iterable[str] = (),
     ) -> None:
         self._vehicle = vehicle
         self._parameters = parameters
         self._logger = logger
         self._orin = orin
+        self._onboard = onboard
         configured = tuple(
             dict.fromkeys(
                 str(task).strip().upper()
@@ -52,22 +56,30 @@ class DispatchCommandService(CommandService):
         self._available_tasks = self._DEFAULT_TASKS + tuple(
             task for task in configured if task not in self._DEFAULT_TASKS
         )
-        self._dispatched = EventStream[CommandRequest]()
-        self._completed = EventStream[CommandResult]()
+        self._dispatched = EventBus[CommandRequest]()
+        self._completed = EventBus[CommandResult]()
+        # MAVLink command transactions share one router and acknowledgements.
+        # Serializing operator commands prevents concurrent waits from racing
+        # for the same COMMAND_ACK or HEARTBEAT response.
+        self._dispatch_lock = threading.Lock()
 
     @property
     def available_tasks(self) -> tuple[str, ...]:
         return self._available_tasks
 
     @property
-    def dispatched(self) -> EventStream[CommandRequest]:
+    def dispatched(self) -> EventBus[CommandRequest]:
         return self._dispatched
 
     @property
-    def completed(self) -> EventStream[CommandResult]:
+    def completed(self) -> EventBus[CommandResult]:
         return self._completed
 
     def dispatch(self, request: CommandRequest) -> CommandResult:
+        with self._dispatch_lock:
+            return self._dispatch_serial(request)
+
+    def _dispatch_serial(self, request: CommandRequest) -> CommandResult:
         self._dispatched.publish(request)
         request_details = self._request_log_details(request)
         try:
@@ -135,6 +147,23 @@ class DispatchCommandService(CommandService):
         return result
 
     def _execute(self, request: CommandRequest) -> tuple[bool, dict[str, object]]:
+        if request.code in {"ONBOARD_TASK_STOP", "ONBOARD_TASK_CANCEL"}:
+            if self._onboard is None:
+                raise ConnectionError("Onboard görev servisi kullanılamıyor")
+            task = str(request.parameters.get("task", "kamikaze.execute"))
+            receipt = (
+                self._onboard.stop_task(task)
+                if request.code == "ONBOARD_TASK_STOP"
+                else self._onboard.cancel_task(task)
+            )
+            if not receipt.accepted:
+                raise RuntimeError(receipt.message)
+            return True, {
+                "task": task,
+                "target": "orin",
+                "request_id": receipt.request_id,
+                "orin_execution": receipt.response.get("execution", "acknowledged"),
+            }
         if request.code == "APPLY_MODE":
             mode = str(request.parameters.get("mode", "")).strip().upper()
             if not mode:
@@ -210,6 +239,20 @@ class DispatchCommandService(CommandService):
         request: CommandRequest,
     ) -> tuple[bool, dict[str, object]]:
         assert self._orin is not None
+        if self._onboard is not None and task == "KAMIKAZE":
+            receipt = self._onboard.start_task(task, source=request.source)
+            if not receipt.accepted:
+                raise RuntimeError(receipt.message)
+            return True, {
+                "task": task,
+                "target": "orin",
+                "request_id": receipt.request_id,
+                "round_trip_ms": receipt.round_trip_ms,
+                "orin_execution": receipt.response.get("execution", "acknowledged"),
+                "waiting_for_mode": bool(receipt.response.get("waiting_for_mode", False)),
+                "mission_id": receipt.response.get("mission_id"),
+                "orin_response": receipt.response,
+            }
         parameters = {
             key: value
             for key, value in request.parameters.items()

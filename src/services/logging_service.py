@@ -8,7 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from src.core.events import EventStream
+from src.core.events import EventBus
 from src.models.logs import LogEntry
 from src.services.contracts.logging import LogService
 
@@ -80,7 +80,7 @@ class LoggingService(LogService):
             raise ValueError("max_entries pozitif olmalı")
         if max_file_bytes <= 0 or backup_count < 0:
             raise ValueError("Log dosyası limitleri geçersiz")
-        self._entries = EventStream[LogEntry]()
+        self._entries = EventBus[LogEntry]()
         self._history: list[LogEntry] = []
         self._max_entries = max_entries
         self._lock = threading.RLock()
@@ -91,7 +91,7 @@ class LoggingService(LogService):
             self._log_path.parent.mkdir(parents=True, exist_ok=True)
 
     @property
-    def entries(self) -> EventStream[LogEntry]:
+    def entries(self) -> EventBus[LogEntry]:
         return self._entries
 
     @property
@@ -129,13 +129,19 @@ class LoggingService(LogService):
         )
 
     def emit_entry(self, entry: LogEntry) -> None:
-        snapshot = replace(entry, details=dict(entry.details))
+        self.emit_entries((entry,))
+
+    def emit_entries(self, entries: tuple[LogEntry, ...] | list[LogEntry]) -> None:
+        snapshots = tuple(replace(entry, details=dict(entry.details)) for entry in entries)
+        if not snapshots:
+            return
         with self._lock:
-            self._history.append(snapshot)
+            self._history.extend(snapshots)
             if len(self._history) > self._max_entries:
                 del self._history[: len(self._history) - self._max_entries]
-            self._persist(snapshot)
-        self._entries.publish(replace(snapshot, details=dict(snapshot.details)))
+            self._persist_many(snapshots)
+        for snapshot in snapshots:
+            self._entries.publish(replace(snapshot, details=dict(snapshot.details)))
 
     def reemit_history(self) -> None:
         for entry in self.history:
@@ -160,10 +166,16 @@ class LoggingService(LogService):
                 return
 
     def _persist(self, entry: LogEntry) -> None:
+        self._persist_many((entry,))
+
+    def _persist_many(self, entries: tuple[LogEntry, ...]) -> None:
         if self._log_path is None:
             return
-        payload = json.dumps(entry.to_dict(), ensure_ascii=False, default=str, separators=(",", ":"))
-        encoded_size = len(payload.encode("utf-8")) + 1
+        payloads = tuple(
+            json.dumps(entry.to_dict(), ensure_ascii=False, default=str, separators=(",", ":"))
+            for entry in entries
+        )
+        encoded_size = sum(len(payload.encode("utf-8")) + 1 for payload in payloads)
         if self._log_path.exists() and self._log_path.stat().st_size + encoded_size > self._max_file_bytes:
             self._rotate_files()
         # Closing the handle makes each record immediately visible while the
@@ -173,7 +185,7 @@ class LoggingService(LogService):
         # flush() once to provide the durability boundary without an idle
         # writer thread or periodic UI stalls.
         with self._log_path.open("a", encoding="utf-8") as handle:
-            handle.write(payload)
+            handle.write("\n".join(payloads))
             handle.write("\n")
 
     def _rotate_files(self) -> None:

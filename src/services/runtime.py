@@ -14,6 +14,7 @@ from src.services.contracts.commands import CommandService
 from src.services.contracts.competition import CompetitionService
 from src.services.contracts.connections import ConnectionControlService
 from src.services.contracts.orin import OrinService
+from src.services.contracts.onboard import OnboardMissionServiceContract
 from src.services.contracts.parameters import ParameterService
 from src.services.contracts.telemetry import TelemetryService
 from src.services.contracts.vehicle import VehicleService
@@ -35,6 +36,7 @@ class RuntimeServices:
     telemetry_service: TelemetryService
     planner_service: PlannerService
     orin_service: OrinService
+    onboard_service: OnboardMissionServiceContract
     command_service: CommandService
     parameter_service: ParameterService
     video_service: VideoService
@@ -65,15 +67,18 @@ class RuntimeServices:
             self.settings_service.changed.subscribe(self._apply_settings)
         )
         self._subscriptions.append(
-            self.orin_service.remote_logs.subscribe(self._ingest_orin_log)
+            self.orin_service.remote_log_batches.subscribe(self._ingest_orin_logs)
         )
 
-    def _ingest_orin_log(self, record: OrinLogRecord) -> None:
+    def _ingest_orin_logs(self, records: tuple[OrinLogRecord, ...]) -> None:
+        self.log_service.emit_entries([self._orin_log_entry(record) for record in records])
+
+    def _orin_log_entry(self, record: OrinLogRecord) -> LogEntry:
         try:
             timestamp = datetime.fromtimestamp(record.emitted_at, UTC)
         except (OverflowError, OSError, ValueError):
             timestamp = datetime.now(UTC)
-        details = dict(record.details)
+        details = self._redact_remote_details(dict(record.details))
         details.update(
             {
                 "remote_source": record.source,
@@ -82,8 +87,7 @@ class RuntimeServices:
                 "remote_session": record.session_id,
             }
         )
-        self.log_service.emit_entry(
-            LogEntry(
+        return LogEntry(
                 source="ORIN",
                 message=f"[{record.source}] {record.message}",
                 severity=record.yki_severity,
@@ -92,8 +96,19 @@ class RuntimeServices:
                 device_id=record.device_id or self.orin_service.state.device_id,
                 correlation_id=record.correlation_id,
                 timestamp=timestamp,
-            )
         )
+
+    @classmethod
+    def _redact_remote_details(cls, value):
+        sensitive = {"password", "passwd", "token", "secret", "api_key", "authorization"}
+        if isinstance(value, dict):
+            return {
+                str(key): "***" if str(key).lower() in sensitive else cls._redact_remote_details(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [cls._redact_remote_details(item) for item in value]
+        return value
 
     def _apply_settings(self, updated) -> None:
         self.planner_service.set_default_radii(updated.backend.mission.radii)
@@ -206,6 +221,7 @@ class RuntimeServices:
             ("telemetry", self.telemetry_service),
             ("competition", self.competition_service),
             ("parameters", self.parameter_service),
+            ("onboard", self.onboard_service),
             ("orin", self.orin_service),
             ("connections", self.connection_service),
         )
@@ -215,6 +231,7 @@ class RuntimeServices:
             ("connections", self.connection_service),
             ("competition", self.competition_service),
             ("parameters", self.parameter_service),
+            ("onboard", self.onboard_service),
             ("orin", self.orin_service),
             ("telemetry", self.telemetry_service),
             ("vehicle", self.vehicle_service),

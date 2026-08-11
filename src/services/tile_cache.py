@@ -12,7 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
 
-from src.core.events import EventStream
+from src.core.events import EventBus
 from src.services.contracts.tile_cache import TileCacheService
 from src.services.storage import ensure_directory
 
@@ -128,7 +128,7 @@ class TileCacheServer(TileCacheService):
         parent: object | None = None,
     ) -> None:
         del parent
-        self._cache_changed = EventStream[int]()
+        self._cache_changed = EventBus[int]()
         self._cache_path = Path(cache_path)
         self._enabled = enabled
         self._limit_mb = limit_mb
@@ -143,7 +143,7 @@ class TileCacheServer(TileCacheService):
         self._load_from_disk()
 
     @property
-    def cache_changed(self) -> EventStream[int]:
+    def cache_changed(self) -> EventBus[int]:
         return self._cache_changed
 
     @property

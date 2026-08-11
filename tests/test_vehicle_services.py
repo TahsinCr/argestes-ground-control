@@ -9,16 +9,20 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from src.core.events import EventStream, Subscription
+from src.core.events import EventBus, Subscription
 from src.models.commands import CommandRequest
 from src.models.mission import MapOverlay, MissionState
 from src.models.parameters import Parameter
+from src.models.settings import BatteryTelemetrySettings
 from src.models.telemetry import TelemetrySnapshot
 from src.models.vehicle import VehicleConnectionState, VehicleTransportStats
 from src.services.logging_service import LoggingService
+from src.services.settings import SettingsService
 from src.services.commands import DispatchCommandService
 from src.services.vehicle.parameters import MutableParameterService
 from src.services.vehicle.parameters import VehicleParameterService
+from src.services.vehicle.parameter_defaults import decode_parameter_defaults
+from src.services.vehicle.battery import VoltageBatteryEstimator
 from src.services.vehicle.telemetry import TelemetryDecoder, VehicleTelemetryService
 from src.services.contracts.vehicle import MissionTransferInterrupted
 from src.services.vehicle.mavlink import MavlinkVehicleService
@@ -35,7 +39,7 @@ class _FakeVehicle:
     def __init__(self, *, connected: bool = True) -> None:
         self.connected = connected
         self.state = VehicleConnectionState(connected, "test", 1, 1)
-        self.connection_changed = EventStream[VehicleConnectionState]()
+        self.connection_changed = EventBus[VehicleConnectionState]()
         self.subscriptions: dict[str, list] = {}
         self.parameter_requests = 0
         self.parameter_writes: list[tuple[str, object, int | None]] = []
@@ -49,7 +53,7 @@ class _FakeVehicle:
         types = (message_types,) if isinstance(message_types, str) else tuple(message_types)
         for message_type in types:
             self.subscriptions.setdefault(message_type, []).append(callback)
-        return Subscription(lambda: None)
+        return Subscription(0, lambda: None)
 
     def request_parameters(self) -> None:
         self.parameter_requests += 1
@@ -243,7 +247,7 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(snapshot.mission_total, 5)
 
     def test_telemetry_decoder_exposes_battery_baro_and_body_axis_acceleration(self) -> None:
-        decoder = TelemetryDecoder()
+        decoder = TelemetryDecoder(BatteryTelemetrySettings(mode="autopilot"))
         snapshot = decoder.apply(
             TelemetrySnapshot.zero(),
             _Message(
@@ -285,6 +289,93 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertAlmostEqual(snapshot.acceleration_z_mps2 or 0.0, 9.80665)
         self.assertIsNotNone(snapshot.load_factor_g)
 
+    def test_voltage_only_battery_uses_filtered_voltage_and_ignores_current(self) -> None:
+        decoder = TelemetryDecoder()
+        snapshot = TelemetrySnapshot.zero().copy(
+            battery_current_amps=42.0,
+            battery_consumed_mah=900,
+        )
+
+        snapshot = decoder.apply(
+            snapshot,
+            _Message(
+                message_type="SYS_STATUS",
+                load=300,
+                battery_remaining=88,
+                voltage_battery=14_800,
+                current_battery=2_400,
+            ),
+        )
+
+        self.assertEqual(snapshot.battery_percent, 10)
+        self.assertAlmostEqual(snapshot.battery_voltage, 14.8)
+        self.assertIsNone(snapshot.battery_current_amps)
+        self.assertIsNone(snapshot.battery_consumed_mah)
+
+    def test_voltage_estimator_rejects_transient_motor_sag(self) -> None:
+        settings = BatteryTelemetrySettings()
+        estimator = VoltageBatteryEstimator(settings)
+        initial = estimator.update(16.2, sample_at=0.0)
+        self.assertIsNotNone(initial)
+
+        # One severe sample cannot move a seven-sample rolling median.
+        sag = estimator.update(14.2, sample_at=0.5)
+        self.assertIsNotNone(sag)
+        self.assertAlmostEqual(sag.filtered_voltage, 16.2)
+
+        # A sustained lower voltage is followed gradually, never as an
+        # instantaneous percentage collapse.
+        sustained = sag
+        for index in range(2, 12):
+            sustained = estimator.update(14.8, sample_at=index * 0.5)
+        self.assertIsNotNone(sustained)
+        self.assertGreater(sustained.filtered_voltage, 14.8)
+        self.assertLess(sustained.filtered_voltage, 16.2)
+
+        before_recovery = sustained.filtered_voltage
+        for index in range(12, 20):
+            recovered = estimator.update(16.2, sample_at=index * 0.5)
+        self.assertGreater(recovered.filtered_voltage, before_recovery)
+
+    def test_vehicle_telemetry_applies_changed_battery_profile_without_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = SettingsService(Path(directory))
+            vehicle = _FakeVehicle()
+            telemetry = VehicleTelemetryService(
+                vehicle,  # type: ignore[arg-type]
+                settings_service=settings,
+            )
+            telemetry.start()
+            vehicle.publish(
+                _Message(
+                    message_type="SYS_STATUS",
+                    load=200,
+                    battery_remaining=90,
+                    voltage_battery=14_800,
+                    current_battery=1_500,
+                )
+            )
+            self.assertEqual(telemetry.current.battery_percent, 10)
+
+            changed = settings.current.with_value(
+                "backend.battery_telemetry.reserve_percent",
+                20.0,
+            )
+            settings.save(changed)
+            vehicle.publish(
+                _Message(
+                    message_type="SYS_STATUS",
+                    load=200,
+                    battery_remaining=90,
+                    voltage_battery=14_800,
+                    current_battery=1_500,
+                )
+            )
+
+            self.assertEqual(telemetry.current.battery_percent, 20)
+            self.assertIsNone(telemetry.current.battery_current_amps)
+            telemetry.stop()
+
     def test_radio_status_uses_both_rf_margins_and_tx_buffer_for_link_health(self) -> None:
         snapshot = TelemetryDecoder().apply(
             TelemetrySnapshot.zero(),
@@ -295,6 +386,8 @@ class VehicleServiceTests(unittest.TestCase):
                 remrssi=135,
                 remnoise=100,
                 txbuf=91,
+                rxerrors=7,
+                fixed=3,
             ),
         )
         self.assertEqual(snapshot.link_quality_source, "rf")
@@ -302,6 +395,8 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertLessEqual(snapshot.link_quality, 65)
         self.assertEqual(snapshot.radio_local_rssi, 150)
         self.assertEqual(snapshot.radio_remote_rssi, 135)
+        self.assertEqual(snapshot.radio_rx_errors, 7)
+        self.assertEqual(snapshot.radio_fixed_packets, 3)
         self.assertIsNotNone(snapshot.link_quality_received_at)
         self.assertTrue(snapshot.has_fresh_link_quality(5))
 
@@ -326,6 +421,8 @@ class VehicleServiceTests(unittest.TestCase):
         telemetry.stop()
         self.assertEqual(snapshot.link_quality, 97)
         self.assertEqual(snapshot.link_quality_source, "mavlink_packets")
+        self.assertEqual(snapshot.packet_delivery_percent, 97)
+        self.assertEqual(snapshot.estimated_dropped_packets, 4)
         self.assertEqual(snapshot.packets_in, 128)
         self.assertEqual(snapshot.packets_out, 7)
 
@@ -548,6 +645,123 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(vehicle.parameter_requests, 2)
         self.assertEqual(logs.history[-1].action, "parameter.sync_failed")
 
+    def test_parameter_sync_timeout_tracks_stream_progress(self) -> None:
+        vehicle = _FakeVehicle()
+        service = VehicleParameterService(
+            vehicle,  # type: ignore[arg-type]
+            write_timeout=1.0,
+            max_refresh_attempts=2,
+        )
+        service.start()
+        vehicle.publish(
+            _Message(
+                message_type="PARAM_VALUE",
+                param_id=b"FIRST\x00",
+                param_value=1.0,
+                param_count=3,
+                param_index=0,
+                param_type=9,
+            )
+        )
+
+        service._check_refresh_timeout()
+
+        self.assertEqual(vehicle.parameter_requests, 1)
+        self.assertTrue(service._loading)
+        self.assertEqual(service._refresh_attempt, 1)
+        service.stop()
+
+    def test_parameter_catalogue_is_published_in_streaming_batches(self) -> None:
+        vehicle = _FakeVehicle()
+        service = VehicleParameterService(vehicle)  # type: ignore[arg-type]
+        service.PROGRESS_BATCH_SIZE = 2
+        service.start()
+
+        for index in range(2):
+            vehicle.publish(
+                _Message(
+                    message_type="PARAM_VALUE",
+                    param_id=f"PARAM_{index}".encode("ascii"),
+                    param_value=float(index),
+                    param_count=3,
+                    param_index=index,
+                    param_type=9,
+                )
+            )
+
+        self.assertTrue(service._loading)
+        self.assertEqual(len(service.current), 2)
+        vehicle.publish(
+            _Message(
+                message_type="PARAM_VALUE",
+                param_id=b"PARAM_2",
+                param_value=2.0,
+                param_count=3,
+                param_index=2,
+                param_type=9,
+            )
+        )
+        self.assertFalse(service._loading)
+        self.assertEqual(len(service.current), 3)
+        service.stop()
+
+    def test_parameter_defaults_enrich_completed_vehicle_catalogue(self) -> None:
+        vehicle = _FakeVehicle()
+        loaded = threading.Event()
+
+        def load_defaults() -> dict[str, object]:
+            loaded.set()
+            return {"ARSPD_FBW_MIN": 12.0}
+
+        service = VehicleParameterService(
+            vehicle,  # type: ignore[arg-type]
+            default_loader=load_defaults,
+        )
+        service.start()
+        vehicle.publish(
+            _Message(
+                message_type="PARAM_VALUE",
+                param_id=b"ARSPD_FBW_MIN",
+                param_value=17.0,
+                param_count=1,
+                param_index=0,
+                param_type=9,
+            )
+        )
+
+        self.assertTrue(loaded.wait(1.0))
+        deadline = time.monotonic() + 1.0
+        while service.current[0].default_value is None and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertEqual(service.current[0].default_value, 12.0)
+        service.stop()
+
+    def test_packed_parameter_defaults_decoder_uses_compiled_defaults(self) -> None:
+        import struct
+
+        packed = bytearray(struct.pack("<HHH", 0x671C, 2, 2))
+        packed.extend(struct.pack("<BB", 0x14, 0x20))
+        packed.extend(b"FOO")
+        packed.extend(struct.pack("<ff", 17.0, 12.0))
+        packed.extend(struct.pack("<BB", 0x04, 0x23))
+        packed.extend(b"BAR")
+        packed.extend(struct.pack("<f", 8.0))
+
+        defaults = decode_parameter_defaults(bytes(packed))
+
+        self.assertEqual(defaults["FOO"], 12.0)
+        self.assertEqual(defaults["FOOBAR"], 8.0)
+
+    def test_identical_parameter_echo_does_not_republish_catalogue(self) -> None:
+        parameter = Parameter("UNCHANGED", 4.0, "-", "vehicle", "")
+        service = MutableParameterService([parameter])
+        published: list[tuple[Parameter, ...]] = []
+        service.changed.subscribe(published.append)
+
+        service.upsert(parameter)
+
+        self.assertEqual(published, [])
+
     def test_application_specific_vehicle_command_can_be_injected(self) -> None:
         received: list[CommandRequest] = []
         client = SimpleNamespace(endpoint=SimpleNamespace(uri="test"))
@@ -558,6 +772,45 @@ class VehicleServiceTests(unittest.TestCase):
         request = CommandRequest("target_lock", {"target_id": 17}, "test")
         vehicle.execute(request)
         self.assertEqual(received, [request])
+
+    def test_operator_commands_are_serialized_on_the_shared_vehicle_link(self) -> None:
+        class SlowVehicle:
+            connected = True
+            state = VehicleConnectionState(True, "test", 1, 1)
+
+            def __init__(self) -> None:
+                self.active = 0
+                self.maximum_active = 0
+                self.lock = threading.Lock()
+
+            def execute(self, _request: CommandRequest) -> bool:
+                with self.lock:
+                    self.active += 1
+                    self.maximum_active = max(self.maximum_active, self.active)
+                time.sleep(0.03)
+                with self.lock:
+                    self.active -= 1
+                return True
+
+        vehicle = SlowVehicle()
+        commands = DispatchCommandService(
+            vehicle,  # type: ignore[arg-type]
+            MutableParameterService(),
+        )
+        workers = [
+            threading.Thread(
+                target=commands.dispatch,
+                args=(CommandRequest("ARM" if index % 2 == 0 else "DISARM"),),
+            )
+            for index in range(4)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=1.0)
+
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertEqual(vehicle.maximum_active, 1)
 
     def test_home_reference_is_sent_with_acknowledged_mavlink_command(self) -> None:
         mavlink = SimpleNamespace(

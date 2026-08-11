@@ -14,6 +14,7 @@ class Parameter(Model):
     category: str
     description: str
     value_type: int | None = None
+    default_value: Any | None = None
 
     def matches(self, query: str, category: str | None) -> bool:
         normalized_query = query.lower().strip()
@@ -32,4 +33,5 @@ class Parameter(Model):
             "category": self.category,
             "description": self.description,
             "value_type": self.value_type,
+            "default_value": self.default_value,
         }

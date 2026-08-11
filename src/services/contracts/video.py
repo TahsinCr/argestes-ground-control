@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import abstractmethod
 
 from src.core.abstracts import Service
-from src.core.events import EventStream
+from src.core.events import EventBus
 from src.models.video import VideoFrame, VideoStreamStats
 
 
@@ -14,11 +14,11 @@ class VideoService(Service):
 
     @property
     @abstractmethod
-    def connection_changed(self) -> EventStream[bool]: ...
+    def connection_changed(self) -> EventBus[bool]: ...
 
     @property
     @abstractmethod
-    def frames(self) -> EventStream[VideoFrame]: ...
+    def frames(self) -> EventBus[VideoFrame]: ...
 
     @property
     @abstractmethod
@@ -26,7 +26,7 @@ class VideoService(Service):
 
     @property
     @abstractmethod
-    def stats_changed(self) -> EventStream[VideoStreamStats]: ...
+    def stats_changed(self) -> EventBus[VideoStreamStats]: ...
 
     @abstractmethod
     def configure(

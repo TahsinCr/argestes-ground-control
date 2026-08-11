@@ -10,6 +10,7 @@ from src.ui.adapters.services import (
     QtCommandService,
     QtConnectionControlService,
     QtLoggingService,
+    QtOnboardMissionService,
     QtPlannerService,
     QtParameterService,
     QtSettingsService,
@@ -31,6 +32,7 @@ class QtRuntimeServices:
     video_service: QtVideoService
     tile_cache_service: QtTileCacheService
     connection_service: QtConnectionControlService
+    onboard_service: QtOnboardMissionService | None = None
     _start_thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _lifecycle_lock: threading.RLock = field(
         default_factory=threading.RLock,
@@ -98,7 +100,7 @@ class QtRuntimeServices:
                 self.backend.stop()
 
     def _adapters(self):
-        return (
+        return tuple(adapter for adapter in (
             self.log_service,
             self.settings_service,
             self.telemetry_service,
@@ -108,7 +110,8 @@ class QtRuntimeServices:
             self.video_service,
             self.tile_cache_service,
             self.connection_service,
-        )
+            self.onboard_service,
+        ) if adapter is not None)
 
 
 def create_qt_runtime_services(base_dir: Path) -> QtRuntimeServices:

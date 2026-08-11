@@ -922,6 +922,8 @@
     let contextOverlayId = null;
     let toolDockResizeObserver = null;
     let toolDockSpacingFrame = 0;
+    let pendingBridgeTelemetry = null;
+    let bridgeTelemetryFrame = 0;
 
     const state = {
       ui: {
@@ -972,6 +974,7 @@
       pendingCursor: null,
       cursorFrame: 0,
       lastVehicleLatLng: null,
+      vehicleTrailPoints: [],
       telemetryDisplay: {
         gpsState: '',
         gpsFix: '',
@@ -2579,13 +2582,16 @@
       const trailPoints = trimTrail((data.trail_points || []).concat([latlng]), state.contactTrailLimit);
       let entry = state.contacts.get(data.contact_id);
       if (!entry) {
+        const tooltip = contactTooltip(data);
+        const color = contactColor(data);
+        const heading = Number(data.heading) || 0;
         const marker = L.marker(latlng, {
           interactive: true,
           icon: contactIcon(data),
         });
-        marker.bindTooltip(contactTooltip(data), { direction: 'top', opacity: 0.92 });
+        marker.bindTooltip(tooltip, { direction: 'top', opacity: 0.92 });
         const trail = L.polyline(trailPoints, {
-          color: contactColor(data),
+          color,
           weight: 2,
           opacity: 0.35,
           lineCap: 'round',
@@ -2593,13 +2599,37 @@
         });
         contactGroup.addLayer(trail);
         contactGroup.addLayer(marker);
-        entry = { marker, trail };
+        entry = { marker, trail, heading, color, tooltip };
         state.contacts.set(data.contact_id, entry);
       } else {
-        entry.marker.setLatLng(latlng);
-        entry.marker.setIcon(contactIcon(data));
-        entry.marker.setTooltipContent(contactTooltip(data));
-        entry.trail.setStyle({ color: contactColor(data) });
+        const markerPosition = entry.marker.getLatLng();
+        if (markerPosition.lat !== Number(data.latitude) || markerPosition.lng !== Number(data.longitude)) {
+          entry.marker.setLatLng(latlng);
+        }
+        const heading = Number(data.heading) || 0;
+        if (entry.heading !== heading) {
+          entry.heading = heading;
+          const markerElement = entry.marker.getElement();
+          const aircraftElement = markerElement
+            ? markerElement.querySelector('.aircraft-icon')
+            : null;
+          if (aircraftElement) {
+            aircraftElement.style.transform = `rotate(${heading}deg)`;
+          } else {
+            entry.marker.setIcon(contactIcon(data));
+          }
+        }
+        const tooltip = contactTooltip(data);
+        if (entry.tooltip !== tooltip) {
+          entry.tooltip = tooltip;
+          entry.marker.setTooltipContent(tooltip);
+        }
+        const color = contactColor(data);
+        if (entry.color !== color) {
+          entry.color = color;
+          entry.marker.setIcon(contactIcon(data));
+          entry.trail.setStyle({ color });
+        }
         entry.trail.setLatLngs(trailPoints);
       }
     }
@@ -3504,6 +3534,7 @@
           if (trailLine.getLatLngs().length) {
             trailLine.setLatLngs([]);
           }
+          state.vehicleTrailPoints = [];
           state.initialCentered = false;
           state.lastVehicleLatLng = null;
           state.telemetryDisplay.heading = null;
@@ -3533,6 +3564,7 @@
         }
         if (payload.resetTrack) {
           trailLine.setLatLngs([]);
+          state.vehicleTrailPoints = [];
           state.lastVehicleLatLng = null;
           state.initialCentered = false;
         }
@@ -3555,7 +3587,14 @@
           }
         }
         if (!state.lastVehicleLatLng || state.lastVehicleLatLng.distanceTo(latlng) >= 0.25) {
-          trailLine.setLatLngs(trimTrail(trailLine.getLatLngs().concat([latlng]), state.vehicleTrailLimit));
+          state.vehicleTrailPoints.push([latitude, longitude]);
+          if (state.vehicleTrailPoints.length > state.vehicleTrailLimit) {
+            state.vehicleTrailPoints.splice(
+              0,
+              state.vehicleTrailPoints.length - state.vehicleTrailLimit,
+            );
+          }
+          trailLine.setLatLngs(state.vehicleTrailPoints);
           state.lastVehicleLatLng = latlng;
         }
         const vehicleReadout = `UAV LAT <strong>${latitude.toFixed(5)}</strong> LON <strong>${longitude.toFixed(5)}</strong>`;
@@ -3580,9 +3619,44 @@
       }
     }
 
+    function connectBridgeDataSignals() {
+      if (!bridge) {
+        return;
+      }
+      if (bridge.telemetry_pushed && bridge.telemetry_pushed.connect) {
+        bridge.telemetry_pushed.connect((payload) => {
+          try {
+            pendingBridgeTelemetry = JSON.parse(payload);
+            if (!bridgeTelemetryFrame) {
+              bridgeTelemetryFrame = window.requestAnimationFrame(() => {
+                bridgeTelemetryFrame = 0;
+                const latest = pendingBridgeTelemetry;
+                pendingBridgeTelemetry = null;
+                if (latest) {
+                  window.ykiMap.pushTelemetry(latest);
+                }
+              });
+            }
+          } catch (_error) {
+            // The next telemetry sample is authoritative.
+          }
+        });
+      }
+      if (bridge.state_delta_applied && bridge.state_delta_applied.connect) {
+        bridge.state_delta_applied.connect((payload) => {
+          try {
+            window.ykiMap.applyStateDelta(JSON.parse(payload));
+          } catch (_error) {
+            // Preserve the current state when transport data is malformed.
+          }
+        });
+      }
+    }
+
     if (typeof qt !== 'undefined' && qt.webChannelTransport && typeof QWebChannel !== 'undefined') {
       new QWebChannel(qt.webChannelTransport, (channel) => {
         bridge = channel.objects.qtBridge;
+        connectBridgeDataSignals();
         if (bridge && bridge.initialConfig) {
           bridge.initialConfig((payload) => {
             let config = null;

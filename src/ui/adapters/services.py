@@ -24,6 +24,7 @@ from src.services.planner import PlannerService
 from src.services.contracts.parameters import ParameterService
 from src.services.contracts.telemetry import TelemetryService
 from src.services.contracts.video import VideoService
+from src.services.contracts.onboard import OnboardMissionServiceContract
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
@@ -102,7 +103,9 @@ class _QtAdapter(QObject):
             else:
                 schedule_next = True
         if schedule_next:
-            self._dispatch_requested.emit()
+            # Yield to paint and input events between bursts. Re-emitting the
+            # queued signal immediately can otherwise starve button clicks.
+            QTimer.singleShot(0, self._drain_events)
 
     def close(self) -> None:
         with self._dispatch_lock:
@@ -169,12 +172,51 @@ class _QtAdapter(QObject):
 
 
 class QtLoggingService(_QtAdapter):
-    entry_emitted = pyqtSignal(object)
+    entries_emitted = pyqtSignal(object)
+    _UI_BATCH_INTERVAL_MS = 50
 
     def __init__(self, backend: LoggingService, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.backend = backend
-        self._subscribe(backend.entries, self.entry_emitted.emit)
+        self._log_lock = threading.Lock()
+        self._pending_logs: list[LogEntry] = []
+        self._log_batch_scheduled = False
+        self._subscriptions.append(backend.entries.subscribe(self._capture_log))
+        self._log_timer = QTimer(self)
+        self._log_timer.setSingleShot(True)
+        self._log_timer.setInterval(self._UI_BATCH_INTERVAL_MS)
+        self._log_timer.timeout.connect(self._emit_log_batch)
+
+    def _capture_log(self, entry: LogEntry) -> None:
+        should_schedule = False
+        with self._log_lock:
+            self._pending_logs.append(entry)
+            if not self._log_batch_scheduled:
+                self._log_batch_scheduled = True
+                should_schedule = True
+        if should_schedule:
+            self._post(self._start_log_timer)
+
+    @pyqtSlot()
+    def _start_log_timer(self) -> None:
+        if not self._closed and not self._log_timer.isActive():
+            self._log_timer.start()
+
+    @pyqtSlot()
+    def _emit_log_batch(self) -> None:
+        with self._log_lock:
+            entries = tuple(self._pending_logs)
+            self._pending_logs.clear()
+            self._log_batch_scheduled = False
+        if entries:
+            self.entries_emitted.emit(entries)
+
+    def close(self) -> None:
+        self._log_timer.stop()
+        with self._log_lock:
+            self._pending_logs.clear()
+            self._log_batch_scheduled = False
+        super().close()
 
     @property
     def history(self): return self.backend.history
@@ -319,10 +361,6 @@ class QtCommandService(_QtAdapter):
     def __init__(self, backend: CommandService, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.backend = backend
-        self._subscribe(
-            backend.dispatched,
-            lambda request: self.command_dispatched.emit(request.code, request.parameters),
-        )
         self._subscribe(backend.completed, self.command_completed.emit)
 
     @property
@@ -336,10 +374,34 @@ class QtCommandService(_QtAdapter):
         *,
         source: str = "qt-ui",
     ):
+        normalized = command.strip().upper()
+        parameters = dict(params or {})
+        # Mark the control pending synchronously. This closes the small window
+        # in which a delayed backend event allowed repeated ARM/mode clicks.
+        self.command_dispatched.emit(normalized, parameters)
         return self._start_worker(
-            lambda: self.backend.issue_command(command, params, source=source),
-            name=f"QtCommand-{command}",
+            lambda: self.backend.issue_command(normalized, parameters, source=source),
+            name=f"QtCommand-{normalized}",
         )
+
+
+class QtOnboardMissionService(_QtAdapter):
+    state_changed = pyqtSignal(object)
+    event_received = pyqtSignal(object)
+
+    def __init__(
+        self,
+        backend: OnboardMissionServiceContract,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.backend = backend
+        self._subscribe(backend.changed, self.state_changed.emit)
+        self._subscribe(backend.events, self.event_received.emit)
+
+    @property
+    def state(self):
+        return self.backend.state
 
 
 class QtConnectionControlService(_QtAdapter):
@@ -405,11 +467,50 @@ class QtConnectionControlService(_QtAdapter):
 
 class QtParameterService(_QtAdapter):
     parameters_changed = pyqtSignal(object)
+    _UI_UPDATE_INTERVAL_MS = 100
 
     def __init__(self, backend: ParameterService, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.backend = backend
-        self._subscribe(backend.changed, self.parameters_changed.emit)
+        self._parameter_lock = threading.Lock()
+        self._latest_parameters = None
+        self._parameter_update_scheduled = False
+        self._subscriptions.append(backend.changed.subscribe(self._capture_parameters))
+        self._parameter_timer = QTimer(self)
+        self._parameter_timer.setSingleShot(True)
+        self._parameter_timer.setInterval(self._UI_UPDATE_INTERVAL_MS)
+        self._parameter_timer.timeout.connect(self._emit_latest_parameters)
+
+    def _capture_parameters(self, parameters) -> None:
+        should_schedule = False
+        with self._parameter_lock:
+            self._latest_parameters = parameters
+            if not self._parameter_update_scheduled:
+                self._parameter_update_scheduled = True
+                should_schedule = True
+        if should_schedule:
+            self._post(self._start_parameter_timer)
+
+    @pyqtSlot()
+    def _start_parameter_timer(self) -> None:
+        if not self._closed and not self._parameter_timer.isActive():
+            self._parameter_timer.start()
+
+    @pyqtSlot()
+    def _emit_latest_parameters(self) -> None:
+        with self._parameter_lock:
+            parameters = self._latest_parameters
+            self._latest_parameters = None
+            self._parameter_update_scheduled = False
+        if parameters is not None:
+            self.parameters_changed.emit(parameters)
+
+    def close(self) -> None:
+        self._parameter_timer.stop()
+        with self._parameter_lock:
+            self._latest_parameters = None
+            self._parameter_update_scheduled = False
+        super().close()
 
     @property
     def current(self): return self.backend.current

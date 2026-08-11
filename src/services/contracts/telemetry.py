@@ -4,7 +4,7 @@ from abc import abstractmethod
 from typing import Any
 
 from src.core.abstracts import Service
-from src.core.events import EventStream
+from src.core.events import EventBus
 from src.models.telemetry import TelemetrySnapshot
 
 
@@ -15,7 +15,7 @@ class TelemetryService(Service):
 
     @property
     @abstractmethod
-    def updated(self) -> EventStream[TelemetrySnapshot]: ...
+    def updated(self) -> EventBus[TelemetrySnapshot]: ...
 
     @abstractmethod
     def push(self, snapshot: TelemetrySnapshot) -> None:

@@ -10,16 +10,18 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
-from src.core.events import EventStream
+from src.core.events import EventBus
+from src.models.logs import LogEntry
 from src.models.telemetry import TelemetrySnapshot
 from src.models.video import VideoFrame, VideoStreamStats
 from src.ui.adapters.runtime import QtRuntimeServices
-from src.ui.adapters.services import QtTelemetryService, QtVideoService
+from src.ui.adapters.services import QtLoggingService, QtTelemetryService, QtVideoService
+from src.services.logging_service import LoggingService
 
 
 class _TelemetryBackend:
     def __init__(self) -> None:
-        self.updated = EventStream[TelemetrySnapshot]()
+        self.updated = EventBus[TelemetrySnapshot]()
         self.current = TelemetrySnapshot.zero()
 
     def start(self) -> None:
@@ -50,8 +52,8 @@ class _BlockingBackend:
 
 class _VideoBackend:
     def __init__(self) -> None:
-        self.frames = EventStream[VideoFrame]()
-        self.stats_changed = EventStream[VideoStreamStats]()
+        self.frames = EventBus[VideoFrame]()
+        self.stats_changed = EventBus[VideoStreamStats]()
         self.connected = False
         self.stats = VideoStreamStats()
 
@@ -148,6 +150,24 @@ class QtRuntimeThreadingTests(unittest.TestCase):
         self.assertLessEqual(len(received), 2)
         self.assertEqual(received[-1].pixelColor(0, 0).red(), 4_999 % 256)
         self.assertFalse(adapter._video_frame_timer.isActive())
+        adapter.close()
+        adapter.deleteLater()
+        self.app.processEvents()
+
+    def test_log_burst_is_delivered_to_ui_as_one_batch(self) -> None:
+        backend = LoggingService()
+        adapter = QtLoggingService(backend)
+        batches: list[tuple[LogEntry, ...]] = []
+        adapter.entries_emitted.connect(batches.append)
+
+        for index in range(500):
+            backend.log("TEST", f"record-{index}")
+
+        self.assertEqual(batches, [])
+        QTest.qWait(80)
+        self.assertEqual(len(batches), 1)
+        self.assertEqual(len(batches[0]), 500)
+        self.assertEqual(batches[0][-1].message, "record-499")
         adapter.close()
         adapter.deleteLater()
         self.app.processEvents()

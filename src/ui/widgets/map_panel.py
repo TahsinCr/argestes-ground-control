@@ -13,7 +13,7 @@ from src.ui.i18n import t
 from src.models.commands import CommandResult
 from src.models.geometry import Point
 from src.ui.config.map import TOOL_LABEL_KEYS, map_tool_config
-from src.models.mission import MapOverlay, MissionState
+from src.models.mission import MapContact, MapOverlay, MissionState
 from src.models.telemetry import TelemetrySnapshot
 from src.services.planner import PlannerService
 from src.services.settings import SettingsService
@@ -56,6 +56,8 @@ class MapRequestInterceptor(QWebEngineUrlRequestInterceptor):
 
 class MapWebBridge(QObject):
     js_ready = pyqtSignal()
+    telemetry_pushed = pyqtSignal(str)
+    state_delta_applied = pyqtSignal(str)
     overlay_changed = pyqtSignal(dict)
     overlay_removed = pyqtSignal(str)
     overlay_selected = pyqtSignal(object)
@@ -151,6 +153,7 @@ class MapPanel(PanelFrame):
         self.destroyed.connect(lambda: tile_cache_backend.stop())
         self._migrate_legacy_cache_index()
         self._pending_cache_count = self._tile_cache.count_tiles()
+        self._last_cache_count: int | None = None
         self._cache_count_timer = QTimer(self)
         self._cache_count_timer.setSingleShot(True)
         self._cache_count_timer.timeout.connect(self._flush_cache_count)
@@ -390,9 +393,13 @@ class MapPanel(PanelFrame):
         self._push_telemetry_payload(payload)
 
     def _push_telemetry_payload(self, payload: dict[str, Any]) -> None:
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        if self._bridge is not None:
+            self._bridge.telemetry_pushed.emit(encoded)
+            return
         self._run_script(
             "window.ykiMap && window.ykiMap.pushTelemetry("
-            f"{json.dumps(payload)});"
+            f"{encoded});"
         )
 
     def command_started(self, code: str, parameters: dict[str, Any]) -> None:
@@ -554,6 +561,7 @@ class MapPanel(PanelFrame):
         self._base_layer = ""
         self._last_telemetry_payload = None
         self._pending_telemetry_payload = None
+        self._last_cache_count = None
         html_path = self._base_dir / "src" / "ui" / "web" / "map.html"
         self._view.load(QUrl.fromLocalFile(str(html_path)))
 
@@ -689,14 +697,21 @@ class MapPanel(PanelFrame):
             self._discard_plan_history()
         self._history_known_plan = incoming_local_plan
         planned_loop = bool(getattr(state, "mission_loop", False))
-        if planned_loop != self._mission_loop:
+        loop_changed = planned_loop != self._mission_loop
+        if loop_changed:
             self._mission_loop = planned_loop
             self._run_script(
                 "window.ykiMap && window.ykiMap.setMissionLoop("
                 f"{json.dumps(planned_loop)});"
             )
         overlays = [overlay.to_dict() for overlay in state.overlays]
-        contacts = [contact.to_dict() for contact in getattr(state, "contacts", [])]
+        contact_trail_limit = max(
+            1,
+            int(self._settings_service.current.contact_trail_limit),
+        )
+        contacts = []
+        for contact in getattr(state, "contacts", []):
+            contacts.append(self._contact_payload(contact, contact_trail_limit))
         overlay_lookup = {item["overlay_id"]: item for item in overlays}
         contact_lookup = {item["contact_id"]: item for item in contacts}
 
@@ -728,10 +743,7 @@ class MapPanel(PanelFrame):
                 "upsertContacts": changed_contacts,
                 "overlayOrder": overlay_order if overlay_order_changed else None,
             }
-            self._run_script(
-                "window.ykiMap && window.ykiMap.applyStateDelta("
-                f"{json.dumps(delta)});"
-            )
+            self._push_state_delta(delta)
 
         if state.selected_overlay_id != self._selected_overlay_id:
             self._run_script(
@@ -749,8 +761,36 @@ class MapPanel(PanelFrame):
 
         self._overlay_cache = overlay_lookup
         self._contact_cache = contact_lookup
-        self._sync_mission_transfer_freshness(state.overlays)
+        if removed_overlays or changed_overlays or overlay_order_changed or loop_changed:
+            self._sync_mission_transfer_freshness(state.overlays)
         self._update_summary(state)
+
+    def _push_state_delta(self, delta: dict[str, Any]) -> None:
+        encoded = json.dumps(delta, ensure_ascii=False, separators=(",", ":"))
+        if self._js_ready and self._bridge is not None:
+            self._bridge.state_delta_applied.emit(encoded)
+            return
+        self._run_script(
+            "window.ykiMap && window.ykiMap.applyStateDelta("
+            f"{encoded});"
+        )
+
+    @staticmethod
+    def _contact_payload(contact: MapContact, trail_limit: int) -> dict[str, Any]:
+        return {
+            "contact_id": contact.contact_id,
+            "label": contact.label,
+            "latitude": contact.latitude,
+            "longitude": contact.longitude,
+            "color": contact.color,
+            "heading": contact.heading,
+            "speed": contact.speed,
+            "trail_points": [
+                list(point) for point in contact.trail_points[-max(1, trail_limit):]
+            ],
+            "source": contact.source,
+            "metadata": dict(contact.metadata),
+        }
 
     def _sync_mission_transfer_freshness(self, overlays) -> None:
         if self._mission_upload_pending:
@@ -801,8 +841,12 @@ class MapPanel(PanelFrame):
 
     def _update_summary(self, state: MissionState) -> None:
         del state
+        count = self._tile_cache.count_tiles()
+        if count == self._last_cache_count:
+            return
+        self._last_cache_count = count
         self._run_script(
-            f"window.ykiMap && window.ykiMap.setCacheCount({json.dumps(self._tile_cache.count_tiles())});"
+            f"window.ykiMap && window.ykiMap.setCacheCount({json.dumps(count)});"
         )
 
     def _on_tile_cache_changed(self, count: int) -> None:
@@ -811,6 +855,9 @@ class MapPanel(PanelFrame):
             self._cache_count_timer.start(500)
 
     def _flush_cache_count(self) -> None:
+        if self._pending_cache_count == self._last_cache_count:
+            return
+        self._last_cache_count = self._pending_cache_count
         self._run_script(
             f"window.ykiMap && window.ykiMap.setCacheCount({json.dumps(self._pending_cache_count)});"
         )

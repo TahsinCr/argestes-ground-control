@@ -23,8 +23,9 @@ vision and similar decision algorithms belong to the onboard system.
 - MAVLink over serial, UDP and TCP for ArduPilot-based aircraft
 - Flight telemetry, connection health, GPS, battery and radio-link monitoring
 - ARM/DISARM, flight modes, LAND, GOTO, parameters and flight-plan transfer
+- Correlated Onboard task control, mission state, QR recovery and remote logs
 - Takeoff, waypoint, loiter, RTL, land and local safety-area planning
-- Parameter and flight-plan synchronization from the flight controller
+- Live parameter/default and flight-plan synchronization from the controller
 - RTSP, HTTP/MJPEG, RTP/UDP, V4L2, file and custom GStreamer sources
 - Optional persistent video auto-connect with fresh-frame health validation
 - TEKNOFEST server communication, competitor telemetry, HSS and QR references
@@ -106,6 +107,26 @@ gst-inspect-1.0 v4l2src
 
 ## Python environment
 
+Clone the repository together with its reusable core submodule:
+
+```bash
+git clone --recurse-submodules \
+  https://github.com/Kirlangic-Team/ground-control-station.git
+cd ground-control-station
+```
+
+For an existing checkout, synchronize the configured URL and initialize the
+pinned core revision before installing or running YKİ:
+
+```bash
+git submodule sync --recursive
+git submodule update --init --recursive
+```
+
+The core source is maintained independently at
+[`TahsinCr/vehicle-autonomy-core`](https://github.com/TahsinCr/vehicle-autonomy-core).
+The parent repository pins an exact core commit for reproducible builds.
+
 ### Linux
 
 ```bash
@@ -132,6 +153,31 @@ python main.py
 PyGObject and GStreamer must use the same architecture. Do not mix 64-bit
 Python with a 32-bit GStreamer installation.
 
+## Shared core workflow
+
+`src/core` is checked out at the exact revision recorded by the GCS repository.
+Normal YKİ work should leave that directory untouched. To move YKİ to a newer
+reviewed core revision:
+
+```bash
+git -C src/core fetch origin
+git -C src/core checkout <core-commit>
+git status --short
+```
+
+The parent diff should show `src/core` as one Git-link change. Core source
+changes, tests and release notes belong in the core repository; only the
+resulting commit pointer belongs in this repository. Run both test suites
+before staging that pointer.
+
+If `src.core` cannot be imported after switching branches, initialize the
+submodule again instead of installing a copied core package:
+
+```bash
+git submodule sync --recursive
+git submodule update --init --recursive
+```
+
 ## Vehicle connection
 
 Connection settings are available under **Settings > Backend > MAVLink** and
@@ -152,6 +198,12 @@ Opening a transport is not treated as proof of a healthy connection. Aircraft
 state requires the target system/component heartbeat, video requires fresh
 frames, and GPS requires a valid and recent fix.
 
+The right side of the bottom bar separates measured MAVLink packet delivery
+from calculated RFD radio health. Its compact view shows RX/TX packet counts,
+RF quality and transmit-buffer availability. Hover **Command/Telemetry** for
+local/remote RSSI, noise, SNR, radio error correction and packet-loss details;
+hovering the percentage or counters does not change their live-state styling.
+
 ## Video connection
 
 Video settings are available under **Settings > Backend > Video** and from the
@@ -170,6 +222,10 @@ camera. If a camera temporarily outpaces the display, the backend continues
 capturing while Qt renders only the newest frame, preventing delayed video
 from accumulating.
 
+The compact video meter reports quality, bitrate, FPS and resolution. Hover
+**Video Stream** for the complete source, codec, frame-age, latency and timeout
+details.
+
 ## High-rate telemetry and UI rendering
 
 MAVLink ingestion is independent from the display refresh rate. The backend
@@ -181,6 +237,12 @@ The flight-dynamics display uses source timestamps and measured sample jitter
 to render smooth intermediate frames. The map ignores unchanged telemetry,
 keeps only the latest update while WebEngine starts, and reuses the existing
 vehicle marker instead of rebuilding its SVG for every heading change.
+
+Map updates use a persistent QWebChannel path and are applied at most once per
+browser animation frame. Parameter snapshots and log bursts are also batched,
+while the parameter table updates existing rows in place. Backend MAVLink
+ingestion and command acknowledgements remain independent from these display
+limits.
 
 ## Map planning
 
@@ -228,6 +290,11 @@ collapse completely.
 Two separate policies are available under
 **Settings > Backend > Battery**:
 
+- The battery display can use Pixhawk's reported percentage or estimate a 4S
+  LiPo percentage from voltage. Full voltage, reserve voltage and the percentage
+  represented by that reserve point are configurable; the zero-percent voltage
+  is calculated automatically. Median and asymmetric time filters reduce brief
+  motor-load sag without hiding sustained discharge.
 - The warning policy uses either percentage or voltage. Crossing its threshold
   makes the bottom-bar battery indicator blink red.
 - The failsafe policy has its own threshold and can be disabled. When enabled,
@@ -236,6 +303,10 @@ Two separate policies are available under
 
 An alarm activation is logged once. While the alarm remains active, each
 one-percentage-point battery change records an updated entry.
+
+Click the battery readout in the bottom bar to open the compact battery editor.
+The estimate is intended for display; Pixhawk voltage thresholds remain the
+authoritative flight-safety protection when current sensing is unavailable.
 
 ## Fake TEKNOFEST server
 
@@ -285,6 +356,16 @@ Primary responsibilities:
 - `services`: planner, commands, connections, competition and other backend services
 - `ui`: Qt, Leaflet, widgets and visual state without business rules
 
+`src/core` is a Git submodule. Core changes must be committed and tested in
+the core repository first; YKİ then updates only the pinned submodule commit.
+Do not copy shared core files back into the parent repository.
+
+Backend service contracts expose the core `EventBus`. Its normal service
+policy isolates a failed observer so telemetry, video or state producers keep
+running. Flows whose acknowledgement depends on local delivery must opt into
+`ErrorPolicy.RAISE`; Orin remote-log ingestion does this before advancing its
+sequence cursor.
+
 Dependency direction:
 
 ```text
@@ -306,6 +387,12 @@ translator or onboard consumer.
 `MavlinkMessageRouter` is the only reader of the MAVLink transport. A new
 service must not open a second `recv_match()` loop.
 
+The vehicle adapter and optional Orin application channel deliberately share
+one `MavlinkClient` and one router. Core's `MavlinkRuntime` is the convenient
+default for standalone tools; YKİ keeps explicit ownership because the Orin
+application channel can be enabled or reconfigured without replacing the
+flight-telemetry connection.
+
 - Consume messages through `VehicleService.subscribe()` or `client.subscribe()`.
 - Capture a router sequence boundary before sending a request.
 - Pass every send operation through the shared send lock.
@@ -317,6 +404,66 @@ service must not open a second `recv_match()` loop.
 
 If normal ARM fails, force ARM is attempted only after explicit operator
 confirmation. It is never triggered automatically in the background.
+
+## SIHA Onboard v0.2-beta link
+
+YKİ uses Vehicle Autonomy Core v1.1's application channel over the existing
+MAVLink connection. It does not open another serial port, UDP socket or receive
+loop. `V2_EXTENSION` uses network ID `77`, message type `42000`, YKİ system ID
+`255`, onboard system ID `1` and onboard component ID `191`. The application
+heartbeat runs once per second and expires after 10 seconds. These values are
+available under the Onboard/Orin settings.
+
+`OnboardMissionService` sends `task.start`, `task.pause`, `task.resume`,
+`task.stop`, `task.cancel`, `mission.status`, `mission.list`, `mission.events`
+and `chain.start` through that shared channel. Replies are correlated strictly
+by packet/request ID. A `system.ack` only means the command was accepted;
+`mission.result` is the final mission outcome. Error, timeout and transport-loss
+states remain separate, and a timed-out `task.start` is never retried
+automatically.
+
+The Kamikaze operator action asks for confirmation before sending `KAMIKAZE`.
+If the ACK contains `waiting_for_mode=true`, the panel tells the operator to
+select GUIDED. Phase comes from `mission.transition`; stop and cancel are
+separate correlated requests.
+
+QR data is recovered from three sources:
+
+1. live `kamikaze.event` notifications (`QR_DECODED` and
+   `QR_DECODED_DURING_PULL_UP`);
+2. `mission.result.snapshot.result.qr_text`;
+3. cursor-based `mission.events` reconciliation after reconnect.
+
+QR content remains inert plain text. It is associated with the active Kamikaze
+mission, deduplicated, shown with a copy action and written to the central log.
+Conflicting live/result values are preserved and reported.
+
+Onboard `logs.push` requests are validated in batches of at most 16 records.
+The complete batch enters the central log repository before ACK; session and
+sequence cursors prevent duplicate rows on retry. Secret-like detail fields are
+masked. Qt drains log events in bounded batches so they cannot monopolize the
+UI thread.
+
+Video remains independent from MAVLink. Configure the HDMI capture card as a
+USB or GStreamer pipeline source and request 1920x1080 at 60 FPS. The video
+service retains only the latest bounded frame, reconnects without blocking task
+controls and reports an unhealthy stream when frames stop arriving.
+
+Hardware verification checklist:
+
+1. Connect YKİ to Pixhawk/RFD and verify ordinary telemetry first.
+2. Enable Onboard and verify system `1`, component `191`, network `77` and
+   message type `42000` in settings.
+3. Start Onboard v0.2-beta and verify version, RTT and the one-second heartbeat
+   without a second MAVLink endpoint.
+4. Start Kamikaze, verify ACK only indicates acceptance, select GUIDED and watch
+   `starting → running`.
+5. Inject both QR variants, reconnect once, and verify live, result and history
+   recovery in the UI and log panel.
+6. Retry an identical `logs.push` batch and verify it is ACKed without another
+   log row.
+7. Connect the HDMI capture card at 1080p/60, interrupt the signal and verify
+   video reconnect while MAVLink controls remain responsive.
 
 ## Using the backend without Qt
 
@@ -416,11 +563,15 @@ Target-lock or kamikaze algorithms do not belong in a GCS service.
 3. Put the main service directly in `services/<service>.py`; protocol-specific
    telemetry and parameter adapters belong under `services/vehicle`.
 4. Pass dependencies explicitly through the constructor.
-5. Instantiate concrete implementations only in `create_runtime_services()`.
-6. Register the service against its contract in the dependency container.
-7. Add lifecycle ordering to `RuntimeServices` when required.
+5. Register infrastructure in `infrastructure_dependencies.py`, shared vehicle
+   adapters in `vehicle/dependencies.py`, or application behavior in
+   `application_dependencies.py`.
+6. Register the concrete type and its contract through one factory; do not
+   resolve the global container from inside a service.
+7. Add the resolved service to `RuntimeServices` and its lifecycle order only
+   when it owns active resources.
 8. Expose only a narrow external API through `BackendFacade`.
-9. Add a Qt signal in `ui/adapters` only when the UI needs the event.
+9. Add a Qt adapter or signal only when the UI actually consumes the event.
 10. Include a hardware-free contract test and an error-path test.
 
 ### Integration checklist
@@ -458,14 +609,18 @@ correlation details rather than relying only on a visible UI message.
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python -B -m unittest discover -s tests -v
+PYTHONDONTWRITEBYTECODE=1 python -B -m unittest discover -s src/core/tests -v
 ```
 
-The suite covers architecture boundaries, dependency lifecycle, MAVLink
-routing and filtering, parameter confirmation, concurrent planning,
-TEKNOFEST communication, battery policies, localization, GStreamer pipeline
-generation, map history, video auto-connect, high-rate telemetry and video
-coalescing, splitter behavior, frameless resizing and offscreen Qt startup.
-The 1.0-beta release preparation suite contains 152 tests.
+The first command runs **183 YKİ tests** covering application architecture,
+the pinned core boundary, dependency composition, vehicle/Orin sharing,
+Onboard mission/QR handling, remote logs, parameter defaults, command retries,
+concurrent planning, TEKNOFEST communication, battery estimation and policies,
+localization, GStreamer pipelines, map history, high-rate data coalescing,
+splitters, frameless resizing and offscreen Qt startup. The second command runs
+the core repository's **109 tests** for its dependency, event, mission and
+MAVLink internals. Keeping the suites separate avoids maintaining the same
+low-level tests in both repositories.
 
 Release history is maintained in the [changelog][changelog-url].
 

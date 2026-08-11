@@ -11,6 +11,7 @@ from src.services.contracts.commands import CommandService
 from src.services.contracts.competition import CompetitionService
 from src.services.contracts.connections import ConnectionControlService
 from src.services.contracts.orin import OrinService
+from src.services.contracts.onboard import OnboardMissionServiceContract
 from src.services.contracts.parameters import ParameterService
 from src.services.contracts.settings import SettingsRepository
 from src.services.contracts.telemetry import TelemetryService
@@ -19,6 +20,7 @@ from src.services.contracts.vehicle import VehicleService
 from src.services.contracts.video import VideoService
 from src.services.facade import BackendFacade
 from src.services.logging_service import LoggingService
+from src.services.onboard import OnboardMissionService
 from src.services.infrastructure_dependencies import (
     ApplicationContext,
     OrinCommandCatalog,
@@ -51,14 +53,32 @@ def _commands(
     stack: VehicleStack,
     catalog: OrinCommandCatalog,
     logging: LoggingService,
+    onboard: OnboardMissionServiceContract,
 ) -> CommandService:
     return DispatchCommandService(
         stack.vehicle,
         stack.parameters,
         logging.child("COMMAND"),
         orin=stack.orin,
+        onboard=onboard,
         configured_orin_tasks=catalog.codes,
     )
+
+
+def _onboard(
+    orin: OrinService,
+    competition: CompetitionService,
+    logging: LoggingService,
+) -> OnboardMissionService:
+    return OnboardMissionService(
+        orin,
+        competition,
+        logging.child("ONBOARD"),
+    )
+
+
+def _onboard_contract(service: OnboardMissionService) -> OnboardMissionServiceContract:
+    return service
 
 
 def _video(
@@ -186,12 +206,29 @@ def register_application_dependencies(
         priority=priority,
     )
     container.singleton(
+        OnboardMissionService,
+        factory=_onboard,
+        dependencies={
+            "orin": OrinService,
+            "competition": CompetitionService,
+            "logging": LoggingService,
+        },
+        priority=priority,
+    )
+    container.singleton(
+        OnboardMissionServiceContract,
+        factory=_onboard_contract,
+        dependencies={"service": OnboardMissionService},
+        priority=priority,
+    )
+    container.singleton(
         CommandService,
         factory=_commands,
         dependencies={
             "stack": VehicleStack,
             "catalog": OrinCommandCatalog,
             "logging": LoggingService,
+            "onboard": OnboardMissionServiceContract,
         },
         priority=priority,
     )
@@ -288,6 +325,7 @@ def register_application_dependencies(
             "telemetry_service": TelemetryService,
             "planner_service": PlannerService,
             "orin_service": OrinService,
+            "onboard_service": OnboardMissionServiceContract,
             "command_service": CommandService,
             "parameter_service": ParameterService,
             "video_service": VideoService,

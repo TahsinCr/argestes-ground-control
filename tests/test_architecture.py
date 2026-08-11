@@ -24,7 +24,6 @@ def imported_modules(path: Path) -> set[str]:
 class ArchitectureTests(unittest.TestCase):
     def test_layer_dependencies_point_inward(self) -> None:
         rules = {
-            "core": ("src.models", "src.services", "src.ui", "PyQt6"),
             "models": ("src.services", "src.ui", "PyQt6"),
             "services": ("src.ui", "PyQt6"),
         }
@@ -41,9 +40,32 @@ class ArchitectureTests(unittest.TestCase):
             self.assertTrue((SRC / layer).is_dir(), layer)
         source = "\n".join(
             path.read_text(encoding="utf-8", errors="ignore")
-            for path in SRC.rglob("*.py")
+            for layer in ("models", "services", "ui")
+            for path in (SRC / layer).rglob("*.py")
         )
         self.assertNotIn("kuzey_core", source)
+
+    def test_project_uses_the_core_public_packages(self) -> None:
+        allowed_prefixes = (
+            "src.core.abstracts",
+            "src.core.dependency",
+            "src.core.events",
+            "src.core.mavlink",
+        )
+        violations: list[str] = []
+        legacy_references: list[str] = []
+        for layer in ("models", "services", "ui"):
+            for path in (SRC / layer).rglob("*.py"):
+                text = path.read_text(encoding="utf-8")
+                if "EventStream" in text or "publish_isolated" in text:
+                    legacy_references.append(str(path.relative_to(ROOT)))
+                for module in imported_modules(path):
+                    if module.startswith("src.core.") and not module.startswith(
+                        allowed_prefixes
+                    ):
+                        violations.append(f"{path.relative_to(ROOT)} -> {module}")
+        self.assertEqual(violations, [])
+        self.assertEqual(legacy_references, [])
 
     def test_service_groups_use_contracts_instead_of_peer_implementations(self) -> None:
         rules = {

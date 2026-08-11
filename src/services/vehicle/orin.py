@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from src.core.events import EventStream, Subscription
+from src.core.events import ErrorPolicy, EventBus, Subscription
 from src.core.mavlink import (
     MavlinkApplicationChannel,
     MavlinkApplicationDispatcher,
@@ -16,6 +16,7 @@ from src.core.mavlink import (
     MavlinkApplicationPacket,
     MavlinkApplicationPeer,
     MavlinkApplicationPeerState,
+    MavlinkApplicationResult,
     MavlinkClient,
     MavlinkRemoteLogBatch,
     MavlinkRemoteLogRecord,
@@ -32,6 +33,10 @@ from src.models.vehicle import VehicleConnectionState
 from src.services.contracts.orin import OrinMessageHandler, OrinService
 from src.services.contracts.vehicle import VehicleService
 from src.services.logging_service import ServiceLogger
+
+
+class LogValidationError(ValueError):
+    """Remote log payload failed validation before any record was accepted."""
 
 
 def configured_orin_commands(config_path: Path) -> tuple[str, ...]:
@@ -75,9 +80,10 @@ def configured_orin_commands(config_path: Path) -> tuple[str, ...]:
 class NullOrinService(OrinService):
     def __init__(self) -> None:
         self._state = OrinConnectionState()
-        self._changed = EventStream[OrinConnectionState]()
-        self._received = EventStream[OrinMessage]()
-        self._remote_logs = EventStream[OrinLogRecord]()
+        self._changed = EventBus[OrinConnectionState]()
+        self._received = EventBus[OrinMessage]()
+        self._remote_logs = EventBus[OrinLogRecord]()
+        self._remote_log_batches = EventBus[tuple[OrinLogRecord, ...]]()
 
     @property
     def connected(self) -> bool:
@@ -88,16 +94,20 @@ class NullOrinService(OrinService):
         return self._state
 
     @property
-    def changed(self) -> EventStream[OrinConnectionState]:
+    def changed(self) -> EventBus[OrinConnectionState]:
         return self._changed
 
     @property
-    def received(self) -> EventStream[OrinMessage]:
+    def received(self) -> EventBus[OrinMessage]:
         return self._received
 
     @property
-    def remote_logs(self) -> EventStream[OrinLogRecord]:
+    def remote_logs(self) -> EventBus[OrinLogRecord]:
         return self._remote_logs
+
+    @property
+    def remote_log_batches(self) -> EventBus[tuple[OrinLogRecord, ...]]:
+        return self._remote_log_batches
 
     def start(self) -> None:
         return
@@ -129,7 +139,7 @@ class NullOrinService(OrinService):
         handler: OrinMessageHandler,
     ) -> Subscription:
         del packet_type, handler
-        return Subscription(lambda: None)
+        return Subscription(0, lambda: None)
 
 
 class MavlinkOrinService(OrinService):
@@ -148,11 +158,15 @@ class MavlinkOrinService(OrinService):
         self._vehicle = vehicle
         self._config = config or OrinLinkConfig()
         self._logger = logger
-        self._changed = EventStream[OrinConnectionState]()
-        self._received = EventStream[OrinMessage]()
-        self._remote_logs = EventStream[OrinLogRecord]()
+        self._changed = EventBus[OrinConnectionState]()
+        self._received = EventBus[OrinMessage]()
+        self._remote_logs = EventBus[OrinLogRecord]()
+        self._remote_log_batches = EventBus[tuple[OrinLogRecord, ...]](
+            error_policy=ErrorPolicy.RAISE,
+        )
         self._state = OrinConnectionState(
             endpoint=client.endpoint.uri,
+            system_id=self._config.system_id,
             component_id=self._config.component_id,
         )
         self._channel: MavlinkApplicationChannel | None = None
@@ -179,16 +193,20 @@ class MavlinkOrinService(OrinService):
             return replace(self._state)
 
     @property
-    def changed(self) -> EventStream[OrinConnectionState]:
+    def changed(self) -> EventBus[OrinConnectionState]:
         return self._changed
 
     @property
-    def received(self) -> EventStream[OrinMessage]:
+    def received(self) -> EventBus[OrinMessage]:
         return self._received
 
     @property
-    def remote_logs(self) -> EventStream[OrinLogRecord]:
+    def remote_logs(self) -> EventBus[OrinLogRecord]:
         return self._remote_logs
+
+    @property
+    def remote_log_batches(self) -> EventBus[tuple[OrinLogRecord, ...]]:
+        return self._remote_log_batches
 
     @property
     def running(self) -> bool:
@@ -205,7 +223,11 @@ class MavlinkOrinService(OrinService):
             self.stop()
         with self._lock:
             self._config = config
-            self._state = replace(self._state, component_id=config.component_id)
+            self._state = replace(
+                self._state,
+                system_id=config.system_id,
+                component_id=config.component_id,
+            )
         if restart:
             self.start()
 
@@ -347,6 +369,22 @@ class MavlinkOrinService(OrinService):
             round_trip_ms,
         )
         execution = str(response.payload.get("execution", "acknowledged"))
+        if (
+            packet.packet_type == "kamikaze.target.update"
+            and accepted
+            and execution.strip().lower() in {"updated", "unchanged"}
+        ):
+            with self._lock:
+                self._state = replace(
+                    self._state,
+                    kamikaze_target_ready=True,
+                    kamikaze_target_revision=self._int_value(
+                        response.payload.get("target_revision"),
+                        self._state.kamikaze_target_revision,
+                    ),
+                )
+                target_state = replace(self._state)
+            self._changed.publish(target_state)
         task = str(
             response.payload.get("task")
             or response.payload.get("active_task")
@@ -399,19 +437,22 @@ class MavlinkOrinService(OrinService):
     def _handle_remote_logs(
         self,
         packet: MavlinkApplicationPacket,
-    ) -> dict[str, Any]:
+    ) -> MavlinkApplicationResult:
         """Validate, de-duplicate and acknowledge one onboard log batch."""
 
-        batch = MavlinkRemoteLogBatch.from_payload(packet.payload)
+        try:
+            batch = MavlinkRemoteLogBatch.from_payload(packet.payload)
+        except (TypeError, ValueError) as exc:
+            raise LogValidationError("Invalid remote log batch") from exc
         with self._lock:
             last_sequence = self._remote_log_sessions.get(batch.session_id, 0)
-        received = 0
+        accepted_records: list[OrinLogRecord] = []
         duplicates = 0
         for record in batch.records:
             if record.sequence <= last_sequence:
                 duplicates += 1
                 continue
-            self._remote_logs.publish(
+            accepted_records.append(
                 OrinLogRecord(
                     sequence=record.sequence,
                     source=record.source,
@@ -425,19 +466,27 @@ class MavlinkOrinService(OrinService):
                     session_id=batch.session_id,
                 )
             )
-            last_sequence = record.sequence
-            received += 1
+        if accepted_records:
+            # One batch event is the persistence boundary. The sequence cursor
+            # moves only after all records have been accepted by subscribers.
+            self._remote_log_batches.publish(tuple(accepted_records))
+            last_sequence = accepted_records[-1].sequence
             with self._lock:
                 self._remote_log_sessions[batch.session_id] = last_sequence
                 self._remote_log_sessions.move_to_end(batch.session_id)
                 while len(self._remote_log_sessions) > 8:
                     self._remote_log_sessions.popitem(last=False)
-        return {
-            "session": batch.session_id,
-            "received": received,
-            "duplicates": duplicates,
-            "last_sequence": last_sequence,
-        }
+            for record in accepted_records:
+                self._remote_logs.publish(record)
+        return MavlinkApplicationResult.success(
+            {
+                "session": batch.session_id,
+                "received": len(accepted_records),
+                "duplicates": duplicates,
+                "last_sequence": last_sequence,
+            },
+            message="Logs accepted",
+        )
 
     def _log_command_sent(self, packet: MavlinkApplicationPacket) -> None:
         self._event(
@@ -455,8 +504,9 @@ class MavlinkOrinService(OrinService):
             target_component=self._config.component_id,
             local_system=self._client.endpoint.source_system,
             local_component=self._client.endpoint.source_component,
+            source_systems=self._config.system_id,
             source_components=self._config.component_id,
-            fragment_timeout=max(5.0, self._config.heartbeat_timeout_s),
+            fragment_timeout=max(10.0, self._config.heartbeat_timeout_s),
         )
 
     def _create_peer(
@@ -464,9 +514,6 @@ class MavlinkOrinService(OrinService):
         channel: MavlinkApplicationChannel,
     ) -> MavlinkApplicationPeer:
         timeout = float(self._config.heartbeat_timeout_s)
-        interval = min(1.0, max(0.25, timeout / 3.0))
-        if interval >= timeout:
-            interval = max(0.1, timeout / 2.0)
         return MavlinkApplicationPeer(
             channel,
             role="yki",
@@ -474,7 +521,7 @@ class MavlinkOrinService(OrinService):
             target_component=lambda: self._config.component_id,
             transport_available=lambda: self._vehicle.connected,
             heartbeat_payload=self._heartbeat_payload,
-            heartbeat_interval=interval,
+            heartbeat_interval=1.0,
             heartbeat_timeout=timeout,
         )
 
@@ -482,6 +529,7 @@ class MavlinkOrinService(OrinService):
         return {
             "role": "yki",
             "health": "ok",
+            "version": "1.3-beta",
             "vehicle_system_id": self._target_system(),
             "capabilities": [
                 "application.notify",
@@ -503,6 +551,24 @@ class MavlinkOrinService(OrinService):
                 if isinstance(capabilities_value, (list, tuple))
                 else self._state.capabilities
             )
+            active_tasks = self._string_tuple(
+                payload.get("active_tasks"), self._state.active_tasks
+            )
+            queued_tasks = self._string_tuple(
+                payload.get("queued_tasks"), self._state.queued_tasks
+            )
+            active_missions = self._int_tuple(
+                payload.get("active_missions"), self._state.active_missions
+            )
+            queued_missions = self._int_tuple(
+                payload.get("queued_missions"), self._state.queued_missions
+            )
+            remote_logging = payload.get("remote_logging")
+            if not isinstance(remote_logging, dict):
+                remote_logging = {}
+            kamikaze_target = payload.get("kamikaze_target")
+            if not isinstance(kamikaze_target, dict):
+                kamikaze_target = {}
             self._state = replace(
                 self._state,
                 alive=True if is_liveness else self._state.alive,
@@ -511,16 +577,46 @@ class MavlinkOrinService(OrinService):
                 component_id=int(packet.source_component or self._config.component_id),
                 health=str(payload.get("health", self._state.health or "ok")),
                 active_task=str(payload.get("active_task", self._state.active_task)),
+                active_tasks=active_tasks,
+                queued_tasks=queued_tasks,
+                active_missions=active_missions,
+                queued_missions=queued_missions,
+                kamikaze_target_ready=bool(
+                    kamikaze_target.get(
+                        "ready",
+                        self._state.kamikaze_target_ready,
+                    )
+                ),
+                kamikaze_target_revision=self._int_value(
+                    kamikaze_target.get("revision"),
+                    self._state.kamikaze_target_revision,
+                ),
+                vehicle_mode=str(payload.get("vehicle_mode", self._state.vehicle_mode)).upper(),
+                idle_vehicle_mode=str(payload.get("idle_vehicle_mode", self._state.idle_vehicle_mode)).upper(),
+                mission_vehicle_mode=str(payload.get("mission_vehicle_mode", self._state.mission_vehicle_mode)).upper(),
+                remote_log_running=bool(remote_logging.get("running", self._state.remote_log_running)),
+                remote_log_queued=self._int_value(
+                    remote_logging.get("queued"), self._state.remote_log_queued
+                ),
+                remote_log_sent=self._int_value(
+                    remote_logging.get("sent"), self._state.remote_log_sent
+                ),
+                remote_log_dropped=self._int_value(
+                    remote_logging.get("dropped"), self._state.remote_log_dropped
+                ),
+                remote_log_error=str(remote_logging.get("last_error", self._state.remote_log_error)),
                 version=str(payload.get("version", self._state.version)),
-                uptime_s=float(payload.get("uptime_s", self._state.uptime_s)),
+                uptime_s=self._float_value(
+                    payload.get("uptime_s"), self._state.uptime_s
+                ),
                 capabilities=capabilities,
                 last_heartbeat_at=now if is_liveness else self._state.last_heartbeat_at,
                 last_packet_at=now,
                 last_error="",
             )
             state = replace(self._state)
-        self._changed.publish_isolated(state)
-        self._received.publish_isolated(
+        self._changed.publish(state)
+        self._received.publish(
             self._message(packet, received_at=now)
         )
 
@@ -557,7 +653,7 @@ class MavlinkOrinService(OrinService):
                 last_error="" if peer_state.alive else peer_state.last_error,
             )
             state = replace(self._state)
-        self._changed.publish_isolated(state)
+        self._changed.publish(state)
         if not was_alive and state.alive:
             self._event(
                 "orin.connected",
@@ -610,7 +706,7 @@ class MavlinkOrinService(OrinService):
                 last_error=reason,
             )
             state = replace(self._state)
-        self._changed.publish_isolated(state)
+        self._changed.publish(state)
         if was_alive:
             self._event(
                 "orin.disconnected",
@@ -620,13 +716,39 @@ class MavlinkOrinService(OrinService):
             )
 
     def _target_system(self) -> int:
-        state_system = int(self._vehicle.state.system_id)
-        if state_system:
-            return state_system
+        return int(self._config.system_id)
+
+    @staticmethod
+    def _string_tuple(value: Any, fallback: tuple[str, ...]) -> tuple[str, ...]:
+        if not isinstance(value, (list, tuple)):
+            return fallback
+        return tuple(str(item) for item in value)
+
+    @staticmethod
+    def _int_tuple(value: Any, fallback: tuple[int, ...]) -> tuple[int, ...]:
+        if not isinstance(value, (list, tuple)):
+            return fallback
+        result: list[int] = []
+        for item in value:
+            try:
+                result.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return tuple(result)
+
+    @staticmethod
+    def _int_value(value: Any, fallback: int) -> int:
         try:
-            return int(self._client.connection.target_system)
-        except ConnectionError:
-            return 1
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            return int(fallback)
+
+    @staticmethod
+    def _float_value(value: Any, fallback: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError, OverflowError):
+            return float(fallback)
 
     @staticmethod
     def _message(
@@ -644,7 +766,7 @@ class MavlinkOrinService(OrinService):
         )
 
     def _publish(self) -> None:
-        self._changed.publish_isolated(self.state)
+        self._changed.publish(self.state)
 
     def _event(
         self,

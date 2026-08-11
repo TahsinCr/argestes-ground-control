@@ -186,6 +186,22 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(restored.backend.battery_alarm.failsafe_mode, "percent")
         self.assertEqual(restored.backend.battery_alarm.failsafe_threshold, 8.0)
 
+    def test_voltage_battery_profile_derives_zero_percent_from_reserve(self) -> None:
+        profile = SettingsModel().backend.battery_telemetry
+
+        self.assertEqual(profile.mode, "voltage")
+        self.assertEqual(profile.cell_count, 4)
+        self.assertAlmostEqual(profile.full_voltage, 16.8)
+        self.assertAlmostEqual(profile.reserve_voltage, 14.8)
+        self.assertAlmostEqual(profile.reserve_percent, 10.0)
+        self.assertAlmostEqual(profile.empty_voltage, 14.5777777778)
+
+        restored = SettingsModel.from_dict(SettingsModel().to_dict())
+        self.assertAlmostEqual(
+            restored.backend.battery_telemetry.empty_voltage,
+            profile.empty_voltage,
+        )
+
     def test_legacy_battery_threshold_migrates_to_both_policies(self) -> None:
         model = SettingsModel.from_dict(
             {

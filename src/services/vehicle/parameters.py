@@ -3,11 +3,11 @@ from __future__ import annotations
 import math
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
-from src.core.events import EventStream, Subscription
+from src.core.events import EventBus, Subscription
 from src.models.parameters import Parameter
 from src.models.vehicle import VehicleConnectionState
 from src.services.contracts.parameters import ParameterService
@@ -18,7 +18,7 @@ from src.services.logging_service import ServiceLogger
 class MutableParameterService(ParameterService):
     def __init__(self, parameters: Iterable[Parameter] = ()) -> None:
         self._parameters = {item.key: replace(item) for item in parameters}
-        self._changed = EventStream[tuple[Parameter, ...]]()
+        self._changed = EventBus[tuple[Parameter, ...]]()
         self._lock = threading.RLock()
 
     @property
@@ -27,7 +27,7 @@ class MutableParameterService(ParameterService):
             return tuple(replace(item) for item in self._parameters.values())
 
     @property
-    def changed(self) -> EventStream[tuple[Parameter, ...]]:
+    def changed(self) -> EventBus[tuple[Parameter, ...]]:
         return self._changed
 
     def start(self) -> None:
@@ -40,19 +40,30 @@ class MutableParameterService(ParameterService):
         self._changed.publish(self.current)
 
     def replace(self, parameters: Iterable[Parameter]) -> None:
+        updated = {item.key: replace(item) for item in parameters}
         with self._lock:
-            self._parameters = {item.key: replace(item) for item in parameters}
+            if self._parameters == updated:
+                return
+            self._parameters = updated
         self._changed.publish(self.current)
 
     def upsert(self, parameter: Parameter) -> None:
         with self._lock:
+            if self._parameters.get(parameter.key) == parameter:
+                return
             self._parameters[parameter.key] = replace(parameter)
         self._changed.publish(self.current)
 
     def upsert_many(self, parameters: Iterable[Parameter]) -> None:
+        changed = False
         with self._lock:
             for parameter in parameters:
+                if self._parameters.get(parameter.key) == parameter:
+                    continue
                 self._parameters[parameter.key] = replace(parameter)
+                changed = True
+        if not changed:
+            return
         self._changed.publish(self.current)
 
     def update_values(self, changes: dict[str, object]) -> None:
@@ -82,6 +93,9 @@ class _PendingWrite:
 class VehicleParameterService(MutableParameterService):
     """Fetch vehicle parameters and confirm writes from vehicle feedback."""
 
+    PROGRESS_BATCH_SIZE = 64
+    PROGRESS_INTERVAL_S = 1.0
+
     def __init__(
         self,
         vehicle: VehicleService,
@@ -90,6 +104,7 @@ class VehicleParameterService(MutableParameterService):
         write_timeout: float = 5.0,
         refresh_on_connect: bool = True,
         max_refresh_attempts: int = 3,
+        default_loader: Callable[[], Mapping[str, object]] | None = None,
     ) -> None:
         super().__init__()
         if write_timeout <= 0:
@@ -99,14 +114,21 @@ class VehicleParameterService(MutableParameterService):
         self._write_timeout = float(write_timeout)
         self._refresh_on_connect = refresh_on_connect
         self._max_refresh_attempts = max(1, int(max_refresh_attempts))
+        self._default_loader = default_loader
         self._subscriptions: list[Subscription] = []
         self._parameter_buffer: dict[str, Parameter] = {}
+        self._progress_buffer: dict[str, Parameter] = {}
+        self._last_progress_publish = 0.0
         self._received_indexes: set[int] = set()
         self._expected_count = 0
         self._loading = False
         self._pending_writes: dict[str, _PendingWrite] = {}
         self._refresh_attempt = 0
+        self._refresh_progress_count = 0
         self._refresh_timer: threading.Timer | None = None
+        self._defaults_thread: threading.Thread | None = None
+        self._defaults_reload_pending = False
+        self._defaults_generation = 0
         self._sync_lock = threading.RLock()
 
     def start(self) -> None:
@@ -127,10 +149,15 @@ class VehicleParameterService(MutableParameterService):
             subscription.cancel()
         self._subscriptions.clear()
         with self._sync_lock:
+            self._defaults_generation += 1
+            self._defaults_reload_pending = False
             self._cancel_refresh_timer()
             for pending in self._pending_writes.values():
                 pending.event.set()
             self._pending_writes.clear()
+            self._parameter_buffer.clear()
+            self._progress_buffer.clear()
+            self._received_indexes.clear()
             self._loading = False
 
     def refresh(self) -> None:
@@ -138,12 +165,16 @@ class VehicleParameterService(MutableParameterService):
             raise ConnectionError("Parametre listesi için uçuş cihazı bağlı değil")
         self.replace(())
         with self._sync_lock:
+            self._defaults_generation += 1
             self._cancel_refresh_timer()
             self._parameter_buffer.clear()
+            self._progress_buffer.clear()
             self._received_indexes.clear()
             self._expected_count = 0
             self._loading = True
             self._refresh_attempt = 1
+            self._refresh_progress_count = 0
+            self._last_progress_publish = time.monotonic()
         try:
             self._vehicle.request_parameters()
         except Exception:
@@ -226,8 +257,13 @@ class VehicleParameterService(MutableParameterService):
             self.refresh()
         elif not state.connected:
             with self._sync_lock:
+                self._defaults_generation += 1
+                self._defaults_reload_pending = False
                 self._cancel_refresh_timer()
                 self._loading = False
+                self._parameter_buffer.clear()
+                self._progress_buffer.clear()
+                self._received_indexes.clear()
                 for pending in self._pending_writes.values():
                     pending.event.set()
             self.replace(())
@@ -250,6 +286,7 @@ class VehicleParameterService(MutableParameterService):
             category=existing.category if existing else self._category_for(key),
             description=existing.description if existing else "ArduPilot uçuş cihazı parametresi",
             value_type=value_type,
+            default_value=existing.default_value if existing else None,
         )
         count = max(0, int(getattr(message, "param_count", 0)))
         index = int(getattr(message, "param_index", -1))
@@ -257,8 +294,10 @@ class VehicleParameterService(MutableParameterService):
         with self._sync_lock:
             loading = self._loading
             complete = False
+            progress_parameters: tuple[Parameter, ...] = ()
             if loading:
                 self._parameter_buffer[key] = parameter
+                self._progress_buffer[key] = parameter
                 if index >= 0:
                     self._received_indexes.add(index)
                 self._expected_count = max(self._expected_count, count)
@@ -269,11 +308,21 @@ class VehicleParameterService(MutableParameterService):
                 if complete:
                     received_parameters = tuple(self._parameter_buffer.values())
                     self._parameter_buffer.clear()
+                    self._progress_buffer.clear()
                     self._received_indexes.clear()
                     self._loading = False
                     self._cancel_refresh_timer()
                 else:
                     received_parameters = ()
+                    now = time.monotonic()
+                    if (
+                        len(self._progress_buffer) >= self.PROGRESS_BATCH_SIZE
+                        or now - self._last_progress_publish
+                        >= self.PROGRESS_INTERVAL_S
+                    ):
+                        progress_parameters = tuple(self._progress_buffer.values())
+                        self._progress_buffer.clear()
+                        self._last_progress_publish = now
             else:
                 received_parameters = ()
             pending = self._pending_writes.get(key)
@@ -286,6 +335,8 @@ class VehicleParameterService(MutableParameterService):
             if confirmed:
                 pending.confirmed = True
 
+        if progress_parameters:
+            self.upsert_many(progress_parameters)
         if complete:
             self.replace(received_parameters)
             self._event(
@@ -294,6 +345,7 @@ class VehicleParameterService(MutableParameterService):
                 severity="success",
                 details={"parameter_count": len(received_parameters)},
             )
+            self._start_default_load()
         elif not loading:
             previous = existing.value if existing is not None else None
             self.upsert(parameter)
@@ -312,6 +364,81 @@ class VehicleParameterService(MutableParameterService):
                 )
         if confirmed and pending is not None:
             pending.event.set()
+
+    def _start_default_load(self) -> None:
+        loader = self._default_loader
+        if loader is None or not self._vehicle.connected:
+            return
+        with self._sync_lock:
+            active = self._defaults_thread
+            if active is not None and active.is_alive():
+                self._defaults_reload_pending = True
+                return
+            self._defaults_generation += 1
+            generation = self._defaults_generation
+            thread = threading.Thread(
+                target=self._load_defaults,
+                args=(generation, loader),
+                name="VehicleParameterDefaults",
+                daemon=True,
+            )
+            self._defaults_thread = thread
+        thread.start()
+
+    def _load_defaults(
+        self,
+        generation: int,
+        loader: Callable[[], Mapping[str, object]],
+    ) -> None:
+        try:
+            self._load_defaults_once(generation, loader)
+        finally:
+            with self._sync_lock:
+                self._defaults_thread = None
+                reload_requested = (
+                    self._defaults_reload_pending
+                    and bool(self._subscriptions)
+                    and self._vehicle.connected
+                )
+                self._defaults_reload_pending = False
+            if reload_requested:
+                self._start_default_load()
+
+    def _load_defaults_once(
+        self,
+        generation: int,
+        loader: Callable[[], Mapping[str, object]],
+    ) -> None:
+        try:
+            defaults = dict(loader())
+        except Exception as exc:
+            with self._sync_lock:
+                current = self._defaults_generation
+            if generation == current and self._vehicle.connected:
+                self._event(
+                    "parameter.defaults_unavailable",
+                    f"Parametre varsayılanları uçuş cihazından alınamadı: {exc}",
+                    severity="warning",
+                )
+            return
+
+        with self._sync_lock:
+            if generation != self._defaults_generation or not self._vehicle.connected:
+                return
+        parameters = self.current
+        enriched = tuple(
+            replace(parameter, default_value=defaults.get(parameter.key))
+            for parameter in parameters
+        )
+        matched = sum(parameter.key in defaults for parameter in parameters)
+        if matched:
+            self.replace(enriched)
+        self._event(
+            "parameter.defaults_received",
+            f"Uçuş cihazından {matched} parametrenin varsayılan değeri alındı",
+            severity="success",
+            details={"parameter_count": matched, "available_count": len(defaults)},
+        )
 
     @staticmethod
     def _parameter_name(raw_name: object) -> str:
@@ -373,19 +500,37 @@ class VehicleParameterService(MutableParameterService):
         with self._sync_lock:
             if not self._loading:
                 return
+            progress_parameters = tuple(self._progress_buffer.values())
+            self._progress_buffer.clear()
+            self._last_progress_publish = time.monotonic()
             received = len(self._received_indexes) or len(self._parameter_buffer)
             expected = self._expected_count
-            if self._refresh_attempt >= self._max_refresh_attempts or not self._vehicle.connected:
+            made_progress = received > self._refresh_progress_count
+            self._refresh_progress_count = received
+            self._refresh_timer = None
+            if made_progress and self._vehicle.connected:
+                # A complete ArduPilot catalogue can take considerably longer
+                # than the write timeout over a radio. Progress means the
+                # transfer is healthy; only retry after a full quiet interval.
+                retry = False
+                keep_waiting = True
+            elif self._refresh_attempt >= self._max_refresh_attempts or not self._vehicle.connected:
                 self._loading = False
                 self._parameter_buffer.clear()
+                self._progress_buffer.clear()
                 self._received_indexes.clear()
-                self._refresh_timer = None
                 retry = False
+                keep_waiting = False
             else:
                 self._refresh_attempt += 1
                 attempt = self._refresh_attempt
-                self._refresh_timer = None
                 retry = True
+                keep_waiting = False
+        if progress_parameters:
+            self.upsert_many(progress_parameters)
+        if keep_waiting:
+            self._arm_refresh_timer()
+            return
         if not retry:
             self._event(
                 "parameter.sync_failed",

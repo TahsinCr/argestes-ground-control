@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from src.core.events import EventStream
+from src.core.events import EventBus
 from src.models.competition import CompetitionConnectionState
 from src.models.telemetry import TelemetrySnapshot
 from src.models.vehicle import VehicleConnectionState
@@ -28,7 +28,7 @@ class ConnectionHealthTests(unittest.TestCase):
                 endpoint="http://127.0.0.1:5000",
                 team_number=1,
             ),
-            changed=EventStream(),
+            changed=EventBus(),
         )
 
     def test_statuses_require_fresh_source_evidence(self) -> None:
@@ -37,7 +37,7 @@ class ConnectionHealthTests(unittest.TestCase):
             vehicle = SimpleNamespace(
                 connected=True,
                 state=VehicleConnectionState(True, "udp:127.0.0.1:14550", 1, 1, 1, 3),
-                connection_changed=EventStream(),
+                connection_changed=EventBus(),
             )
             telemetry = MutableTelemetryService()
             video = MutableVideoService()
@@ -50,7 +50,7 @@ class ConnectionHealthTests(unittest.TestCase):
                     team_number=1,
                     last_success_at=datetime.now(UTC) - timedelta(seconds=30),
                 ),
-                changed=EventStream(),
+                changed=EventBus(),
             )
             service = BackendConnectionControlService(
                 settings=settings,
@@ -112,7 +112,7 @@ class ConnectionHealthTests(unittest.TestCase):
             class FailingVehicle:
                 connected = False
                 state = VehicleConnectionState(False, "old")
-                connection_changed = EventStream()
+                connection_changed = EventBus()
 
                 def reconnect(self, config) -> None:
                     self.config = config
@@ -156,7 +156,7 @@ class ConnectionHealthTests(unittest.TestCase):
             vehicle = SimpleNamespace(
                 connected=False,
                 state=VehicleConnectionState(False, ""),
-                connection_changed=EventStream(),
+                connection_changed=EventBus(),
             )
             service = BackendConnectionControlService(
                 settings=settings,
@@ -195,7 +195,7 @@ class ConnectionHealthTests(unittest.TestCase):
             vehicle = SimpleNamespace(
                 connected=False,
                 state=VehicleConnectionState(False, ""),
-                connection_changed=EventStream(),
+                connection_changed=EventBus(),
             )
             service = BackendConnectionControlService(
                 settings=settings,
@@ -224,7 +224,7 @@ class ConnectionHealthTests(unittest.TestCase):
             vehicle = SimpleNamespace(
                 connected=False,
                 state=VehicleConnectionState(False, ""),
-                connection_changed=EventStream(),
+                connection_changed=EventBus(),
             )
             service = BackendConnectionControlService(
                 settings=settings,
@@ -263,7 +263,7 @@ class ConnectionHealthTests(unittest.TestCase):
             class Vehicle:
                 connected = False
                 state = VehicleConnectionState(False, "")
-                connection_changed = EventStream()
+                connection_changed = EventBus()
 
                 def reconnect(self, config) -> None:
                     self.config = config

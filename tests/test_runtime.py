@@ -5,8 +5,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.container import VehicleStack
-from src.core.mavlink import MavlinkClient
 from src.models.orin import OrinLogRecord
 from src.services.battery_alarm import BatteryAlarmService
 from src.models.mission import MapOverlay
@@ -19,8 +17,8 @@ class RuntimeTests(unittest.TestCase):
     def test_orin_remote_logs_enter_the_central_log_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             runtime = create_runtime_services(Path(directory))
-            runtime.orin_service.remote_logs.publish(
-                OrinLogRecord(
+            runtime.orin_service.remote_log_batches.publish(
+                (OrinLogRecord(
                     1,
                     "MISSION",
                     "mission.transition",
@@ -30,9 +28,10 @@ class RuntimeTests(unittest.TestCase):
                         "mission_id": "target.lock",
                         "previous": "starting",
                         "current": "running",
+                        "token": "do-not-display",
                     },
                     correlation_id="target.lock:1",
-                )
+                ),)
             )
 
             entry = runtime.log_service.history[-1]
@@ -46,20 +45,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(entry.details["remote_sequence"], 1)
             self.assertEqual(entry.details["mission_id"], "target.lock")
             self.assertEqual(entry.details["remote_session"], "")
-
-    def test_vehicle_services_share_one_mavlink_client(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            runtime = create_runtime_services(Path(directory))
-            stack = runtime.container.resolve(VehicleStack)
-            client = runtime.container.resolve(MavlinkClient)
-
-            self.assertIs(client, stack.client)
-            self.assertIs(runtime.vehicle_service, stack.vehicle)
-            self.assertIs(runtime.telemetry_service, stack.telemetry)
-            self.assertIs(runtime.parameter_service, stack.parameters)
-            self.assertIs(runtime.orin_service, stack.orin)
-            self.assertIs(runtime.vehicle_service._client, client)
-            self.assertIs(runtime.orin_service._client, client)
+            self.assertEqual(entry.details["token"], "***")
 
     def test_video_start_respects_saved_auto_connect(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

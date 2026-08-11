@@ -93,6 +93,10 @@ class TelemetrySnapshot(Model):
     radio_local_noise: int | None = None
     radio_remote_noise: int | None = None
     radio_tx_buffer: int | None = None
+    radio_rx_errors: int | None = None
+    radio_fixed_packets: int | None = None
+    packet_delivery_percent: int | None = None
+    estimated_dropped_packets: int = 0
     battery_current_amps: float | None = None
     battery_consumed_mah: int | None = None
     barometric_pressure_hpa: float | None = None

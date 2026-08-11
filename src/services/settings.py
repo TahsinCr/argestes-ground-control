@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from src.core.events import EventStream
+from src.core.events import EventBus
 from src.models.settings import SettingsModel
 from src.services.contracts.settings import SettingsRepository
 from src.services.logging_service import ServiceLogger
@@ -14,8 +14,8 @@ class SettingsService(SettingsRepository):
     """UI-independent settings service preserving backend and UI ownership."""
 
     def __init__(self, base_dir: Path, logger: ServiceLogger | None = None) -> None:
-        self._changed = EventStream[SettingsModel]()
-        self.cache_cleared = EventStream[None]()
+        self._changed = EventBus[SettingsModel]()
+        self.cache_cleared = EventBus[None]()
         self._base_dir = base_dir
         self._logger = logger
         self._data_dir = ensure_directory(base_dir / "data")
@@ -24,7 +24,7 @@ class SettingsService(SettingsRepository):
         self._settings = self._load()
 
     @property
-    def changed(self) -> EventStream[SettingsModel]:
+    def changed(self) -> EventBus[SettingsModel]:
         return self._changed
 
     @property

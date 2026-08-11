@@ -7,13 +7,16 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
-from src.core.events import EventStream, Subscription
+from src.core.events import EventBus, Subscription
 from src.models.geometry import Point
+from src.models.settings import BatteryTelemetrySettings
 from src.models.telemetry import TelemetrySnapshot
 from src.models.vehicle import VehicleConnectionState, VehicleTransportStats
 from src.services.contracts.telemetry import TelemetryService
+from src.services.contracts.settings import SettingsRepository
 from src.services.contracts.vehicle import VehicleService
 from src.services.logging_service import ServiceLogger
+from src.services.vehicle.battery import VoltageBatteryEstimator
 
 
 def clone_snapshot(snapshot: TelemetrySnapshot) -> TelemetrySnapshot:
@@ -25,7 +28,7 @@ class MutableTelemetryService(TelemetryService):
 
     def __init__(self, logger: ServiceLogger | None = None) -> None:
         self._current = TelemetrySnapshot.zero()
-        self._updated = EventStream[TelemetrySnapshot]()
+        self._updated = EventBus[TelemetrySnapshot]()
         self._logger = logger
         self._lock = threading.RLock()
 
@@ -35,7 +38,7 @@ class MutableTelemetryService(TelemetryService):
             return clone_snapshot(self._current)
 
     @property
-    def updated(self) -> EventStream[TelemetrySnapshot]:
+    def updated(self) -> EventBus[TelemetrySnapshot]:
         return self._updated
 
     def start(self) -> None:
@@ -75,6 +78,36 @@ class TelemetryDecoder:
         7: "POWEROFF",
         8: "TERMINATING",
     }
+
+    def __init__(
+        self,
+        battery_settings: BatteryTelemetrySettings | None = None,
+    ) -> None:
+        self._battery_settings = battery_settings or BatteryTelemetrySettings()
+        self._battery_estimator = (
+            VoltageBatteryEstimator(self._battery_settings)
+            if self._battery_settings.mode == "voltage"
+            else None
+        )
+
+    @property
+    def battery_settings(self) -> BatteryTelemetrySettings:
+        return self._battery_settings
+
+    def reset_battery_estimator(self) -> None:
+        if self._battery_estimator is not None:
+            self._battery_estimator.reset()
+
+    def configure_battery(self, settings: BatteryTelemetrySettings) -> bool:
+        if settings == self._battery_settings:
+            return False
+        self._battery_settings = settings
+        self._battery_estimator = (
+            VoltageBatteryEstimator(settings)
+            if settings.mode == "voltage"
+            else None
+        )
+        return True
 
     def apply(self, snapshot: TelemetrySnapshot, message: Any) -> TelemetrySnapshot:
         message_type = str(message.get_type()).upper()
@@ -156,25 +189,26 @@ class TelemetryDecoder:
                 0,
                 min(100, int(float(getattr(message, "load", 0.0)) / 10.0)),
             )
-            if 0 <= remaining <= 100:
-                updates["battery_percent"] = remaining
-            if 0 < voltage_mv < 65_535:
-                updates["battery_voltage"] = voltage_mv / 1000.0
-            if current_ca >= 0:
-                updates["battery_current_amps"] = current_ca / 100.0
+            updates.update(
+                self._battery_updates(
+                    voltage=(voltage_mv / 1000.0 if 0 < voltage_mv < 65_535 else None),
+                    reported_percent=remaining,
+                    current_amps=(current_ca / 100.0 if current_ca >= 0 else None),
+                )
+            )
         elif message_type == "BATTERY_STATUS":
             remaining = int(getattr(message, "battery_remaining", -1))
             current_ca = int(getattr(message, "current_battery", -1))
             consumed_mah = int(getattr(message, "current_consumed", -1))
             voltage = self._battery_status_voltage(getattr(message, "voltages", ()))
-            if 0 <= remaining <= 100:
-                updates["battery_percent"] = remaining
-            if voltage is not None:
-                updates["battery_voltage"] = voltage
-            if current_ca >= 0:
-                updates["battery_current_amps"] = current_ca / 100.0
-            if consumed_mah >= 0:
-                updates["battery_consumed_mah"] = consumed_mah
+            updates.update(
+                self._battery_updates(
+                    voltage=voltage,
+                    reported_percent=remaining,
+                    current_amps=(current_ca / 100.0 if current_ca >= 0 else None),
+                    consumed_mah=(consumed_mah if consumed_mah >= 0 else None),
+                )
+            )
         elif message_type == "SCALED_PRESSURE":
             pressure = self._finite_float(getattr(message, "press_abs", None))
             differential = self._finite_float(getattr(message, "press_diff", None))
@@ -216,6 +250,8 @@ class TelemetryDecoder:
                 radio_local_noise=self._optional_radio_value(message, "noise"),
                 radio_remote_noise=self._optional_radio_value(message, "remnoise"),
                 radio_tx_buffer=self._optional_radio_value(message, "txbuf"),
+                radio_rx_errors=self._optional_radio_value(message, "rxerrors"),
+                radio_fixed_packets=self._optional_radio_value(message, "fixed"),
             )
         elif message_type == "RC_CHANNELS":
             rssi = int(getattr(message, "rssi", 0))
@@ -261,6 +297,43 @@ class TelemetryDecoder:
             # ArduPilot reserves wire sequence zero for the home item.
             updates.update(mission_total=max(0, int(getattr(message, "count", 0)) - 1))
         return snapshot.copy(**updates)
+
+    def _battery_updates(
+        self,
+        *,
+        voltage: float | None,
+        reported_percent: int,
+        current_amps: float | None,
+        consumed_mah: int | None = None,
+    ) -> dict[str, Any]:
+        if self._battery_estimator is None:
+            updates: dict[str, Any] = {}
+            if 0 <= reported_percent <= 100:
+                updates["battery_percent"] = reported_percent
+            if voltage is not None:
+                updates["battery_voltage"] = voltage
+            if current_amps is not None:
+                updates["battery_current_amps"] = current_amps
+            if consumed_mah is not None:
+                updates["battery_consumed_mah"] = consumed_mah
+            return updates
+
+        # BATT_MONITOR=3 has no trustworthy current integration. Explicitly
+        # clear any previous current/mAh values and derive only the display
+        # percentage from the filtered voltage.
+        updates = {
+            "battery_current_amps": None,
+            "battery_consumed_mah": None,
+        }
+        if voltage is None:
+            return updates
+        estimate = self._battery_estimator.update(voltage)
+        if estimate is not None:
+            updates.update(
+                battery_voltage=estimate.filtered_voltage,
+                battery_percent=estimate.percent,
+            )
+        return updates
 
     @staticmethod
     def _home_metrics(
@@ -439,10 +512,12 @@ class VehicleTelemetryService(MutableTelemetryService):
         vehicle: VehicleService,
         logger: ServiceLogger | None = None,
         decoder: TelemetryDecoder | None = None,
+        settings_service: SettingsRepository | None = None,
     ) -> None:
         super().__init__(logger)
         self._vehicle = vehicle
         self._decoder = decoder or TelemetryDecoder()
+        self._settings_service = settings_service
         self._subscriptions: list[Subscription] = []
         self._rf_link_logged = False
         self._packet_link_logged = False
@@ -450,13 +525,22 @@ class VehicleTelemetryService(MutableTelemetryService):
     def start(self) -> None:
         if self._subscriptions:
             return
+        if self._settings_service is not None:
+            self._decoder.configure_battery(
+                self._settings_service.current.backend.battery_telemetry
+            )
         self._subscriptions.extend(
             [
                 self._vehicle.subscribe(TELEMETRY_MESSAGE_TYPES, self._consume_message),
                 self._vehicle.connection_changed.subscribe(self._on_connection_changed),
             ]
         )
+        if self._settings_service is not None:
+            self._subscriptions.append(
+                self._settings_service.changed.subscribe(self._on_settings_changed)
+            )
         self._updated.publish(self.current)
+        self._log_battery_profile()
 
     def stop(self) -> None:
         for subscription in self._subscriptions:
@@ -475,6 +559,8 @@ class VehicleTelemetryService(MutableTelemetryService):
             snapshot = snapshot.copy(
                 packets_in=transport.received_packets,
                 packets_out=transport.sent_packets,
+                packet_delivery_percent=transport.delivery_quality,
+                estimated_dropped_packets=transport.estimated_dropped_packets,
             )
             rf_is_fresh = bool(
                 snapshot.link_quality_source == "rf"
@@ -527,6 +613,7 @@ class VehicleTelemetryService(MutableTelemetryService):
 
     def _on_connection_changed(self, state: VehicleConnectionState) -> None:
         if not state.connected:
+            self._decoder.reset_battery_estimator()
             self._rf_link_logged = False
             self._packet_link_logged = False
             self.push(
@@ -547,6 +634,10 @@ class VehicleTelemetryService(MutableTelemetryService):
                     radio_local_noise=None,
                     radio_remote_noise=None,
                     radio_tx_buffer=None,
+                    radio_rx_errors=None,
+                    radio_fixed_packets=None,
+                    packet_delivery_percent=None,
+                    estimated_dropped_packets=0,
                     battery_percent=0,
                     battery_voltage=0.0,
                     battery_current_amps=None,
@@ -562,6 +653,38 @@ class VehicleTelemetryService(MutableTelemetryService):
                     local_down_m=None,
                 )
             )
+
+    def _on_settings_changed(self, settings) -> None:
+        battery = settings.backend.battery_telemetry
+        if not self._decoder.configure_battery(battery):
+            return
+        if battery.mode == "voltage":
+            self.patch(
+                battery_current_amps=None,
+                battery_consumed_mah=None,
+            )
+        self._log_battery_profile()
+
+    def _log_battery_profile(self) -> None:
+        battery = self._decoder.battery_settings
+        if battery.mode != "voltage" or self._logger is None:
+            return
+        self._logger.event(
+            "battery.voltage_estimation_enabled",
+            (
+                "Voltaj tabanlı batarya göstergesi etkin: "
+                f"{battery.reserve_voltage:.2f} V = %{battery.reserve_percent:.0f}"
+            ),
+            severity="info",
+            details={
+                "cell_count": battery.cell_count,
+                "full_voltage": battery.full_voltage,
+                "reserve_voltage": battery.reserve_voltage,
+                "reserve_percent": battery.reserve_percent,
+                "calculated_empty_voltage": battery.empty_voltage,
+                "safety_source": "pixhawk_voltage_failsafe",
+            },
+        )
 
     @staticmethod
     def _message_source(message: Any, method_name: str) -> int | None:

@@ -31,6 +31,7 @@ from src.ui.themes.style import ThemePalette, apply_theme
 from src.ui.views.archive_dialog import MissionArchiveDialog
 from src.ui.views.settings_dialog import SettingsDialog
 from src.ui.widgets.attitude import AttitudeIndicator
+from src.ui.widgets.battery_popup import BatterySettingsPopup
 from src.ui.widgets.common import BatteryMeter, PanelFrame, SignalMeter, StatusChip
 from src.ui.widgets.connection_popup import ConnectionPopup
 from src.ui.widgets.control_panels import CommandPanel, TelemetryPanel
@@ -58,6 +59,7 @@ class MainWindow(QMainWindow):
         tile_cache_service,
         archive_service: MissionArchiveService,
         battery_alarm_service: BatteryAlarmService,
+        onboard_service,
         base_dir: Path,
         theme: ThemePalette,
     ) -> None:
@@ -73,12 +75,15 @@ class MainWindow(QMainWindow):
         self.tile_cache_service = tile_cache_service
         self.base_dir = base_dir
         self.theme = theme
-        self.language = settings_service.current.language
+        self._active_settings = settings_service.current
+        self.language = self._active_settings.language
         self.ui_log = log_service.child("UI")
         self.battery_alarm_service = battery_alarm_service
         self.archive_service = archive_service
+        self.onboard_service = onboard_service
         self._last_warning_signature = ""
         self._last_snapshot = telemetry_service.current
+        self._last_video_stats = video_service.stats
         self._serial_access_prompted: set[str] = set()
         self._serial_access_repair_running = False
         self._shutdown_prepared = False
@@ -93,9 +98,14 @@ class MainWindow(QMainWindow):
             self,
             language=self.language,
         )
+        self.battery_popup = BatterySettingsPopup(
+            self.theme,
+            self,
+            language=self.language,
+        )
         self._connect_signals()
         self.parameters_panel.set_parameters(self.parameter_service.current)
-        self.apply_settings(settings_service.current)
+        self.apply_settings(self._active_settings)
         self.ui_log.event(
             "ui.started",
             "Arayuz baslatildi, log akisi aktif",
@@ -142,6 +152,7 @@ class MainWindow(QMainWindow):
         self.battery_meter = BatteryMeter("BATARYA", self)
         self.battery_meter.set_theme(self.theme)
         self.battery_meter.set_unavailable()
+        self.battery_meter.clicked.connect(self._open_battery_popup)
         status_layout.addWidget(self.battery_meter)
 
         self.link_meters = {
@@ -284,7 +295,7 @@ class MainWindow(QMainWindow):
         self.video_service.frame_ready.connect(self.video_panel.set_frame)
         self.video_service.stats_updated.connect(self._on_video_stats)
         self.video_panel.reconnect_requested.connect(self._reconnect_video_from_panel)
-        self.command_panel.command_requested.connect(self.command_service.issue_command)
+        self.command_panel.command_requested.connect(self._request_command)
         self.map_panel.command_requested.connect(self.command_service.issue_command)
         self.command_service.command_dispatched.connect(self._on_command_dispatched)
         self.command_service.command_completed.connect(self._on_command_completed)
@@ -293,7 +304,7 @@ class MainWindow(QMainWindow):
             lambda severity, message: self.log_service.log("MAP", message, severity)
         )
 
-        self.log_service.entry_emitted.connect(self.log_panel.add_entry)
+        self.log_service.entries_emitted.connect(self.log_panel.add_entries)
         self.parameters_panel.parameter_changed.connect(self._on_parameter_changed)
         self.parameter_service.parameters_changed.connect(self.parameters_panel.set_parameters)
         self.parameters_panel.apply_requested.connect(self._on_parameters_apply)
@@ -305,6 +316,33 @@ class MainWindow(QMainWindow):
         self.connection_popup.reconnect_requested.connect(self._reconnect_channel)
         self.connection_popup.disconnect_requested.connect(self._disconnect_channel)
         self.connection_popup.settings_requested.connect(self._open_settings_from_popup)
+        self.battery_popup.save_requested.connect(self._save_battery_popup)
+        self.battery_popup.settings_requested.connect(
+            self._open_battery_full_settings
+        )
+        self.onboard_service.state_changed.connect(self.command_panel.update_onboard_state)
+        self.command_panel.update_onboard_state(self.onboard_service.state)
+
+    def _request_command(self, code: str, parameters: dict) -> None:
+        task = str(parameters.get("task", "")).strip().upper()
+        if code == "SET_MISSION_TASK" and task == "KAMIKAZE":
+            dialog = QMessageBox(self)
+            dialog.setIcon(QMessageBox.Icon.Warning)
+            dialog.setWindowTitle(t("onboard.confirm.title", self.language))
+            dialog.setText(t("onboard.confirm.message", self.language))
+            dialog.setInformativeText(t("onboard.confirm.guided", self.language))
+            dialog.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            dialog.setDefaultButton(QMessageBox.StandardButton.No)
+            if dialog.exec() != QMessageBox.StandardButton.Yes:
+                self.ui_log.event(
+                    "kamikaze.start_cancelled",
+                    "Kamikaze başlatma işlemi operatör tarafından iptal edildi",
+                    severity="warning",
+                )
+                return
+        self.command_service.issue_command(code, parameters)
 
     def _on_command_dispatched(self, code: str, parameters: dict) -> None:
         if parameters.get("battery_failsafe") is True:
@@ -377,6 +415,10 @@ class MainWindow(QMainWindow):
         return dialog.exec() == QMessageBox.StandardButton.Yes
 
     def apply_settings(self, settings: SettingsModel) -> None:
+        # Keep the already isolated settings snapshot on the UI side. Reading
+        # SettingsService.current deep-copies the complete model and must not
+        # happen for every high-rate telemetry frame.
+        self._active_settings = settings
         self.language = settings.language
         app = QApplication.instance()
         if app:
@@ -408,6 +450,8 @@ class MainWindow(QMainWindow):
             chip.set_theme(self.theme)
         self.connection_popup.set_theme(self.theme)
         self.connection_popup.set_language(self.language)
+        self.battery_popup.set_theme(self.theme)
+        self.battery_popup.set_language(self.language)
         self.title_bar.set_theme(self.theme)
         self.telemetry_panel.set_theme(self.theme)
         self.attitude_indicator.set_theme(self.theme)
@@ -471,6 +515,9 @@ class MainWindow(QMainWindow):
         self.link_meters["bulk"].set_label(t("status.payload_link", self.language))
         self.battery_meter.set_label(t("status.battery", self.language))
         self.battery_meter.set_language(self.language)
+        self.battery_meter.set_settings_hint(
+            t("battery.popup.open_tooltip", self.language)
+        )
         self.bottom_status["server"].set_label(t("status.server", self.language))
         self.bottom_status["telemetry"].set_label(t("status.telemetry", self.language))
         self.bottom_status["video"].set_label(t("status.video", self.language))
@@ -483,6 +530,8 @@ class MainWindow(QMainWindow):
             )
         for chip in self.bottom_status.values():
             chip.setToolTip(t("connection.tooltip.open", self.language))
+        self._update_telemetry_link_meter(self._last_snapshot)
+        self._update_video_link_meter(self._last_video_stats)
 
     def _on_telemetry(self, snapshot: TelemetrySnapshot) -> None:
         if self._shutdown_prepared:
@@ -492,16 +541,10 @@ class MainWindow(QMainWindow):
         self.command_panel.update_snapshot(snapshot)
         self.attitude_indicator.update_snapshot(snapshot)
         self.map_panel.update_snapshot(snapshot)
-        self._update_flight_metrics(snapshot)
-
-        link_freshness_s = float(
-            self.settings_service.current.backend.mavlink.heartbeat_timeout
-        )
-        link_quality_available = snapshot.has_fresh_link_quality(link_freshness_s)
-        packet_text = f"↓ {snapshot.packets_in} ↑ {snapshot.packets_out}"
+        settings = self._active_settings
         battery_alarm_active = self.battery_alarm_service.evaluate(
             snapshot,
-            self.settings_service.current.backend.battery_alarm,
+            settings.backend.battery_alarm,
         )
         if (
             snapshot.telemetry_link
@@ -517,13 +560,7 @@ class MainWindow(QMainWindow):
             self.battery_meter.set_alarm(battery_alarm_active)
         else:
             self.battery_meter.set_unavailable()
-        if snapshot.telemetry_link and snapshot.autopilot_link:
-            self.link_meters["command"].set_value(
-                snapshot.link_quality if link_quality_available else 0,
-                packet_text,
-            )
-        else:
-            self.link_meters["command"].set_unavailable(packet_text)
+        self._update_telemetry_link_meter(snapshot)
         warning_signature = "|".join(snapshot.warnings)
         if warning_signature and warning_signature != self._last_warning_signature:
             self.log_service.log("FLT", ", ".join(snapshot.warnings), "warning")
@@ -532,7 +569,96 @@ class MainWindow(QMainWindow):
     def _on_video_stats(self, stats: VideoStreamStats) -> None:
         if self._shutdown_prepared:
             return
+        self._last_video_stats = stats
         self.video_panel.set_stats(stats)
+        self._update_video_link_meter(stats)
+
+    def _update_telemetry_link_meter(self, snapshot: TelemetrySnapshot) -> None:
+        meter = self.link_meters["command"]
+        freshness_s = float(self._active_settings.backend.mavlink.heartbeat_timeout)
+        quality_available = snapshot.has_fresh_link_quality(freshness_s)
+        rf_available = bool(
+            quality_available and snapshot.link_quality_source == "rf"
+        )
+        compact = [f"↓{snapshot.packets_in} ↑{snapshot.packets_out}"]
+        if rf_available:
+            compact.append(f"RF{snapshot.link_quality}")
+            if snapshot.radio_tx_buffer is not None:
+                compact.append(f"TB{snapshot.radio_tx_buffer}")
+        detail = " · ".join(compact)
+        delivery = snapshot.packet_delivery_percent
+        if snapshot.telemetry_link and snapshot.autopilot_link:
+            quality = delivery
+            if quality is None and quality_available:
+                quality = snapshot.link_quality
+            if quality is None:
+                meter.set_unavailable(detail)
+            else:
+                meter.set_value(quality, detail)
+        else:
+            meter.set_unavailable(detail)
+        meter.set_metric_tooltip(self._telemetry_link_tooltip(snapshot, rf_available))
+
+    def _telemetry_link_tooltip(
+        self,
+        snapshot: TelemetrySnapshot,
+        rf_available: bool,
+    ) -> str:
+        delivery = self._metric(snapshot.packet_delivery_percent, "%")
+        rf_quality = self._metric(snapshot.link_quality if rf_available else None, "%")
+        local_snr = self._radio_snr(snapshot.radio_local_rssi, snapshot.radio_local_noise)
+        remote_snr = self._radio_snr(snapshot.radio_remote_rssi, snapshot.radio_remote_noise)
+        received_at = snapshot.link_quality_received_at
+        age_s = None
+        if received_at is not None and received_at.tzinfo is not None:
+            age_s = max(0.0, (snapshot.timestamp - received_at).total_seconds())
+        return "\n".join(
+            (
+                t("link.tooltip.delivery", self.language, value=delivery),
+                t("link.tooltip.rf_quality", self.language, value=rf_quality),
+                t(
+                    "link.tooltip.local_radio",
+                    self.language,
+                    rssi=self._metric(snapshot.radio_local_rssi),
+                    noise=self._metric(snapshot.radio_local_noise),
+                    snr=self._metric(local_snr, " dB", precision=1),
+                ),
+                t(
+                    "link.tooltip.remote_radio",
+                    self.language,
+                    rssi=self._metric(snapshot.radio_remote_rssi),
+                    noise=self._metric(snapshot.radio_remote_noise),
+                    snr=self._metric(remote_snr, " dB", precision=1),
+                ),
+                t(
+                    "link.tooltip.tx_buffer",
+                    self.language,
+                    value=self._metric(snapshot.radio_tx_buffer, "%"),
+                ),
+                t(
+                    "link.tooltip.radio_counters",
+                    self.language,
+                    errors=self._metric(snapshot.radio_rx_errors),
+                    fixed=self._metric(snapshot.radio_fixed_packets),
+                ),
+                t(
+                    "link.tooltip.mavlink_counters",
+                    self.language,
+                    received=snapshot.packets_in,
+                    sent=snapshot.packets_out,
+                    dropped=snapshot.estimated_dropped_packets,
+                ),
+                t(
+                    "link.tooltip.sample",
+                    self.language,
+                    source=snapshot.link_quality_source or "—",
+                    age=self._metric(age_s, " s", precision=1),
+                ),
+            )
+        )
+
+    def _update_video_link_meter(self, stats: VideoStreamStats) -> None:
+        meter = self.link_meters["bulk"]
         if not stats.connected:
             detail = (
                 t(
@@ -543,17 +669,89 @@ class MainWindow(QMainWindow):
                 if stats.frames_received
                 else t("video.link.waiting", self.language)
             )
-            self.link_meters["bulk"].set_unavailable(detail)
+            meter.set_unavailable(detail)
+            meter.set_metric_tooltip(self._video_link_tooltip(stats))
             return
+        resolution = f"{stats.height}p" if stats.height else "—"
+        meter.set_value(
+            stats.quality_percent,
+            f"↓{self._compact_bitrate(stats.bitrate_kbps)} · "
+            f"{stats.fps:.1f}F · {resolution}",
+        )
+        meter.set_metric_tooltip(self._video_link_tooltip(stats))
+
+    def _video_link_tooltip(self, stats: VideoStreamStats) -> str:
+        backend = self._active_settings.backend
+        state = t(
+            "video.tooltip.state.connected"
+            if stats.connected
+            else "video.tooltip.state.waiting",
+            self.language,
+        )
+        resolution = f"{stats.width}×{stats.height}" if stats.width and stats.height else "—"
         bitrate = (
-            f"{stats.bitrate_kbps / 1000.0:.1f} Mbps"
+            f"{stats.bitrate_kbps / 1000.0:.2f} Mbps"
             if stats.bitrate_kbps >= 1000.0
             else f"{stats.bitrate_kbps:.0f} kbps"
         )
-        self.link_meters["bulk"].set_value(
-            stats.quality_percent,
-            f"↓ {bitrate} · {stats.fps:.1f} FPS",
+        return "\n".join(
+            (
+                t("video.tooltip.state", self.language, value=state),
+                t(
+                    "video.tooltip.quality",
+                    self.language,
+                    value=self._metric(stats.quality_percent if stats.connected else None, "%"),
+                ),
+                t("video.tooltip.resolution", self.language, value=resolution),
+                t("video.tooltip.fps", self.language, value=f"{stats.fps:.1f}"),
+                t("video.tooltip.bitrate", self.language, value=bitrate),
+                t("video.tooltip.frames", self.language, value=stats.frames_received),
+                t(
+                    "video.tooltip.frame_age",
+                    self.language,
+                    value=self._metric(stats.frame_age_s, " s", precision=2),
+                ),
+                t(
+                    "video.tooltip.source",
+                    self.language,
+                    source=backend.video_source_type.upper(),
+                    codec=backend.video_codec.upper(),
+                ),
+                t(
+                    "video.tooltip.pipeline",
+                    self.language,
+                    latency=backend.video_latency_ms,
+                    timeout=backend.video_frame_timeout_s,
+                ),
+            )
         )
+
+    @staticmethod
+    def _radio_snr(rssi: int | None, noise: int | None) -> float | None:
+        if rssi is None or noise is None or rssi <= 0 or noise <= 0:
+            return None
+        return (rssi - noise) / 1.9
+
+    @staticmethod
+    def _compact_bitrate(bitrate_kbps: float) -> str:
+        if bitrate_kbps >= 1000.0:
+            return f"{bitrate_kbps / 1000.0:.1f}M"
+        return f"{bitrate_kbps:.0f}K"
+
+    @staticmethod
+    def _metric(
+        value: int | float | None,
+        suffix: str = "",
+        *,
+        precision: int = 0,
+    ) -> str:
+        if value is None:
+            return "—"
+        if isinstance(value, float):
+            rendered = f"{value:.{precision}f}"
+        else:
+            rendered = str(value)
+        return f"{rendered}{suffix}"
 
     def _on_connection_status(self, status: ConnectionStatus) -> None:
         if self._shutdown_prepared:
@@ -632,6 +830,7 @@ class MainWindow(QMainWindow):
         self.connection_service.repair_serial_access(status.channel)
 
     def _open_connection_popup(self, channel: str, chip: StatusChip) -> None:
+        self.battery_popup.close()
         status = self.connection_service.status(channel)
         self.connection_popup.show_status(status)
         self.connection_popup.adjustSize()
@@ -642,6 +841,55 @@ class MainWindow(QMainWindow):
         self.connection_popup.move(x, y)
         self.connection_popup.show()
         self.connection_popup.raise_()
+
+    def _open_battery_popup(self) -> None:
+        self.connection_popup.close()
+        self.battery_popup.show_settings(
+            self._active_settings,
+            self._last_snapshot,
+        )
+        self.battery_popup.adjustSize()
+        origin = self.battery_meter.mapToGlobal(QPoint(0, 0))
+        screen = self.battery_meter.screen().availableGeometry()
+        x = min(
+            max(screen.left() + 6, origin.x()),
+            screen.right() - self.battery_popup.width() - 6,
+        )
+        y = max(screen.top() + 6, origin.y() - self.battery_popup.height() - 7)
+        self.battery_popup.move(x, y)
+        self.battery_popup.show()
+        self.battery_popup.raise_()
+
+    def _save_battery_popup(self, values: dict[str, object]) -> None:
+        payload = self.settings_service.current.to_dict()
+        profile = payload["backend"]["battery_telemetry"]
+        alarm = payload["backend"]["battery_alarm"]
+        for key in ("full_voltage", "reserve_voltage", "reserve_percent"):
+            profile[key] = values[key]
+        for key in (
+            "warning_mode",
+            "warning_threshold",
+            "failsafe_enabled",
+            "failsafe_mode",
+            "failsafe_threshold",
+        ):
+            alarm[key] = values[key]
+        try:
+            updated = SettingsModel.from_dict(payload)
+        except (TypeError, ValueError) as exc:
+            self.battery_popup.set_result(False, str(exc))
+            return
+        self.settings_service.save(updated)
+        self._active_settings = updated
+        self.battery_popup.show_settings(updated, self._last_snapshot)
+        self.battery_popup.set_result(
+            True,
+            t("battery.popup.saved", self.language),
+        )
+
+    def _open_battery_full_settings(self) -> None:
+        self.battery_popup.close()
+        self.open_settings()
 
     def _reconnect_channel(self, channel: str, options: dict[str, object]) -> None:
         if channel == "telemetry":
@@ -656,7 +904,7 @@ class MainWindow(QMainWindow):
         self.connection_service.reconnect(channel, options)
 
     def _reconnect_video_from_panel(self) -> None:
-        backend = self.settings_service.current.backend
+        backend = self._active_settings.backend
         self.connection_service.reconnect(
             "video",
             {
@@ -759,6 +1007,7 @@ class MainWindow(QMainWindow):
         self.attitude_indicator.shutdown()
         self.battery_meter.set_alarm(False)
         self.connection_popup.hide()
+        self.battery_popup.hide()
         self.map_panel.shutdown()
 
     def closeEvent(self, event: QCloseEvent) -> None:

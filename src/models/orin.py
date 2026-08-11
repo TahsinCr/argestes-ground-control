@@ -12,13 +12,16 @@ from src.core.abstracts import Model
 @dataclass(frozen=True, slots=True)
 class OrinLinkConfig(Model):
     enabled: bool = False
+    system_id: int = 1
     component_id: int = 191
     network_id: int = 77
     message_type: int = 42_000
-    heartbeat_timeout_s: float = 12.0
+    heartbeat_timeout_s: float = 10.0
     command_timeout_s: float = 5.0
 
     def __post_init__(self) -> None:
+        if not 1 <= int(self.system_id) <= 255:
+            raise ValueError("Orin system ID 1..255 aralığında olmalı")
         if not 0 <= int(self.component_id) <= 255:
             raise ValueError("Orin component ID 0..255 aralığında olmalı")
         if not 0 <= int(self.network_id) <= 255:
@@ -40,6 +43,20 @@ class OrinConnectionState(Model):
     component_id: int = 191
     health: str = "unknown"
     active_task: str = ""
+    active_tasks: tuple[str, ...] = field(default_factory=tuple)
+    queued_tasks: tuple[str, ...] = field(default_factory=tuple)
+    active_missions: tuple[int, ...] = field(default_factory=tuple)
+    queued_missions: tuple[int, ...] = field(default_factory=tuple)
+    kamikaze_target_ready: bool = False
+    kamikaze_target_revision: int = 0
+    vehicle_mode: str = ""
+    idle_vehicle_mode: str = ""
+    mission_vehicle_mode: str = ""
+    remote_log_running: bool = False
+    remote_log_queued: int = 0
+    remote_log_sent: int = 0
+    remote_log_dropped: int = 0
+    remote_log_error: str = ""
     version: str = ""
     uptime_s: float = 0.0
     capabilities: tuple[str, ...] = field(default_factory=tuple)

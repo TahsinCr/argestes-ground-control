@@ -13,6 +13,7 @@ from src.models.geometry import Point
 from src.models.logs import LogEntry
 from src.models.mission import MapContact, MapOverlay, MissionState
 from src.models.orin import OrinCommandReceipt, OrinConnectionState, OrinLinkConfig, OrinMessage
+from src.models.onboard import OnboardMissionEvent, OnboardMissionState
 from src.models.parameters import Parameter
 from src.models.settings import SettingsModel
 from src.models.telemetry import TargetTrack, TelemetrySnapshot
@@ -43,6 +44,8 @@ __all__ = [
     "OrinConnectionState",
     "OrinLinkConfig",
     "OrinMessage",
+    "OnboardMissionEvent",
+    "OnboardMissionState",
     "Parameter",
     "SettingsModel",
     "TelemetrySnapshot",

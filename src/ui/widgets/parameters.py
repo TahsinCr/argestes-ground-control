@@ -80,9 +80,9 @@ class ParametersPanel(PanelFrame):
             [
                 t("table.parameters.key", language),
                 t("table.parameters.value", language),
+                t("table.parameters.default", language),
                 t("table.parameters.unit", language),
                 t("table.parameters.category", language),
-                t("table.parameters.description", language),
             ]
         )
         if self.category_combo.count():
@@ -92,17 +92,121 @@ class ParametersPanel(PanelFrame):
         self._update_footer()
 
     def set_parameters(self, parameters: Iterable[Parameter]) -> None:
-        self._parameters = list(parameters)
+        incoming = list(parameters)
+        previous_by_key = {item.key: item for item in self._parameters}
+        incoming_by_key = {item.key: item for item in incoming}
+        previous_keys = set(previous_by_key)
+        incoming_keys = set(incoming_by_key)
+        previous_order = [item.key for item in self._parameters]
+        retained_order = [item.key for item in incoming if item.key in previous_keys]
+        metadata_compatible = all(
+            (
+                previous_by_key[key].unit,
+                previous_by_key[key].category,
+                previous_by_key[key].description,
+                previous_by_key[key].value_type,
+            )
+            == (
+                incoming_by_key[key].unit,
+                incoming_by_key[key].category,
+                incoming_by_key[key].description,
+                incoming_by_key[key].value_type,
+            )
+            for key in previous_keys & incoming_keys
+        )
+
+        # Streaming parameter sync only adds rows and updates values. Handle
+        # that common path incrementally so a growing ArduPilot catalogue does
+        # not rebuild a thousand-row table for every published batch.
+        if (
+            previous_keys
+            and previous_keys.issubset(incoming_keys)
+            and retained_order == previous_order
+            and metadata_compatible
+        ):
+            self._apply_incremental_parameters(
+                incoming,
+                previous_by_key=previous_by_key,
+            )
+            return
+
+        self._parameters = incoming
         self._original_values = {item.key: item.value for item in self._parameters}
         self._dirty_values.clear()
+        self._replace_categories()
+        self._rebuild_table()
+        self._update_footer()
+
+    def _replace_categories(self) -> None:
         categories = sorted({item.category for item in self._parameters})
+        selected = self.category_combo.currentData() or "all"
         self.category_combo.blockSignals(True)
         self.category_combo.clear()
         self.category_combo.addItem(t("table.parameters.all", self._language), "all")
         for category in categories:
             self.category_combo.addItem(category.upper(), category)
+        selected_index = self.category_combo.findData(selected)
+        self.category_combo.setCurrentIndex(max(0, selected_index))
         self.category_combo.blockSignals(False)
-        self._rebuild_table()
+
+    def _apply_incremental_parameters(
+        self,
+        incoming: list[Parameter],
+        *,
+        previous_by_key: dict[str, Parameter],
+    ) -> None:
+        incoming_by_key = {item.key: item for item in incoming}
+        new_parameters = [
+            item for item in incoming if item.key not in previous_by_key
+        ]
+        self._parameters = incoming
+
+        existing_categories = {
+            str(self.category_combo.itemData(index))
+            for index in range(self.category_combo.count())
+        }
+        for category in sorted(
+            {item.category for item in new_parameters} - existing_categories
+        ):
+            self.category_combo.addItem(category.upper(), category)
+
+        visible_rows = {
+            self.table.item(row, 0).text(): row
+            for row in range(self.table.rowCount())
+            if self.table.item(row, 0) is not None
+        }
+        self.table.blockSignals(True)
+        self.table.setUpdatesEnabled(False)
+        try:
+            for key, parameter in incoming_by_key.items():
+                previous = previous_by_key.get(key)
+                if key not in self._dirty_values:
+                    self._original_values[key] = parameter.value
+                row = visible_rows.get(key)
+                if (
+                    row is not None
+                    and key not in self._dirty_values
+                    and (previous is None or previous.value != parameter.value)
+                ):
+                    value_item = self.table.item(row, 1)
+                    if value_item is not None:
+                        value_item.setText(str(parameter.value))
+                if (
+                    row is not None
+                    and (previous is None or previous.default_value != parameter.default_value)
+                ):
+                    default_item = self.table.item(row, 2)
+                    if default_item is not None:
+                        default_item.setText(self._display_default(parameter.default_value))
+            for parameter in new_parameters:
+                if parameter.matches(
+                    self.search_input.text(),
+                    self.category_combo.currentData(),
+                ):
+                    self._append_parameter_row(parameter)
+        finally:
+            self.table.setUpdatesEnabled(True)
+            self.table.blockSignals(False)
         self._update_footer()
 
     def _parameter_for_key(self, key: str) -> Parameter | None:
@@ -119,23 +223,30 @@ class ParametersPanel(PanelFrame):
         for parameter in self._parameters:
             if not parameter.matches(query, category):
                 continue
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            items = [
-                QTableWidgetItem(str(parameter.key)),
-                QTableWidgetItem(str(parameter.value)),
-                QTableWidgetItem(parameter.unit),
-                QTableWidgetItem(parameter.category.upper()),
-                QTableWidgetItem(parameter.description),
-            ]
-            items[0].setFlags(items[0].flags() & ~Qt.ItemFlag.ItemIsEditable)
-            items[2].setFlags(items[2].flags() & ~Qt.ItemFlag.ItemIsEditable)
-            items[3].setFlags(items[3].flags() & ~Qt.ItemFlag.ItemIsEditable)
-            items[4].setFlags(items[4].flags() & ~Qt.ItemFlag.ItemIsEditable)
-            for column, item in enumerate(items):
-                self.table.setItem(row, column, item)
-            self._apply_row_style(row, parameter.key)
+            self._append_parameter_row(parameter)
         self.table.blockSignals(False)
+
+    def _append_parameter_row(self, parameter: Parameter) -> None:
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        items = [
+            QTableWidgetItem(str(parameter.key)),
+            QTableWidgetItem(str(parameter.value)),
+            QTableWidgetItem(self._display_default(parameter.default_value)),
+            QTableWidgetItem(parameter.unit),
+            QTableWidgetItem(parameter.category.upper()),
+        ]
+        items[0].setFlags(items[0].flags() & ~Qt.ItemFlag.ItemIsEditable)
+        items[2].setFlags(items[2].flags() & ~Qt.ItemFlag.ItemIsEditable)
+        items[3].setFlags(items[3].flags() & ~Qt.ItemFlag.ItemIsEditable)
+        items[4].setFlags(items[4].flags() & ~Qt.ItemFlag.ItemIsEditable)
+        for column, item in enumerate(items):
+            self.table.setItem(row, column, item)
+        self._apply_row_style(row, parameter.key)
+
+    @staticmethod
+    def _display_default(value: object | None) -> str:
+        return "—" if value is None else str(value)
 
     def _coerce_value(self, parameter: Parameter, raw_value: str) -> object:
         current_value = self._original_values.get(parameter.key, parameter.value)

@@ -9,10 +9,12 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFrame,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QLayout,
     QListWidget,
     QListWidgetItem,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -28,6 +30,7 @@ from src.ui.config.commands import (
     TASK_LABEL_KEYS,
 )
 from src.models.commands import CommandResult
+from src.models.onboard import OnboardMissionState
 from src.models.telemetry import TelemetrySnapshot
 from src.ui.themes.style import ThemePalette
 from src.ui.widgets.common import PanelFrame, compact_button
@@ -260,6 +263,7 @@ class CommandPanel(PanelFrame):
         self._requested_armed: bool | None = None
         self._mode_selection_dirty = False
         self._arm_render_signature: tuple[object, ...] | None = None
+        self._onboard_state = OnboardMissionState()
         self.setMinimumWidth(300)
 
         self.mode_label = QLabel(self)
@@ -333,6 +337,9 @@ class CommandPanel(PanelFrame):
         self.task_list.setAlternatingRowColors(False)
         self.task_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.task_list.setMinimumHeight(96)
+        self.task_list.currentRowChanged.connect(
+            lambda _row: self._sync_command_availability()
+        )
         self.set_task_codes(
             (command.code for command in AUTONOMOUS_COMMANDS)
             if task_codes is None
@@ -343,6 +350,43 @@ class CommandPanel(PanelFrame):
         self.task_apply_button = compact_button("TASK APPLY", "primary")
         self.task_apply_button.clicked.connect(self._emit_task_command)
         self.body_layout.addWidget(self.task_apply_button)
+
+        self.onboard_status = QLabel(self)
+        self.onboard_status.setProperty("role", "readout-label")
+        self.onboard_status.setWordWrap(True)
+        self.body_layout.addWidget(self.onboard_status)
+
+        qr_row = QWidget(self)
+        qr_layout = QHBoxLayout(qr_row)
+        qr_layout.setContentsMargins(0, 0, 0, 0)
+        qr_layout.setSpacing(4)
+        self.qr_result = QLineEdit(self)
+        self.qr_result.setReadOnly(True)
+        self.qr_copy_button = compact_button("COPY", "success")
+        self.qr_copy_button.clicked.connect(self._copy_qr)
+        qr_layout.addWidget(self.qr_result, 1)
+        qr_layout.addWidget(self.qr_copy_button)
+        self.body_layout.addWidget(qr_row)
+
+        task_control_row = QWidget(self)
+        task_control_layout = QHBoxLayout(task_control_row)
+        task_control_layout.setContentsMargins(0, 0, 0, 0)
+        task_control_layout.setSpacing(4)
+        self.task_stop_button = compact_button("STOP", "warning")
+        self.task_cancel_button = compact_button("CANCEL", "danger")
+        self.task_stop_button.clicked.connect(
+            lambda: self.command_requested.emit(
+                "ONBOARD_TASK_STOP", {"task": "kamikaze.execute"}
+            )
+        )
+        self.task_cancel_button.clicked.connect(
+            lambda: self.command_requested.emit(
+                "ONBOARD_TASK_CANCEL", {"task": "kamikaze.execute"}
+            )
+        )
+        task_control_layout.addWidget(self.task_stop_button)
+        task_control_layout.addWidget(self.task_cancel_button)
+        self.body_layout.addWidget(task_control_row)
 
         self.set_language(self._language)
 
@@ -355,6 +399,10 @@ class CommandPanel(PanelFrame):
         self.mode_apply_button.setText(t("command.apply", language).upper())
         self.profile_apply_button.setText(t("command.apply", language).upper())
         self.task_apply_button.setText(t("command.task_apply", language).upper())
+        self.qr_copy_button.setText(t("onboard.qr.copy", language).upper())
+        self.task_stop_button.setText(t("onboard.task.stop", language).upper())
+        self.task_cancel_button.setText(t("onboard.task.cancel", language).upper())
+        self.update_onboard_state(self._onboard_state)
         self._sync_arm_controls()
         self.mode_apply_button.setToolTip(t("command.mode_apply.tooltip", language))
         self.profile_apply_button.setToolTip(t("command.profile_apply.tooltip", language))
@@ -434,6 +482,59 @@ class CommandPanel(PanelFrame):
                 self._sync_mode_combo(self._telemetry_mode)
         elif not self._mode_selection_dirty:
             self._sync_mode_combo(self._telemetry_mode)
+
+    def update_onboard_state(self, state: OnboardMissionState) -> None:
+        self._onboard_state = state
+        if not state.connected:
+            text = t("onboard.status.offline", self._language)
+            status = "danger"
+        elif state.critical_event:
+            text = t(
+                "onboard.status.critical",
+                self._language,
+                event=state.critical_event,
+            )
+            status = "danger"
+        elif state.waiting_for_guided:
+            text = t("onboard.status.waiting_guided", self._language)
+            status = "warning"
+        elif state.active_task:
+            text = t(
+                "onboard.status.active",
+                self._language,
+                task=state.active_task,
+                phase=state.phase,
+            )
+            status = "success" if state.phase == "succeeded" else "neutral"
+        else:
+            text = t(
+                "onboard.status.ready",
+                self._language,
+                version=state.onboard_version or "-",
+            )
+            status = "success"
+        self.onboard_status.setText(text)
+        self.onboard_status.setProperty("state", status)
+        self.onboard_status.style().unpolish(self.onboard_status)
+        self.onboard_status.style().polish(self.onboard_status)
+        self.qr_result.setText(state.qr_text or "")
+        self.qr_result.setPlaceholderText(
+            t(
+                "onboard.qr.cancelled"
+                if state.qr_status == "cancelled"
+                else "onboard.qr.pending",
+                self._language,
+            )
+        )
+        self.qr_copy_button.setEnabled(bool(state.qr_text))
+        task_active = bool(
+            state.connected
+            and state.active_task == "kamikaze.execute"
+            and not state.terminal
+        )
+        self.task_stop_button.setEnabled(task_active and not state.pending_command)
+        self.task_cancel_button.setEnabled(task_active and not state.pending_command)
+        self._sync_command_availability()
 
     def _on_mode_selected(self, _index: int) -> None:
         selected = str(self.mode_combo.currentData() or "").strip().upper()
@@ -586,14 +687,22 @@ class CommandPanel(PanelFrame):
         self._sync_command_availability()
 
     def _sync_command_availability(self) -> None:
+        if not hasattr(self, "task_apply_button"):
+            return
         available = self._vehicle_connected and not self._pending_commands
         for button in (
             self.mode_apply_button,
             self.profile_apply_button,
-            self.task_apply_button,
         ):
             if button.isEnabled() != available:
                 button.setEnabled(available)
+        current = self.task_list.currentItem()
+        selected_task = str(current.data(Qt.ItemDataRole.UserRole) or "") if current else ""
+        task_available = available and (
+            selected_task not in {"KAMIKAZE", "TARGET_LOCK", "WAYPOINT_TRACK", "SURVEY_AREA"}
+            or (self._onboard_state.connected and not self._onboard_state.pending_command)
+        )
+        self.task_apply_button.setEnabled(task_available)
         if self.mode_combo.isEnabled() != available:
             self.mode_combo.setEnabled(available)
         self._sync_arm_controls()
@@ -627,3 +736,10 @@ class CommandPanel(PanelFrame):
         params = self._profile_params()
         params["mode"] = self.mode_combo.currentData()
         self.command_requested.emit(command, params)
+
+    def _copy_qr(self) -> None:
+        text = self.qr_result.text()
+        if text:
+            from PyQt6.QtWidgets import QApplication
+
+            QApplication.clipboard().setText(text)

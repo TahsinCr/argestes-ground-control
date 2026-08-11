@@ -16,6 +16,10 @@ dist/
 
 data/
 
+# Local flight-controller diagnostics
+/pixhawk_param_dump.py
+/pixhawk_params.json
+
 .idea/
 .vscode/
 *.swp

@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from src.core.events import EventStream, Subscription
+from src.core.events import EventBus, Subscription
 from src.models.competition import CompetitionServerConfig
 from src.models.connections import ConnectionStatus
 from src.models.vehicle import VehicleConnectionConfig, VehicleConnectionState
@@ -51,14 +51,14 @@ class BackendConnectionControlService(ConnectionControlService):
         self._competition = competition
         self._orin = orin
         self._logger = logger
-        self._changed = EventStream[ConnectionStatus]()
+        self._changed = EventBus[ConnectionStatus]()
         self._subscriptions: list[Subscription] = []
         self._operation_lock = threading.RLock()
         self._health_stop = threading.Event()
         self._health_thread: threading.Thread | None = None
 
     @property
-    def changed(self) -> EventStream[ConnectionStatus]:
+    def changed(self) -> EventBus[ConnectionStatus]:
         return self._changed
 
     def start(self) -> None:
@@ -207,8 +207,14 @@ class BackendConnectionControlService(ConnectionControlService):
                     if orin_state.round_trip_ms is not None
                     else ""
                 )
+                remote_log = (
+                    f"log açık / kuyruk {orin_state.remote_log_queued}"
+                    if orin_state.remote_log_running
+                    else "log kapalı"
+                )
                 detail = (
                     f"Sağlık {orin_state.health.upper()} / görev {task} / "
+                    f"mod {orin_state.vehicle_mode or '-'} / {remote_log} / "
                     f"heartbeat {heartbeat_age:.1f} sn önce{latency}"
                 )
             else:
@@ -233,6 +239,7 @@ class BackendConnectionControlService(ConnectionControlService):
                     "shared_vehicle_link": True,
                     "vehicle_connected": connected,
                     "component_id": settings.backend.orin.component_id,
+                    "system_id": settings.backend.orin.system_id,
                     "network_id": settings.backend.orin.network_id,
                     "message_type": settings.backend.orin.message_type,
                     "heartbeat_age_s": heartbeat_age,
@@ -240,6 +247,13 @@ class BackendConnectionControlService(ConnectionControlService):
                     "health": orin_state.health if orin_state is not None else "offline",
                     "service_available": orin_state is not None,
                     "active_task": orin_state.active_task if orin_state is not None else "",
+                    "queued_tasks": list(orin_state.queued_tasks) if orin_state is not None else [],
+                    "vehicle_mode": orin_state.vehicle_mode if orin_state is not None else "",
+                    "onboard_version": orin_state.version if orin_state is not None else "",
+                    "remote_log_running": orin_state.remote_log_running if orin_state is not None else False,
+                    "remote_log_queued": orin_state.remote_log_queued if orin_state is not None else 0,
+                    "remote_log_sent": orin_state.remote_log_sent if orin_state is not None else 0,
+                    "remote_log_dropped": orin_state.remote_log_dropped if orin_state is not None else 0,
                     "round_trip_ms": (
                         orin_state.round_trip_ms if orin_state is not None else None
                     ),
@@ -347,7 +361,15 @@ class BackendConnectionControlService(ConnectionControlService):
                     "link_quality_available": link_quality_available,
                     "radio_local_rssi": snapshot.radio_local_rssi,
                     "radio_remote_rssi": snapshot.radio_remote_rssi,
+                    "radio_local_noise": snapshot.radio_local_noise,
+                    "radio_remote_noise": snapshot.radio_remote_noise,
                     "radio_tx_buffer": snapshot.radio_tx_buffer,
+                    "radio_rx_errors": snapshot.radio_rx_errors,
+                    "radio_fixed_packets": snapshot.radio_fixed_packets,
+                    "packet_delivery_percent": snapshot.packet_delivery_percent,
+                    "estimated_dropped_packets": snapshot.estimated_dropped_packets,
+                    "packets_in": snapshot.packets_in,
+                    "packets_out": snapshot.packets_out,
                 },
             )
         summary = "Otopilot heartbeat bağlı" if connected else "Otopilot heartbeat bağlantısı yok"
@@ -672,7 +694,7 @@ class BackendConnectionControlService(ConnectionControlService):
             self._publish(channel)
 
     def _publish(self, channel: str) -> None:
-        self._changed.publish_isolated(self.status(channel))
+        self._changed.publish(self.status(channel))
 
     @staticmethod
     def _normalize(channel: str) -> str:

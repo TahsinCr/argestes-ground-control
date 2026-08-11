@@ -31,6 +31,9 @@ HSS_MIN_CENTER_DISTANCE_M = 280.0
 HSS_MAX_CENTER_DISTANCE_M = 900.0
 HSS_RADII_M = (50, 75, 100, 150)
 
+QR_LATITUDE = 39.86706
+QR_LONGITUDE = 32.74729
+
 LOG_MESSAGES: dict[str, dict[str, str]] = {
     "en": {
         "server_ready": (
@@ -428,10 +431,10 @@ class FakeTeknofestHandler(BaseHTTPRequestHandler):
             self.state.log(
                 "reference_qr_response",
                 self._authenticated_team(),
-                latitude + 0.0012,
-                longitude - 0.0012,
+                QR_LATITUDE,
+                QR_LONGITUDE,
             )
-            self._send(200, {"qrEnlem": latitude + 0.0012, "qrBoylam": longitude - 0.0012})
+            self._send(200, {"qrEnlem": QR_LATITUDE, "qrBoylam": QR_LONGITUDE})
         elif path == "/api/hss_koordinatlari":
             self.state.log("reference_hss_request", self._authenticated_team())
             payload = self.state.hss_payload()

@@ -127,6 +127,51 @@ class BatteryAlarmSettings:
 
 
 @dataclass(slots=True)
+class BatteryTelemetrySettings:
+    """Battery display source and 4S voltage-estimation calibration."""
+
+    mode: str = "voltage"
+    cell_count: int = 4
+    full_voltage: float = 16.8
+    reserve_voltage: float = 14.8
+    reserve_percent: float = 10.0
+    median_window: int = 7
+    discharge_filter_seconds: float = 15.0
+    recovery_filter_seconds: float = 2.0
+
+    def __post_init__(self) -> None:
+        self.mode = str(self.mode).strip().lower()
+        self.cell_count = int(self.cell_count)
+        self.full_voltage = float(self.full_voltage)
+        self.reserve_voltage = float(self.reserve_voltage)
+        self.reserve_percent = float(self.reserve_percent)
+        self.median_window = int(self.median_window)
+        self.discharge_filter_seconds = float(self.discharge_filter_seconds)
+        self.recovery_filter_seconds = float(self.recovery_filter_seconds)
+        if self.mode not in {"voltage", "autopilot"}:
+            raise ValueError(f"Desteklenmeyen batarya telemetri modu: {self.mode}")
+        if self.cell_count <= 0:
+            raise ValueError("Batarya hücre sayısı pozitif olmalı")
+        if not 0.0 < self.reserve_percent < 100.0:
+            raise ValueError("Batarya rezerv yüzdesi 0..100 aralığında olmalı")
+        if not 0.0 < self.reserve_voltage < self.full_voltage:
+            raise ValueError("Batarya rezerv voltajı tam dolu voltajından düşük olmalı")
+        if self.empty_voltage <= 0.0:
+            raise ValueError("Hesaplanan minimum batarya voltajı pozitif olmalı")
+        if self.median_window < 3 or self.median_window % 2 == 0:
+            raise ValueError("Batarya medyan penceresi tek ve en az 3 olmalı")
+        if self.discharge_filter_seconds <= 0.0 or self.recovery_filter_seconds <= 0.0:
+            raise ValueError("Batarya filtre süreleri pozitif olmalı")
+
+    @property
+    def empty_voltage(self) -> float:
+        reserve_fraction = self.reserve_percent / 100.0
+        return (
+            self.reserve_voltage - reserve_fraction * self.full_voltage
+        ) / (1.0 - reserve_fraction)
+
+
+@dataclass(slots=True)
 class BackendSettings:
     mock_mode: bool = False
     video_auto_connect: bool = False
@@ -141,6 +186,9 @@ class BackendSettings:
     competition: CompetitionServerConfig = field(default_factory=CompetitionServerConfig)
     mission: MissionDefaults = field(default_factory=MissionDefaults)
     battery_alarm: BatteryAlarmSettings = field(default_factory=BatteryAlarmSettings)
+    battery_telemetry: BatteryTelemetrySettings = field(
+        default_factory=BatteryTelemetrySettings
+    )
 
     def __post_init__(self) -> None:
         self.video_auto_connect = bool(self.video_auto_connect)
@@ -222,6 +270,12 @@ class SettingsModel(Model):
             battery_alarm = BatteryAlarmSettings(
                 **_known(BatteryAlarmSettings, battery_payload)
             )
+            battery_telemetry = BatteryTelemetrySettings(
+                **_known(
+                    BatteryTelemetrySettings,
+                    dict(backend_payload.pop("battery_telemetry", {})),
+                )
+            )
             mission_payload = dict(backend_payload.pop("mission", {}))
             radii = dict(DEFAULT_RADII)
             radii.update({key: int(value) for key, value in mission_payload.get("radii", {}).items()})
@@ -232,6 +286,7 @@ class SettingsModel(Model):
                 orin=orin,
                 competition=competition,
                 battery_alarm=battery_alarm,
+                battery_telemetry=battery_telemetry,
                 mission=MissionDefaults(
                     radii=radii,
                     default_altitude_m=int(mission_payload.get("default_altitude_m", 100)),

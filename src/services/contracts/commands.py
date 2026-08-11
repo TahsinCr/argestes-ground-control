@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from src.core.events import EventStream
+from src.core.events import EventBus
 from src.models.commands import CommandRequest, CommandResult
 
 
@@ -15,11 +15,11 @@ class CommandService(ABC):
 
     @property
     @abstractmethod
-    def dispatched(self) -> EventStream[CommandRequest]: ...
+    def dispatched(self) -> EventBus[CommandRequest]: ...
 
     @property
     @abstractmethod
-    def completed(self) -> EventStream[CommandResult]: ...
+    def completed(self) -> EventBus[CommandResult]: ...
 
     @abstractmethod
     def dispatch(self, request: CommandRequest) -> CommandResult: ...

@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import replace
 from typing import Any
 
-from src.core.events import EventStream, Subscription
+from src.core.events import EventBus, Subscription
 from src.core.mavlink import MavlinkClient, MavlinkMessageFilter
 from src.core.mavlink.filter import (
     mavlink_message_type,
@@ -29,7 +29,7 @@ class NullVehicleService(VehicleService):
     """Service that remains safely offline when no vehicle link is configured."""
 
     def __init__(self) -> None:
-        self._changed = EventStream[VehicleConnectionState]()
+        self._changed = EventBus[VehicleConnectionState]()
         self._state = VehicleConnectionState(False, "")
 
     @property
@@ -41,7 +41,7 @@ class NullVehicleService(VehicleService):
         return self._state
 
     @property
-    def connection_changed(self) -> EventStream[VehicleConnectionState]:
+    def connection_changed(self) -> EventBus[VehicleConnectionState]:
         return self._changed
 
     @property
@@ -64,7 +64,7 @@ class NullVehicleService(VehicleService):
 
     def subscribe(self, message_types, callback) -> Subscription:
         del message_types, callback
-        return Subscription(lambda: None)
+        return Subscription(0, lambda: None)
 
     def request_parameters(self) -> None:
         self._unavailable("PARAM_REQUEST_LIST")
@@ -138,7 +138,7 @@ class MavlinkVehicleService(VehicleService):
         self._default_mission_altitude = float(default_mission_altitude)
         if self._default_mission_altitude <= 0:
             raise ValueError("Varsayılan görev irtifası pozitif olmalı")
-        self._changed = EventStream[VehicleConnectionState]()
+        self._changed = EventBus[VehicleConnectionState]()
         self._state = VehicleConnectionState(False, client.endpoint.uri)
         self._subscriptions: list[Subscription] = []
         self._started = False
@@ -175,7 +175,7 @@ class MavlinkVehicleService(VehicleService):
             return self._state
 
     @property
-    def connection_changed(self) -> EventStream[VehicleConnectionState]:
+    def connection_changed(self) -> EventBus[VehicleConnectionState]:
         return self._changed
 
     @property
@@ -257,7 +257,7 @@ class MavlinkVehicleService(VehicleService):
         )
         self._watchdog_thread.start()
         self._request_telemetry_streams()
-        self._changed.publish_isolated(self._state)
+        self._changed.publish(self._state)
         self._event(
             "success",
             "vehicle.connected",
@@ -332,7 +332,7 @@ class MavlinkVehicleService(VehicleService):
                     previous.vehicle_type,
                     previous.autopilot_type,
                 )
-            self._changed.publish_isolated(self._state)
+            self._changed.publish(self._state)
             self._cancel_subscriptions()
         self._event(
             "info",
@@ -646,6 +646,7 @@ class MavlinkVehicleService(VehicleService):
         command = self._client.mavlink.MAV_CMD_COMPONENT_ARM_DISARM
         if force and not armed:
             raise ValueError("Zorla DISARM bu arayüz tarafından desteklenmiyor")
+        boundary = self._client.router.sequence
         self._command_long(
             command,
             1.0 if armed else 0.0,
@@ -654,7 +655,6 @@ class MavlinkVehicleService(VehicleService):
         armed_flag = int(
             getattr(self._client.mavlink, "MAV_MODE_FLAG_SAFETY_ARMED", 128)
         )
-        boundary = self._client.router.sequence
         self._client.wait_for(
             "HEARTBEAT",
             predicate=lambda message: (
@@ -672,18 +672,27 @@ class MavlinkVehicleService(VehicleService):
         if normalized not in mapping:
             raise ValueError(f"Araç modu desteklenmiyor: {normalized}")
         custom_mode = int(mapping[normalized])
-        boundary = self._client.router.sequence
-        self._client.call_raw("set_mode", custom_mode)
-        self._client.wait_for(
-            "HEARTBEAT",
-            predicate=lambda message: (
-                self._is_target_vehicle_message(message)
-                and int(getattr(message, "custom_mode", -1)) == custom_mode
-            ),
-            timeout=self._operation_timeout,
-            after_sequence=boundary,
-        )
-        return True
+        attempt_timeout = self._operation_timeout / 2.0
+        last_error: TimeoutError | None = None
+        for _attempt in range(2):
+            boundary = self._client.router.sequence
+            self._client.call_raw("set_mode", custom_mode)
+            try:
+                self._client.wait_for(
+                    "HEARTBEAT",
+                    predicate=lambda message: (
+                        self._is_target_vehicle_message(message)
+                        and int(getattr(message, "custom_mode", -1)) == custom_mode
+                    ),
+                    timeout=attempt_timeout,
+                    after_sequence=boundary,
+                )
+            except TimeoutError as exc:
+                last_error = exc
+                continue
+            return True
+        assert last_error is not None
+        raise last_error
 
     def _goto(self, parameters: dict[str, Any]) -> bool:
         system, component = self._target
@@ -773,33 +782,47 @@ class MavlinkVehicleService(VehicleService):
         system, component = self._target
         values = [float(value) for value in parameters[:7]]
         values.extend([0.0] * (7 - len(values)))
-        boundary = self._client.router.sequence
-        self._client.call_mav(
-            "command_long_send",
-            system,
-            component,
-            int(command),
-            0,
-            *values,
-        )
-        deadline = time.monotonic() + self._operation_timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(f"MAVLink komut onayı zaman aşımı: {command}")
-            acknowledgement = self._client.wait_for(
-                "COMMAND_ACK",
-                predicate=lambda message: int(message.command) == int(command),
-                timeout=remaining,
-                after_sequence=boundary,
+        attempt_timeout = self._operation_timeout / 2.0
+        last_error: TimeoutError | None = None
+        for confirmation in range(2):
+            boundary = self._client.router.sequence
+            self._client.call_mav(
+                "command_long_send",
+                system,
+                component,
+                int(command),
+                confirmation,
+                *values,
             )
-            result = int(acknowledgement.result)
-            if result == self._client.mavlink.MAV_RESULT_IN_PROGRESS:
-                boundary = self._client.router.sequence
-                continue
-            if result != self._client.mavlink.MAV_RESULT_ACCEPTED:
-                raise RuntimeError(f"MAVLink komutu reddedildi: command={command}, result={result}")
-            return
+            deadline = time.monotonic() + attempt_timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    last_error = TimeoutError(
+                        f"MAVLink komut onayı zaman aşımı: {command}"
+                    )
+                    break
+                try:
+                    acknowledgement = self._client.wait_for(
+                        "COMMAND_ACK",
+                        predicate=lambda message: int(message.command) == int(command),
+                        timeout=remaining,
+                        after_sequence=boundary,
+                    )
+                except TimeoutError as exc:
+                    last_error = exc
+                    break
+                result = int(acknowledgement.result)
+                if result == self._client.mavlink.MAV_RESULT_IN_PROGRESS:
+                    boundary = self._client.router.sequence
+                    continue
+                if result != self._client.mavlink.MAV_RESULT_ACCEPTED:
+                    raise RuntimeError(
+                        f"MAVLink komutu reddedildi: command={command}, result={result}"
+                    )
+                return
+        assert last_error is not None
+        raise last_error
 
     @staticmethod
     def _numeric_parameter_value(name: str, value: object) -> float:
@@ -1058,7 +1081,7 @@ class MavlinkVehicleService(VehicleService):
                 )
                 recovered = self._state
         if recovered is not None:
-            self._changed.publish_isolated(recovered)
+            self._changed.publish(recovered)
             self._event(
                 "success",
                 "vehicle.link_recovered",
@@ -1089,7 +1112,7 @@ class MavlinkVehicleService(VehicleService):
                     )
                     lost = self._state
             if lost is not None:
-                self._changed.publish_isolated(lost)
+                self._changed.publish(lost)
                 self._event(
                     "warning",
                     "vehicle.link_lost",

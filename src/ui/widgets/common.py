@@ -224,6 +224,19 @@ class SignalMeter(QFrame):
         layout.addWidget(self.detail)
         self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
 
+    def set_metric_tooltip(self, text: str) -> None:
+        """Expose metric details only from the descriptive title label."""
+
+        tooltip = str(text).strip()
+        if tooltip == self.label.toolTip():
+            return
+        # Do not attach the tooltip to the meter itself: QWidget tooltips can be
+        # inherited by child labels and make the live value area feel hoverable.
+        self.setToolTip("")
+        self.label.setToolTip(tooltip)
+        self.value.setToolTip("")
+        self.detail.setToolTip("")
+
     def set_theme(self, theme: ThemePalette) -> None:
         self._theme = theme
         self._restyle()
@@ -320,15 +333,31 @@ class SignalMeter(QFrame):
 class BatteryMeter(SignalMeter):
     """Compact threshold-colored battery indicator for the bottom status bar."""
 
+    clicked = pyqtSignal()
+
     def __init__(self, label: str, parent: QWidget | None = None) -> None:
         super().__init__(label, parent)
         self._language = "tr"
+        self._settings_hint = ""
         self._alarm_active = False
         self._alarm_phase = False
         self._alarm_timer = QTimer(self)
         self._alarm_timer.setInterval(450)
         self._alarm_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._alarm_timer.timeout.connect(self._toggle_alarm_phase)
+        for child in (self.label, self.value, self.detail):
+            child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self.rect().contains(event.position().toPoint())
+        ):
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     @property
     def alarm_active(self) -> bool:
@@ -337,9 +366,21 @@ class BatteryMeter(SignalMeter):
     def set_language(self, language: str) -> None:
         self._language = language
         if self._value <= 0:
-            tooltip = t("battery.tooltip.waiting", self._language)
+            tooltip = self._tooltip_with_settings_hint(
+                [t("battery.tooltip.waiting", self._language)]
+            )
             if tooltip != self.toolTip():
                 self.setToolTip(tooltip)
+
+    def set_settings_hint(self, text: str) -> None:
+        previous_hint = self._settings_hint
+        self._settings_hint = str(text).strip()
+        current_lines = [
+            line
+            for line in self.toolTip().splitlines()
+            if line and line != previous_hint
+        ]
+        self.setToolTip(self._tooltip_with_settings_hint(current_lines))
 
     def set_battery(
         self,
@@ -369,7 +410,7 @@ class BatteryMeter(SignalMeter):
                     mah=consumed_mah,
                 )
             )
-        tooltip_text = "\n".join(tooltip)
+        tooltip_text = self._tooltip_with_settings_hint(tooltip)
         if tooltip_text != self.toolTip():
             self.setToolTip(tooltip_text)
 
@@ -396,9 +437,17 @@ class BatteryMeter(SignalMeter):
     def set_unavailable(self, detail: str = "") -> None:
         self.set_alarm(False)
         super().set_unavailable(detail)
-        tooltip = t("battery.tooltip.waiting", self._language)
+        tooltip = self._tooltip_with_settings_hint(
+            [t("battery.tooltip.waiting", self._language)]
+        )
         if tooltip != self.toolTip():
             self.setToolTip(tooltip)
+
+    def _tooltip_with_settings_hint(self, lines: list[str]) -> str:
+        values = [line for line in lines if line and line != self._settings_hint]
+        if self._settings_hint:
+            values.append(self._settings_hint)
+        return "\n".join(values)
 
     def _level_color(self) -> str:
         if not self._theme:

@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -74,7 +75,7 @@ class SettingsDialog(QDialog):
         )
         self.buttons.button(QDialogButtonBox.StandardButton.Save).setText(t("dialog.settings.save", language))
         self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(t("dialog.settings.cancel", language))
-        self.buttons.accepted.connect(self.accept)
+        self.buttons.accepted.connect(self._accept_if_valid)
         self.buttons.rejected.connect(self.reject)
         footer.addWidget(self.buttons)
         shell_layout.addLayout(footer)
@@ -155,10 +156,33 @@ class SettingsDialog(QDialog):
         raise TypeError(f"Unsupported settings widget for path: {path}")
 
     def to_settings(self) -> SettingsModel:
-        result = self._settings
+        payload = self._settings.to_dict()
         for field in iter_fields():
-            result = result.with_value(field.path, self._value_for(field.path))
-        return result
+            target = payload
+            path_parts = field.path.split(".")
+            for part in path_parts[:-1]:
+                target = target[part]
+            target[path_parts[-1]] = self._value_for(field.path)
+        # Validate the complete form atomically. Interdependent fields such as
+        # battery minimum/maximum voltage must not fail against stale values
+        # merely because one happens to be processed first.
+        return SettingsModel.from_dict(payload)
+
+    def _accept_if_valid(self) -> None:
+        try:
+            self.to_settings()
+        except (TypeError, ValueError) as exc:
+            QMessageBox.warning(
+                self,
+                t("dialog.settings.validation_title", self._ui_language),
+                t(
+                    "dialog.settings.validation_message",
+                    self._ui_language,
+                    error=str(exc),
+                ),
+            )
+            return
+        self.accept()
 
     def changeEvent(self, event) -> None:
         super().changeEvent(event)

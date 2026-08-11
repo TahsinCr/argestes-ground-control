@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -77,6 +78,13 @@ class UiSmokeTests(unittest.TestCase):
             self.assertEqual(window.bottom_status["video"].state, "danger")
             self.assertIn(theme.danger, window.bottom_status["video"].text_label.styleSheet())
             self.assertEqual(window.bottom_status["orin"].state, "danger")
+
+            QTest.mouseClick(window.battery_meter, Qt.MouseButton.LeftButton)
+            QTest.qWait(25)
+            self.assertTrue(window.battery_popup.isVisible())
+            self.assertEqual(window.battery_popup.full_voltage.value(), 16.8)
+            self.assertEqual(window.battery_popup.minimum_voltage.value(), 14.8)
+            window.battery_popup.close()
 
             home_reference_result: list[object] = []
             window.map_panel._view.page().runJavaScript(
@@ -295,18 +303,16 @@ class UiSmokeTests(unittest.TestCase):
             self.assertEqual(loop_after_sync, ["loop"])
             runtime.planner_service.set_active_tool("pan")
 
-            map_scripts: list[str] = []
-            original_run_script = window.map_panel._run_script
-            window.map_panel._run_script = map_scripts.append
+            telemetry_payloads: list[dict] = []
+            window.map_panel._bridge.telemetry_pushed.connect(
+                lambda payload: telemetry_payloads.append(json.loads(payload))
+            )
             waiting_position = TelemetrySnapshot.zero().copy(
                 telemetry_link=True,
                 autopilot_link=True,
             )
             window.map_panel.update_snapshot(waiting_position)
-            telemetry_scripts = [
-                script for script in map_scripts if ".pushTelemetry(" in script
-            ]
-            self.assertIn('"active": false', telemetry_scripts[-1])
+            self.assertFalse(telemetry_payloads[-1]["active"])
             first_position = waiting_position.copy(
                 latitude=39.9,
                 longitude=32.8,
@@ -319,32 +325,47 @@ class UiSmokeTests(unittest.TestCase):
                 local_down_m=-114.6,
             )
             window.map_panel.update_snapshot(first_position)
-            QTest.qWait(window.map_panel._TELEMETRY_RENDER_INTERVAL_MS + 10)
-            telemetry_scripts = [
-                script for script in map_scripts if ".pushTelemetry(" in script
-            ]
-            self.assertIn('"active": true', telemetry_scripts[-1])
-            self.assertIn('"gpsSatellites": 14', telemetry_scripts[-1])
-            self.assertIn('"gpsHdop": 0.82', telemetry_scripts[-1])
-            self.assertIn('"localPositionAvailable": true', telemetry_scripts[-1])
-            self.assertIn('"localNorth": 145.25', telemetry_scripts[-1])
-            self.assertIn('"localEast": -32.5', telemetry_scripts[-1])
-            self.assertIn('"localDown": -114.6', telemetry_scripts[-1])
-            self.assertIn('"homePositionAvailable": false', telemetry_scripts[-1])
-            map_update_count = len(telemetry_scripts)
+            for _attempt in range(10):
+                QTest.qWait(window.map_panel._TELEMETRY_RENDER_INTERVAL_MS)
+                if telemetry_payloads[-1].get("active"):
+                    break
+            latest_payload = telemetry_payloads[-1]
+            self.assertTrue(latest_payload["active"])
+            self.assertEqual(latest_payload["gpsSatellites"], 14)
+            self.assertEqual(latest_payload["gpsHdop"], 0.82)
+            self.assertTrue(latest_payload["localPositionAvailable"])
+            self.assertEqual(latest_payload["localNorth"], 145.25)
+            self.assertEqual(latest_payload["localEast"], -32.5)
+            self.assertEqual(latest_payload["localDown"], -114.6)
+            self.assertFalse(latest_payload["homePositionAvailable"])
+            vehicle_readout: list[object] = []
+            for _attempt in range(40):
+                current_readout: list[object] = []
+                window.map_panel._view.page().runJavaScript(
+                    "document.querySelector('#vehicle-readout').textContent;",
+                    current_readout.append,
+                )
+                for _callback_attempt in range(10):
+                    QTest.qWait(10)
+                    if current_readout:
+                        break
+                if current_readout:
+                    vehicle_readout[:] = current_readout
+                    if "39.90000" in str(current_readout[-1]):
+                        break
+                QTest.qWait(25)
+            self.assertIn("39.90000", str(vehicle_readout[-1]))
+            self.assertIn("32.80000", str(vehicle_readout[-1]))
+            map_update_count = len(telemetry_payloads)
             window.map_panel.update_snapshot(first_position)
-            self.assertEqual(
-                len([script for script in map_scripts if ".pushTelemetry(" in script]),
-                map_update_count,
-            )
+            self.assertEqual(len(telemetry_payloads), map_update_count)
             jumped_position = first_position.copy(latitude=-35.36, longitude=149.16)
             window.map_panel.update_snapshot(jumped_position)
-            QTest.qWait(window.map_panel._TELEMETRY_RENDER_INTERVAL_MS + 10)
-            telemetry_scripts = [
-                script for script in map_scripts if ".pushTelemetry(" in script
-            ]
-            self.assertIn('"resetTrack": true', telemetry_scripts[-1])
-            window.map_panel._run_script = original_run_script
+            for _attempt in range(10):
+                QTest.qWait(window.map_panel._TELEMETRY_RENDER_INTERVAL_MS)
+                if telemetry_payloads[-1].get("resetTrack"):
+                    break
+            self.assertTrue(telemetry_payloads[-1]["resetTrack"])
 
             telemetry_chip = window.bottom_status["telemetry"]
             window._on_connection_status(
@@ -375,7 +396,32 @@ class UiSmokeTests(unittest.TestCase):
             )
             window._on_telemetry(packet_snapshot)
             self.assertEqual(window.link_meters["command"].value.text(), "93%")
-            self.assertEqual(window.link_meters["command"].detail.text(), "↓ 391 ↑ 8")
+            self.assertEqual(window.link_meters["command"].detail.text(), "↓391 ↑8")
+            rf_snapshot = packet_snapshot.copy(
+                link_quality=61,
+                link_quality_source="rf",
+                radio_local_rssi=150,
+                radio_local_noise=100,
+                radio_remote_rssi=135,
+                radio_remote_noise=100,
+                radio_tx_buffer=91,
+                radio_rx_errors=7,
+                radio_fixed_packets=3,
+                packet_delivery_percent=88,
+                estimated_dropped_packets=12,
+            )
+            window._on_telemetry(rf_snapshot)
+            self.assertEqual(window.link_meters["command"].value.text(), "88%")
+            self.assertEqual(
+                window.link_meters["command"].detail.text(),
+                "↓391 ↑8 · RF61 · TB91",
+            )
+            command_meter = window.link_meters["command"]
+            self.assertIn("Yerel RFD", command_meter.label.toolTip())
+            self.assertIn("tahmini kayıp 12", command_meter.label.toolTip())
+            self.assertEqual(command_meter.toolTip(), "")
+            self.assertEqual(command_meter.value.toolTip(), "")
+            self.assertEqual(command_meter.detail.toolTip(), "")
             self.assertEqual(window.battery_meter.value.text(), "--%")
             battery_snapshot = packet_snapshot.copy(
                 battery_percent=76,
@@ -406,8 +452,14 @@ class UiSmokeTests(unittest.TestCase):
             self.assertEqual(window.link_meters["bulk"].value.text(), "92%")
             self.assertEqual(
                 window.link_meters["bulk"].detail.text(),
-                "↓ 2.4 Mbps · 29.7 FPS",
+                "↓2.4M · 29.7F · 720p",
             )
+            video_meter = window.link_meters["bulk"]
+            self.assertIn("1280×720", video_meter.label.toolTip())
+            self.assertIn("120", video_meter.label.toolTip())
+            self.assertEqual(video_meter.toolTip(), "")
+            self.assertEqual(video_meter.value.toolTip(), "")
+            self.assertEqual(video_meter.detail.toolTip(), "")
             telemetry_chip.set_state("success")
             self.assertIn(theme.success, telemetry_chip.text_label.styleSheet())
             telemetry_chip.set_state("danger")

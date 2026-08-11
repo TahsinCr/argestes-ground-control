@@ -183,13 +183,8 @@ class EventLogPanel(PanelFrame):
     def add_entry(self, entry: LogEntry) -> None:
         follow_latest = self._follow_latest
         self._entries.append(entry)
-        entries_trimmed = False
         if len(self._entries) > self.MAX_ENTRIES:
             del self._entries[: len(self._entries) - self.MAX_ENTRIES]
-            entries_trimmed = True
-        if entries_trimmed:
-            self._rebuild_table(scroll_to_bottom=follow_latest)
-            return
         if not self._entry_matches(entry):
             return
         scrollbar = self.table.verticalScrollBar()
@@ -206,6 +201,26 @@ class EventLogPanel(PanelFrame):
         finally:
             self._scroll_change_internal = False
         self._follow_latest = follow_latest
+
+    def add_entries(self, entries) -> None:
+        batch = tuple(entries)
+        if not batch:
+            return
+        if len(batch) <= 16:
+            self.table.setUpdatesEnabled(False)
+            try:
+                for entry in batch:
+                    self.add_entry(entry)
+            finally:
+                self.table.setUpdatesEnabled(True)
+            return
+        follow_latest = self._follow_latest
+        self._entries.extend(batch)
+        if len(self._entries) > self.MAX_ENTRIES:
+            del self._entries[: len(self._entries) - self.MAX_ENTRIES]
+        # One rebuild is substantially cheaper than hundreds of insert/remove
+        # operations while startup history or remote logs arrive in a burst.
+        self._rebuild_table(scroll_to_bottom=follow_latest)
 
     def _append_row(self, entry: LogEntry) -> None:
         row = self.table.rowCount()

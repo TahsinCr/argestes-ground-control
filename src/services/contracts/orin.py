@@ -5,7 +5,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from src.core.abstracts import Service
-from src.core.events import EventStream, Subscription
+from src.core.events import EventBus, Subscription
 from src.models.orin import (
     OrinCommandReceipt,
     OrinConnectionState,
@@ -34,15 +34,19 @@ class OrinService(Service):
 
     @property
     @abstractmethod
-    def changed(self) -> EventStream[OrinConnectionState]: ...
+    def changed(self) -> EventBus[OrinConnectionState]: ...
 
     @property
     @abstractmethod
-    def received(self) -> EventStream[OrinMessage]: ...
+    def received(self) -> EventBus[OrinMessage]: ...
 
     @property
     @abstractmethod
-    def remote_logs(self) -> EventStream[OrinLogRecord]: ...
+    def remote_logs(self) -> EventBus[OrinLogRecord]: ...
+
+    @property
+    @abstractmethod
+    def remote_log_batches(self) -> EventBus[tuple[OrinLogRecord, ...]]: ...
 
     @property
     @abstractmethod

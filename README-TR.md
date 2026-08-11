@@ -18,8 +18,9 @@ YKİ otonom görevi yürütmez. Haritada uçuş planı hazırlanır, araç veya 
 - ArduPilot tabanlı araçlarla seri, UDP ve TCP üzerinden MAVLink bağlantısı
 - Uçuş telemetrisi, bağlantı sağlığı, GPS, batarya ve radyo bağlantı bilgileri
 - ARM/DISARM, uçuş modu, LAND, GOTO, parametre ve uçuş planı aktarımı
+- İstek kimliğiyle eşleştirilen Onboard görevleri, görev durumu, QR kurtarma ve uzak loglar
 - Takeoff, waypoint, loiter, RTL, land ve yerel güvenlik alanlarının harita üzerinde hazırlanması
-- Araçtan parametre ve uçuş planı alma
+- Araçtan canlı parametre/varsayılan değer ve uçuş planı alma
 - RTSP, HTTP/MJPEG, RTP/UDP, V4L2, dosya ve özel GStreamer pipeline kaynakları
 - Taze kare ile doğrulanan, isteğe bağlı kalıcı video otomatik bağlantısı
 - TEKNOFEST sunucu bağlantısı, rakip telemetrisi, HSS ve QR referans verileri
@@ -93,6 +94,27 @@ gst-inspect-1.0 v4l2src
 
 ## Python ortamı
 
+Projeyi yeniden kullanılabilir core submodule’üyle birlikte klonlayın:
+
+```bash
+git clone --recurse-submodules \
+  https://github.com/Kirlangic-Team/ground-control-station.git
+cd ground-control-station
+```
+
+Mevcut bir çalışma kopyasında YKİ’yi kurmadan veya çalıştırmadan önce kayıtlı
+adresi eşitleyip sabitlenmiş core sürümünü başlatın:
+
+```bash
+git submodule sync --recursive
+git submodule update --init --recursive
+```
+
+Core kaynakları bağımsız olarak
+[`TahsinCr/vehicle-autonomy-core`](https://github.com/TahsinCr/vehicle-autonomy-core)
+reposunda geliştirilir. Ana repo tekrarlanabilir kurulum için belirli bir core
+commitine sabitlenir.
+
 ### Linux
 
 ```bash
@@ -118,6 +140,31 @@ python main.py
 
 PyGObject kurulumu sistemdeki GStreamer ile aynı mimariyi kullanmalıdır. Windows’ta 64 bit Python ile 64 bit MSVC GStreamer’ı karıştırmayın.
 
+## Ortak core çalışma akışı
+
+`src/core`, YKİ reposunun kaydettiği kesin commit üzerinden kullanılır. Normal
+YKİ geliştirmesinde bu dizin değiştirilmemelidir. YKİ’yi incelenmiş daha yeni
+bir core sürümüne taşımak için:
+
+```bash
+git -C src/core fetch origin
+git -C src/core checkout <core-commit>
+git status --short
+```
+
+Ana repo farkında `src/core` tek bir Git-link değişikliği olarak görünmelidir.
+Core kaynak değişiklikleri, testleri ve sürüm notları core reposunda tutulur;
+bu repoya yalnızca ortaya çıkan commit işaretçisi girer. İşaretçiyi stage
+etmeden önce iki test paketini de çalıştırın.
+
+Branch değişiminden sonra `src.core` import edilemiyorsa core dosyalarını
+kopyalamak yerine submodule’ü yeniden başlatın:
+
+```bash
+git submodule sync --recursive
+git submodule update --init --recursive
+```
+
 ## Araç bağlantısı
 
 Bağlantı ayarları **Ayarlar > Backend > MAVLink** bölümünden veya alt çubuktaki Telemetri/Otopilot/GPS menüsünden değiştirilir. Bağlan veya Yeniden Bağlan seçildiğinde ayarlar önce kaydedilir, ardından backend yeni endpoint ile açılır.
@@ -131,6 +178,13 @@ TCP:  tcp:127.0.0.1:5762
 Windows seri portu `COM3` gibi doğrudan yazılır. UDP ve TCP bağlantılarında baud değeri kullanılmaz.
 
 Bir bağlantının açılması tek başına başarı sayılmaz. Araç durumu hedef system/component heartbeat’iyle, video durumu taze kareyle, GPS durumu geçerli fix verisiyle doğrulanır.
+
+Alt çubuğun sağındaki gösterge, ölçülen MAVLink paket teslim oranını
+hesaplanan RFD radyo sağlığından ayırır. Kompakt alanda alınan/gönderilen
+paket, RF ve gönderim tamponu bilgileri yer alır. Yerel/uzak RSSI, gürültü,
+SNR, hata düzeltme ve paket kaybı ayrıntıları için yalnızca
+**Komut/Telemetri** yazısının üzerinde bekleyin. Yüzde ve sayaçların temaya
+ait canlı durum rengi değişmez.
 
 ## Video bağlantısı
 
@@ -149,6 +203,10 @@ geçer. Pipeline’ın açılması tek başına kamera bağlantısı sayılmaz. 
 süreli olarak arayüzden hızlı kare üretirse backend yakalamaya devam eder, Qt
 ise yalnızca en yeni kareyi çizer; gecikmiş kareler kuyrukta birikmez.
 
+Kompakt video göstergesinde kalite, bitrate, FPS ve çözünürlük bulunur. Kaynak,
+codec, kare yaşı, gecikme ve zaman aşımı ayrıntıları için **Video Aktarımı**
+yazısının üzerinde bekleyin.
+
 ## Yüksek hızlı telemetri ve arayüz
 
 MAVLink alım hızı arayüz yenileme hızından bağımsızdır. Backend gelen bütün
@@ -159,6 +217,11 @@ engeller.
 Uçuş dinamiği göstergesi kaynak zaman damgalarını ve örnekleme aralığındaki
 değişimi kullanarak ara kareleri üretir. Harita değişmeyen telemetriyi tekrar
 işlemez ve araç ikonunu her yön değişiminde yeniden oluşturmaz.
+
+Harita verisi kalıcı QWebChannel hattından geçer ve tarayıcı animasyon karesi
+başına en fazla bir kez uygulanır. Parametre snapshot’ları ile log patlamaları da
+toplu işlenir; parametre tablosu mevcut satırları yerinde günceller. Bu görsel
+sınırlar backend MAVLink alımını veya komut onaylarını yavaşlatmaz.
 
 ## Harita planlama
 
@@ -204,6 +267,11 @@ kapanmasını engeller.
 
 **Ayarlar > Backend > Batarya** bölümünde iki ayrı politika bulunur:
 
+- Batarya göstergesi Pixhawk yüzdesini kullanabilir veya 4S LiPo yüzdesini
+  voltajdan tahmin edebilir. Tam dolu voltajı, rezerv voltajı ve rezerv noktasının
+  karşılık geldiği yüzde ayarlanır; yüzde sıfır voltajı otomatik hesaplanır.
+  Medyan ve asimetrik zaman filtreleri kısa motor yükü düşüşlerini azaltırken
+  kalıcı deşarjı gizlemez.
 - Uyarı eşiği yüzde veya voltaj üzerinden çalışır ve alt bardaki batarya
   göstergesini kırmızı yanıp sönen alarm durumuna getirir.
 - Failsafe eşiği uyarıdan bağımsızdır. Yalnızca etkinleştirilmişse, araç
@@ -211,6 +279,10 @@ kapanmasını engeller.
 
 Alarm ilk etkinleştiğinde bir kez loglanır; batarya yüzdesindeki her bir puanlık
 değişimde güncel durum yeniden kaydedilir.
+
+Kompakt batarya ayarları için alt çubuktaki batarya bilgisine tıklayın. Akım
+ölçümü kullanılamıyorsa bu yüzde yalnızca gösterge amaçlıdır; uçuş güvenliğinde
+Pixhawk voltaj eşikleri esas alınmalıdır.
 
 ## Sahte TEKNOFEST sunucusu
 
@@ -255,6 +327,16 @@ Temel sorumluluklar:
 - `services`: planlayıcı, komut, bağlantı ve yarışma gibi ana backend servisleri
 - `ui`: Qt, Leaflet, widget ve görsel durum; iş kuralı içermez
 
+`src/core` bir Git submodule’dür. Core değişiklikleri önce kendi reposunda
+test edilip commit edilmelidir; YKİ tarafında yalnızca sabitlenen submodule
+commit’i güncellenir. Ortak core dosyalarını ana repoya kopyalamayın.
+
+Backend servis sözleşmeleri core `EventBus` yapısını kullanır. Normal servis
+politikası, hatalı bir dinleyiciyi izole ederek telemetri, video ve durum
+üreticilerinin çalışmasını sürdürür. Onayı yerel teslimata bağlı olan akışlar
+`ErrorPolicy.RAISE` kullanmalıdır; Orin uzak log alımı sıra numarasını ilerletmeden
+önce bu politikayı uygular.
+
 Bağımlılık yönü:
 
 ```text
@@ -270,6 +352,11 @@ Haritadaki HSS, QR hedefi, güvenli alan ve yasak alan verileri ArduPilot görev
 
 Uygulamada MAVLink socket’ini yalnızca `MavlinkMessageRouter` okur. Yeni bir servis ikinci `recv_match()` döngüsü açmamalıdır.
 
+Araç adaptörü ile isteğe bağlı Orin uygulama kanalı tek bir `MavlinkClient`
+ve router kullanır. Core içindeki `MavlinkRuntime` bağımsız araçlar için kolay
+varsayılandır; YKİ ise Orin kanalını uçuş telemetri bağlantısını değiştirmeden
+açıp yapılandırabilmek için sahipliği açık tutar.
+
 - Mesaj tüketimi `VehicleService.subscribe()` veya çekirdekte `client.subscribe()` ile yapılır.
 - İstek cevabı beklenirken gönderim öncesi router sequence sınırı alınır.
 - Bütün gönderimler ortak send kilidinden geçer.
@@ -279,6 +366,66 @@ Uygulamada MAVLink socket’ini yalnızca `MavlinkMessageRouter` okur. Yeni bir 
 - Uçuş planı aktarımı `MISSION_REQUEST(_INT)` ve `MISSION_ACK` akışı tamamlanmadan başarılı sayılmaz.
 
 Normal ARM başarısız olursa zorla ARM yalnızca operatör onayıyla denenir. Arka planda otomatik zorla ARM yapılmaz.
+
+## SİHA Onboard v0.2-beta bağlantısı
+
+YKİ, Vehicle Autonomy Core v1.1 uygulama kanalını mevcut MAVLink bağlantısı
+üzerinden kullanır. İkinci seri port, UDP socket veya receive döngüsü açılmaz.
+`V2_EXTENSION`; ağ ID `77`, mesaj tipi `42000`, YKİ system ID `255`, onboard
+system ID `1` ve onboard component ID `191` ile çalışır. Uygulama heartbeat'i
+saniyede bir gönderilir ve 10 saniyede zaman aşımına uğrar. Bu değerler
+Onboard/Orin ayarlarından değiştirilebilir.
+
+`OnboardMissionService`; `task.start`, `task.pause`, `task.resume`, `task.stop`,
+`task.cancel`, `mission.status`, `mission.list`, `mission.events` ve `chain.start`
+isteklerini ortak kanaldan gönderir. Cevaplar yalnızca packet/request ID birebir
+eşleştiğinde isteği tamamlar. `system.ack` yalnızca komutun kabul edildiğini,
+`mission.result` ise nihai görev sonucunu gösterir. Hata, timeout ve transport
+kopması ayrı tutulur; timeout olan `task.start` otomatik tekrarlanmaz.
+
+Kamikaze eylemi `KAMIKAZE` göndermeden önce operatör onayı ister. ACK içinde
+`waiting_for_mode=true` varsa panel GUIDED seçilmesini ister. Phase bilgisi
+`mission.transition` paketinden gelir; durdurma ve iptal ayrı correlation'lı
+isteklerdir.
+
+QR sonucu üç kaynaktan kurtarılır:
+
+1. canlı `kamikaze.event` bildirimleri (`QR_DECODED` ve
+   `QR_DECODED_DURING_PULL_UP`);
+2. `mission.result.snapshot.result.qr_text`;
+3. yeniden bağlantı sonrası cursor tabanlı `mission.events` uzlaştırması.
+
+QR içeriği çalıştırılmayan düz metindir. Aktif Kamikaze göreviyle
+ilişkilendirilir, tekrarlardan arındırılır, kopyalama eylemiyle gösterilir ve
+merkezi loga yazılır. Canlı event ile sonuç farklıysa iki değer de korunur ve
+uyumsuzluk loglanır.
+
+Onboard `logs.push` istekleri en fazla 16 kayıtlı batch olarak doğrulanır. ACK,
+batch'in tamamı merkezi log deposuna girdikten sonra verilir. Session/sequence
+cursor'u tekrar gönderimde ikinci log satırı oluşmasını engeller. Gizli bilgi
+belirten detail alanları maskelenir. Qt olayları sınırlı batch'lerle işleyerek log
+akışının UI thread'ini meşgul etmesini engeller.
+
+Video MAVLink'ten bağımsızdır. HDMI capture kartı USB veya GStreamer pipeline
+kaynağı olarak seçilip 1920x1080/60 FPS istenmelidir. Video servisi yalnızca son
+kareyi sınırlı yapıda tutar, görev kontrollerini bloklamadan yeniden bağlanır ve
+kare gelmediğinde akışı sağlıksız gösterir.
+
+Gerçek donanım kontrol listesi:
+
+1. YKİ'yi Pixhawk/RFD'ye bağlayıp önce normal telemetriyi doğrulayın.
+2. Onboard bağlantısını açıp system `1`, component `191`, network `77` ve
+   message type `42000` değerlerini ayarlardan kontrol edin.
+3. Onboard v0.2-beta'yı başlatıp sürüm, RTT ve saniyelik heartbeat'i ikinci
+   MAVLink endpoint'i açılmadan doğrulayın.
+4. Kamikaze'yi başlatın, ACK'in yalnızca kabulü gösterdiğini kontrol edin,
+   GUIDED seçip `starting → running` geçişini izleyin.
+5. İki QR türünü gönderin, bir kez yeniden bağlanın ve canlı, sonuç ve
+   geçmiş kurtarma yollarını UI/log panelinde doğrulayın.
+6. Aynı `logs.push` batch'ini tekrar gönderip ikinci log satırı olmadan ACK
+   verildiğini kontrol edin.
+7. HDMI capture kartını 1080p/60 bağlayın, sinyali kesin ve MAVLink kontrolleri
+   akıcı kalırken video reconnect davranışını doğrulayın.
 
 ## Backend’i UI olmadan kullanma
 
@@ -372,11 +519,15 @@ Hedef kilitlenme veya kamikaze gibi algoritma YKİ servisine eklenmez.
 3. Ana backend servisini doğrudan `services/<servis>.py` altında tutun.
    Telemetri, parametre ve protokol adaptörleri `vehicle` altında bulunur.
 4. Bağımlılıkları constructor üzerinden açıkça verin; servis içinden global container çözmeyin.
-5. Somut implementasyonu yalnızca `create_runtime_services()` içinde oluşturun.
-6. Servisi DI container’a sözleşmesiyle kaydedin.
-7. Yaşam döngüsü varsa `RuntimeServices` başlangıç/durdurma sırasına ekleyin.
+5. Altyapı servisini `infrastructure_dependencies.py`, ortak araç adaptörünü
+   `vehicle/dependencies.py`, uygulama davranışını ise
+   `application_dependencies.py` içinde kaydedin.
+6. Somut tip ile sözleşmesini aynı fabrika üzerinden kaydedin; servis içinden
+   global container çözmeyin.
+7. Aktif kaynak sahibi ise çözümlenen servisi `RuntimeServices` alanlarına ve
+   yaşam döngüsü sırasına ekleyin.
 8. Dış arayüz gerekiyorsa `BackendFacade` üzerinden dar bir API açın.
-9. Qt sinyali yalnızca UI gerçekten abone olacaksa `ui/adapters` içinde ekleyin.
+9. Qt adaptörü veya sinyali yalnızca UI gerçekten tüketecekse ekleyin.
 10. Donanım olmadan çalışan contract testi ve hata yolu testi ekleyin.
 
 ### Entegrasyon kontrol listesi
@@ -413,14 +564,18 @@ testlerde hata üretir.
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python -B -m unittest discover -s tests -v
+PYTHONDONTWRITEBYTECODE=1 python -B -m unittest discover -s src/core/tests -v
 ```
 
-Test paketi katman sınırlarını, DI yaşam döngüsünü, MAVLink router ve
-filtrelerini, parametre doğrulamasını, uçuş planı eşzamanlılığını, harita
-geçmişini, TEKNOFEST haberleşmesini, video otomatik bağlantısını, GStreamer
-pipeline üretimini, yüksek hızlı telemetri/video birleştirmesini, ayırıcıları,
-çerçevesiz pencere boyutlandırmasını ve offscreen Qt açılışını kapsar.
-1.0-beta sürüm hazırlığı paketi 152 test içerir.
+İlk komut; uygulama mimarisi, sabitlenmiş core sınırı, DI bileşimi, ortak
+araç/Orin istemcisi, Onboard görev/QR akışı, uzak loglar, parametre
+varsayılanları, komut tekrarları, eşzamanlı planlama, TEKNOFEST haberleşmesi,
+batarya voltaj tahmini ve politikaları, dil paketleri, GStreamer, harita geçmişi,
+yüksek hızlı veri birleştirme, ayırıcılar, çerçevesiz pencere ve offscreen Qt
+açılışı için **183 YKİ testi** çalıştırır. İkinci komut core’un
+dependency, event, mission ve MAVLink iç yapılarına ait **109 testi**
+çalıştırır. Paketleri ayrı tutmak aynı alt seviye testlerin iki repoda
+birden bakımını önler.
 
 Sürüm geçmişi [değişiklik günlüğünde][changelog-url] tutulur.
 

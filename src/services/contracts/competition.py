@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import abstractmethod
 
 from src.core.abstracts import Service
-from src.core.events import EventStream
+from src.core.events import EventBus
 from src.models.competition import (
     CompetitionConnectionState,
     CompetitionServerConfig,
@@ -24,11 +24,11 @@ class CompetitionService(Service):
 
     @property
     @abstractmethod
-    def changed(self) -> EventStream[CompetitionConnectionState]: ...
+    def changed(self) -> EventBus[CompetitionConnectionState]: ...
 
     @property
     @abstractmethod
-    def competitors_updated(self) -> EventStream[tuple[CompetitorTelemetry, ...]]: ...
+    def competitors_updated(self) -> EventBus[tuple[CompetitorTelemetry, ...]]: ...
 
     @property
     @abstractmethod
@@ -36,11 +36,11 @@ class CompetitionService(Service):
 
     @property
     @abstractmethod
-    def hss_updated(self) -> EventStream[tuple[HssZone, ...]]: ...
+    def hss_updated(self) -> EventBus[tuple[HssZone, ...]]: ...
 
     @property
     @abstractmethod
-    def qr_updated(self) -> EventStream[QrCoordinate | None]: ...
+    def qr_updated(self) -> EventBus[QrCoordinate | None]: ...
 
     @property
     @abstractmethod
@@ -61,6 +61,9 @@ class CompetitionService(Service):
 
     @abstractmethod
     def refresh_reference_data(self) -> None: ...
+
+    @abstractmethod
+    def refresh_qr_coordinate(self) -> None: ...
 
     @abstractmethod
     def submit_lock_event(self, event: LockEvent) -> None: ...

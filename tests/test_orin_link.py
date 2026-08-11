@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from src.core.events import EventStream
+from src.core.events import EventBus
 from src.core.mavlink import (
     MavlinkApplicationAssembler,
     MavlinkApplicationCodec,
@@ -71,7 +71,7 @@ class OrinLinkTests(unittest.TestCase):
         vehicle = SimpleNamespace(
             connected=True,
             state=VehicleConnectionState(True, "COM3", 1, 1),
-            connection_changed=EventStream(),
+            connection_changed=EventBus(),
         )
         client = SimpleNamespace(
             endpoint=SimpleNamespace(
@@ -106,9 +106,10 @@ class OrinLinkTests(unittest.TestCase):
         first = service._handle_remote_logs(packet)
         duplicate = service._handle_remote_logs(packet)
 
-        self.assertEqual(first["received"], 2)
-        self.assertEqual(duplicate["received"], 0)
-        self.assertEqual(duplicate["duplicates"], 2)
+        self.assertEqual(first.payload["received"], 2)
+        self.assertEqual(first.message, "Logs accepted")
+        self.assertEqual(duplicate.payload["received"], 0)
+        self.assertEqual(duplicate.payload["duplicates"], 2)
         self.assertEqual([record.sequence for record in received], [7, 8])
         self.assertEqual(received[0].session_id, "orin-dedupe-session")
 
@@ -116,7 +117,7 @@ class OrinLinkTests(unittest.TestCase):
         vehicle = SimpleNamespace(
             connected=True,
             state=VehicleConnectionState(True, "COM3", 1, 1),
-            connection_changed=EventStream(),
+            connection_changed=EventBus(),
         )
         client = SimpleNamespace(
             endpoint=SimpleNamespace(
@@ -129,13 +130,14 @@ class OrinLinkTests(unittest.TestCase):
         service = MavlinkOrinService(client, vehicle)  # type: ignore[arg-type]
         failures = 1
 
-        def persist(record: OrinLogRecord) -> None:
+        def persist(records: tuple[OrinLogRecord, ...]) -> None:
             nonlocal failures
+            self.assertEqual(len(records), 1)
             if failures:
                 failures -= 1
                 raise OSError("simulated log storage failure")
 
-        service.remote_logs.subscribe(persist)
+        service.remote_log_batches.subscribe(persist)
         batch = MavlinkRemoteLogBatch(
             "orin-retry-session",
             (
@@ -150,18 +152,18 @@ class OrinLinkTests(unittest.TestCase):
         )
         packet = MavlinkApplicationPacket("logs.push", batch.to_payload())
 
-        with self.assertRaises(OSError):
+        with self.assertRaises(ExceptionGroup):
             service._handle_remote_logs(packet)
         retried = service._handle_remote_logs(packet)
 
-        self.assertEqual(retried["received"], 1)
-        self.assertEqual(retried["duplicates"], 0)
+        self.assertEqual(retried.payload["received"], 1)
+        self.assertEqual(retried.payload["duplicates"], 0)
 
     def test_application_peer_probes_and_correlates_responses(self) -> None:
         class Channel:
             def __init__(self) -> None:
-                self.packets = EventStream()
-                self.errors = EventStream()
+                self.packets = EventBus()
+                self.errors = EventBus()
                 self.sent: list[tuple[MavlinkApplicationPacket, int, int]] = []
                 self.running = False
 
@@ -270,7 +272,7 @@ class OrinLinkTests(unittest.TestCase):
     def test_dispatcher_routes_commands_and_correlates_acknowledgements(self) -> None:
         class Peer:
             def __init__(self) -> None:
-                self.packets = EventStream()
+                self.packets = EventBus()
                 self.sent: list[tuple[MavlinkApplicationPacket, int, int]] = []
 
             def send(
@@ -326,8 +328,8 @@ class OrinLinkTests(unittest.TestCase):
             def __init__(self, system_id: int, component_id: int) -> None:
                 self.system_id = system_id
                 self.component_id = component_id
-                self.packets = EventStream()
-                self.errors = EventStream()
+                self.packets = EventBus()
+                self.errors = EventBus()
                 self.remote = None
 
             def start(self) -> None:
@@ -469,7 +471,7 @@ class OrinLinkTests(unittest.TestCase):
         vehicle = SimpleNamespace(
             connected=True,
             state=VehicleConnectionState(True, "COM3", 1, 1),
-            connection_changed=EventStream(),
+            connection_changed=EventBus(),
         )
         client = SimpleNamespace(
             endpoint=SimpleNamespace(uri="COM3", source_system=255, source_component=0),
@@ -620,7 +622,7 @@ class OrinLinkTests(unittest.TestCase):
             vehicle = SimpleNamespace(
                 connected=True,
                 state=VehicleConnectionState(True, "COM3", 1, 1),
-                connection_changed=EventStream(),
+                connection_changed=EventBus(),
             )
             orin = SimpleNamespace(
                 connected=True,
@@ -636,7 +638,7 @@ class OrinLinkTests(unittest.TestCase):
                     packets_in=5,
                     packets_out=2,
                 ),
-                changed=EventStream(),
+                changed=EventBus(),
             )
             competition = SimpleNamespace(
                 state=CompetitionConnectionState(
@@ -646,7 +648,7 @@ class OrinLinkTests(unittest.TestCase):
                     endpoint="http://127.0.0.1:5000",
                     team_number=1,
                 ),
-                changed=EventStream(),
+                changed=EventBus(),
             )
             control = BackendConnectionControlService(
                 settings=settings,
@@ -670,7 +672,7 @@ class OrinLinkTests(unittest.TestCase):
             class Vehicle:
                 connected = True
                 state = VehicleConnectionState(True, "COM3", 1, 1)
-                connection_changed = EventStream()
+                connection_changed = EventBus()
 
                 def reconnect(self, _config) -> None:
                     raise AssertionError("Orin reconnect opened the vehicle transport")
@@ -684,7 +686,7 @@ class OrinLinkTests(unittest.TestCase):
                         system_id=1,
                         component_id=191,
                     )
-                    self.changed = EventStream()
+                    self.changed = EventBus()
                     self.config = None
                     self.probes = 0
 
@@ -710,7 +712,7 @@ class OrinLinkTests(unittest.TestCase):
                     endpoint="http://127.0.0.1:5000",
                     team_number=1,
                 ),
-                changed=EventStream(),
+                changed=EventBus(),
             )
             control = BackendConnectionControlService(
                 settings=settings,

@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from typing import Any
 
-from src.core.events import EventStream
+from src.core.events import EventBus
 from src.models.video import VideoFrame, VideoStreamStats
 from src.services.contracts.video import VideoService
 from src.services.logging_service import ServiceLogger
@@ -15,9 +15,9 @@ from src.services.logging_service import ServiceLogger
 
 class MutableVideoService(VideoService):
     def __init__(self, logger: ServiceLogger | None = None) -> None:
-        self._frames = EventStream[VideoFrame]()
-        self._stats_changed = EventStream[VideoStreamStats]()
-        self._connection_changed = EventStream[bool]()
+        self._frames = EventBus[VideoFrame]()
+        self._stats_changed = EventBus[VideoStreamStats]()
+        self._connection_changed = EventBus[bool]()
         self._logger = logger
         self._connected = False
         self._connection_lock = threading.RLock()
@@ -30,11 +30,11 @@ class MutableVideoService(VideoService):
             return self._connected
 
     @property
-    def connection_changed(self) -> EventStream[bool]:
+    def connection_changed(self) -> EventBus[bool]:
         return self._connection_changed
 
     @property
-    def frames(self) -> EventStream[VideoFrame]:
+    def frames(self) -> EventBus[VideoFrame]:
         return self._frames
 
     @property
@@ -43,7 +43,7 @@ class MutableVideoService(VideoService):
             return self._stats
 
     @property
-    def stats_changed(self) -> EventStream[VideoStreamStats]:
+    def stats_changed(self) -> EventBus[VideoStreamStats]:
         return self._stats_changed
 
     def start(self) -> None:
@@ -88,7 +88,7 @@ class MutableVideoService(VideoService):
             if value == self._connected:
                 return
             self._connected = value
-        self._connection_changed.publish_isolated(value)
+        self._connection_changed.publish(value)
         current = self.stats
         self._publish_stats(
             VideoStreamStats(
@@ -108,7 +108,7 @@ class MutableVideoService(VideoService):
             if stats == self._stats:
                 return
             self._stats = stats
-        self._stats_changed.publish_isolated(stats)
+        self._stats_changed.publish(stats)
 
 
 class GStreamerVideoService(MutableVideoService):

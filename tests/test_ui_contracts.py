@@ -11,6 +11,7 @@ os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --no-sandbox"
 
 from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtGui import QImage
+from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -24,6 +25,8 @@ from PyQt6.QtWidgets import (
 from src.models.commands import CommandRequest, CommandResult
 from src.models.connections import ConnectionStatus
 from src.models.logs import LogEntry
+from src.models.mission import MapContact
+from src.models.parameters import Parameter
 from src.models.settings import SettingsModel
 from src.models.telemetry import TelemetrySnapshot
 from src.models.video import VideoStreamStats
@@ -36,9 +39,11 @@ from src.ui.views.settings_dialog import SettingsDialog
 from src.ui.widgets.attitude import AttitudeIndicator
 from src.ui.widgets.control_panels import CommandPanel, TelemetryPanel
 from src.ui.widgets.common import BatteryMeter, SignalMeter
+from src.ui.widgets.battery_popup import BatterySettingsPopup
 from src.ui.widgets.connection_popup import ConnectionPopup
 from src.ui.widgets.logs import EventLogPanel
-from src.ui.widgets.map_panel import MapWebBridge
+from src.ui.widgets.parameters import ParametersPanel
+from src.ui.widgets.map_panel import MapPanel, MapWebBridge
 from src.ui.widgets.title_bar import FramelessResizeController
 from src.ui.widgets.video import VideoPanel
 
@@ -71,6 +76,29 @@ class UiContractTests(unittest.TestCase):
         dialog.deleteLater()
         self.app.processEvents()
 
+    def test_settings_dialog_validates_battery_voltage_fields_as_one_profile(self) -> None:
+        dialog = SettingsDialog(SettingsModel(), "tr", DARK)
+        full = dialog._widgets["backend.battery_telemetry.full_voltage"]
+        minimum = dialog._widgets["backend.battery_telemetry.reserve_voltage"]
+        minimum_percent = dialog._widgets[
+            "backend.battery_telemetry.reserve_percent"
+        ]
+        full.setValue(14.0)
+        minimum.setValue(13.0)
+        minimum_percent.setValue(12.0)
+
+        updated = dialog.to_settings().backend.battery_telemetry
+
+        self.assertEqual(updated.full_voltage, 14.0)
+        self.assertEqual(updated.reserve_voltage, 13.0)
+        self.assertEqual(updated.reserve_percent, 12.0)
+        full.setValue(12.0)
+        with self.assertRaises(ValueError):
+            dialog.to_settings()
+        dialog.close()
+        dialog.deleteLater()
+        self.app.processEvents()
+
     def test_battery_meter_blinks_only_while_alarm_is_active(self) -> None:
         meter = BatteryMeter("BATARYA")
         meter.set_theme(DARK)
@@ -91,10 +119,49 @@ class UiContractTests(unittest.TestCase):
         meter.deleteLater()
         self.app.processEvents()
 
+    def test_battery_meter_opens_a_complete_compact_settings_editor(self) -> None:
+        meter = BatteryMeter("BATARYA")
+        meter.resize(240, 32)
+        meter.show()
+        clicks: list[bool] = []
+        meter.clicked.connect(lambda: clicks.append(True))
+        QTest.mouseClick(meter, Qt.MouseButton.LeftButton)
+        self.assertEqual(clicks, [True])
+
+        popup = BatterySettingsPopup(DARK, language="tr")
+        settings = SettingsModel()
+        popup.show_settings(
+            settings,
+            TelemetrySnapshot.zero().copy(
+                battery_percent=10,
+                battery_voltage=14.8,
+            ),
+        )
+        self.assertEqual(popup.full_voltage.value(), 16.8)
+        self.assertEqual(popup.minimum_voltage.value(), 14.8)
+        self.assertEqual(popup.minimum_percent.value(), 10.0)
+        self.assertIn("14.80 V", popup.detail_label.text())
+
+        saved: list[dict[str, object]] = []
+        popup.save_requested.connect(saved.append)
+        popup.minimum_percent.setValue(12.0)
+        popup.save_button.click()
+        self.assertEqual(saved[-1]["reserve_percent"], 12.0)
+        popup.close()
+        popup.deleteLater()
+        meter.close()
+        meter.deleteLater()
+        self.app.processEvents()
+
     def test_signal_meter_does_not_restyle_for_packet_counter_updates(self) -> None:
         meter = SignalMeter("TELEMETRY")
         meter.set_theme(DARK)
         meter.set_value(80, "↓ 1 ↑ 1")
+        meter.set_metric_tooltip("Delivery 80%\nRF 75%")
+        self.assertEqual(meter.label.toolTip(), "Delivery 80%\nRF 75%")
+        self.assertEqual(meter.toolTip(), "")
+        self.assertEqual(meter.value.toolTip(), "")
+        self.assertEqual(meter.detail.toolTip(), "")
         restyle_calls = 0
         original_restyle = meter._restyle
 
@@ -211,6 +278,89 @@ class UiContractTests(unittest.TestCase):
         panel.deleteLater()
         self.app.processEvents()
 
+    def test_log_panel_does_not_rebuild_every_time_history_is_full(self) -> None:
+        panel = EventLogPanel("", "", "")
+        panel.MAX_ENTRIES = 5
+        for index in range(5):
+            panel.add_entry(LogEntry("TEST", f"Log {index}"))
+        rebuilds = 0
+        original_rebuild = panel._rebuild_table
+
+        def count_rebuild(*args, **kwargs) -> None:
+            nonlocal rebuilds
+            rebuilds += 1
+            original_rebuild(*args, **kwargs)
+
+        panel._rebuild_table = count_rebuild
+        panel.add_entry(LogEntry("TEST", "Newest"))
+
+        self.assertEqual(rebuilds, 0)
+        self.assertEqual(len(panel._entries), 5)
+        self.assertEqual(panel._entries[-1].message, "Newest")
+        panel.close()
+        panel.deleteLater()
+        self.app.processEvents()
+
+    def test_parameter_panel_appends_streamed_rows_without_rebuilding(self) -> None:
+        panel = ParametersPanel("", "", "")
+        first = Parameter("FIRST", 1.0, "-", "vehicle", "")
+        second = Parameter("SECOND", 2.0, "-", "vehicle", "")
+        panel.set_parameters([first])
+        rebuilds = 0
+        original_rebuild = panel._rebuild_table
+
+        def count_rebuild(*args, **kwargs) -> None:
+            nonlocal rebuilds
+            rebuilds += 1
+            original_rebuild(*args, **kwargs)
+
+        panel._rebuild_table = count_rebuild
+        panel.set_parameters([first, second])
+        panel.set_parameters(
+            [Parameter("FIRST", 3.0, "-", "vehicle", ""), second]
+        )
+
+        self.assertEqual(rebuilds, 0)
+        self.assertEqual(panel.table.rowCount(), 2)
+        self.assertEqual(panel.table.item(0, 1).text(), "3.0")
+        self.assertEqual(panel.table.item(0, 2).text(), "—")
+        panel.close()
+        panel.deleteLater()
+        self.app.processEvents()
+
+    def test_parameter_panel_updates_default_column_without_rebuilding(self) -> None:
+        panel = ParametersPanel("", "", "")
+        panel.set_parameters([Parameter("ARSPD_FBW_MIN", 17.0, "m/s", "flight", "")])
+        rebuilds = 0
+        original_rebuild = panel._rebuild_table
+
+        def count_rebuild(*args, **kwargs) -> None:
+            nonlocal rebuilds
+            rebuilds += 1
+            original_rebuild(*args, **kwargs)
+
+        panel._rebuild_table = count_rebuild
+        panel.set_parameters(
+            [
+                Parameter(
+                    "ARSPD_FBW_MIN",
+                    17.0,
+                    "m/s",
+                    "flight",
+                    "",
+                    default_value=12.0,
+                )
+            ]
+        )
+
+        self.assertEqual(rebuilds, 0)
+        self.assertEqual(panel.table.columnCount(), 5)
+        self.assertEqual(panel.table.item(0, 2).text(), "12.0")
+        self.assertFalse(panel.table.item(0, 2).flags() & Qt.ItemFlag.ItemIsEditable)
+        panel.close()
+        panel.deleteLater()
+        self.app.processEvents()
+
     def test_video_overlay_exposes_stats_and_fit_fill_modes(self) -> None:
         panel = VideoPanel("", "", theme=DARK, language="tr")
         viewport = panel.viewport
@@ -275,6 +425,22 @@ class UiContractTests(unittest.TestCase):
         self.assertEqual(actions[-1]["type"], "goto")
         bridge.deleteLater()
         self.app.processEvents()
+
+    def test_map_contact_transport_keeps_only_visible_trail_points(self) -> None:
+        contact = MapContact(
+            "competitor-1",
+            "Competitor",
+            39.9,
+            32.8,
+            trail_points=[[39.0 + index / 1000, 32.0] for index in range(160)],
+            metadata={"altitude_m": 120.0},
+        )
+
+        payload = MapPanel._contact_payload(contact, 40)
+
+        self.assertEqual(len(payload["trail_points"]), 40)
+        self.assertEqual(payload["trail_points"][0], contact.trail_points[-40])
+        self.assertEqual(payload["metadata"], {"altitude_m": 120.0})
 
     def test_frameless_cursor_clear_does_not_reenter_global_event_filter(self) -> None:
         window = QWidget()

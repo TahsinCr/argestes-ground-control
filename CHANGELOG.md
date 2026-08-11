@@ -1,6 +1,111 @@
 # **Change Log**
 All notable changes to this project will be documented in this file.
 
+## **[1.3-beta] - 11.08.2026**
+The **"Onboard Operations and Performance Beta"** release. This update turns
+the shared Orin channel into an operator-facing mission link, improves the
+quality of battery and radio information, and removes the main UI bottlenecks
+seen while telemetry, parameters, logs and map contacts arrive together.
+
+### Added
+* **Onboard mission client**:
+    * Added correlated start, pause, resume, stop, cancel, status, list and
+      event-history requests over the existing MAVLink application channel.
+    * Added mission transition/result handling, GUIDED-waiting state, critical
+      event reporting and a copyable QR result in the operator panel.
+    * Recovered QR results from live Kamikaze events, terminal mission results
+      and cursor-based mission history without treating an ACK as mission
+      success.
+    * Added an acknowledged TEKNOFEST target update before Kamikaze start. A
+      missing or rejected target now blocks launch instead of starting with
+      stale coordinates.
+* **Voltage-based battery estimate**:
+    * Added a display-only 4S LiPo estimator for installations where Pixhawk
+      current sensing is not reliable. Median filtering and separate discharge
+      and recovery time constants reduce motor-load voltage sag.
+    * Added configurable full voltage, reserve voltage and reserve percentage;
+      the zero-percent voltage is derived from that calibration automatically.
+    * Added a compact battery popup in the bottom bar with the estimate profile,
+      warning threshold and independent failsafe settings in one place.
+* **Parameter defaults**:
+    * Added an ArduPilot MAVFTP reader for `param.pck?withdefaults=1` on the
+      shared MAVLink router, without opening another receive loop.
+    * Added a read-only Default column to the parameter panel. Unsupported or
+      unavailable defaults remain visibly unknown instead of using a catalogue
+      fallback.
+* **Link diagnostics**:
+    * Added MAVLink packet-delivery, estimated loss and RFD local/remote radio
+      counters to telemetry snapshots and connection details.
+    * Added compact telemetry and video readouts for packet direction, RF/TX
+      buffer, bitrate, FPS and resolution. Full diagnostics appear only when
+      the operator hovers the connection name, leaving live values visually
+      stable.
+
+### Updated
+* **Shared core dependency**:
+    * Replaced the copied core tree with the independently maintained
+      `TahsinCr/vehicle-autonomy-core` Git submodule and pinned the reviewed
+      Vehicle Autonomy Core v1.1 revision.
+    * Migrated backend contracts and services from the retired `EventStream`
+      API to `EventBus`, including explicit error propagation for acknowledged
+      remote-log batches.
+    * Added clear startup guidance when the submodule has not been initialized,
+      and documented the clone/update workflow in both project guides.
+* **High-rate UI path**:
+    * Moved map telemetry and state deltas to persistent QWebChannel signals and
+      coalesced them to the newest browser animation frame.
+    * Reused map markers, tooltips and trail arrays, bounded competitor history,
+      and skipped unchanged mission freshness and tile-cache updates.
+    * Batched Qt log delivery, updated full parameter catalogues incrementally,
+      and coalesced parameter snapshots before touching table widgets.
+    * Cached the active settings snapshot in the main window so high-rate
+      telemetry no longer deep-copies the entire settings model per frame.
+* **Parameter synchronization**:
+    * Published large ArduPilot catalogues in bounded progress batches and kept
+      a healthy transfer alive while new indexes continue to arrive.
+    * Preserved staged edits while live values/defaults update and avoided
+      rebuilding the thousand-row table for each incoming batch.
+* **Remote onboard logs**:
+    * Validated `logs.push` atomically, deduplicated by session/sequence and sent
+      its ACK only after the complete batch reached the central YKİ log pipeline.
+    * Masked secret-like detail fields and batched GUI insertion so onboard
+      bursts do not block flight controls.
+* **Test server reference data**:
+    * Made the fake TEKNOFEST QR coordinate deterministic so target forwarding
+      and Kamikaze integration can be repeated reliably.
+
+### Fixed
+* **Operator command responsiveness**:
+    * Marked ARM, mode and other controls pending before starting their worker
+      so rapid clicks cannot open duplicate command transactions.
+    * Serialized operator command waits on the shared router and retried lost
+      mode/`COMMAND_ACK` exchanges within the configured operation timeout.
+    * Captured the ARM confirmation boundary before transmission so a fast
+      heartbeat cannot be missed.
+* **Parameter and log stalls**:
+    * Removed repeated full-table and full-log rebuilds during sustained input.
+    * Reset parameter/default synchronization state cleanly on disconnect and
+      prevented an active transfer from being declared failed while it was
+      still making progress over a slow radio.
+* **Telemetry presentation**:
+    * Used the router's measured MAVLink delivery percentage as the main link
+      value while keeping calculated RFD health as a separate diagnostic.
+    * Reset stale radio/error metrics on disconnect and kept tooltip ownership
+      on the connection title instead of changing the live metric theme.
+* **Map rendering drops**:
+    * Avoided repeated SVG, tooltip, route-freshness and cache-count work when
+      the underlying values have not changed.
+
+### Testing
+* The YKİ suite now passes **183 tests**, including application-channel
+  correlation, Kamikaze target/QR recovery, remote logs, voltage estimation,
+  parameter defaults, command retries and high-rate Qt/map regressions.
+* The pinned core revision passes **109 tests** for dependency lifecycles,
+  events, missions and MAVLink transport/application behavior.
+
+<br>
+
+
 ## **[1.2-beta] - 02.08.2026**
 The **"Unified Onboard Integration Beta"** release. This update establishes a
 single, extensible MAVLink application path between YKİ, the flight controller

@@ -20,7 +20,12 @@ from src.services.vehicle.parameters import (
     MutableParameterService,
     VehicleParameterService,
 )
-from src.services.vehicle.telemetry import MockTelemetryService, VehicleTelemetryService
+from src.services.vehicle.parameter_defaults import MavlinkParameterDefaultSource
+from src.services.vehicle.telemetry import (
+    MockTelemetryService,
+    TelemetryDecoder,
+    VehicleTelemetryService,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,15 +70,25 @@ def _create_vehicle_stack(
         operation_timeout=float(mavlink.operation_timeout),
         default_mission_altitude=float(settings.backend.mission.default_altitude_m),
     )
+    parameter_defaults = MavlinkParameterDefaultSource(
+        client,
+        timeout=min(5.0, max(1.0, float(mavlink.operation_timeout))),
+    )
     return VehicleStack(
         client=client,
         vehicle=vehicle,
-        telemetry=VehicleTelemetryService(vehicle, logging.child("TELEMETRY")),
+        telemetry=VehicleTelemetryService(
+            vehicle,
+            logging.child("TELEMETRY"),
+            decoder=TelemetryDecoder(settings.backend.battery_telemetry),
+            settings_service=settings_service,
+        ),
         parameters=VehicleParameterService(
             vehicle,
             logging.child("PARAMETER"),
             write_timeout=float(mavlink.operation_timeout),
             refresh_on_connect=mavlink.sync_parameters_on_connect,
+            default_loader=parameter_defaults.load,
         ),
         orin=MavlinkOrinService(
             client,

@@ -4,7 +4,7 @@ from abc import abstractmethod
 from typing import Any
 
 from src.core.abstracts import Service
-from src.core.events import EventStream
+from src.core.events import EventBus
 from src.models.connections import ConnectionStatus
 
 
@@ -13,7 +13,7 @@ class ConnectionControlService(Service):
 
     @property
     @abstractmethod
-    def changed(self) -> EventStream[ConnectionStatus]: ...
+    def changed(self) -> EventBus[ConnectionStatus]: ...
 
     @abstractmethod
     def status(self, channel: str) -> ConnectionStatus: ...

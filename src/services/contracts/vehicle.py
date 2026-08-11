@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from src.core.abstracts import Service
-from src.core.events import EventStream, Subscription
+from src.core.events import EventBus, Subscription
 from src.models.commands import CommandRequest
 from src.models.mission import MapOverlay
 from src.models.vehicle import (
@@ -32,7 +32,7 @@ class VehicleService(Service):
 
     @property
     @abstractmethod
-    def connection_changed(self) -> EventStream[VehicleConnectionState]: ...
+    def connection_changed(self) -> EventBus[VehicleConnectionState]: ...
 
     @property
     @abstractmethod

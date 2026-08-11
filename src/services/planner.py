@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from src.core.abstracts import Service
-from src.core.events import EventStream, Subscription
+from src.core.events import EventBus, Subscription
 from src.models.mission import MapContact, MapOverlay, MissionState
 from src.services.contracts.vehicle import MissionTransferInterrupted, VehicleService
 from src.services.logging_service import ServiceLogger
@@ -107,7 +107,7 @@ class PlannerService(Service):
         sync_from_vehicle_on_connect: bool = True,
     ) -> None:
         self._logger = logger
-        self._changed = EventStream[MissionState]()
+        self._changed = EventBus[MissionState]()
         self._lock = threading.RLock()
         self._state = initial_state or self._initial_state()
         self._issued_indexes: dict[str, int] = {}
@@ -128,7 +128,7 @@ class PlannerService(Service):
         self.api = PlannerMapApi(self)
 
     @property
-    def changed(self) -> EventStream[MissionState]:
+    def changed(self) -> EventBus[MissionState]:
         return self._changed
 
     @property

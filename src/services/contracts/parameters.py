@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections.abc import Iterable
 
-from src.core.events import EventStream
+from src.core.events import EventBus
 from src.core.abstracts import Service
 from src.models.parameters import Parameter
 
@@ -15,7 +15,7 @@ class ParameterService(Service):
 
     @property
     @abstractmethod
-    def changed(self) -> EventStream[tuple[Parameter, ...]]: ...
+    def changed(self) -> EventBus[tuple[Parameter, ...]]: ...
 
     @abstractmethod
     def replace(self, parameters: Iterable[Parameter]) -> None: ...

@@ -10,7 +10,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
-from src.core.events import EventStream
+from src.core.events import EventBus
 from src.models.competition import (
     CompetitionConnectionState,
     CompetitionServerConfig,
@@ -66,10 +66,10 @@ class TeknofestCompetitionService(CompetitionService):
         self._competitors: tuple[CompetitorTelemetry, ...] = ()
         self._hss_zones: tuple[HssZone, ...] = ()
         self._qr_coordinate: QrCoordinate | None = None
-        self._changed = EventStream[CompetitionConnectionState]()
-        self._competitors_updated = EventStream[tuple[CompetitorTelemetry, ...]]()
-        self._hss_updated = EventStream[tuple[HssZone, ...]]()
-        self._qr_updated = EventStream[QrCoordinate | None]()
+        self._changed = EventBus[CompetitionConnectionState]()
+        self._competitors_updated = EventBus[tuple[CompetitorTelemetry, ...]]()
+        self._hss_updated = EventBus[tuple[HssZone, ...]]()
+        self._qr_updated = EventBus[QrCoordinate | None]()
         self._lock = threading.RLock()
         self._lifecycle_lock = threading.RLock()
         self._http_lock = threading.RLock()
@@ -87,11 +87,11 @@ class TeknofestCompetitionService(CompetitionService):
             return replace(self._state)
 
     @property
-    def changed(self) -> EventStream[CompetitionConnectionState]:
+    def changed(self) -> EventBus[CompetitionConnectionState]:
         return self._changed
 
     @property
-    def competitors_updated(self) -> EventStream[tuple[CompetitorTelemetry, ...]]:
+    def competitors_updated(self) -> EventBus[tuple[CompetitorTelemetry, ...]]:
         return self._competitors_updated
 
     @property
@@ -100,11 +100,11 @@ class TeknofestCompetitionService(CompetitionService):
             return tuple(self._competitors)
 
     @property
-    def hss_updated(self) -> EventStream[tuple[HssZone, ...]]:
+    def hss_updated(self) -> EventBus[tuple[HssZone, ...]]:
         return self._hss_updated
 
     @property
-    def qr_updated(self) -> EventStream[QrCoordinate | None]:
+    def qr_updated(self) -> EventBus[QrCoordinate | None]:
         return self._qr_updated
 
     @property
@@ -165,9 +165,9 @@ class TeknofestCompetitionService(CompetitionService):
                 self._last_hss_refresh = 0.0
                 self._last_qr_refresh = 0.0
             if had_hss:
-                self._hss_updated.publish_isolated(())
+                self._hss_updated.publish(())
             if had_qr:
-                self._qr_updated.publish_isolated(None)
+                self._qr_updated.publish(None)
             self._publish_state(
                 connected=False,
                 authenticated=False,
@@ -348,6 +348,18 @@ class TeknofestCompetitionService(CompetitionService):
             raise ConnectionError("TEKNOFEST sunucu oturumu açık değil")
         self._refresh_reference_data_if_due(force=True)
 
+    def refresh_qr_coordinate(self) -> None:
+        """Fetch only the QR target needed by a pending kamikaze launch."""
+
+        self._require_connected()
+        with self._lock:
+            self._last_qr_refresh = time.monotonic()
+        self._fetch_qr_coordinate()
+        self._publish_state(
+            qr_available=self.qr_coordinate is not None,
+            last_success_at=datetime.now(UTC),
+        )
+
     def submit_lock_event(self, event: LockEvent) -> None:
         self._require_connected()
         payload = event.to_payload()
@@ -438,7 +450,7 @@ class TeknofestCompetitionService(CompetitionService):
         )
         server_time = self._server_time(payload.get("sunucusaati", {}))
         self._telemetry.patch(server_link=True, server_time=server_time)
-        self._competitors_updated.publish_isolated(result)
+        self._competitors_updated.publish(result)
         self._publish_state(
             connected=True,
             authenticated=True,
@@ -606,26 +618,7 @@ class TeknofestCompetitionService(CompetitionService):
             )
 
         if poll_qr:
-            self._log_protocol(
-                "competition.qr_request_tx",
-                "TX TEKNOFEST QR koordinat isteği gönderiliyor",
-                {},
-                severity="debug",
-            )
-            qr_payload = self._request_json("GET", "/api/qr_koordinati")
-            if not isinstance(qr_payload, dict):
-                raise CompetitionProtocolError("QR koordinatı yanıtı JSON nesnesi değil")
-            try:
-                qr = QrCoordinate.from_payload(qr_payload)
-            except (KeyError, TypeError, ValueError) as exc:
-                raise CompetitionProtocolError("QR koordinatı geçersiz") from exc
-            self._replace_qr_coordinate(qr)
-            self._log_protocol(
-                "competition.qr_rx",
-                "RX TEKNOFEST QR koordinatı alındı",
-                {"latitude": qr.latitude, "longitude": qr.longitude},
-                severity="debug",
-            )
+            self._fetch_qr_coordinate()
 
         with self._lock:
             hss_count = len(self._hss_zones)
@@ -634,6 +627,28 @@ class TeknofestCompetitionService(CompetitionService):
             hss_count=hss_count,
             qr_available=qr_available,
             last_success_at=datetime.now(UTC),
+        )
+
+    def _fetch_qr_coordinate(self) -> None:
+        self._log_protocol(
+            "competition.qr_request_tx",
+            "TX TEKNOFEST QR koordinat isteği gönderiliyor",
+            {},
+            severity="debug",
+        )
+        qr_payload = self._request_json("GET", "/api/qr_koordinati")
+        if not isinstance(qr_payload, dict):
+            raise CompetitionProtocolError("QR koordinatı yanıtı JSON nesnesi değil")
+        try:
+            qr = QrCoordinate.from_payload(qr_payload)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise CompetitionProtocolError("QR koordinatı geçersiz") from exc
+        self._replace_qr_coordinate(qr)
+        self._log_protocol(
+            "competition.qr_rx",
+            "RX TEKNOFEST QR koordinatı alındı",
+            {"latitude": qr.latitude, "longitude": qr.longitude},
+            severity="debug",
         )
 
     def _replace_hss_zones(self, zones: tuple[HssZone, ...]) -> bool:
@@ -646,7 +661,7 @@ class TeknofestCompetitionService(CompetitionService):
         )
         with self._lock:
             self._hss_zones = zones
-        self._hss_updated.publish_isolated(zones)
+        self._hss_updated.publish(zones)
         self._publish_state(hss_count=len(zones))
         return True
 
@@ -658,7 +673,7 @@ class TeknofestCompetitionService(CompetitionService):
         self._planner.replace_source_overlays("teknofest-qr", overlays)
         with self._lock:
             self._qr_coordinate = qr
-        self._qr_updated.publish_isolated(qr)
+        self._qr_updated.publish(qr)
         self._publish_state(qr_available=qr is not None)
         return True
 
@@ -745,7 +760,7 @@ class TeknofestCompetitionService(CompetitionService):
                 return
             self._state = updated
             snapshot = replace(self._state)
-        self._changed.publish_isolated(snapshot)
+        self._changed.publish(snapshot)
 
     def _log_connection_failure(self, message: str) -> None:
         if self._logger is None:
