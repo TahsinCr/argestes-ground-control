@@ -372,12 +372,17 @@ Normal ARM başarısız olursa zorla ARM yalnızca operatör onayıyla denenir. 
 
 ## SİHA Onboard v0.2-beta bağlantısı
 
-YKİ, Vehicle Autonomy Core v1.1.1 uygulama kanalını mevcut MAVLink bağlantısı
+YKİ, Vehicle Autonomy Core v1.2 uygulama kanalını mevcut MAVLink bağlantısı
 üzerinden kullanır. İkinci seri port, UDP socket veya receive döngüsü açılmaz.
 `V2_EXTENSION`; ağ ID `77`, mesaj tipi `42000`, YKİ system ID `255`, onboard
 system ID `1` ve onboard component ID `191` ile çalışır. Uygulama heartbeat'i
 saniyede bir gönderilir ve 10 saniyede zaman aşımına uğrar. Bu değerler
 Onboard/Orin ayarlarından değiştirilebilir.
+
+Core v1.2, tamamlanmamış uygulama paketlerinin birleştirme alanını ve MAVLink
+async köprü kuyruklarını sınırlar. Böylece hatalı, yinelenen veya ani yoğun
+uygulama trafiği normal telemetri yolunu değiştirmeden bellek kullanımını
+sınırsız büyütemez.
 
 `OnboardMissionService`; `task.start`, `task.pause`, `task.resume`, `task.stop`,
 `task.cancel`, `mission.status`, `mission.list`, `mission.events` ve `chain.start`
@@ -578,7 +583,7 @@ varsayılanları, komut tekrarları, eşzamanlı planlama, TEKNOFEST haberleşme
 batarya voltaj tahmini ve politikaları, dil paketleri, GStreamer, harita geçmişi,
 yüksek hızlı veri birleştirme, ayırıcılar, çerçevesiz pencere ve offscreen Qt
 açılışı için **194 YKİ testi** çalıştırır. İkinci komut core'un
-dependency, event, mission ve MAVLink iç yapılarına ait **109 testi**
+dependency, event, mission ve MAVLink iç yapılarına ait **125 testi**
 çalıştırır. Paketleri ayrı tutmak aynı alt seviye testlerin iki repoda
 birden bakımını önler.
 

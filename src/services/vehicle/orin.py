@@ -528,7 +528,7 @@ class MavlinkOrinService(OrinService):
         return {
             "role": "yki",
             "health": "ok",
-            "version": "1.4-beta",
+            "version": "1.4.1-beta",
             "vehicle_system_id": self._target_system(),
             "capabilities": [
                 "application.notify",

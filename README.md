@@ -410,12 +410,16 @@ confirmation. It is never triggered automatically in the background.
 
 ## SIHA Onboard v0.2-beta link
 
-YKİ uses Vehicle Autonomy Core v1.1.1's application channel over the existing
+YKİ uses Vehicle Autonomy Core v1.2's application channel over the existing
 MAVLink connection. It does not open another serial port, UDP socket or receive
 loop. `V2_EXTENSION` uses network ID `77`, message type `42000`, YKİ system ID
 `255`, onboard system ID `1` and onboard component ID `191`. The application
 heartbeat runs once per second and expires after 10 seconds. These values are
 available under the Onboard/Orin settings.
+
+Core v1.2 bounds both incomplete application-packet assemblies and the MAVLink
+async bridge queues. This keeps malformed, duplicated or bursty application
+traffic from growing memory use without changing the normal telemetry path.
 
 `OnboardMissionService` sends `task.start`, `task.pause`, `task.resume`,
 `task.stop`, `task.cancel`, `mission.status`, `mission.list`, `mission.events`
@@ -624,7 +628,7 @@ concurrent planning, TEKNOFEST communication, battery estimation and policies,
 localization, GStreamer pipelines, map history, high-rate data coalescing,
 responsive autonomous/map controls, splitters, frameless resizing and offscreen
 Qt startup. The second command runs
-the core repository's **109 tests** for its dependency, event, mission and
+the core repository's **125 tests** for its dependency, event, mission and
 MAVLink internals. Keeping the suites separate avoids maintaining the same
 low-level tests in both repositories.
 

@@ -1,6 +1,41 @@
 # **Change Log**
 All notable changes to this project will be documented in this file.
 
+## **[1.4.1-beta] - 13.08.2026**
+The **"Core Reliability Patch"** release. This patch updates the shared
+Vehicle Autonomy Core dependency without changing the operator workflow or the
+single-connection MAVLink architecture.
+
+### Updated
+* **Vehicle Autonomy Core v1.2**:
+    * Moved the pinned core revision from v1.1.1 to the official v1.2 release.
+    * Adopted bounded MAVLink application-fragment assembly and bounded
+      asyncio bridge queues so burst traffic cannot grow internal buffers
+      without limit.
+    * Adopted safer concurrent dependency scopes, serialized mission lifecycle
+      callbacks and pause-aware mission execution timeouts.
+    * Included the core fixes for event-wait races, one-shot MAVLink
+      subscriptions and retryable asynchronous resource cleanup.
+* **Release identity and documentation**:
+    * Updated the YKİ application heartbeat version to `1.4.1-beta`.
+    * Refreshed the English and Turkish integration notes and verified test
+      counts while retaining Python 3.11 as the YKİ runtime target.
+
+### Compatibility
+* The existing `MavlinkClient`, router and physical transport remain shared by
+  vehicle telemetry and the Onboard application channel. No second serial or
+  UDP reader was introduced.
+* Operator controls, wire settings and public YKİ service boundaries remain
+  compatible with the v1.4-beta release.
+
+### Testing
+* The YKİ suite passes **194 tests** against the updated core dependency.
+* Vehicle Autonomy Core v1.2 passes its **125 tests**, covering dependency,
+  event, mission and MAVLink concurrency and lifecycle behavior.
+
+<br>
+
+
 ## **[1.4-beta] - 13.08.2026**
 The **"Responsive Operator Controls Beta"** release. This update focuses on
 the controls used most often during operation: autonomous task handling,
