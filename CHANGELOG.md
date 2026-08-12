@@ -1,6 +1,69 @@
 # **Change Log**
 All notable changes to this project will be documented in this file.
 
+## **[1.4-beta] - 13.08.2026**
+The **"Responsive Operator Controls Beta"** release. This update focuses on
+the controls used most often during operation: autonomous task handling,
+compact-screen usability, reliable frameless resizing and a clearer quick
+command layout.
+
+### Added
+* **Tabbed autonomous controls**:
+    * Split the Autonomous Control panel into dedicated Quick Commands and
+      Tasks tabs without changing the underlying command services.
+    * Added independent, color-coded status rows for vehicle commands and
+      onboard task operations.
+    * Added an explicit task restart action. Restart first receives a successful
+      cancel acknowledgement, then starts the selected task again; a rejected
+      cancel never produces a second start request.
+
+### Updated
+* **Task operation flow**:
+    * Reduced the task controls to the two actions supported by the operator
+      workflow: Start/Restart and Cancel.
+    * Kept actuator-test safety confirmation and routed its start request over
+      the existing correlated Onboard application channel.
+    * Removed the QR result control from the task selector while retaining QR
+      recovery and structured logging in the backend.
+* **Quick Commands presentation**:
+    * Grouped flight controls and target profile inputs into separate compact
+      cards with stable status feedback at the bottom of the tab.
+    * Simplified the target profile to altitude and airspeed; loiter radius is
+      no longer presented as a quick profile input.
+* **Responsive map controls**:
+    * Added bounded responsive sizing for map statistics, GPS status, layer
+      selection and the floating tool dock.
+    * Preserved readable icons and labels at narrow panel widths instead of
+      shrinking controls below a practical operator size.
+* **Shared core dependency**:
+    * Updated the pinned Vehicle Autonomy Core revision from v1.1 to v1.1.1,
+      adopting its clearer package-layout checks and standalone test runner.
+
+### Fixed
+* **Actuator task dispatch**:
+    * Removed the stale capability gate that could leave Actuator Test visible
+      but prevent the UI from sending `task.start` to a connected Onboard.
+* **Frameless resizing**:
+    * Fixed edge and corner resizing on Linux/X11 window managers that report a
+      successful native resize request without actually starting the drag.
+    * Widened the invisible resize target and retained native compositor resize
+      behavior on Wayland, Windows and macOS.
+* **Small-screen layout**:
+    * Made both autonomous-control tabs independently scrollable and kept task
+      actions and status visible at the bottom of the panel.
+    * Lowered the safe application window minimum to 1152x648 while preserving
+      minimum sizes for operational controls.
+
+### Testing
+* The YKİ suite passes **194 tests**, including task restart ordering,
+  actuator dispatch, responsive Qt controls, frameless resizing and the
+  existing MAVLink, map, video and telemetry regressions.
+* Vehicle Autonomy Core v1.1.1 passes its **109 tests** through the new
+  `src/core/tests/run.py` entry point.
+
+<br>
+
+
 ## **[1.3-beta] - 11.08.2026**
 The **"Onboard Operations and Performance Beta"** release. This update turns
 the shared Orin channel into an operator-facing mission link, improves the

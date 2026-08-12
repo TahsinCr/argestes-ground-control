@@ -91,7 +91,7 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(application_icon(base_dir))
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.resize(1600, 940)
-        self.setMinimumSize(1280, 720)
+        self.setMinimumSize(1152, 648)
         self._build_ui()
         self.connection_popup = ConnectionPopup(
             self.theme,
@@ -328,7 +328,7 @@ class MainWindow(QMainWindow):
 
     def _request_command(self, code: str, parameters: dict) -> None:
         task = str(parameters.get("task", "")).strip().upper()
-        if code == "SET_MISSION_TASK" and task == "KAMIKAZE":
+        if code in {"SET_MISSION_TASK", "RESTART_MISSION_TASK"} and task == "KAMIKAZE":
             dialog = QMessageBox(self)
             dialog.setIcon(QMessageBox.Icon.Warning)
             dialog.setWindowTitle(t("onboard.confirm.title", self.language))
@@ -345,7 +345,10 @@ class MainWindow(QMainWindow):
                     severity="warning",
                 )
                 return
-        elif code == "SET_MISSION_TASK" and task == "ACTUATOR_TEST":
+        elif (
+            code in {"SET_MISSION_TASK", "RESTART_MISSION_TASK"}
+            and task == "ACTUATOR_TEST"
+        ):
             if not self._confirm_actuator_test():
                 self.ui_log.event(
                     "actuator_test.start_cancelled",

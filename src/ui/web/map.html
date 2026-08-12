@@ -771,6 +771,130 @@
       letter-spacing: 0.4px;
       text-transform: uppercase;
     }
+
+    @media (max-width: 720px) {
+      .map-top {
+        top: 7px;
+        left: 7px;
+        right: 7px;
+        gap: 6px;
+      }
+
+      .map-stats {
+        flex-wrap: wrap;
+        gap: 3px;
+      }
+
+      .stat-chip {
+        padding: 5px 7px;
+        font-size: 10px;
+      }
+
+      .stat-chip strong {
+        margin-left: 3px;
+      }
+
+      .map-top-right {
+        gap: 3px;
+      }
+
+      .layer-toggle {
+        padding: 3px;
+      }
+
+      .layer-toggle button {
+        min-width: 62px;
+        height: 27px;
+        padding: 0 7px;
+        font-size: 10px;
+      }
+
+      .gps-summary {
+        min-height: 25px;
+        gap: 5px;
+        padding: 0 6px;
+        font-size: 10px;
+      }
+
+      .tool-dock {
+        bottom: 7px;
+        width: calc(100% - 12px);
+        justify-content: center;
+      }
+
+      .tool-group {
+        gap: 2px;
+        padding: 3px;
+      }
+
+      .mission-mode-toggle {
+        padding: 3px;
+        border-radius: 7px;
+      }
+
+      .mission-mode-button,
+      .tool-button {
+        width: 31px;
+        height: 32px;
+      }
+
+      .mission-mode-button svg,
+      .tool-button svg {
+        width: 17px;
+        height: 17px;
+      }
+
+      .tool-button.is-send {
+        width: 33px;
+        min-width: 33px;
+        padding: 0;
+      }
+
+      .tool-button.is-send .tool-button-label {
+        display: none;
+      }
+
+      .hud-footer {
+        top: 71px;
+        left: 7px;
+        max-width: calc(100% - 14px);
+        gap: 2px;
+        padding: 5px 7px;
+        font-size: 10px;
+      }
+
+      .hud-row {
+        gap: 6px;
+      }
+    }
+
+    @media (max-width: 500px) {
+      .mission-mode-button,
+      .tool-button {
+        width: 29px;
+        height: 30px;
+      }
+
+      .tool-button.is-send {
+        width: 31px;
+        min-width: 31px;
+      }
+
+      .mission-mode-button svg,
+      .tool-button svg {
+        width: 16px;
+        height: 16px;
+      }
+
+      .tool-group {
+        gap: 1px;
+        padding: 2px;
+      }
+
+      #cache-chip {
+        display: none;
+      }
+    }
   </style>
 </head>
 <body>

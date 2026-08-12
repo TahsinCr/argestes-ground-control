@@ -24,6 +24,7 @@ vision and similar decision algorithms belong to the onboard system.
 - Flight telemetry, connection health, GPS, battery and radio-link monitoring
 - ARM/DISARM, flight modes, LAND, GOTO, parameters and flight-plan transfer
 - Correlated Onboard task control, mission state, QR recovery and remote logs
+- Tabbed quick commands and Start/Restart/Cancel controls for onboard tasks
 - Takeoff, waypoint, loiter, RTL, land and local safety-area planning
 - Live parameter/default and flight-plan synchronization from the controller
 - RTSP, HTTP/MJPEG, RTP/UDP, V4L2, file and custom GStreamer sources
@@ -283,7 +284,9 @@ diagnostic rows, or the log/parameter panels. Layout updates are deferred
 during splitter movement to keep WebEngine, video and large tables responsive.
 The frameless window can also be resized from every edge and corner. Splitters
 and the window retain minimum panel sizes so operational controls cannot
-collapse completely.
+collapse completely. On Linux/X11 the application uses its own bounded resize
+path when a window manager accepts but does not begin Qt's native resize; other
+platforms retain compositor-managed resizing.
 
 ## Battery warning and failsafe
 
@@ -407,7 +410,7 @@ confirmation. It is never triggered automatically in the background.
 
 ## SIHA Onboard v0.2-beta link
 
-YKİ uses Vehicle Autonomy Core v1.1's application channel over the existing
+YKİ uses Vehicle Autonomy Core v1.1.1's application channel over the existing
 MAVLink connection. It does not open another serial port, UDP socket or receive
 loop. `V2_EXTENSION` uses network ID `77`, message type `42000`, YKİ system ID
 `255`, onboard system ID `1` and onboard component ID `191`. The application
@@ -424,8 +427,9 @@ automatically.
 
 The Kamikaze operator action asks for confirmation before sending `KAMIKAZE`.
 If the ACK contains `waiting_for_mode=true`, the panel tells the operator to
-select GUIDED. Phase comes from `mission.transition`; stop and cancel are
-separate correlated requests.
+select GUIDED. Phase comes from `mission.transition`. The Tasks tab exposes
+Start/Restart and Cancel: restarting waits for a successful cancel ACK before
+sending the next `task.start` request.
 
 QR data is recovered from three sources:
 
@@ -435,8 +439,9 @@ QR data is recovered from three sources:
 3. cursor-based `mission.events` reconciliation after reconnect.
 
 QR content remains inert plain text. It is associated with the active Kamikaze
-mission, deduplicated, shown with a copy action and written to the central log.
-Conflicting live/result values are preserved and reported.
+mission, deduplicated and written to the central log. Conflicting live/result
+values are preserved and reported. QR recovery remains a backend responsibility
+and is not duplicated in the compact task selector.
 
 Onboard `logs.push` requests are validated in batches of at most 16 records.
 The complete batch enters the central log repository before ACK; session and
@@ -609,15 +614,16 @@ correlation details rather than relying only on a visible UI message.
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python -B -m unittest discover -s tests -v
-PYTHONDONTWRITEBYTECODE=1 python -B -m unittest discover -s src/core/tests -v
+PYTHONDONTWRITEBYTECODE=1 python -B src/core/tests/run.py
 ```
 
-The first command runs **183 YKİ tests** covering application architecture,
+The first command runs **194 YKİ tests** covering application architecture,
 the pinned core boundary, dependency composition, vehicle/Orin sharing,
 Onboard mission/QR handling, remote logs, parameter defaults, command retries,
 concurrent planning, TEKNOFEST communication, battery estimation and policies,
 localization, GStreamer pipelines, map history, high-rate data coalescing,
-splitters, frameless resizing and offscreen Qt startup. The second command runs
+responsive autonomous/map controls, splitters, frameless resizing and offscreen
+Qt startup. The second command runs
 the core repository's **109 tests** for its dependency, event, mission and
 MAVLink internals. Keeping the suites separate avoids maintaining the same
 low-level tests in both repositories.

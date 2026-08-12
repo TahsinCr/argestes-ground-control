@@ -14,10 +14,10 @@ from PyQt6.QtWidgets import (
     QLayout,
     QListWidget,
     QListWidgetItem,
-    QLineEdit,
     QProgressBar,
     QScrollArea,
     QSizePolicy,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -266,9 +266,79 @@ class CommandPanel(PanelFrame):
         self._onboard_state = OnboardMissionState()
         self.setMinimumWidth(300)
 
+        self.tabs = QTabWidget(self)
+        self.tabs.setObjectName("CommandTabs")
+        self.tabs.setDocumentMode(False)
+        self.tabs.tabBar().setExpanding(True)
+        self.tabs.tabBar().setDrawBase(False)
+        self.tabs.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+        self.quick_tab = QWidget(self.tabs)
+        self.task_tab = QWidget(self.tabs)
+        self.quick_tab.setObjectName("CommandTabPage")
+        self.task_tab.setObjectName("CommandTabPage")
+        self.tabs.addTab(self.quick_tab, "")
+        self.tabs.addTab(self.task_tab, "")
+        self.body_layout.addWidget(self.tabs, 1)
+
+        quick_page_layout = QVBoxLayout(self.quick_tab)
+        quick_page_layout.setContentsMargins(0, 4, 0, 0)
+        quick_page_layout.setSpacing(4)
+        quick_scroll = QScrollArea(self.quick_tab)
+        quick_scroll.setObjectName("CommandTabScroll")
+        quick_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        quick_scroll.setWidgetResizable(True)
+        quick_scroll.setMinimumHeight(0)
+        quick_scroll.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Ignored,
+        )
+        quick_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        quick_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        quick_content = QWidget(quick_scroll)
+        quick_content.setObjectName("CommandTabContent")
+        quick_layout = QVBoxLayout(quick_content)
+        quick_layout.setContentsMargins(0, 0, 0, 0)
+        quick_layout.setSpacing(4)
+        quick_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        quick_scroll.setWidget(quick_content)
+        quick_page_layout.addWidget(quick_scroll, 1)
+
+        task_page_layout = QVBoxLayout(self.task_tab)
+        task_page_layout.setContentsMargins(0, 4, 0, 0)
+        task_page_layout.setSpacing(4)
+        task_scroll = QScrollArea(self.task_tab)
+        task_scroll.setObjectName("CommandTabScroll")
+        task_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        task_scroll.setWidgetResizable(True)
+        task_scroll.setMinimumHeight(0)
+        task_scroll.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Ignored,
+        )
+        task_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        task_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        task_content = QWidget(task_scroll)
+        task_content.setObjectName("CommandTabContent")
+        task_layout = QVBoxLayout(task_content)
+        task_layout.setContentsMargins(0, 0, 0, 0)
+        task_layout.setSpacing(4)
+        task_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        task_scroll.setWidget(task_content)
+        task_page_layout.addWidget(task_scroll, 1)
+
+        self.quick_control_card = QFrame(quick_content)
+        self.quick_control_card.setObjectName("QuickCommandCard")
+        quick_control_layout = QVBoxLayout(self.quick_control_card)
+        quick_control_layout.setContentsMargins(8, 7, 8, 8)
+        quick_control_layout.setSpacing(4)
+        quick_layout.addWidget(self.quick_control_card)
+
         self.mode_label = QLabel(self)
         self.mode_label.setProperty("role", "section-label")
-        self.body_layout.addWidget(self.mode_label)
+        quick_control_layout.addWidget(self.mode_label)
 
         mode_row = QWidget(self)
         mode_layout = QGridLayout(mode_row)
@@ -283,25 +353,32 @@ class CommandPanel(PanelFrame):
         self.mode_apply_button.clicked.connect(self._emit_mode_update)
         mode_layout.addWidget(self.mode_combo, 0, 0)
         mode_layout.addWidget(self.mode_apply_button, 0, 1)
-        self.body_layout.addWidget(mode_row)
+        quick_control_layout.addWidget(mode_row)
 
         self.arm_label = QLabel(self)
         self.arm_label.setProperty("role", "section-label")
-        self.body_layout.addWidget(self.arm_label)
+        quick_control_layout.addWidget(self.arm_label)
 
         self.arm_toggle_button = compact_button("ARM", "success")
         self.arm_toggle_button.clicked.connect(self._toggle_arm_state)
-        self.body_layout.addWidget(self.arm_toggle_button)
+        quick_control_layout.addWidget(self.arm_toggle_button)
 
         self.command_status = QLabel(self)
+        self.command_status.setObjectName("CommandStatus")
         self.command_status.setProperty("role", "readout-label")
         self.command_status.setWordWrap(True)
-        self.body_layout.addWidget(self.command_status)
 
         self.profile_label = QLabel(self)
         self.profile_label.setProperty("role", "section-label")
-        self.profile_label.setVisible(False)
-        self.body_layout.addWidget(self.profile_label)
+        self.profile_label.setVisible(True)
+
+        self.quick_profile_card = QFrame(quick_content)
+        self.quick_profile_card.setObjectName("QuickCommandCard")
+        quick_profile_layout = QVBoxLayout(self.quick_profile_card)
+        quick_profile_layout.setContentsMargins(8, 7, 8, 8)
+        quick_profile_layout.setSpacing(4)
+        quick_profile_layout.addWidget(self.profile_label)
+        quick_layout.addWidget(self.quick_profile_card)
 
         target_row = QWidget(self)
         target_layout = QGridLayout(target_row)
@@ -316,6 +393,11 @@ class CommandPanel(PanelFrame):
             widget.setDecimals(spec.decimals)
             widget.setValue(spec.default)
             widget.setSuffix(spec.suffix)
+            widget.setMinimumWidth(0)
+            widget.setSizePolicy(
+                QSizePolicy.Policy.Ignored,
+                QSizePolicy.Policy.Fixed,
+            )
             self.profile_inputs[spec.key] = widget
             setattr(self, spec.key, widget)
             field_label = QLabel(spec.short_label, self)
@@ -325,18 +407,26 @@ class CommandPanel(PanelFrame):
 
         self.profile_apply_button = compact_button("APPLY", "primary")
         self.profile_apply_button.clicked.connect(self._emit_profile_update)
-        target_layout.addWidget(self.profile_apply_button, 1, 3)
-        self.body_layout.addWidget(target_row)
+        target_layout.addWidget(
+            self.profile_apply_button,
+            2,
+            0,
+            1,
+            len(PROFILE_FIELDS),
+        )
+        quick_profile_layout.addWidget(target_row)
+        quick_layout.addStretch(1)
+        quick_page_layout.addWidget(self.command_status)
 
         self.tasks_label = QLabel(self)
         self.tasks_label.setProperty("role", "section-label")
-        self.body_layout.addWidget(self.tasks_label)
+        task_layout.addWidget(self.tasks_label)
 
         self.task_list = QListWidget(self)
         self.task_list.setUniformItemSizes(True)
         self.task_list.setAlternatingRowColors(False)
         self.task_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.task_list.setMinimumHeight(96)
+        self.task_list.setMinimumHeight(76)
         self.task_list.currentRowChanged.connect(
             lambda _row: self._sync_command_availability()
         )
@@ -345,7 +435,7 @@ class CommandPanel(PanelFrame):
             if task_codes is None
             else task_codes
         )
-        self.body_layout.addWidget(self.task_list, 1)
+        task_layout.addWidget(self.task_list, 1)
 
         self.actuator_card = QFrame(self)
         self.actuator_card.setObjectName("MetricCard")
@@ -379,59 +469,45 @@ class CommandPanel(PanelFrame):
         actuator_layout.addWidget(self.actuator_detail, 2, 0, 1, 2)
         actuator_layout.addWidget(self.actuator_progress, 3, 0, 1, 2)
         self.actuator_card.hide()
-        self.body_layout.addWidget(self.actuator_card)
+        task_layout.addWidget(self.actuator_card)
 
-        self.task_apply_button = compact_button("TASK APPLY", "primary")
+        self.task_apply_button = compact_button("START", "primary")
         self.task_apply_button.clicked.connect(self._emit_task_command)
-        self.body_layout.addWidget(self.task_apply_button)
 
         self.onboard_status = QLabel(self)
+        self.onboard_status.setObjectName("CommandStatus")
         self.onboard_status.setProperty("role", "readout-label")
         self.onboard_status.setWordWrap(True)
-        self.body_layout.addWidget(self.onboard_status)
-
-        qr_row = QWidget(self)
-        qr_layout = QHBoxLayout(qr_row)
-        qr_layout.setContentsMargins(0, 0, 0, 0)
-        qr_layout.setSpacing(4)
-        self.qr_result = QLineEdit(self)
-        self.qr_result.setReadOnly(True)
-        self.qr_copy_button = compact_button("COPY", "success")
-        self.qr_copy_button.clicked.connect(self._copy_qr)
-        qr_layout.addWidget(self.qr_result, 1)
-        qr_layout.addWidget(self.qr_copy_button)
-        self.body_layout.addWidget(qr_row)
 
         task_control_row = QWidget(self)
-        task_control_layout = QHBoxLayout(task_control_row)
+        task_control_layout = QGridLayout(task_control_row)
         task_control_layout.setContentsMargins(0, 0, 0, 0)
-        task_control_layout.setSpacing(4)
-        self.task_stop_button = compact_button("STOP", "warning")
+        task_control_layout.setHorizontalSpacing(4)
+        task_control_layout.setVerticalSpacing(4)
         self.task_cancel_button = compact_button("CANCEL", "danger")
-        self.task_stop_button.clicked.connect(
-            lambda: self._emit_active_task_control("ONBOARD_TASK_STOP")
-        )
         self.task_cancel_button.clicked.connect(
             lambda: self._emit_active_task_control("ONBOARD_TASK_CANCEL")
         )
-        task_control_layout.addWidget(self.task_stop_button)
-        task_control_layout.addWidget(self.task_cancel_button)
-        self.body_layout.addWidget(task_control_row)
+        task_control_layout.addWidget(self.task_apply_button, 0, 0, 1, 2)
+        task_control_layout.addWidget(self.task_cancel_button, 0, 2)
+        task_control_layout.setColumnStretch(0, 1)
+        task_control_layout.setColumnStretch(1, 1)
+        task_page_layout.addWidget(task_control_row)
+        task_page_layout.addWidget(self.onboard_status)
 
         self.set_language(self._language)
 
     def set_language(self, language: str) -> None:
         self._language = language
         self._arm_render_signature = None
-        self.mode_label.setText(t("command.quick", language).upper())
-        self.profile_label.setText("")
+        self.tabs.setTabText(0, t("command.tab.quick", language))
+        self.tabs.setTabText(1, t("command.tab.tasks", language))
+        self.mode_label.setText(t("command.flight_controls", language).upper())
+        self.profile_label.setText(t("command.target_profile", language).upper())
         self.tasks_label.setText(t("command.tasks", language).upper())
         self.mode_apply_button.setText(t("command.apply", language).upper())
         self.profile_apply_button.setText(t("command.apply", language).upper())
-        self.task_apply_button.setText(t("command.task_apply", language).upper())
         self.actuator_title.setText(t("onboard.actuator.title", language).upper())
-        self.qr_copy_button.setText(t("onboard.qr.copy", language).upper())
-        self.task_stop_button.setText(t("onboard.task.stop", language).upper())
         self.task_cancel_button.setText(t("onboard.task.cancel", language).upper())
         self.update_onboard_state(self._onboard_state)
         self._sync_arm_controls()
@@ -548,22 +624,11 @@ class CommandPanel(PanelFrame):
         self.onboard_status.setProperty("state", status)
         self.onboard_status.style().unpolish(self.onboard_status)
         self.onboard_status.style().polish(self.onboard_status)
-        self.qr_result.setText(state.qr_text or "")
-        self.qr_result.setPlaceholderText(
-            t(
-                "onboard.qr.cancelled"
-                if state.qr_status == "cancelled"
-                else "onboard.qr.pending",
-                self._language,
-            )
-        )
-        self.qr_copy_button.setEnabled(bool(state.qr_text))
         task_active = bool(
             state.connected
             and state.active_task
             and not state.terminal
         )
-        self.task_stop_button.setEnabled(task_active and not state.pending_command)
         self.task_cancel_button.setEnabled(task_active and not state.pending_command)
         self._sync_command_availability()
 
@@ -773,7 +838,8 @@ class CommandPanel(PanelFrame):
         if normalized == "FORCE_ARM":
             self._requested_armed = True
         self._pending_commands.append(normalized)
-        self._set_command_status(
+        self._set_operation_status(
+            normalized,
             t("command.status.sending", self._language).format(command=normalized),
             "warning",
         )
@@ -802,12 +868,14 @@ class CommandPanel(PanelFrame):
 
         if self._pending_commands:
             pending = self._pending_commands[-1]
-            self._set_command_status(
+            self._set_operation_status(
+                pending,
                 t("command.status.sending", self._language).format(command=pending),
                 "warning",
             )
         else:
-            self._set_command_status(
+            self._set_operation_status(
+                code,
                 t(
                     "command.result.success"
                     if result.accepted
@@ -838,15 +906,7 @@ class CommandPanel(PanelFrame):
             "WAYPOINT_TRACK",
             "SURVEY_AREA",
         }
-        actuator_supported = bool(
-            selected_task != "ACTUATOR_TEST"
-            or ACTUATOR_TEST_TASK in self._onboard_state.available_tasks
-        )
-        selected_canonical = (
-            ACTUATOR_TEST_TASK
-            if selected_task == "ACTUATOR_TEST"
-            else selected_task.lower()
-        )
+        selected_canonical = self._canonical_ui_task(selected_task)
         same_task_active = bool(
             selected_canonical
             and self._onboard_state.active_task == selected_canonical
@@ -854,8 +914,6 @@ class CommandPanel(PanelFrame):
         )
         task_available = bool(
             available
-            and actuator_supported
-            and not same_task_active
             and (
                 not onboard_task
                 or (
@@ -865,6 +923,16 @@ class CommandPanel(PanelFrame):
             )
         )
         self.task_apply_button.setEnabled(task_available)
+        button_key = "command.task_restart" if same_task_active else "command.task_start"
+        button_role = "warning" if same_task_active else "primary"
+        button_text = t(button_key, self._language)
+        if self._language.lower().startswith("tr"):
+            button_text = button_text.replace("i", "İ").replace("ı", "I")
+        self.task_apply_button.setText(button_text.upper())
+        if self.task_apply_button.property("role") != button_role:
+            self.task_apply_button.setProperty("role", button_role)
+            self.task_apply_button.style().unpolish(self.task_apply_button)
+            self.task_apply_button.style().polish(self.task_apply_button)
         if self.mode_combo.isEnabled() != available:
             self.mode_combo.setEnabled(available)
         self._sync_arm_controls()
@@ -875,6 +943,22 @@ class CommandPanel(PanelFrame):
         self.command_status.setProperty("state", state)
         self.command_status.style().unpolish(self.command_status)
         self.command_status.style().polish(self.command_status)
+
+    def _set_task_status(self, message: str, state: str) -> None:
+        self.onboard_status.setText(message)
+        self.onboard_status.setProperty("state", state)
+        self.onboard_status.style().unpolish(self.onboard_status)
+        self.onboard_status.style().polish(self.onboard_status)
+
+    def _set_operation_status(self, code: str, message: str, state: str) -> None:
+        if code.strip().upper() in {
+            "SET_MISSION_TASK",
+            "RESTART_MISSION_TASK",
+            "ONBOARD_TASK_CANCEL",
+        }:
+            self._set_task_status(message, state)
+            return
+        self._set_command_status(message, state)
 
     def _emit_mode_update(self) -> None:
         params = self._profile_params()
@@ -891,16 +975,29 @@ class CommandPanel(PanelFrame):
         if not item:
             return
         task = str(item.data(Qt.ItemDataRole.UserRole) or "").strip().upper()
+        same_task_active = bool(
+            self._canonical_ui_task(task) == self._onboard_state.active_task
+            and not self._onboard_state.terminal
+        )
+        command = "RESTART_MISSION_TASK" if same_task_active else "SET_MISSION_TASK"
         if task == "ACTUATOR_TEST":
             self.command_requested.emit(
-                "SET_MISSION_TASK",
+                command,
                 {"task": task},
             )
             return
         params = self._profile_params()
         params["mode"] = self.mode_combo.currentData()
         params["task"] = task
-        self.command_requested.emit("SET_MISSION_TASK", params)
+        self.command_requested.emit(command, params)
+
+    @staticmethod
+    def _canonical_ui_task(task: str) -> str:
+        normalized = str(task).strip().upper()
+        return {
+            "KAMIKAZE": "kamikaze.execute",
+            "ACTUATOR_TEST": ACTUATOR_TEST_TASK,
+        }.get(normalized, normalized.lower())
 
     def _emit_active_task_control(self, command: str) -> None:
         task = self._onboard_state.active_task
@@ -912,10 +1009,3 @@ class CommandPanel(PanelFrame):
         params = self._profile_params()
         params["mode"] = self.mode_combo.currentData()
         self.command_requested.emit(command, params)
-
-    def _copy_qr(self) -> None:
-        text = self.qr_result.text()
-        if text:
-            from PyQt6.QtWidgets import QApplication
-
-            QApplication.clipboard().setText(text)

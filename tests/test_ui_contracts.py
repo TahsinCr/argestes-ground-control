@@ -881,7 +881,13 @@ class UiContractTests(unittest.TestCase):
                 actuator_armed=False,
             )
         )
-        self.assertFalse(panel.task_apply_button.isEnabled())
+        self.assertTrue(panel.task_apply_button.isEnabled())
+        self.assertEqual(panel.task_apply_button.text(), "GÖREVİ YENİDEN BAŞLAT")
+        panel._emit_task_command()
+        self.assertEqual(
+            requested[-1],
+            ("RESTART_MISSION_TASK", {"task": "ACTUATOR_TEST"}),
+        )
         self.assertIn("84", panel.actuator_detail.text())
         self.assertIn("1700", panel.actuator_detail.text())
         self.assertGreater(panel.actuator_progress.maximum(), 0)

@@ -127,7 +127,7 @@ class FramelessResizeController(QObject):
     def __init__(self, window: QWidget, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._window = window
-        self._border = 8
+        self._border = 10
         self._resizing = False
         self._resize_edges = None
         self._start_pos = QPoint()
@@ -175,25 +175,39 @@ class FramelessResizeController(QObject):
         elif event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
             edges = self._edge_at(event.globalPosition().toPoint())
             if edges:
-                handle = self._window.windowHandle()
-                start_resize = getattr(handle, "startSystemResize", None) if handle else None
-                if start_resize and start_resize(edges):
+                if self._start_native_resize(edges):
                     self._clear_cursor()
                     return True
-                self._resizing = True
-                self._resize_edges = edges
-                self._start_pos = event.globalPosition().toPoint()
-                self._start_geometry = self._window.geometry()
-                self._pending_resize_pos = None
-                self._window.grabMouse()
+                self._begin_manual_resize(edges, event.globalPosition().toPoint())
                 return True
         elif event.type() == QEvent.Type.MouseButtonRelease:
             self._finish_manual_resize(event.globalPosition().toPoint())
             self._clear_cursor()
         elif event.type() in {QEvent.Type.Leave, QEvent.Type.WindowDeactivate, QEvent.Type.Hide}:
+            if self._resizing and event.type() != QEvent.Type.Leave:
+                self._finish_manual_resize()
             if not self._resizing:
                 self._clear_cursor()
         return False
+
+    def _start_native_resize(self, edges: Qt.Edge) -> bool:
+        # Qt's XCB backend can report a successful system resize even when the
+        # window manager never starts the operation. Manual geometry updates
+        # are reliable on X11; compositors that restrict them keep the native
+        # path.
+        platform = str(self._app.platformName()).lower() if self._app else ""
+        if platform in {"xcb", "offscreen", "minimal"}:
+            return False
+        handle = self._window.windowHandle()
+        start_resize = getattr(handle, "startSystemResize", None) if handle else None
+        return bool(start_resize and start_resize(edges))
+
+    def _begin_manual_resize(self, edges: Qt.Edge, global_pos: QPoint) -> None:
+        self._resizing = True
+        self._resize_edges = edges
+        self._start_pos = QPoint(global_pos)
+        self._start_geometry = QRect(self._window.geometry())
+        self._pending_resize_pos = None
 
     def _edge_at(self, global_pos: QPoint):
         rect = self._window.frameGeometry()
@@ -242,8 +256,6 @@ class FramelessResizeController(QObject):
             self._filter_installed = False
         self._resize_timer.stop()
         self._pending_resize_pos = None
-        if QWidget.mouseGrabber() is self._window:
-            self._window.releaseMouse()
         self._cursor_active = False
 
     def _queue_resize(self, global_pos: QPoint) -> None:
@@ -267,8 +279,6 @@ class FramelessResizeController(QObject):
             self._resize_to(position)
         self._resizing = False
         self._resize_edges = None
-        if QWidget.mouseGrabber() is self._window:
-            self._window.releaseMouse()
 
     def _resize_to(self, global_pos: QPoint) -> None:
         if not self._resize_edges:

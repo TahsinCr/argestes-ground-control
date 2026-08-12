@@ -154,22 +154,23 @@ class DispatchCommandService(CommandService):
         return result
 
     def _execute(self, request: CommandRequest) -> tuple[bool, dict[str, object]]:
-        if request.code in {"ONBOARD_TASK_STOP", "ONBOARD_TASK_CANCEL"}:
+        if request.code in {"RESTART_MISSION_TASK", "ONBOARD_TASK_CANCEL"}:
             if self._onboard is None:
                 raise ConnectionError("Onboard görev servisi kullanılamıyor")
             task = str(request.parameters.get("task", "kamikaze.execute"))
-            receipt = (
-                self._onboard.stop_task(task)
-                if request.code == "ONBOARD_TASK_STOP"
-                else self._onboard.cancel_task(task)
-            )
+            receipt = self._onboard.cancel_task(task)
             if not receipt.accepted:
                 raise RuntimeError(receipt.message)
+            if request.code == "RESTART_MISSION_TASK":
+                receipt = self._onboard.start_task(task, source=request.source)
+                if not receipt.accepted:
+                    raise RuntimeError(receipt.message)
             return True, {
                 "task": task,
                 "target": "orin",
                 "request_id": receipt.request_id,
                 "orin_execution": receipt.response.get("execution", "acknowledged"),
+                "restarted": request.code == "RESTART_MISSION_TASK",
             }
         if request.code == "APPLY_MODE":
             mode = str(request.parameters.get("mode", "")).strip().upper()

@@ -19,6 +19,7 @@ YKİ otonom görevi yürütmez. Haritada uçuş planı hazırlanır, araç veya 
 - Uçuş telemetrisi, bağlantı sağlığı, GPS, batarya ve radyo bağlantı bilgileri
 - ARM/DISARM, uçuş modu, LAND, GOTO, parametre ve uçuş planı aktarımı
 - İstek kimliğiyle eşleştirilen Onboard görevleri, görev durumu, QR kurtarma ve uzak loglar
+- Sekmeli hızlı komutlar ve araç üstü görevler için Başlat/Yeniden Başlat/İptal kontrolleri
 - Takeoff, waypoint, loiter, RTL, land ve yerel güvenlik alanlarının harita üzerinde hazırlanması
 - Araçtan canlı parametre/varsayılan değer ve uçuş planı alma
 - RTSP, HTTP/MJPEG, RTP/UDP, V4L2, dosya ve özel GStreamer pipeline kaynakları
@@ -261,7 +262,9 @@ boyutlandırılabilir. WebEngine, video ve büyük tabloların sürükleme sıra
 donmaması için pahalı yerleşim güncellemeleri ayırıcı bırakıldığında
 uygulanır. Çerçevesiz ana pencere de tüm kenar ve köşelerden
 boyutlandırılabilir; minimum panel ölçüleri kritik kontrollerin tamamen
-kapanmasını engeller.
+kapanmasını engeller. Linux/X11'de pencere yöneticisi Qt'nin yerel
+boyutlandırma talebini kabul edip sürüklemeyi başlatmazsa uygulamanın sınırlı
+manuel yolu kullanılır; diğer platformlarda compositor yönetimi korunur.
 
 ## Batarya uyarısı ve failsafe
 
@@ -369,7 +372,7 @@ Normal ARM başarısız olursa zorla ARM yalnızca operatör onayıyla denenir. 
 
 ## SİHA Onboard v0.2-beta bağlantısı
 
-YKİ, Vehicle Autonomy Core v1.1 uygulama kanalını mevcut MAVLink bağlantısı
+YKİ, Vehicle Autonomy Core v1.1.1 uygulama kanalını mevcut MAVLink bağlantısı
 üzerinden kullanır. İkinci seri port, UDP socket veya receive döngüsü açılmaz.
 `V2_EXTENSION`; ağ ID `77`, mesaj tipi `42000`, YKİ system ID `255`, onboard
 system ID `1` ve onboard component ID `191` ile çalışır. Uygulama heartbeat'i
@@ -385,8 +388,9 @@ kopması ayrı tutulur; timeout olan `task.start` otomatik tekrarlanmaz.
 
 Kamikaze eylemi `KAMIKAZE` göndermeden önce operatör onayı ister. ACK içinde
 `waiting_for_mode=true` varsa panel GUIDED seçilmesini ister. Phase bilgisi
-`mission.transition` paketinden gelir; durdurma ve iptal ayrı correlation'lı
-isteklerdir.
+`mission.transition` paketinden gelir. Görevler sekmesi Başlat/Yeniden Başlat
+ve İptal eylemlerini sunar; yeniden başlatma yeni `task.start` isteğinden önce
+başarılı iptal ACK'ini bekler.
 
 QR sonucu üç kaynaktan kurtarılır:
 
@@ -396,9 +400,10 @@ QR sonucu üç kaynaktan kurtarılır:
 3. yeniden bağlantı sonrası cursor tabanlı `mission.events` uzlaştırması.
 
 QR içeriği çalıştırılmayan düz metindir. Aktif Kamikaze göreviyle
-ilişkilendirilir, tekrarlardan arındırılır, kopyalama eylemiyle gösterilir ve
-merkezi loga yazılır. Canlı event ile sonuç farklıysa iki değer de korunur ve
-uyumsuzluk loglanır.
+ilişkilendirilir, tekrarlardan arındırılır ve merkezi loga yazılır. Canlı
+event ile sonuç farklıysa iki değer de korunur ve uyumsuzluk loglanır. QR
+kurtarma backend sorumluluğu olarak kalır ve kompakt görev seçicisinde tekrar
+gösterilmez.
 
 Onboard `logs.push` istekleri en fazla 16 kayıtlı batch olarak doğrulanır. ACK,
 batch'in tamamı merkezi log deposuna girdikten sonra verilir. Session/sequence
@@ -564,7 +569,7 @@ testlerde hata üretir.
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python -B -m unittest discover -s tests -v
-PYTHONDONTWRITEBYTECODE=1 python -B -m unittest discover -s src/core/tests -v
+PYTHONDONTWRITEBYTECODE=1 python -B src/core/tests/run.py
 ```
 
 İlk komut; uygulama mimarisi, sabitlenmiş core sınırı, DI bileşimi, ortak
@@ -572,7 +577,7 @@ araç/Orin istemcisi, Onboard görev/QR akışı, uzak loglar, parametre
 varsayılanları, komut tekrarları, eşzamanlı planlama, TEKNOFEST haberleşmesi,
 batarya voltaj tahmini ve politikaları, dil paketleri, GStreamer, harita geçmişi,
 yüksek hızlı veri birleştirme, ayırıcılar, çerçevesiz pencere ve offscreen Qt
-açılışı için **183 YKİ testi** çalıştırır. İkinci komut core’un
+açılışı için **194 YKİ testi** çalıştırır. İkinci komut core'un
 dependency, event, mission ve MAVLink iç yapılarına ait **109 testi**
 çalıştırır. Paketleri ayrı tutmak aynı alt seviye testlerin iki repoda
 birden bakımını önler.

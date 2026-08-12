@@ -604,6 +604,48 @@ class OrinLinkTests(unittest.TestCase):
         self.assertEqual(result.details["target"], "orin")
         self.assertIn("Orin", result.message)
 
+    def test_active_onboard_task_restart_cancels_before_starting_again(self) -> None:
+        calls: list[tuple[str, str, str]] = []
+
+        class Vehicle:
+            connected = True
+            state = VehicleConnectionState(True, "COM3", 1, 1)
+
+            def execute(self, request) -> bool:
+                raise AssertionError(f"Onboard task leaked to Pixhawk: {request.code}")
+
+        class Onboard:
+            def cancel_task(self, task):
+                calls.append(("cancel", task, ""))
+                return OrinCommandReceipt(31, True, "cancelled", {"execution": "cancelled"}, 4.0)
+
+            def start_task(self, task, *, source="ui"):
+                calls.append(("start", task, source))
+                return OrinCommandReceipt(32, True, "starting", {"execution": "starting"}, 5.0)
+
+        service = DispatchCommandService(
+            Vehicle(),  # type: ignore[arg-type]
+            MutableParameterService(),
+            onboard=Onboard(),  # type: ignore[arg-type]
+        )
+        result = service.dispatch(
+            CommandRequest(
+                "RESTART_MISSION_TASK",
+                {"task": "ACTUATOR_TEST"},
+                source="operator-ui",
+            )
+        )
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(
+            calls,
+            [
+                ("cancel", "ACTUATOR_TEST", ""),
+                ("start", "ACTUATOR_TEST", "operator-ui"),
+            ],
+        )
+        self.assertTrue(result.details["restarted"])
+
     def test_configured_ping_task_is_exposed_and_routed_to_orin(self) -> None:
         class Vehicle:
             connected = True

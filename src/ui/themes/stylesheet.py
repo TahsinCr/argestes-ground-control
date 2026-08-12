@@ -218,6 +218,64 @@ def build_stylesheet(theme: ThemePalette) -> str:
         font-size: 10px;
         font-weight: 600;
     }}
+    QTabWidget#CommandTabs::pane {{
+        background: {theme.background_alt};
+        border: 1px solid {theme.border};
+        border-radius: 5px;
+        top: 0;
+    }}
+    QTabWidget#CommandTabs QTabBar {{
+        background: transparent;
+    }}
+    QTabWidget#CommandTabs QTabBar::tab {{
+        min-height: 29px;
+        padding: 0 12px;
+        margin: 0;
+        background: {theme.surface};
+        border: 1px solid {theme.border};
+        border-bottom: none;
+        color: {theme.muted_text};
+        font-size: 10px;
+        font-weight: 700;
+    }}
+    QTabWidget#CommandTabs QTabBar::tab:first {{
+        border-top-left-radius: 5px;
+    }}
+    QTabWidget#CommandTabs QTabBar::tab:last {{
+        border-top-right-radius: 5px;
+        border-left: none;
+    }}
+    QTabWidget#CommandTabs QTabBar::tab:hover {{
+        color: {theme.text};
+        background: {theme.surface_hover};
+    }}
+    QTabWidget#CommandTabs QTabBar::tab:selected {{
+        color: {theme.text};
+        background: {theme.background_alt};
+        border-top: 2px solid {theme.accent};
+    }}
+    QScrollArea#CommandTabScroll,
+    QWidget#CommandTabPage {{
+        background: transparent;
+        border: none;
+    }}
+    QScrollArea#CommandTabScroll > QWidget > QWidget,
+    QWidget#CommandTabContent {{
+        background: {theme.background_alt};
+        border: none;
+    }}
+    QFrame#QuickCommandCard {{
+        background: {theme.surface};
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 5px;
+    }}
+    QLabel#CommandStatus {{
+        min-height: 20px;
+        padding: 4px 7px;
+        background: {theme.surface};
+        border: 1px solid {theme.border};
+        border-radius: 4px;
+    }}
     QPushButton {{
         background: {theme.surface_alt};
         border: 1px solid {theme.border_strong};

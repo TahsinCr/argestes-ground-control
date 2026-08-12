@@ -36,7 +36,6 @@ FLIGHT_MODES = (
 PROFILE_FIELDS = (
     NumericCommandField("target_altitude", "ALT", 20.0, 1000.0, 140.0, " m"),
     NumericCommandField("air_speed", "SPD", 10.0, 70.0, 28.0, " m/s"),
-    NumericCommandField("loiter_radius", "LTR", 20.0, 800.0, 75.0, " m"),
 )
 
 AUTONOMOUS_COMMANDS = (
