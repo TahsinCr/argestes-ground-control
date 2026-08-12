@@ -7,6 +7,8 @@ from typing import Any
 
 from src.core.events import EventBus, Subscription
 from src.models.onboard import (
+    ACTUATOR_TEST_EVENTS,
+    ACTUATOR_TEST_TASK,
     CRITICAL_KAMIKAZE_EVENTS,
     QR_EVENT_TYPES,
     OnboardMissionEvent,
@@ -21,6 +23,7 @@ from src.services.logging_service import ServiceLogger
 
 TASK_ALIASES = {
     "KAMIKAZE": "kamikaze.execute",
+    "ACTUATOR_TEST": ACTUATOR_TEST_TASK,
 }
 
 
@@ -82,6 +85,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 self._orin.changed.subscribe(self._on_orin_changed),
                 self._orin.register_handler("mission.transition", self._handle_transition),
                 self._orin.register_handler("mission.result", self._handle_result),
+                self._orin.register_handler("mission.event", self._handle_mission_event),
                 self._orin.register_handler("mission.chain", self._handle_chain),
                 self._orin.register_handler("kamikaze.event", self._handle_kamikaze_event),
             ]
@@ -97,11 +101,21 @@ class OnboardMissionService(OnboardMissionServiceContract):
 
     def start_task(self, task: str, *, source: str = "ui") -> OrinCommandReceipt:
         canonical = self._canonical_task(task)
+        with self._lock:
+            if (
+                self._state.active_task == canonical
+                and not self._state.terminal
+            ):
+                raise RuntimeError(f"Onboard görevi zaten çalışıyor: {canonical}")
         if canonical == "kamikaze.execute":
             self._sync_kamikaze_target()
+        wire_task = {
+            "kamikaze.execute": "KAMIKAZE",
+            ACTUATOR_TEST_TASK: "ACTUATOR_TEST",
+        }.get(canonical, canonical)
         return self._issue(
             "task.start",
-            {"task": "KAMIKAZE" if canonical == "kamikaze.execute" else canonical, "source": source},
+            {"task": wire_task, "source": source},
             pending="start",
             task=canonical,
         )
@@ -201,7 +215,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
 
     def refresh(self) -> OrinCommandReceipt:
         receipt = self._issue("mission.list", {}, pending="refresh")
-        self._apply_mission_list(receipt.response.get("missions", []))
+        self._apply_mission_list(receipt.response)
         return receipt
 
     def mission_status(
@@ -270,38 +284,65 @@ class OnboardMissionService(OnboardMissionServiceContract):
         with self._lock:
             if self._state.pending_command:
                 raise RuntimeError(f"Onboard komutu zaten bekleniyor: {self._state.pending_command}")
+            starting = packet_type == "task.start"
+            starting_kamikaze = starting and task == "kamikaze.execute"
+            starting_actuator_test = starting and task == ACTUATOR_TEST_TASK
             self._state = replace(
                 self._state,
                 pending_command=pending,
                 last_error="",
                 active_task=task or self._state.active_task,
-                mission_id=(None if packet_type == "task.start" else self._state.mission_id),
-                phase=("requesting" if packet_type == "task.start" else self._state.phase),
-                qr_status=("pending" if packet_type == "task.start" else self._state.qr_status),
-                qr_text=(None if packet_type == "task.start" else self._state.qr_text),
-                qr_event=("" if packet_type == "task.start" else self._state.qr_event),
-                qr_time_utc=("" if packet_type == "task.start" else self._state.qr_time_utc),
-                qr_conflicts=(() if packet_type == "task.start" else self._state.qr_conflicts),
-                critical_event=("" if packet_type == "task.start" else self._state.critical_event),
-                result=({} if packet_type == "task.start" else self._state.result),
-                result_received=(False if packet_type == "task.start" else self._state.result_received),
-                timeline=(() if packet_type == "task.start" else self._state.timeline),
+                mission_id=(None if starting else self._state.mission_id),
+                phase=("requesting" if starting else self._state.phase),
+                qr_status=("pending" if starting_kamikaze else self._state.qr_status),
+                qr_text=(None if starting_kamikaze else self._state.qr_text),
+                qr_event=("" if starting_kamikaze else self._state.qr_event),
+                qr_time_utc=("" if starting_kamikaze else self._state.qr_time_utc),
+                qr_conflicts=(() if starting_kamikaze else self._state.qr_conflicts),
+                critical_event=("" if starting else self._state.critical_event),
+                result=({} if starting else self._state.result),
+                acknowledgement_snapshot=(
+                    {} if starting else self._state.acknowledgement_snapshot
+                ),
+                result_received=(False if starting else self._state.result_received),
+                actuator_step=("" if starting_actuator_test else self._state.actuator_step),
+                actuator_step_count=(
+                    0 if starting_actuator_test else self._state.actuator_step_count
+                ),
+                actuator_servo_output=(
+                    None
+                    if starting_actuator_test
+                    else self._state.actuator_servo_output
+                ),
+                actuator_pwm=(None if starting_actuator_test else self._state.actuator_pwm),
+                actuator_armed=(
+                    None if starting_actuator_test else self._state.actuator_armed
+                ),
+                actuator_notification_only=(
+                    False
+                    if starting_actuator_test
+                    else self._state.actuator_notification_only
+                ),
+                timeline=(() if starting else self._state.timeline),
             )
-            if packet_type == "task.start":
+            if starting:
                 self._event_keys.clear()
         self._publish()
         try:
             receipt = self._orin.issue(packet_type, payload)
             if not receipt.accepted:
                 raise OnboardCommandRejectedError(
-                    f"Onboard komutu reddedildi: {receipt.message}",
+                    receipt.message,
                     receipt.response,
                 )
             if packet_type.startswith("task.") or packet_type == "mission.status":
                 self._apply_ack(receipt.response, task=task)
             return receipt
         except OnboardCommandRejectedError as exc:
-            self._set_error(str(exc))
+            self._set_error(
+                str(exc),
+                phase="failed" if packet_type == "task.start" else None,
+            )
             self._log(
                 "onboard.command_failed",
                 str(exc),
@@ -339,12 +380,19 @@ class OnboardMissionService(OnboardMissionServiceContract):
 
     def _apply_ack(self, payload: dict[str, Any], *, task: str = "") -> None:
         snapshot = payload.get("snapshot")
+        snapshot_payload = dict(snapshot) if isinstance(snapshot, dict) else {}
         mission_id = self._optional_int(payload.get("mission_id"))
         phase = str(payload.get("execution", "acknowledged")).strip().lower()
-        if isinstance(snapshot, dict):
-            mission_id = self._optional_int(snapshot.get("mission_id")) or mission_id
-            phase = str(snapshot.get("phase", phase)).strip().lower()
+        if snapshot_payload:
+            mission_id = self._optional_int(snapshot_payload.get("mission_id")) or mission_id
+            phase = str(snapshot_payload.get("phase", phase)).strip().lower()
         waiting = bool(payload.get("waiting_for_mode", False))
+        vehicle_mode = str(
+            payload.get(
+                "vehicle_mode",
+                snapshot_payload.get("vehicle_mode", self._state.vehicle_mode),
+            )
+        ).upper()
         with self._lock:
             self._state = replace(
                 self._state,
@@ -352,7 +400,8 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 mission_id=mission_id or self._state.mission_id,
                 phase=("starting" if phase == "starting" else phase or self._state.phase),
                 waiting_for_guided=waiting,
-                vehicle_mode=str(payload.get("vehicle_mode", self._state.vehicle_mode)).upper(),
+                vehicle_mode=vehicle_mode,
+                acknowledgement_snapshot=snapshot_payload,
             )
         message = (
             "Görev alındı, GUIDED modu bekleniyor"
@@ -363,7 +412,13 @@ class OnboardMissionService(OnboardMissionServiceContract):
             "onboard.command_acknowledged",
             message,
             "warning" if waiting else "success",
-            {"task": task, "mission_id": mission_id, "execution": phase},
+            {
+                "task": task,
+                "mission_id": mission_id,
+                "execution": phase,
+                "vehicle_mode": vehicle_mode,
+                "snapshot": snapshot_payload,
+            },
         )
         self._publish()
 
@@ -437,6 +492,10 @@ class OnboardMissionService(OnboardMissionServiceContract):
         self._process_event_payload(message.payload, source="live")
         return {}
 
+    def _handle_mission_event(self, message: OrinMessage) -> dict[str, Any]:
+        self._process_event_payload(message.payload, source="live")
+        return {}
+
     def _process_event_payload(
         self,
         payload: dict[str, Any],
@@ -445,44 +504,129 @@ class OnboardMissionService(OnboardMissionServiceContract):
         mission_id: int | None = None,
         sequence: int | None = None,
     ) -> None:
-        event_name = str(payload.get("event", "UNKNOWN")).strip().upper()
-        altitude = payload.get("altitude_m")
+        normalized_payload = dict(payload)
+        nested_fields = payload.get("fields")
+        if isinstance(nested_fields, dict):
+            for key, value in nested_fields.items():
+                normalized_payload.setdefault(str(key), value)
+        event_name = str(normalized_payload.get("event", "UNKNOWN")).strip().upper()
+        altitude = normalized_payload.get("altitude_m")
         event = OnboardMissionEvent(
             event=event_name,
-            time_utc=str(payload.get("time_utc") or payload.get("timestamp") or ""),
-            mission_id=mission_id or self.state.mission_id,
+            time_utc=str(
+                normalized_payload.get("time_utc")
+                or normalized_payload.get("timestamp")
+                or ""
+            ),
+            mission_id=(
+                mission_id
+                or self._optional_int(normalized_payload.get("mission_id"))
+                or self.state.mission_id
+            ),
             sequence=sequence,
             source=source,
-            qr_text=(str(payload["qr_text"]) if payload.get("qr_text") is not None else None),
+            qr_text=(
+                str(normalized_payload["qr_text"])
+                if normalized_payload.get("qr_text") is not None
+                else None
+            ),
             altitude_m=(float(altitude) if altitude is not None else None),
-            fields=dict(payload),
+            fields=normalized_payload,
         )
         with self._lock:
             if event.deduplication_key in self._event_keys:
                 return
             self._event_keys.add(event.deduplication_key)
             timeline = (*self._state.timeline, event)[-self._TIMELINE_LIMIT :]
-            self._state = replace(
-                self._state,
-                timeline=timeline,
-                critical_event=(event_name if event_name in CRITICAL_KAMIKAZE_EVENTS else self._state.critical_event),
-                qr_status=(
+            changes: dict[str, Any] = {
+                "timeline": timeline,
+                "critical_event": (
+                    event_name
+                    if event_name in CRITICAL_KAMIKAZE_EVENTS
+                    else self._state.critical_event
+                ),
+                "qr_status": (
                     "cancelled"
                     if event_name == "SAFETY_FLOOR_BREACH"
-                    and bool(payload.get("qr_cancelled"))
+                    and bool(normalized_payload.get("qr_cancelled"))
                     and self._state.qr_text is None
                     else self._state.qr_status
                 ),
-                waiting_for_guided=(True if event_name == "WAITING_FOR_GUIDED" else False if event_name == "GUIDED_READY" else self._state.waiting_for_guided),
-            )
+                "waiting_for_guided": (
+                    True
+                    if event_name == "WAITING_FOR_GUIDED"
+                    else False
+                    if event_name == "GUIDED_READY"
+                    else self._state.waiting_for_guided
+                ),
+            }
+            if event_name in ACTUATOR_TEST_EVENTS:
+                servo_output = self._integer_or_none(
+                    normalized_payload.get("servo_output")
+                )
+                pwm = self._integer_or_none(normalized_payload.get("pwm"))
+                armed = self._boolean_or_none(normalized_payload.get("armed"))
+                changes.update(
+                    {
+                        "active_task": ACTUATOR_TEST_TASK,
+                        "mission_id": event.mission_id or self._state.mission_id,
+                        "actuator_step": str(
+                            normalized_payload.get("step")
+                            or event_name.rsplit(".", 1)[-1].lower()
+                        ),
+                        "actuator_step_count": (
+                            self._state.actuator_step_count + 1
+                            if event_name == "ACTUATOR_TEST.STEP"
+                            else self._state.actuator_step_count
+                        ),
+                        "actuator_servo_output": (
+                            servo_output
+                            if servo_output is not None
+                            else self._state.actuator_servo_output
+                        ),
+                        "actuator_pwm": (
+                            pwm if pwm is not None else self._state.actuator_pwm
+                        ),
+                        "actuator_armed": (
+                            armed if armed is not None else self._state.actuator_armed
+                        ),
+                        "actuator_notification_only": (
+                            self._state.actuator_notification_only
+                            or event_name == "ACTUATOR_TEST.NOTIFICATION_ONLY"
+                            or servo_output == 0
+                        ),
+                    }
+                )
+            self._state = replace(self._state, **changes)
         if event_name in QR_EVENT_TYPES and event.qr_text:
             self._accept_qr(event)
-        severity = "danger" if event.critical else "success" if event_name in QR_EVENT_TYPES else "warning" if event_name in {"ABORT", "FAULT"} else "info"
+        actuator_event = event_name in ACTUATOR_TEST_EVENTS
+        severity = (
+            "danger"
+            if event.critical
+            else "success"
+            if event_name in QR_EVENT_TYPES
+            or event_name in {
+                "ACTUATOR_TEST.NOTIFICATION_ONLY",
+                "ACTUATOR_TEST.COMPLETED",
+            }
+            else "warning"
+            if event_name in {"ABORT", "FAULT"}
+            else "info"
+        )
         self._log(
-            "kamikaze.event",
-            f"Kamikaze olayı: {event_name}",
+            "actuator_test.event" if actuator_event else "kamikaze.event",
+            (
+                f"Aktüatör testi olayı: {event_name}"
+                if actuator_event
+                else f"Kamikaze olayı: {event_name}"
+            ),
             severity,
-            {**dict(payload), "mission_id": event.mission_id, "source": source},
+            {
+                **normalized_payload,
+                "mission_id": event.mission_id,
+                "source": source,
+            },
         )
         self._events.publish(event)
         self._publish()
@@ -525,12 +669,26 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 target = {}
             elif state.alive and not state.kamikaze_target_ready:
                 target_ready = False
+            advertised_tasks = self._normalized_tasks(
+                (
+                    *state.available_tasks,
+                    *(
+                        capability
+                        for capability in state.capabilities
+                        if str(capability).strip().lower() == ACTUATOR_TEST_TASK
+                    ),
+                )
+            )
+            available_tasks = tuple(
+                dict.fromkeys((*self._state.available_tasks, *advertised_tasks))
+            )
             self._state = replace(
                 self._state,
                 connected=state.alive,
                 onboard_version=state.version,
                 vehicle_mode=state.vehicle_mode,
                 active_task=state.active_task or self._state.active_task,
+                available_tasks=available_tasks,
                 queued_tasks=tuple(state.queued_tasks),
                 mission_id=(
                     state.active_missions[0]
@@ -561,7 +719,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
         try:
             receipt = self._orin.issue("mission.list", {})
             if receipt.accepted:
-                self._apply_mission_list(receipt.response.get("missions", []))
+                self._apply_mission_list(receipt.response)
             mission_ids = set(self._event_cursors)
             if self.state.mission_id is not None:
                 mission_ids.add(self.state.mission_id)
@@ -590,26 +748,63 @@ class OnboardMissionService(OnboardMissionServiceContract):
             with self._lock:
                 self._recovery_running = False
 
-    def _apply_mission_list(self, missions: Any) -> None:
+    def _apply_mission_list(self, response: Any) -> None:
+        if isinstance(response, dict):
+            missions = response.get("missions", [])
+            advertised = response.get("available_tasks", response.get("tasks", []))
+        else:
+            missions = response
+            advertised = []
         if not isinstance(missions, list):
             return
+        listed_tasks = [
+            str(item.get("task", ""))
+            for item in missions
+            if isinstance(item, dict) and str(item.get("task", "")).strip()
+        ]
+        available_tasks = self._normalized_tasks(
+            (
+                *self.state.available_tasks,
+                *(advertised if isinstance(advertised, (list, tuple)) else ()),
+                *listed_tasks,
+            )
+        )
         active = next(
             (
                 item for item in missions
                 if isinstance(item, dict)
-                and str(item.get("task", "")).lower() == "kamikaze.execute"
-                and str(item.get("phase", "")).lower() not in {"stopped", "succeeded", "failed", "cancelled"}
+                and str(item.get("task", "")).strip()
+                and str(item.get("phase", "")).strip().lower()
+                in {
+                    "queued",
+                    "starting",
+                    "running",
+                    "pausing",
+                    "paused",
+                    "stopping",
+                }
             ),
             None,
         )
-        if active is None:
-            return
         with self._lock:
             self._state = replace(
                 self._state,
-                active_task="kamikaze.execute",
-                mission_id=self._optional_int(active.get("mission_id")),
-                phase=str(active.get("phase", self._state.phase)).lower(),
+                available_tasks=available_tasks,
+                active_task=(
+                    self._canonical_task(str(active.get("task", "")))
+                    if active is not None
+                    else self._state.active_task
+                ),
+                mission_id=(
+                    self._optional_int(active.get("mission_id"))
+                    if active is not None
+                    else self._state.mission_id
+                ),
+                phase=(
+                    str(active.get("phase", self._state.phase)).lower()
+                    if active is not None
+                    else self._state.phase
+                ),
             )
         self._publish()
 
@@ -623,7 +818,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
             self._event_cursors[mission_id] = max(self._event_cursors.get(mission_id, 0), sequence)
             fields = raw.get("fields") if isinstance(raw.get("fields"), dict) else {}
             event_name = str(fields.get("event", "")).upper()
-            if event_name in QR_EVENT_TYPES:
+            if event_name in QR_EVENT_TYPES or event_name in ACTUATOR_TEST_EVENTS:
                 self._process_event_payload(
                     dict(fields),
                     source="recovery",
@@ -631,9 +826,13 @@ class OnboardMissionService(OnboardMissionServiceContract):
                     sequence=sequence,
                 )
 
-    def _set_error(self, message: str) -> None:
+    def _set_error(self, message: str, *, phase: str | None = None) -> None:
         with self._lock:
-            self._state = replace(self._state, last_error=message)
+            self._state = replace(
+                self._state,
+                last_error=message,
+                phase=phase or self._state.phase,
+            )
         self._publish()
 
     def _publish(self) -> None:
@@ -663,6 +862,40 @@ class OnboardMissionService(OnboardMissionServiceContract):
         except (TypeError, ValueError):
             return None
         return parsed if parsed > 0 else None
+
+    @classmethod
+    def _normalized_tasks(cls, tasks: Any) -> tuple[str, ...]:
+        if not isinstance(tasks, (list, tuple)):
+            return ()
+        result: list[str] = []
+        for task in tasks:
+            try:
+                canonical = cls._canonical_task(str(task))
+            except ValueError:
+                continue
+            if canonical not in result:
+                result.append(canonical)
+        return tuple(result)
+
+    @staticmethod
+    def _integer_or_none(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    @staticmethod
+    def _boolean_or_none(value: Any) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and value in {0, 1}:
+            return bool(value)
+        normalized = str(value).strip().lower()
+        if normalized in {"true", "yes", "1", "armed"}:
+            return True
+        if normalized in {"false", "no", "0", "disarmed"}:
+            return False
+        return None
 
 
 __all__ = ["OnboardMissionService", "TASK_ALIASES"]

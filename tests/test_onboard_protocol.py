@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from src.core.events import EventBus, Subscription
 from src.models.competition import QrCoordinate
-from src.models.onboard import OnboardMissionState
+from src.models.onboard import ACTUATOR_TEST_TASK
 from src.models.orin import OrinCommandReceipt, OrinConnectionState, OrinMessage
 from src.services.logging_service import LoggingService
 from src.services.onboard import OnboardMissionService
@@ -255,6 +255,180 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertEqual(self.service.state.critical_event, "SAFETY_FLOOR_BREACH")
         self.assertEqual(self.service.state.qr_status, "cancelled")
         self.assertTrue(self.service.state.timeline[-1].critical)
+
+    def test_actuator_test_uses_alias_payload_and_preserves_ack_state(self) -> None:
+        snapshot = {
+            "mission_id": 84,
+            "task": ACTUATOR_TEST_TASK,
+            "phase": "starting",
+            "resources": ["actuators"],
+        }
+        self.orin.responses.append(
+            OrinCommandReceipt(
+                202,
+                True,
+                "Command accepted",
+                {
+                    "request_id": 202,
+                    "task": ACTUATOR_TEST_TASK,
+                    "mission_id": 84,
+                    "execution": "starting",
+                    "vehicle_mode": "MANUAL",
+                    "snapshot": snapshot,
+                },
+            )
+        )
+
+        receipt = self.service.start_task("ACTUATOR_TEST", source="operator-ui")
+
+        self.assertTrue(receipt.accepted)
+        self.assertEqual(
+            self.orin.requests[-1],
+            (
+                "task.start",
+                {"task": "ACTUATOR_TEST", "source": "operator-ui"},
+            ),
+        )
+        state = self.service.state
+        self.assertEqual(state.active_task, ACTUATOR_TEST_TASK)
+        self.assertEqual(state.mission_id, 84)
+        self.assertEqual(state.phase, "starting")
+        self.assertEqual(state.vehicle_mode, "MANUAL")
+        self.assertEqual(dict(state.acknowledgement_snapshot), snapshot)
+
+    def test_actuator_events_update_progress_and_notification_only_state(self) -> None:
+        self.orin.emit(
+            "mission.event",
+            {
+                "event": "actuator_test.started",
+                "mission_id": 84,
+                "step": "initializing",
+                "armed": False,
+            },
+        )
+        self.orin.emit(
+            "mission.event",
+            {
+                "event": "actuator_test.step",
+                "mission_id": 84,
+                "step": "servo-1-high",
+                "servo_output": 1,
+                "pwm": 1700,
+                "armed": False,
+            },
+        )
+        self.orin.emit(
+            "mission.event",
+            {
+                "event": "actuator_test.notification_only",
+                "mission_id": 84,
+                "step": "notification",
+                "servo_output": 0,
+                "pwm": 0,
+                "armed": False,
+            },
+        )
+
+        state = self.service.state
+        self.assertEqual(state.active_task, ACTUATOR_TEST_TASK)
+        self.assertEqual(state.mission_id, 84)
+        self.assertEqual(state.actuator_step_count, 1)
+        self.assertEqual(state.actuator_step, "notification")
+        self.assertEqual(state.actuator_servo_output, 0)
+        self.assertEqual(state.actuator_pwm, 0)
+        self.assertFalse(state.actuator_armed)
+        self.assertTrue(state.actuator_notification_only)
+        self.assertEqual(len(state.timeline), 3)
+        self.assertTrue(
+            any(entry.action == "actuator_test.event" for entry in self.logs.history)
+        )
+
+    def test_actuator_start_is_blocked_while_the_same_task_is_active(self) -> None:
+        self.orin.emit(
+            "mission.transition",
+            {
+                "task": ACTUATOR_TEST_TASK,
+                "mission_id": 84,
+                "previous": "starting",
+                "current": "running",
+            },
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "zaten çalışıyor"):
+            self.service.start_task("ACTUATOR_TEST", source="operator-ui")
+
+        self.assertFalse(
+            any(packet_type == "task.start" for packet_type, _ in self.orin.requests)
+        )
+
+    def test_actuator_system_error_message_is_preserved_verbatim(self) -> None:
+        self.orin.responses.append(
+            OrinCommandReceipt(
+                203,
+                False,
+                "Vehicle must be DISARMED",
+                {
+                    "request_id": 203,
+                    "accepted": False,
+                    "message": "Vehicle must be DISARMED",
+                    "error_type": "SafetyError",
+                },
+            )
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "^Vehicle must be DISARMED$"):
+            self.service.start_task("ACTUATOR_TEST", source="operator-ui")
+
+        self.assertEqual(self.service.state.last_error, "Vehicle must be DISARMED")
+        self.assertEqual(self.service.state.phase, "failed")
+
+        self.orin.responses.append(
+            OrinCommandReceipt(
+                204,
+                True,
+                "Command accepted",
+                {
+                    "request_id": 204,
+                    "task": ACTUATOR_TEST_TASK,
+                    "mission_id": 85,
+                    "execution": "starting",
+                },
+            )
+        )
+        self.assertTrue(
+            self.service.start_task(
+                "ACTUATOR_TEST",
+                source="operator-ui",
+            ).accepted
+        )
+
+    def test_actuator_task_is_discovered_from_heartbeat_and_mission_list(self) -> None:
+        self.orin.state = replace(
+            self.orin.state,
+            alive=True,
+            available_tasks=(ACTUATOR_TEST_TASK,),
+        )
+        self.orin.changed.publish(self.orin.state)
+        self.assertIn(ACTUATOR_TEST_TASK, self.service.state.available_tasks)
+
+        service = OnboardMissionService(
+            self.orin,  # type: ignore[arg-type]
+            self.competition,  # type: ignore[arg-type]
+        )
+        service._apply_mission_list(
+            {
+                "missions": [
+                    {
+                        "mission_id": 84,
+                        "task": ACTUATOR_TEST_TASK,
+                        "phase": "registered",
+                    }
+                ],
+                "available_tasks": ["ACTUATOR_TEST"],
+            }
+        )
+        self.assertIn(ACTUATOR_TEST_TASK, service.state.available_tasks)
+        self.assertEqual(service.state.active_task, "")
 
 
 if __name__ == "__main__":

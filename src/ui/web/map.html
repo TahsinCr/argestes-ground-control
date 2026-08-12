@@ -924,6 +924,7 @@
     let toolDockSpacingFrame = 0;
     let pendingBridgeTelemetry = null;
     let bridgeTelemetryFrame = 0;
+    let markerMotionFrame = 0;
 
     const state = {
       ui: {
@@ -975,6 +976,7 @@
       cursorFrame: 0,
       lastVehicleLatLng: null,
       vehicleTrailPoints: [],
+      vehicleMotion: { motion: null, lastSampleAt: 0 },
       telemetryDisplay: {
         gpsState: '',
         gpsFix: '',
@@ -2574,6 +2576,68 @@
       return normalized.slice(-limit);
     }
 
+    function interpolateLatLng(start, target, factor) {
+      const amount = Math.max(0, Math.min(1, Number(factor) || 0));
+      return L.latLng(
+        start.lat + (target.lat - start.lat) * amount,
+        start.lng + (target.lng - start.lng) * amount,
+      );
+    }
+
+    function startMarkerMotion(holder, marker, target, durationMs, now = performance.now()) {
+      const destination = L.latLng(target);
+      const current = marker.getLatLng();
+      if (
+        document.hidden
+        || !Number.isFinite(durationMs)
+        || durationMs <= 0
+        || current.distanceTo(destination) < 0.05
+      ) {
+        marker.setLatLng(destination);
+        holder.motion = null;
+        return;
+      }
+      holder.motion = {
+        start: L.latLng(current.lat, current.lng),
+        target: destination,
+        startedAt: now,
+        durationMs,
+      };
+      scheduleMarkerMotionFrame();
+    }
+
+    function advanceMarkerMotion(holder, marker, now) {
+      const motion = holder && holder.motion;
+      if (!motion || !marker) {
+        return false;
+      }
+      const progress = Math.min(1, (now - motion.startedAt) / motion.durationMs);
+      marker.setLatLng(interpolateLatLng(motion.start, motion.target, progress));
+      if (progress >= 1) {
+        holder.motion = null;
+        return false;
+      }
+      return true;
+    }
+
+    function renderMarkerMotions(now) {
+      markerMotionFrame = 0;
+      let active = false;
+      state.contacts.forEach((entry) => {
+        active = advanceMarkerMotion(entry, entry.marker, now) || active;
+      });
+      active = advanceMarkerMotion(state.vehicleMotion, vehicleMarker, now) || active;
+      if (active) {
+        markerMotionFrame = window.requestAnimationFrame(renderMarkerMotions);
+      }
+    }
+
+    function scheduleMarkerMotionFrame() {
+      if (!markerMotionFrame) {
+        markerMotionFrame = window.requestAnimationFrame(renderMarkerMotions);
+      }
+    }
+
     function upsertContact(data) {
       if (!data || !data.contact_id) {
         return;
@@ -2599,13 +2663,32 @@
         });
         contactGroup.addLayer(trail);
         contactGroup.addLayer(marker);
-        entry = { marker, trail, heading, color, tooltip };
+        entry = {
+          marker,
+          trail,
+          heading,
+          color,
+          tooltip,
+          motion: null,
+          lastSampleAt: performance.now(),
+        };
         state.contacts.set(data.contact_id, entry);
       } else {
+        const now = performance.now();
         const markerPosition = entry.marker.getLatLng();
         if (markerPosition.lat !== Number(data.latitude) || markerPosition.lng !== Number(data.longitude)) {
-          entry.marker.setLatLng(latlng);
+          const sampleIntervalMs = entry.lastSampleAt
+            ? Math.max(1, now - entry.lastSampleAt)
+            : 0;
+          startMarkerMotion(
+            entry,
+            entry.marker,
+            latlng,
+            Math.max(80, Math.min(1200, sampleIntervalMs * 0.9)),
+            now,
+          );
         }
+        entry.lastSampleAt = now;
         const heading = Number(data.heading) || 0;
         if (entry.heading !== heading) {
           entry.heading = heading;
@@ -2650,6 +2733,7 @@
         return;
       }
       const entry = state.contacts.get(contactId);
+      entry.motion = null;
       contactGroup.removeLayer(entry.marker);
       contactGroup.removeLayer(entry.trail);
       state.contacts.delete(contactId);
@@ -3528,6 +3612,8 @@
           localReadout.innerHTML = localReadoutText;
         }
         if (!payload || !payload.active) {
+          state.vehicleMotion.motion = null;
+          state.vehicleMotion.lastSampleAt = 0;
           if (vehicleMarker && map.hasLayer(vehicleMarker)) {
             map.removeLayer(vehicleMarker);
           }
@@ -3567,13 +3653,26 @@
           state.vehicleTrailPoints = [];
           state.lastVehicleLatLng = null;
           state.initialCentered = false;
+          state.vehicleMotion.motion = null;
+          state.vehicleMotion.lastSampleAt = 0;
         }
         if (!map.hasLayer(vehicleMarker)) {
           vehicleMarker.addTo(map);
         }
         const markerPosition = vehicleMarker.getLatLng();
         if (markerPosition.lat !== latitude || markerPosition.lng !== longitude) {
-          vehicleMarker.setLatLng(latlng);
+          const now = performance.now();
+          const sampleIntervalMs = state.vehicleMotion.lastSampleAt
+            ? Math.max(1, now - state.vehicleMotion.lastSampleAt)
+            : 0;
+          startMarkerMotion(
+            state.vehicleMotion,
+            vehicleMarker,
+            latlng,
+            Math.max(16, Math.min(140, sampleIntervalMs * 0.75)),
+            now,
+          );
+          state.vehicleMotion.lastSampleAt = now;
         }
         const heading = Number(payload.heading) || 0;
         if (state.telemetryDisplay.heading !== heading) {

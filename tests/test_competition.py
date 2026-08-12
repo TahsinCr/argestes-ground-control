@@ -7,7 +7,12 @@ from types import SimpleNamespace
 import unittest
 
 from fake_teknofest_server import create_server
-from src.models.competition import CompetitionServerConfig, KamikazeEvent, LockEvent
+from src.models.competition import (
+    CompetitionServerConfig,
+    HssZone,
+    KamikazeEvent,
+    LockEvent,
+)
 from src.models.geometry import Point
 from src.models.mission import MissionState
 from src.models.telemetry import TargetTrack, TelemetrySnapshot
@@ -413,6 +418,36 @@ class CompetitionTests(unittest.TestCase):
             if entry.action == "competition.connection_failed"
         ]
         self.assertEqual(len(failures), 3)
+
+    def test_missing_hss_response_expires_only_hss_map_lease(self) -> None:
+        self.service._replace_hss_zones(
+            (HssZone(1, 39.868, 32.7485, 75.0),)
+        )
+        self.service._hss_response_available = True
+        original_request = self.service._request_json
+
+        def fail_hss(method, path, payload=None):
+            if path == "/api/hss_koordinatlari":
+                raise ConnectionError("HSS response missing")
+            return original_request(method, path, payload)
+
+        self.service._request_json = fail_hss  # type: ignore[method-assign]
+        self.service._poll_hss_zones()
+        self.service._poll_hss_zones()
+
+        self.assertEqual(self.service.hss_zones, ())
+        self.assertFalse(
+            any(
+                item.overlay_id.startswith("teknofest-hss-")
+                for item in self.planner.state.overlays
+            )
+        )
+        unavailable = [
+            entry
+            for entry in self.logs.history
+            if entry.action == "competition.hss_unavailable"
+        ]
+        self.assertEqual(len(unavailable), 1)
 
     def test_identical_state_updates_are_not_republished(self) -> None:
         states = []

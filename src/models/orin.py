@@ -44,6 +44,7 @@ class OrinConnectionState(Model):
     health: str = "unknown"
     active_task: str = ""
     active_tasks: tuple[str, ...] = field(default_factory=tuple)
+    available_tasks: tuple[str, ...] = field(default_factory=tuple)
     queued_tasks: tuple[str, ...] = field(default_factory=tuple)
     active_missions: tuple[int, ...] = field(default_factory=tuple)
     queued_missions: tuple[int, ...] = field(default_factory=tuple)

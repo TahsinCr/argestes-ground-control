@@ -175,6 +175,25 @@ def build_stylesheet(theme: ThemePalette) -> str:
         color: {theme.muted_text};
         font-size: 10px;
     }}
+    QProgressBar#ActuatorTestProgress {{
+        background: {theme.background_alt};
+        border: 1px solid {theme.border};
+        border-radius: 3px;
+        padding: 0;
+    }}
+    QProgressBar#ActuatorTestProgress::chunk {{
+        background: {theme.accent};
+        border-radius: 2px;
+    }}
+    QProgressBar#ActuatorTestProgress[state="success"]::chunk {{
+        background: {theme.success};
+    }}
+    QProgressBar#ActuatorTestProgress[state="danger"]::chunk {{
+        background: {theme.danger};
+    }}
+    QProgressBar#ActuatorTestProgress[state="warning"]::chunk {{
+        background: {theme.warning};
+    }}
     #TelemetrySectionTitle {{
         margin-top: 2px;
         color: {theme.muted_text};

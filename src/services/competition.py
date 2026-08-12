@@ -78,6 +78,7 @@ class TeknofestCompetitionService(CompetitionService):
         self._opener = self._new_opener()
         self._last_hss_refresh = 0.0
         self._last_qr_refresh = 0.0
+        self._hss_response_available = False
         self._last_connection_error_signature = ""
         self._last_connection_error_log_at = 0.0
 
@@ -164,6 +165,7 @@ class TeknofestCompetitionService(CompetitionService):
                 self._qr_coordinate = None
                 self._last_hss_refresh = 0.0
                 self._last_qr_refresh = 0.0
+                self._hss_response_available = False
             if had_hss:
                 self._hss_updated.publish(())
             if had_qr:
@@ -587,35 +589,7 @@ class TeknofestCompetitionService(CompetitionService):
             return
 
         if poll_hss:
-            self._log_protocol(
-                "competition.hss_request_tx",
-                "TX TEKNOFEST HSS koordinat isteği gönderiliyor",
-                {},
-                severity="debug",
-            )
-            hss_payload = self._request_json("GET", "/api/hss_koordinatlari")
-            if not isinstance(hss_payload, dict):
-                raise CompetitionProtocolError("HSS yanıtı JSON nesnesi değil")
-            raw_hss = hss_payload.get("hss_koordinat_bilgileri", [])
-            if not isinstance(raw_hss, list):
-                raise CompetitionProtocolError("hss_koordinat_bilgileri liste olmalı")
-            zones: list[HssZone] = []
-            for item in raw_hss:
-                if not isinstance(item, dict):
-                    continue
-                try:
-                    zones.append(HssZone.from_payload(item))
-                except (KeyError, TypeError, ValueError):
-                    continue
-            zones.sort(key=lambda item: item.identifier)
-            hss_result = tuple(zones)
-            self._replace_hss_zones(hss_result)
-            self._log_protocol(
-                "competition.hss_rx",
-                f"RX TEKNOFEST HSS koordinatları alındı ({len(hss_result)})",
-                {"hss_count": len(hss_result)},
-                severity="debug",
-            )
+            self._poll_hss_zones()
 
         if poll_qr:
             self._fetch_qr_coordinate()
@@ -627,6 +601,58 @@ class TeknofestCompetitionService(CompetitionService):
             hss_count=hss_count,
             qr_available=qr_available,
             last_success_at=datetime.now(UTC),
+        )
+
+    def _poll_hss_zones(self) -> None:
+        """Refresh the one-second HSS lease without stopping other server data."""
+
+        self._log_protocol(
+            "competition.hss_request_tx",
+            "TX TEKNOFEST HSS koordinat isteği gönderiliyor",
+            {},
+            severity="debug",
+        )
+        try:
+            payload = self._request_json("GET", "/api/hss_koordinatlari")
+            if not isinstance(payload, dict):
+                raise CompetitionProtocolError("HSS yanıtı JSON nesnesi değil")
+            raw_hss = payload.get("hss_koordinat_bilgileri")
+            if not isinstance(raw_hss, list):
+                raise CompetitionProtocolError(
+                    "hss_koordinat_bilgileri liste olmalı"
+                )
+            zones: list[HssZone] = []
+            for item in raw_hss:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    zones.append(HssZone.from_payload(item))
+                except (KeyError, TypeError, ValueError):
+                    continue
+            zones.sort(key=lambda item: item.identifier)
+            result = tuple(zones)
+        except Exception as exc:
+            with self._lock:
+                was_available = self._hss_response_available
+                self._hss_response_available = False
+            self._replace_hss_zones(())
+            if was_available:
+                self._log_protocol(
+                    "competition.hss_unavailable",
+                    "TEKNOFEST HSS yanıtı kesildi; eski HSS alanları kaldırıldı",
+                    {"error": str(exc), "error_type": type(exc).__name__},
+                    severity="warning",
+                )
+            return
+
+        with self._lock:
+            self._hss_response_available = True
+        self._replace_hss_zones(result)
+        self._log_protocol(
+            "competition.hss_rx",
+            f"RX TEKNOFEST HSS koordinatları alındı ({len(result)})",
+            {"hss_count": len(result)},
+            severity="debug",
         )
 
     def _fetch_qr_coordinate(self) -> None:

@@ -299,6 +299,9 @@ class MainWindow(QMainWindow):
         self.map_panel.command_requested.connect(self.command_service.issue_command)
         self.command_service.command_dispatched.connect(self._on_command_dispatched)
         self.command_service.command_completed.connect(self._on_command_completed)
+        self.telemetry_service.flight_dynamics_updated.connect(
+            self.attitude_indicator.update_snapshot
+        )
         self.map_panel.storage_requested.connect(self._handle_map_storage_request)
         self.map_panel.info_generated.connect(
             lambda severity, message: self.log_service.log("MAP", message, severity)
@@ -342,7 +345,46 @@ class MainWindow(QMainWindow):
                     severity="warning",
                 )
                 return
-        self.command_service.issue_command(code, parameters)
+        elif code == "SET_MISSION_TASK" and task == "ACTUATOR_TEST":
+            if not self._confirm_actuator_test():
+                self.ui_log.event(
+                    "actuator_test.start_cancelled",
+                    "Aktüatör testi operatör tarafından iptal edildi",
+                    severity="warning",
+                )
+                return
+        self.command_service.issue_command(
+            code,
+            parameters,
+            source="operator-ui" if task == "ACTUATOR_TEST" else "qt-ui",
+        )
+
+    def _confirm_actuator_test(self) -> bool:
+        confirmations = (
+            (
+                "onboard.actuator.confirm.safety",
+                "onboard.actuator.confirm.safety_detail",
+            ),
+            (
+                "onboard.actuator.confirm.start",
+                "onboard.actuator.confirm.start_detail",
+            ),
+        )
+        for message_key, detail_key in confirmations:
+            dialog = QMessageBox(self)
+            dialog.setIcon(QMessageBox.Icon.Warning)
+            dialog.setWindowTitle(
+                t("onboard.actuator.confirm.title", self.language)
+            )
+            dialog.setText(t(message_key, self.language))
+            dialog.setInformativeText(t(detail_key, self.language))
+            dialog.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            dialog.setDefaultButton(QMessageBox.StandardButton.No)
+            if dialog.exec() != QMessageBox.StandardButton.Yes:
+                return False
+        return True
 
     def _on_command_dispatched(self, code: str, parameters: dict) -> None:
         if parameters.get("battery_failsafe") is True:
@@ -539,7 +581,6 @@ class MainWindow(QMainWindow):
         self._last_snapshot = snapshot
         self.telemetry_panel.update_snapshot(snapshot)
         self.command_panel.update_snapshot(snapshot)
-        self.attitude_indicator.update_snapshot(snapshot)
         self.map_panel.update_snapshot(snapshot)
         settings = self._active_settings
         battery_alarm_active = self.battery_alarm_service.evaluate(

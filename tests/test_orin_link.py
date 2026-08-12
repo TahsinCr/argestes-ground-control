@@ -38,6 +38,38 @@ from src.services.video import MutableVideoService
 
 
 class OrinLinkTests(unittest.TestCase):
+    def test_orin_heartbeat_exposes_onboard_available_tasks(self) -> None:
+        vehicle = SimpleNamespace(
+            connected=True,
+            state=VehicleConnectionState(True, "COM3", 1, 1),
+            connection_changed=EventBus(),
+        )
+        client = SimpleNamespace(
+            endpoint=SimpleNamespace(
+                uri="COM3",
+                source_system=255,
+                source_component=0,
+            ),
+            connection=SimpleNamespace(target_system=1),
+        )
+        service = MavlinkOrinService(client, vehicle)  # type: ignore[arg-type]
+
+        service._on_packet(
+            MavlinkApplicationPacket(
+                "system.heartbeat",
+                {
+                    "role": "orin",
+                    "available_tasks": ["system.actuator.test"],
+                    "capabilities": ["task.start", "mission.events"],
+                },
+                source_system=1,
+                source_component=191,
+            )
+        )
+
+        self.assertEqual(service.state.available_tasks, ("system.actuator.test",))
+        self.assertIn("task.start", service.state.capabilities)
+
     def test_remote_log_batch_roundtrips_structured_records(self) -> None:
         batch = MavlinkRemoteLogBatch(
             "orin-test-session",
@@ -561,6 +593,7 @@ class OrinLinkTests(unittest.TestCase):
             LoggingService().child("COMMAND"),
             orin=orin,  # type: ignore[arg-type]
         )
+        self.assertIn("ACTUATOR_TEST", service.available_tasks)
         result = service.dispatch(
             CommandRequest("SET_MISSION_TASK", {"task": "KAMIKAZE", "target_id": 27})
         )

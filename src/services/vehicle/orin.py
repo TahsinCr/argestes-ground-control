@@ -19,7 +19,6 @@ from src.core.mavlink import (
     MavlinkApplicationResult,
     MavlinkClient,
     MavlinkRemoteLogBatch,
-    MavlinkRemoteLogRecord,
     REMOTE_LOG_PACKET_TYPE,
 )
 from src.models.orin import (
@@ -554,6 +553,9 @@ class MavlinkOrinService(OrinService):
             active_tasks = self._string_tuple(
                 payload.get("active_tasks"), self._state.active_tasks
             )
+            available_tasks = self._string_tuple(
+                payload.get("available_tasks"), self._state.available_tasks
+            )
             queued_tasks = self._string_tuple(
                 payload.get("queued_tasks"), self._state.queued_tasks
             )
@@ -578,6 +580,7 @@ class MavlinkOrinService(OrinService):
                 health=str(payload.get("health", self._state.health or "ok")),
                 active_task=str(payload.get("active_task", self._state.active_task)),
                 active_tasks=active_tasks,
+                available_tasks=available_tasks,
                 queued_tasks=queued_tasks,
                 active_missions=active_missions,
                 queued_missions=queued_missions,

@@ -18,6 +18,7 @@ class DispatchCommandService(CommandService):
     _DEFAULT_TASKS = (
         "TARGET_LOCK",
         "KAMIKAZE",
+        "ACTUATOR_TEST",
         "WAYPOINT_TRACK",
         "AUTO_TAKEOFF",
         "AUTO_LAND",
@@ -28,7 +29,13 @@ class DispatchCommandService(CommandService):
         "AUTO_LAND": "AUTOLAND",
     }
     _BUILTIN_ORIN_TASKS = frozenset(
-        {"TARGET_LOCK", "KAMIKAZE", "WAYPOINT_TRACK", "SURVEY_AREA"}
+        {
+            "TARGET_LOCK",
+            "KAMIKAZE",
+            "ACTUATOR_TEST",
+            "WAYPOINT_TRACK",
+            "SURVEY_AREA",
+        }
     )
 
     def __init__(
@@ -239,8 +246,9 @@ class DispatchCommandService(CommandService):
         request: CommandRequest,
     ) -> tuple[bool, dict[str, object]]:
         assert self._orin is not None
-        if self._onboard is not None and task == "KAMIKAZE":
-            receipt = self._onboard.start_task(task, source=request.source)
+        if self._onboard is not None and task in {"KAMIKAZE", "ACTUATOR_TEST"}:
+            source = "operator-ui" if task == "ACTUATOR_TEST" else request.source
+            receipt = self._onboard.start_task(task, source=source)
             if not receipt.accepted:
                 raise RuntimeError(receipt.message)
             return True, {
@@ -251,6 +259,8 @@ class DispatchCommandService(CommandService):
                 "orin_execution": receipt.response.get("execution", "acknowledged"),
                 "waiting_for_mode": bool(receipt.response.get("waiting_for_mode", False)),
                 "mission_id": receipt.response.get("mission_id"),
+                "vehicle_mode": receipt.response.get("vehicle_mode"),
+                "snapshot": receipt.response.get("snapshot", {}),
                 "orin_response": receipt.response,
             }
         parameters = {

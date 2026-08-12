@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
@@ -12,7 +13,7 @@ os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --no-sandbox"
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from src.container import create_container
 from src.services.runtime import RuntimeServices
@@ -78,6 +79,25 @@ class UiSmokeTests(unittest.TestCase):
             self.assertEqual(window.bottom_status["video"].state, "danger")
             self.assertIn(theme.danger, window.bottom_status["video"].text_label.styleSheet())
             self.assertEqual(window.bottom_status["orin"].state, "danger")
+
+            with patch.object(
+                QMessageBox,
+                "exec",
+                side_effect=(
+                    QMessageBox.StandardButton.Yes,
+                    QMessageBox.StandardButton.Yes,
+                ),
+            ) as confirmation:
+                self.assertTrue(window._confirm_actuator_test())
+                self.assertEqual(confirmation.call_count, 2)
+
+            with patch.object(
+                QMessageBox,
+                "exec",
+                return_value=QMessageBox.StandardButton.No,
+            ) as confirmation:
+                self.assertFalse(window._confirm_actuator_test())
+                confirmation.assert_called_once()
 
             QTest.mouseClick(window.battery_meter, Qt.MouseButton.LeftButton)
             QTest.qWait(25)

@@ -26,6 +26,7 @@ from src.models.commands import CommandRequest, CommandResult
 from src.models.connections import ConnectionStatus
 from src.models.logs import LogEntry
 from src.models.mission import MapContact
+from src.models.onboard import ACTUATOR_TEST_TASK, OnboardMissionState
 from src.models.parameters import Parameter
 from src.models.settings import SettingsModel
 from src.models.telemetry import TelemetrySnapshot
@@ -484,6 +485,13 @@ class UiContractTests(unittest.TestCase):
         self.assertEqual(panel.mode_combo.itemText(panel.mode_combo.findData("AUTOLAND")), "LAND")
         self.assertEqual(set(panel.profile_inputs), {field.key for field in PROFILE_FIELDS})
         self.assertEqual(panel.task_list.count(), len(AUTONOMOUS_COMMANDS))
+        actuator_row = next(
+            row
+            for row in range(panel.task_list.count())
+            if panel.task_list.item(row).data(Qt.ItemDataRole.UserRole)
+            == "ACTUATOR_TEST"
+        )
+        self.assertEqual(panel.task_list.item(actuator_row).text(), "Aktüatör Testi")
         self.assertFalse(panel.arm_toggle_button.isEnabled())
         self.assertEqual(panel.arm_toggle_button.text(), "ARM / DISARM")
         panel.update_snapshot(
@@ -658,6 +666,30 @@ class UiContractTests(unittest.TestCase):
         )
         self.assertAlmostEqual(indicator._field_sample_ages["pitch"], 1.0)
         self.assertGreater(projected_targets[-1], 5.0)
+        self.assertLessEqual(
+            max(projected_targets),
+            5.0
+            + 4.0
+            * (
+                indicator._MAX_PREDICTION_HORIZON_S
+                + indicator._MAX_PREDICTION_BRAKE_TIME_S
+            ),
+        )
+        indicator.close()
+        indicator.deleteLater()
+        self.app.processEvents()
+
+    def test_flight_dynamics_prioritizes_latest_sample_over_long_smoothing(self) -> None:
+        indicator = AttitudeIndicator(DARK)
+        indicator._display_values["pitch"] = 0.0
+        indicator._target_values["pitch"] = 12.0
+        indicator._field_velocities["pitch"] = 0.0
+        indicator._field_sample_periods["pitch"] = 1.0
+
+        indicator._animation_step(0.1)
+
+        self.assertGreater(indicator._display_values["pitch"], 9.0)
+        self.assertLessEqual(indicator._MAX_SMOOTHING_TIME_S, 0.07)
         indicator.close()
         indicator.deleteLater()
         self.app.processEvents()
@@ -794,6 +826,83 @@ class UiContractTests(unittest.TestCase):
         panel._emit_task_command()
         self.assertEqual(requested[-1][0], "SET_MISSION_TASK")
         self.assertEqual(requested[-1][1]["task"], "PING_TEST")
+        panel.close()
+        panel.deleteLater()
+        self.app.processEvents()
+
+    def test_actuator_test_card_is_discovered_and_emits_only_task_start_intent(self) -> None:
+        panel = CommandPanel("", "")
+        panel.update_snapshot(
+            TelemetrySnapshot.zero().copy(
+                telemetry_link=True,
+                autopilot_link=True,
+                armed=False,
+            )
+        )
+        panel.update_onboard_state(
+            OnboardMissionState(
+                connected=True,
+                onboard_version="0.2-beta",
+                available_tasks=(ACTUATOR_TEST_TASK,),
+            )
+        )
+        self.assertFalse(panel.actuator_card.isHidden())
+
+        requested: list[tuple[str, dict]] = []
+        panel.command_requested.connect(
+            lambda code, params: requested.append((code, params))
+        )
+        actuator_row = next(
+            row
+            for row in range(panel.task_list.count())
+            if panel.task_list.item(row).data(Qt.ItemDataRole.UserRole)
+            == "ACTUATOR_TEST"
+        )
+        panel.task_list.setCurrentRow(actuator_row)
+        panel._emit_task_command()
+        self.assertEqual(
+            requested,
+            [("SET_MISSION_TASK", {"task": "ACTUATOR_TEST"})],
+        )
+        self.assertNotIn("pwm", requested[0][1])
+        self.assertNotIn("armed", requested[0][1])
+
+        panel.update_onboard_state(
+            OnboardMissionState(
+                connected=True,
+                active_task=ACTUATOR_TEST_TASK,
+                available_tasks=(ACTUATOR_TEST_TASK,),
+                mission_id=84,
+                phase="running",
+                actuator_step="servo-1-high",
+                actuator_step_count=1,
+                actuator_servo_output=1,
+                actuator_pwm=1700,
+                actuator_armed=False,
+            )
+        )
+        self.assertFalse(panel.task_apply_button.isEnabled())
+        self.assertIn("84", panel.actuator_detail.text())
+        self.assertIn("1700", panel.actuator_detail.text())
+        self.assertGreater(panel.actuator_progress.maximum(), 0)
+
+        panel.update_onboard_state(
+            OnboardMissionState(
+                connected=True,
+                active_task=ACTUATOR_TEST_TASK,
+                available_tasks=(ACTUATOR_TEST_TASK,),
+                mission_id=84,
+                phase="succeeded",
+                actuator_notification_only=True,
+                actuator_servo_output=0,
+                actuator_pwm=0,
+                actuator_armed=False,
+            )
+        )
+        self.assertIn(
+            "Bildirim testi başarılı",
+            panel.actuator_status.text(),
+        )
         panel.close()
         panel.deleteLater()
         self.app.processEvents()
@@ -983,6 +1092,12 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("payload.positionValid", html)
         self.assertIn("payload.resetTrack", html)
         self.assertIn("(changes.upsertContacts || []).forEach", html)
+        self.assertIn("function renderMarkerMotions(now)", html)
+        self.assertIn("function startMarkerMotion(", html)
+        self.assertIn("state.contacts.forEach((entry) =>", html)
+        self.assertIn("Math.min(1200, sampleIntervalMs * 0.9)", html)
+        self.assertIn("Math.min(140, sampleIntervalMs * 0.75)", html)
+        self.assertEqual(html.count("requestAnimationFrame(renderMarkerMotions)"), 2)
         self.assertIn('"upsertContacts": changed_contacts', panel_source)
         self.assertIn("window.ykiMap.applyStateDelta(", panel_source)
         self.assertNotIn("window.ykiMap.upsertContact(", panel_source)

@@ -249,6 +249,7 @@ class QtSettingsService(_QtAdapter):
 
 class QtTelemetryService(_QtAdapter):
     telemetry_updated = pyqtSignal(object)
+    flight_dynamics_updated = pyqtSignal(object)
     # The backend may ingest MAVLink considerably faster than the screen needs
     # to be laid out. The attitude widget interpolates at 60 Hz independently;
     # the remaining panels only need the freshest snapshot once per UI frame.
@@ -259,7 +260,10 @@ class QtTelemetryService(_QtAdapter):
         self.backend = backend
         self._latest_lock = threading.Lock()
         self._latest_snapshot: TelemetrySnapshot | None = None
+        self._latest_dynamics_snapshot: TelemetrySnapshot | None = None
         self._frame_scheduled = False
+        self._dynamics_scheduled = False
+        self._dynamics_signature: tuple[object, ...] | None = None
         self._subscriptions.append(
             backend.updated.subscribe(self._capture_latest_snapshot)
         )
@@ -273,13 +277,46 @@ class QtTelemetryService(_QtAdapter):
         """Keep backend throughput independent from the GUI render queue."""
 
         should_schedule = False
+        should_schedule_dynamics = False
+        dynamics_signature = (
+            snapshot.telemetry_link,
+            snapshot.autopilot_link,
+            snapshot.attitude_received_at,
+            snapshot.global_position_received_at,
+            snapshot.hud_received_at,
+            snapshot.roll,
+            snapshot.pitch,
+            snapshot.heading,
+            snapshot.air_speed,
+            snapshot.ground_speed,
+            snapshot.altitude_agl,
+        )
         with self._latest_lock:
             self._latest_snapshot = snapshot
             if not self._frame_scheduled:
                 self._frame_scheduled = True
                 should_schedule = True
+            if dynamics_signature != self._dynamics_signature:
+                self._dynamics_signature = dynamics_signature
+                self._latest_dynamics_snapshot = snapshot
+                if not self._dynamics_scheduled:
+                    self._dynamics_scheduled = True
+                    should_schedule_dynamics = True
+        if should_schedule_dynamics:
+            # Flight dynamics uses a separate latest-only path. It reaches the
+            # next GUI event-loop turn without waiting for map/panel batching.
+            self._post(self._emit_latest_dynamics_snapshot)
         if should_schedule:
             self._post(self._start_frame_timer)
+
+    @pyqtSlot()
+    def _emit_latest_dynamics_snapshot(self) -> None:
+        with self._latest_lock:
+            snapshot = self._latest_dynamics_snapshot
+            self._latest_dynamics_snapshot = None
+            self._dynamics_scheduled = False
+        if snapshot is not None and not self._closed:
+            self.flight_dynamics_updated.emit(snapshot)
 
     @pyqtSlot()
     def _start_frame_timer(self) -> None:
@@ -310,7 +347,10 @@ class QtTelemetryService(_QtAdapter):
         self._frame_timer.stop()
         with self._latest_lock:
             self._latest_snapshot = None
+            self._latest_dynamics_snapshot = None
             self._frame_scheduled = False
+            self._dynamics_scheduled = False
+            self._dynamics_signature = None
         super().close()
 
     @property

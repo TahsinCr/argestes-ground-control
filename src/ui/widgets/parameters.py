@@ -10,7 +10,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QWidget,

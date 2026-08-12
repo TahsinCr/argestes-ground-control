@@ -12,7 +12,6 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,

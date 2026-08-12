@@ -11,6 +11,15 @@ from src.core.abstracts import Model
 TERMINAL_MISSION_PHASES = frozenset({"stopped", "succeeded", "failed", "cancelled"})
 QR_EVENT_TYPES = frozenset({"QR_DECODED", "QR_DECODED_DURING_PULL_UP"})
 CRITICAL_KAMIKAZE_EVENTS = frozenset({"SAFETY_FLOOR_BREACH", "FAULT", "GROUND_CONTACT"})
+ACTUATOR_TEST_TASK = "system.actuator.test"
+ACTUATOR_TEST_EVENTS = frozenset(
+    {
+        "ACTUATOR_TEST.STARTED",
+        "ACTUATOR_TEST.NOTIFICATION_ONLY",
+        "ACTUATOR_TEST.STEP",
+        "ACTUATOR_TEST.COMPLETED",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +56,16 @@ class OnboardMissionEvent(Model):
                 self.qr_text,
                 self.altitude_m,
             )
+        if self.event in ACTUATOR_TEST_EVENTS:
+            return (
+                self.mission_id,
+                self.event,
+                self.time_utc,
+                self.fields.get("step"),
+                self.fields.get("servo_output"),
+                self.fields.get("pwm"),
+                self.fields.get("armed"),
+            )
         if self.sequence is not None:
             return (self.mission_id, self.sequence)
         return (
@@ -76,12 +95,14 @@ class OnboardMissionState(Model):
     onboard_version: str = ""
     vehicle_mode: str = ""
     active_task: str = ""
+    available_tasks: tuple[str, ...] = field(default_factory=tuple)
     queued_tasks: tuple[str, ...] = field(default_factory=tuple)
     mission_id: int | None = None
     phase: str = "idle"
     waiting_for_guided: bool = False
     pending_command: str = ""
     result: dict[str, Any] = field(default_factory=dict)
+    acknowledgement_snapshot: dict[str, Any] = field(default_factory=dict)
     result_received: bool = False
     qr_status: str = "pending"
     qr_text: str | None = None
@@ -92,12 +113,34 @@ class OnboardMissionState(Model):
     target_revision: int = 0
     target: dict[str, Any] = field(default_factory=dict)
     critical_event: str = ""
+    actuator_step: str = ""
+    actuator_step_count: int = 0
+    actuator_servo_output: int | None = None
+    actuator_pwm: int | None = None
+    actuator_armed: bool | None = None
+    actuator_notification_only: bool = False
     timeline: tuple[OnboardMissionEvent, ...] = field(default_factory=tuple)
     last_error: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "result", MappingProxyType(dict(self.result)))
+        object.__setattr__(
+            self,
+            "acknowledgement_snapshot",
+            MappingProxyType(dict(self.acknowledgement_snapshot)),
+        )
         object.__setattr__(self, "target", MappingProxyType(dict(self.target)))
+        object.__setattr__(
+            self,
+            "available_tasks",
+            tuple(
+                dict.fromkeys(
+                    str(task).strip().lower()
+                    for task in self.available_tasks
+                    if str(task).strip()
+                )
+            ),
+        )
 
     @property
     def terminal(self) -> bool:
@@ -109,12 +152,14 @@ class OnboardMissionState(Model):
             "onboard_version": self.onboard_version,
             "vehicle_mode": self.vehicle_mode,
             "active_task": self.active_task,
+            "available_tasks": list(self.available_tasks),
             "queued_tasks": list(self.queued_tasks),
             "mission_id": self.mission_id,
             "phase": self.phase,
             "waiting_for_guided": self.waiting_for_guided,
             "pending_command": self.pending_command,
             "result": dict(self.result),
+            "acknowledgement_snapshot": dict(self.acknowledgement_snapshot),
             "result_received": self.result_received,
             "qr_status": self.qr_status,
             "qr_text": self.qr_text,
@@ -125,6 +170,12 @@ class OnboardMissionState(Model):
             "target_revision": self.target_revision,
             "target": dict(self.target),
             "critical_event": self.critical_event,
+            "actuator_step": self.actuator_step,
+            "actuator_step_count": self.actuator_step_count,
+            "actuator_servo_output": self.actuator_servo_output,
+            "actuator_pwm": self.actuator_pwm,
+            "actuator_armed": self.actuator_armed,
+            "actuator_notification_only": self.actuator_notification_only,
             "timeline": [event.to_dict() for event in self.timeline],
             "last_error": self.last_error,
         }

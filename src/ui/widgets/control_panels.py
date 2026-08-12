@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QLineEdit,
-    QPushButton,
+    QProgressBar,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
@@ -30,7 +30,7 @@ from src.ui.config.commands import (
     TASK_LABEL_KEYS,
 )
 from src.models.commands import CommandResult
-from src.models.onboard import OnboardMissionState
+from src.models.onboard import ACTUATOR_TEST_TASK, OnboardMissionState
 from src.models.telemetry import TelemetrySnapshot
 from src.ui.themes.style import ThemePalette
 from src.ui.widgets.common import PanelFrame, compact_button
@@ -347,6 +347,40 @@ class CommandPanel(PanelFrame):
         )
         self.body_layout.addWidget(self.task_list, 1)
 
+        self.actuator_card = QFrame(self)
+        self.actuator_card.setObjectName("MetricCard")
+        actuator_layout = QGridLayout(self.actuator_card)
+        actuator_layout.setContentsMargins(7, 6, 7, 6)
+        actuator_layout.setHorizontalSpacing(6)
+        actuator_layout.setVerticalSpacing(3)
+        self.actuator_title = QLabel(self.actuator_card)
+        self.actuator_title.setObjectName("MetricTitle")
+        self.actuator_status = QLabel(self.actuator_card)
+        self.actuator_status.setWordWrap(True)
+        self.actuator_status.setProperty("role", "readout-value")
+        self.actuator_detail = QLabel(self.actuator_card)
+        self.actuator_detail.setWordWrap(True)
+        self.actuator_detail.setProperty("role", "readout-label")
+        self.actuator_progress = QProgressBar(self.actuator_card)
+        self.actuator_progress.setObjectName("ActuatorTestProgress")
+        self.actuator_progress.setTextVisible(False)
+        self.actuator_progress.setFixedHeight(7)
+        self._actuator_progress_animation = QPropertyAnimation(
+            self.actuator_progress,
+            b"value",
+            self,
+        )
+        self._actuator_progress_animation.setDuration(280)
+        self._actuator_progress_animation.setEasingCurve(
+            QEasingCurve.Type.OutCubic
+        )
+        actuator_layout.addWidget(self.actuator_title, 0, 0, 1, 2)
+        actuator_layout.addWidget(self.actuator_status, 1, 0, 1, 2)
+        actuator_layout.addWidget(self.actuator_detail, 2, 0, 1, 2)
+        actuator_layout.addWidget(self.actuator_progress, 3, 0, 1, 2)
+        self.actuator_card.hide()
+        self.body_layout.addWidget(self.actuator_card)
+
         self.task_apply_button = compact_button("TASK APPLY", "primary")
         self.task_apply_button.clicked.connect(self._emit_task_command)
         self.body_layout.addWidget(self.task_apply_button)
@@ -375,14 +409,10 @@ class CommandPanel(PanelFrame):
         self.task_stop_button = compact_button("STOP", "warning")
         self.task_cancel_button = compact_button("CANCEL", "danger")
         self.task_stop_button.clicked.connect(
-            lambda: self.command_requested.emit(
-                "ONBOARD_TASK_STOP", {"task": "kamikaze.execute"}
-            )
+            lambda: self._emit_active_task_control("ONBOARD_TASK_STOP")
         )
         self.task_cancel_button.clicked.connect(
-            lambda: self.command_requested.emit(
-                "ONBOARD_TASK_CANCEL", {"task": "kamikaze.execute"}
-            )
+            lambda: self._emit_active_task_control("ONBOARD_TASK_CANCEL")
         )
         task_control_layout.addWidget(self.task_stop_button)
         task_control_layout.addWidget(self.task_cancel_button)
@@ -399,6 +429,7 @@ class CommandPanel(PanelFrame):
         self.mode_apply_button.setText(t("command.apply", language).upper())
         self.profile_apply_button.setText(t("command.apply", language).upper())
         self.task_apply_button.setText(t("command.task_apply", language).upper())
+        self.actuator_title.setText(t("onboard.actuator.title", language).upper())
         self.qr_copy_button.setText(t("onboard.qr.copy", language).upper())
         self.task_stop_button.setText(t("onboard.task.stop", language).upper())
         self.task_cancel_button.setText(t("onboard.task.cancel", language).upper())
@@ -529,12 +560,114 @@ class CommandPanel(PanelFrame):
         self.qr_copy_button.setEnabled(bool(state.qr_text))
         task_active = bool(
             state.connected
-            and state.active_task == "kamikaze.execute"
+            and state.active_task
             and not state.terminal
         )
         self.task_stop_button.setEnabled(task_active and not state.pending_command)
         self.task_cancel_button.setEnabled(task_active and not state.pending_command)
         self._sync_command_availability()
+
+    def _update_actuator_card(self) -> None:
+        state = self._onboard_state
+        supported = bool(
+            ACTUATOR_TEST_TASK in state.available_tasks
+            or state.active_task == ACTUATOR_TEST_TASK
+        )
+        self.actuator_card.setVisible(supported)
+        if not supported:
+            return
+
+        active = bool(
+            state.active_task == ACTUATOR_TEST_TASK
+            and not state.terminal
+        )
+        if not state.connected:
+            status_text = t("onboard.actuator.offline", self._language)
+            visual_state = "danger"
+        elif state.phase in {"failed", "cancelled"}:
+            status_text = state.last_error or t(
+                "onboard.actuator.failed",
+                self._language,
+            )
+            visual_state = "danger"
+        elif state.actuator_notification_only:
+            status_text = t("onboard.actuator.notification_only", self._language)
+            visual_state = "success"
+        elif state.phase == "succeeded":
+            status_text = t("onboard.actuator.succeeded", self._language)
+            visual_state = "success"
+        elif state.pending_command or state.phase in {"requesting", "starting"}:
+            status_text = t("onboard.actuator.starting", self._language)
+            visual_state = "warning"
+        elif active:
+            status_text = t("onboard.actuator.running", self._language)
+            visual_state = "warning"
+        else:
+            status_text = t("onboard.actuator.ready", self._language)
+            visual_state = "neutral"
+
+        self.actuator_status.setText(status_text)
+        self.actuator_status.setProperty("state", visual_state)
+        self.actuator_status.style().unpolish(self.actuator_status)
+        self.actuator_status.style().polish(self.actuator_status)
+
+        mission_id = state.mission_id if state.mission_id is not None else "—"
+        step = state.actuator_step or "—"
+        servo = (
+            state.actuator_servo_output
+            if state.actuator_servo_output is not None
+            else "—"
+        )
+        pwm = state.actuator_pwm if state.actuator_pwm is not None else "—"
+        armed = (
+            t("onboard.actuator.armed", self._language)
+            if state.actuator_armed is True
+            else t("onboard.actuator.disarmed", self._language)
+            if state.actuator_armed is False
+            else "—"
+        )
+        detail = t(
+            "onboard.actuator.detail",
+            self._language,
+            mission_id=mission_id,
+            phase=state.phase,
+            step=step,
+            servo=servo,
+            pwm=pwm,
+            armed=armed,
+        )
+        if state.actuator_notification_only and state.phase == "succeeded":
+            detail = (
+                f"{t('onboard.actuator.notification_only', self._language)}\n"
+                f"{detail}"
+            )
+        self.actuator_detail.setText(detail)
+
+        self.actuator_progress.setProperty("state", visual_state)
+        self.actuator_progress.style().unpolish(self.actuator_progress)
+        self.actuator_progress.style().polish(self.actuator_progress)
+        if state.phase == "succeeded":
+            self._set_actuator_progress(100)
+        elif state.phase in {"failed", "cancelled", "idle"}:
+            self._set_actuator_progress(0)
+        elif active and state.actuator_step_count == 0:
+            self._actuator_progress_animation.stop()
+            self.actuator_progress.setRange(0, 0)
+        else:
+            self._set_actuator_progress(
+                min(92, max(8, state.actuator_step_count * 16))
+            )
+
+    def _set_actuator_progress(self, value: int) -> None:
+        if self.actuator_progress.minimum() == 0 and self.actuator_progress.maximum() == 0:
+            self.actuator_progress.setRange(0, 100)
+        target = max(0, min(100, int(value)))
+        if self.actuator_progress.value() == target:
+            return
+        self._actuator_progress_animation.stop()
+        self._actuator_progress_animation.setStartValue(self.actuator_progress.value())
+        self._actuator_progress_animation.setEndValue(target)
+        self._actuator_progress_animation.start()
 
     def _on_mode_selected(self, _index: int) -> None:
         selected = str(self.mode_combo.currentData() or "").strip().upper()
@@ -698,14 +831,44 @@ class CommandPanel(PanelFrame):
                 button.setEnabled(available)
         current = self.task_list.currentItem()
         selected_task = str(current.data(Qt.ItemDataRole.UserRole) or "") if current else ""
-        task_available = available and (
-            selected_task not in {"KAMIKAZE", "TARGET_LOCK", "WAYPOINT_TRACK", "SURVEY_AREA"}
-            or (self._onboard_state.connected and not self._onboard_state.pending_command)
+        onboard_task = selected_task in {
+            "KAMIKAZE",
+            "TARGET_LOCK",
+            "ACTUATOR_TEST",
+            "WAYPOINT_TRACK",
+            "SURVEY_AREA",
+        }
+        actuator_supported = bool(
+            selected_task != "ACTUATOR_TEST"
+            or ACTUATOR_TEST_TASK in self._onboard_state.available_tasks
+        )
+        selected_canonical = (
+            ACTUATOR_TEST_TASK
+            if selected_task == "ACTUATOR_TEST"
+            else selected_task.lower()
+        )
+        same_task_active = bool(
+            selected_canonical
+            and self._onboard_state.active_task == selected_canonical
+            and not self._onboard_state.terminal
+        )
+        task_available = bool(
+            available
+            and actuator_supported
+            and not same_task_active
+            and (
+                not onboard_task
+                or (
+                    self._onboard_state.connected
+                    and not self._onboard_state.pending_command
+                )
+            )
         )
         self.task_apply_button.setEnabled(task_available)
         if self.mode_combo.isEnabled() != available:
             self.mode_combo.setEnabled(available)
         self._sync_arm_controls()
+        self._update_actuator_card()
 
     def _set_command_status(self, message: str, state: str) -> None:
         self.command_status.setText(message)
@@ -727,10 +890,23 @@ class CommandPanel(PanelFrame):
         item = self.task_list.currentItem()
         if not item:
             return
+        task = str(item.data(Qt.ItemDataRole.UserRole) or "").strip().upper()
+        if task == "ACTUATOR_TEST":
+            self.command_requested.emit(
+                "SET_MISSION_TASK",
+                {"task": task},
+            )
+            return
         params = self._profile_params()
         params["mode"] = self.mode_combo.currentData()
-        params["task"] = item.data(Qt.ItemDataRole.UserRole)
+        params["task"] = task
         self.command_requested.emit("SET_MISSION_TASK", params)
+
+    def _emit_active_task_control(self, command: str) -> None:
+        task = self._onboard_state.active_task
+        if not task or self._onboard_state.terminal:
+            return
+        self.command_requested.emit(command, {"task": task})
 
     def _emit_command(self, command: str) -> None:
         params = self._profile_params()

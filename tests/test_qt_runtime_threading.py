@@ -4,6 +4,7 @@ import os
 import threading
 import time
 import unittest
+from datetime import UTC, datetime, timedelta
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -124,6 +125,39 @@ class QtRuntimeThreadingTests(unittest.TestCase):
         backend.updated.publish(TelemetrySnapshot.zero().copy(packets_in=9_999))
         QTest.qWait(25)
         self.assertEqual(received[-1].packets_in, 4_999)
+        adapter.deleteLater()
+        self.app.processEvents()
+
+    def test_flight_dynamics_uses_immediate_latest_only_ui_path(self) -> None:
+        backend = _TelemetryBackend()
+        adapter = QtTelemetryService(backend)
+        dynamics: list[TelemetrySnapshot] = []
+        regular: list[TelemetrySnapshot] = []
+        adapter.flight_dynamics_updated.connect(dynamics.append)
+        adapter.telemetry_updated.connect(regular.append)
+        started_at = datetime.now(UTC)
+
+        for index in range(200):
+            backend.updated.publish(
+                TelemetrySnapshot.zero().copy(
+                    telemetry_link=True,
+                    autopilot_link=True,
+                    pitch=float(index),
+                    attitude_received_at=(
+                        started_at + timedelta(milliseconds=index * 5)
+                    ),
+                )
+            )
+
+        self.assertEqual(dynamics, [])
+        self.app.processEvents()
+        self.assertEqual(len(dynamics), 1)
+        self.assertEqual(dynamics[0].pitch, 199.0)
+        self.assertEqual(regular, [])
+
+        QTest.qWait(QtTelemetryService._UI_FRAME_INTERVAL_MS + 10)
+        self.assertEqual(regular[-1].pitch, 199.0)
+        adapter.close()
         adapter.deleteLater()
         self.app.processEvents()
 
