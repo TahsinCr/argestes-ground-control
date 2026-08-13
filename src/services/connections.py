@@ -16,13 +16,13 @@ from src.core.events import EventBus, Subscription
 from src.models.competition import CompetitionServerConfig
 from src.models.connections import ConnectionStatus
 from src.models.vehicle import VehicleConnectionConfig, VehicleConnectionState
-from src.services.contracts.competition import CompetitionService
-from src.services.contracts.connections import ConnectionControlService
-from src.services.contracts.orin import OrinService
-from src.services.contracts.settings import SettingsRepository
-from src.services.contracts.telemetry import TelemetryService
-from src.services.contracts.vehicle import VehicleService
-from src.services.contracts.video import VideoService
+from src.services.abstracts.competition import CompetitionService
+from src.services.abstracts.connections import ConnectionControlService
+from src.services.abstracts.orin import OrinService
+from src.services.abstracts.settings import SettingsRepository
+from src.services.abstracts.telemetry import TelemetryService
+from src.services.abstracts.vehicle import VehicleService
+from src.services.abstracts.video import VideoService
 from src.services.logging_service import ServiceLogger
 
 
@@ -148,6 +148,11 @@ class BackendConnectionControlService(ConnectionControlService):
                     "hss_count": state.hss_count,
                     "qr_available": state.qr_available,
                     "telemetry_tx_active": state.telemetry_tx_active,
+                    "session_health": state.session_health,
+                    "telemetry_health": state.telemetry_health,
+                    "clock_health": state.clock_health,
+                    "qr_health": state.qr_health,
+                    "hss_health": state.hss_health,
                 },
                 can_disconnect=state.running,
             )
@@ -267,24 +272,26 @@ class BackendConnectionControlService(ConnectionControlService):
             )
         if key == "gps":
             position_age = self._age_seconds(snapshot.position_received_at)
+            gps_age = self._age_seconds(snapshot.gps_received_at)
             gps_ready = bool(
                 connected
-                and snapshot.telemetry_link
-                and snapshot.autopilot_link
                 and snapshot.has_valid_position
-                and snapshot.gps_satellites > 0
-                and position_age is not None
-                and position_age <= freshness_limit
+                and snapshot.has_fresh_gps(freshness_limit)
+            )
+            satellite_text = (
+                str(snapshot.gps_satellites)
+                if snapshot.gps_satellites is not None
+                else "--"
             )
             return ConnectionStatus(
                 key,
                 gps_ready,
                 "GPS verisi alınıyor" if gps_ready else "GPS verisi bekleniyor",
                 (
-                    f"{snapshot.gps_fix} / {snapshot.gps_satellites} uydu / "
-                    f"konum yaşı {position_age:.1f} sn"
-                    if position_age is not None
-                    else f"{snapshot.gps_fix} / {snapshot.gps_satellites} uydu / canlı konum yok"
+                    f"{snapshot.gps_fix} / {satellite_text} uydu / "
+                    f"GPS yaşı {gps_age:.1f} sn"
+                    if gps_age is not None
+                    else f"{snapshot.gps_fix} / {satellite_text} uydu / canlı GPS verisi yok"
                 ),
                 state.endpoint or settings.backend.mavlink.endpoint,
                 float(settings.backend.mavlink.heartbeat_timeout),
@@ -293,6 +300,7 @@ class BackendConnectionControlService(ConnectionControlService):
                     "vehicle_connected": connected,
                     "satellites": snapshot.gps_satellites,
                     "gps_fix": snapshot.gps_fix,
+                    "gps_age_s": gps_age,
                     "position_valid": snapshot.has_valid_position,
                     "position_age_s": position_age,
                     "freshness_limit_s": freshness_limit,

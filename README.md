@@ -617,20 +617,31 @@ correlation details rather than relying only on a visible UI message.
 ## Testing
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python -B -m unittest discover -s tests -v
-PYTHONDONTWRITEBYTECODE=1 python -B src/core/tests/run.py
+python run_tests.py
 ```
 
-The first command runs **194 YKİ tests** covering application architecture,
+The runner reports the YKİ and pinned core suites as one result. It currently
+runs **331 tests**: **206 YKİ tests** covering application architecture,
 the pinned core boundary, dependency composition, vehicle/Orin sharing,
 Onboard mission/QR handling, remote logs, parameter defaults, command retries,
 concurrent planning, TEKNOFEST communication, battery estimation and policies,
 localization, GStreamer pipelines, map history, high-rate data coalescing,
 responsive autonomous/map controls, splitters, frameless resizing and offscreen
-Qt startup. The second command runs
-the core repository's **125 tests** for its dependency, event, mission and
-MAVLink internals. Keeping the suites separate avoids maintaining the same
-low-level tests in both repositories.
+Qt startup, plus **125 core tests** for dependency, event, mission and MAVLink
+internals. The suites remain independently owned even though the root runner
+presents one final status.
+
+For Linux runtime measurements, start YKİ through the performance monitor:
+
+```bash
+python monitor_performance.py --interval 1 --details-every 10
+python monitor_performance.py --csv performance.csv
+```
+
+Use PSS for the closest estimate of the application's real memory cost; RSS is
+also shown for comparison. The periodic breakdown separates the YKİ process
+from Qt WebEngine renderer and zygote processes, which is useful when profiling
+map interaction.
 
 Release history is maintained in the [changelog][changelog-url].
 

@@ -12,8 +12,10 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 from src.core.events import EventBus
 from src.models.competition import (
+    CompetitionClockSample,
     CompetitionConnectionState,
     CompetitionServerConfig,
+    CompetitionServerTime,
     CompetitorTelemetry,
     HssZone,
     KamikazeEvent,
@@ -21,10 +23,10 @@ from src.models.competition import (
     QrCoordinate,
 )
 from src.models.telemetry import TelemetrySnapshot
-from src.services.contracts.competition import CompetitionService
+from src.services.abstracts.competition import CompetitionService
 from src.services.planner import PlannerService
-from src.services.contracts.telemetry import TelemetryService
-from src.services.contracts.vehicle import VehicleService
+from src.services.abstracts.telemetry import TelemetryService
+from src.services.abstracts.vehicle import VehicleService
 from src.services.logging_service import ServiceLogger
 
 
@@ -32,11 +34,19 @@ class CompetitionProtocolError(RuntimeError):
     pass
 
 
+class CompetitionHttpError(CompetitionProtocolError):
+    def __init__(self, status_code: int, detail: str) -> None:
+        self.status_code = int(status_code)
+        self.detail = detail
+        super().__init__(f"HTTP {self.status_code}: {detail}")
+
+
 class TeknofestCompetitionService(CompetitionService):
     """Connect the 2026 TEKNOFEST HTTP protocol to central backend state."""
 
     HSS_REFRESH_PERIOD_S = 1.0
     QR_REFRESH_PERIOD_S = 5.0
+    MAX_JSON_RESPONSE_BYTES = 2 * 1024 * 1024
 
     def __init__(
         self,
@@ -81,6 +91,7 @@ class TeknofestCompetitionService(CompetitionService):
         self._hss_response_available = False
         self._last_connection_error_signature = ""
         self._last_connection_error_log_at = 0.0
+        self._clock_sample: CompetitionClockSample | None = None
 
     @property
     def state(self) -> CompetitionConnectionState:
@@ -179,6 +190,11 @@ class TeknofestCompetitionService(CompetitionService):
                 qr_available=False,
                 telemetry_tx_active=False,
                 last_error="",
+                session_health="offline",
+                telemetry_health="unknown",
+                clock_health="unknown",
+                qr_health="unknown",
+                hss_health="unknown",
             )
 
     def stop(self) -> None:
@@ -211,8 +227,9 @@ class TeknofestCompetitionService(CompetitionService):
                     {},
                     severity="debug",
                 )
+                clock_started = time.monotonic()
                 server_payload = self._request_json("GET", "/api/sunucusaati")
-                server_time = self._server_time(server_payload)
+                server_time = self._update_server_clock(server_payload, clock_started)
                 self._log_protocol(
                     "competition.server_time_rx",
                     "RX TEKNOFEST sunucu saati alındı",
@@ -227,6 +244,8 @@ class TeknofestCompetitionService(CompetitionService):
                     telemetry_tx_active=False,
                     last_error="",
                     last_success_at=datetime.now(UTC),
+                    session_health="authenticated",
+                    clock_health="healthy" if server_time is not None else "degraded",
                 )
                 if self._logger:
                     self._logger.event(
@@ -267,12 +286,13 @@ class TeknofestCompetitionService(CompetitionService):
                         if feed_ready and vehicle_time is not None:
                             outbound = self._telemetry_payload(snapshot, vehicle_time)
                             self._log_telemetry_tx(outbound)
+                            telemetry_started = time.monotonic()
                             response = self._request_json(
                                 "POST",
                                 "/api/telemetri_gonder",
                                 outbound,
                             )
-                            self._consume_telemetry_response(response)
+                            self._consume_telemetry_response(response, telemetry_started)
                             if not first_telemetry_sent:
                                 first_telemetry_sent = True
                                 self._refresh_reference_data_if_due(force=True)
@@ -299,8 +319,9 @@ class TeknofestCompetitionService(CompetitionService):
                                 {},
                                 severity="debug",
                             )
+                            clock_started = time.monotonic()
                             health = self._request_json("GET", "/api/sunucusaati")
-                            health_time = self._server_time(health)
+                            health_time = self._update_server_clock(health, clock_started)
                             self._telemetry.patch(
                                 server_link=True,
                                 server_time=health_time,
@@ -317,6 +338,10 @@ class TeknofestCompetitionService(CompetitionService):
                                 running=True,
                                 last_error="",
                                 last_success_at=datetime.now(UTC),
+                                session_health="authenticated",
+                                clock_health=(
+                                    "healthy" if health_time is not None else "degraded"
+                                ),
                             )
                         next_telemetry_at = started + period_s
                     self._refresh_reference_data_if_due()
@@ -340,10 +365,19 @@ class TeknofestCompetitionService(CompetitionService):
                     running=True,
                     telemetry_tx_active=False,
                     last_error=message,
+                    session_health="offline",
+                    telemetry_health="unavailable",
+                    clock_health="unavailable",
                 )
                 self._log_connection_failure(message)
                 self._opener = self._new_opener()
-                self._stop_event.wait(2.0)
+                retry_delay = (
+                    10.0
+                    if isinstance(exc, CompetitionHttpError)
+                    and exc.status_code in {400, 403, 404}
+                    else 2.0
+                )
+                self._stop_event.wait(retry_delay)
 
     def refresh_reference_data(self) -> None:
         if not self.state.connected:
@@ -423,7 +457,11 @@ class TeknofestCompetitionService(CompetitionService):
             severity="debug",
         )
 
-    def _consume_telemetry_response(self, payload: Any) -> None:
+    def _consume_telemetry_response(
+        self,
+        payload: Any,
+        request_started_monotonic: float | None = None,
+    ) -> None:
         if not isinstance(payload, dict):
             raise CompetitionProtocolError("Telemetri yanıtı JSON nesnesi değil")
         received_at = datetime.now(UTC)
@@ -450,7 +488,10 @@ class TeknofestCompetitionService(CompetitionService):
             (contact.to_map_contact() for contact in result),
             source="teknofest",
         )
-        server_time = self._server_time(payload.get("sunucusaati", {}))
+        server_time = self._update_server_clock(
+            payload.get("sunucusaati", {}),
+            request_started_monotonic,
+        )
         self._telemetry.patch(server_link=True, server_time=server_time)
         self._competitors_updated.publish(result)
         self._publish_state(
@@ -461,6 +502,9 @@ class TeknofestCompetitionService(CompetitionService):
             competitor_count=len(result),
             last_error="",
             last_success_at=received_at,
+            session_health="authenticated",
+            telemetry_health="healthy",
+            clock_health="healthy" if server_time is not None else "degraded",
         )
         self._log_protocol(
             "competition.telemetry_rx",
@@ -592,7 +636,7 @@ class TeknofestCompetitionService(CompetitionService):
             self._poll_hss_zones()
 
         if poll_qr:
-            self._fetch_qr_coordinate()
+            self._poll_qr_coordinate()
 
         with self._lock:
             hss_count = len(self._hss_zones)
@@ -632,10 +676,13 @@ class TeknofestCompetitionService(CompetitionService):
             zones.sort(key=lambda item: item.identifier)
             result = tuple(zones)
         except Exception as exc:
+            if isinstance(exc, CompetitionHttpError) and exc.status_code == 401:
+                raise
             with self._lock:
                 was_available = self._hss_response_available
                 self._hss_response_available = False
             self._replace_hss_zones(())
+            self._publish_state(hss_health="degraded")
             if was_available:
                 self._log_protocol(
                     "competition.hss_unavailable",
@@ -648,12 +695,41 @@ class TeknofestCompetitionService(CompetitionService):
         with self._lock:
             self._hss_response_available = True
         self._replace_hss_zones(result)
+        self._publish_state(hss_health="healthy")
         self._log_protocol(
             "competition.hss_rx",
             f"RX TEKNOFEST HSS koordinatları alındı ({len(result)})",
             {"hss_count": len(result)},
             severity="debug",
         )
+
+    def _poll_qr_coordinate(self) -> None:
+        """Refresh QR health without allowing one endpoint to drop the session."""
+
+        try:
+            self._fetch_qr_coordinate()
+        except CompetitionHttpError as exc:
+            if exc.status_code == 401:
+                raise
+            should_log = self.state.qr_health != "degraded"
+            self._publish_state(qr_health="degraded")
+            if should_log:
+                self._log_protocol(
+                    "competition.qr_unavailable",
+                    "TEKNOFEST QR koordinat endpoint'i geçici olarak kullanılamıyor",
+                    {"error": str(exc), "status_code": exc.status_code},
+                    severity="warning",
+                )
+        except Exception as exc:
+            should_log = self.state.qr_health != "degraded"
+            self._publish_state(qr_health="degraded")
+            if should_log:
+                self._log_protocol(
+                    "competition.qr_unavailable",
+                    "TEKNOFEST QR koordinat endpoint'i geçici olarak kullanılamıyor",
+                    {"error": str(exc), "error_type": type(exc).__name__},
+                    severity="warning",
+                )
 
     def _fetch_qr_coordinate(self) -> None:
         self._log_protocol(
@@ -670,6 +746,7 @@ class TeknofestCompetitionService(CompetitionService):
         except (KeyError, TypeError, ValueError) as exc:
             raise CompetitionProtocolError("QR koordinatı geçersiz") from exc
         self._replace_qr_coordinate(qr)
+        self._publish_state(qr_health="healthy")
         self._log_protocol(
             "competition.qr_rx",
             "RX TEKNOFEST QR koordinatı alındı",
@@ -734,11 +811,11 @@ class TeknofestCompetitionService(CompetitionService):
         try:
             with self._http_lock:
                 with self._opener.open(request, timeout=self.config.timeout_s) as response:
-                    raw = response.read()
+                    raw = self._read_limited(response)
         except HTTPError as exc:
-            raw = exc.read()
+            raw = self._read_limited(exc)
             detail = self._decode_error(raw)
-            raise CompetitionProtocolError(f"HTTP {exc.code}: {detail}") from exc
+            raise CompetitionHttpError(exc.code, detail) from exc
         except (URLError, TimeoutError, OSError) as exc:
             reason = getattr(exc, "reason", exc)
             raise ConnectionError(f"{self.config.base_url} erişilemiyor: {reason}") from exc
@@ -759,21 +836,48 @@ class TeknofestCompetitionService(CompetitionService):
             return str(payload.get("mesaj", payload.get("message", payload)))
         return str(payload)
 
-    @staticmethod
-    def _server_time(payload: Any) -> datetime | None:
-        if not isinstance(payload, dict):
-            return None
-        now = datetime.now(UTC)
+    def _read_limited(self, response: Any) -> bytes:
+        content_length = response.headers.get("Content-Length")
+        if content_length is not None:
+            try:
+                if int(content_length) > self.MAX_JSON_RESPONSE_BYTES:
+                    raise CompetitionProtocolError("Sunucu JSON yanıtı boyut sınırını aşıyor")
+            except ValueError:
+                pass
+        raw = response.read(self.MAX_JSON_RESPONSE_BYTES + 1)
+        if len(raw) > self.MAX_JSON_RESPONSE_BYTES:
+            raise CompetitionProtocolError("Sunucu JSON yanıtı boyut sınırını aşıyor")
+        return raw
+
+    def _update_server_clock(
+        self,
+        payload: Any,
+        request_started_monotonic: float | None = None,
+    ) -> datetime | None:
+        received_monotonic = time.monotonic()
         try:
-            return now.replace(
-                day=int(payload["gun"]),
-                hour=int(payload["saat"]),
-                minute=int(payload["dakika"]),
-                second=int(payload["saniye"]),
-                microsecond=int(payload.get("milisaniye", 0)) * 1000,
+            server_time = CompetitionServerTime.from_payload(payload)
+            resolved = server_time.resolve_near(datetime.now(UTC))
+            sample = CompetitionClockSample(
+                server_time=server_time,
+                received_monotonic=received_monotonic,
+                request_started_monotonic=(
+                    received_monotonic
+                    if request_started_monotonic is None
+                    else float(request_started_monotonic)
+                ),
+                resolved_at=resolved,
             )
         except (KeyError, TypeError, ValueError):
             return None
+        with self._lock:
+            self._clock_sample = sample
+        return sample.estimate(received_monotonic)
+
+    def estimated_server_time(self) -> datetime | None:
+        with self._lock:
+            sample = self._clock_sample
+        return None if sample is None else sample.estimate(time.monotonic())
 
     @staticmethod
     def _new_opener():

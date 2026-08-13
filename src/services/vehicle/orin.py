@@ -29,8 +29,8 @@ from src.models.orin import (
     OrinMessage,
 )
 from src.models.vehicle import VehicleConnectionState
-from src.services.contracts.orin import OrinMessageHandler, OrinService
-from src.services.contracts.vehicle import VehicleService
+from src.services.abstracts.orin import OrinMessageHandler, OrinService
+from src.services.abstracts.vehicle import VehicleService
 from src.services.logging_service import ServiceLogger
 
 
@@ -528,7 +528,7 @@ class MavlinkOrinService(OrinService):
         return {
             "role": "yki",
             "health": "ok",
-            "version": "1.4.1-beta",
+            "version": "1.4.2-beta",
             "vehicle_system_id": self._target_system(),
             "capabilities": [
                 "application.notify",

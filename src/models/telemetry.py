@@ -48,7 +48,7 @@ class TelemetrySnapshot(Model):
     battery_voltage: float
     link_quality: int
     link_quality_source: str
-    gps_satellites: int
+    gps_satellites: int | None
     gps_fix: str
     gps_hdop: float | None
     flight_mode: str
@@ -86,6 +86,7 @@ class TelemetrySnapshot(Model):
     attitude_received_at: datetime | None = None
     global_position_received_at: datetime | None = None
     hud_received_at: datetime | None = None
+    gps_received_at: datetime | None = None
     home_latitude: float | None = None
     home_longitude: float | None = None
     radio_local_rssi: int | None = None
@@ -197,6 +198,31 @@ class TelemetrySnapshot(Model):
         age_s = (current - received_at.astimezone(UTC)).total_seconds()
         return 0.0 <= age_s <= max_age_s
 
+    def has_fresh_gps(
+        self,
+        max_age_s: float,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        """Return whether a recent GPS receiver sample reports a usable fix."""
+
+        if max_age_s <= 0:
+            raise ValueError("GPS tazelik süresi pozitif olmalı")
+        received_at = self.gps_received_at
+        if (
+            not self.telemetry_link
+            or not self.autopilot_link
+            or received_at is None
+            or received_at.tzinfo is None
+            or self.gps_fix in {"NO GPS", "NO FIX"}
+            or self.gps_satellites is None
+            or self.gps_satellites <= 0
+        ):
+            return False
+        current = (now or datetime.now(UTC)).astimezone(UTC)
+        age_s = (current - received_at.astimezone(UTC)).total_seconds()
+        return 0.0 <= age_s <= max_age_s
+
     def copy(self, **changes: Any) -> "TelemetrySnapshot":
         changes.setdefault("warnings", list(self.warnings))
         return replace(self, **changes)
@@ -222,6 +248,8 @@ class TelemetrySnapshot(Model):
             )
         if self.hud_received_at is not None:
             payload["hud_received_at"] = self.hud_received_at.isoformat()
+        if self.gps_received_at is not None:
+            payload["gps_received_at"] = self.gps_received_at.isoformat()
         return payload
 
     @classmethod
@@ -243,7 +271,7 @@ class TelemetrySnapshot(Model):
             battery_voltage=0.0,
             link_quality=0,
             link_quality_source="",
-            gps_satellites=0,
+            gps_satellites=None,
             gps_fix="NO FIX",
             gps_hdop=None,
             flight_mode="DISCONNECTED",

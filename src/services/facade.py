@@ -9,13 +9,13 @@ from src.models.orin import OrinMessage
 from src.models.settings import SettingsModel
 from src.models.telemetry import TelemetrySnapshot
 from src.models.parameters import Parameter
-from src.services.contracts.commands import CommandService
-from src.services.contracts.competition import CompetitionService
+from src.services.abstracts.commands import CommandService
+from src.services.abstracts.competition import CompetitionService
 from src.services.planner import PlannerService
-from src.services.contracts.orin import OrinMessageHandler, OrinService
-from src.services.contracts.parameters import ParameterService
-from src.services.contracts.telemetry import TelemetryService
-from src.services.contracts.settings import SettingsRepository
+from src.services.abstracts.orin import OrinMessageHandler, OrinService
+from src.services.abstracts.parameters import ParameterService
+from src.services.abstracts.telemetry import TelemetryService
+from src.services.abstracts.settings import SettingsRepository
 
 
 class BackendFacade:

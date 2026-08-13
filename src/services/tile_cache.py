@@ -13,7 +13,7 @@ from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
 
 from src.core.events import EventBus
-from src.services.contracts.tile_cache import TileCacheService
+from src.services.abstracts.tile_cache import TileCacheService
 from src.services.storage import ensure_directory
 
 
@@ -119,6 +119,8 @@ class TileCacheServer(TileCacheService):
     missing tile once, write it atomically, then answer the browser.
     """
 
+    MAX_TILE_BYTES = 12 * 1024 * 1024
+
     def __init__(
         self,
         *,
@@ -136,6 +138,7 @@ class TileCacheServer(TileCacheService):
         self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
         self._index: dict[str, dict[str, Any]] = {}
+        self._total_bytes = 0
         self._inflight: dict[str, threading.Event] = {}
         self._fetch_gate = threading.BoundedSemaphore(6)
         self._last_persist_at = 0.0
@@ -219,6 +222,7 @@ class TileCacheServer(TileCacheService):
         with self._lock:
             shutil.rmtree(self._tiles_root, ignore_errors=True)
             self._index.clear()
+            self._total_bytes = 0
             self.index_path.unlink(missing_ok=True)
         self.cache_changed.publish(0)
 
@@ -342,7 +346,12 @@ class TileCacheServer(TileCacheService):
         if not self._looks_like_image(payload, tile.extension):
             path.unlink(missing_ok=True)
             with self._lock:
-                self._index.pop(tile.key, None)
+                removed = self._index.pop(tile.key, None)
+                if removed is not None:
+                    self._total_bytes = max(
+                        0,
+                        self._total_bytes - int(removed.get("size", 0)),
+                    )
             return None
         self._touch_index(tile, path, persist=False)
         return payload
@@ -363,7 +372,16 @@ class TileCacheServer(TileCacheService):
                 with self._fetch_gate:
                     with urlopen(request, timeout=7) as response:
                         status = getattr(response, "status", 200)
-                        payload = response.read()
+                        content_length = response.headers.get("Content-Length")
+                        if content_length is not None:
+                            try:
+                                if int(content_length) > self.MAX_TILE_BYTES:
+                                    return None, None
+                            except ValueError:
+                                pass
+                        payload = response.read(self.MAX_TILE_BYTES + 1)
+                        if len(payload) > self.MAX_TILE_BYTES:
+                            return None, None
                         if 200 <= status < 300 and self._looks_like_image(payload, tile.extension):
                             return payload, response.headers.get_content_type()
             except (HTTPError, URLError, TimeoutError, OSError):
@@ -403,6 +421,7 @@ class TileCacheServer(TileCacheService):
 
     def _load_from_disk_locked(self) -> None:
         self._index.clear()
+        self._total_bytes = 0
         tiles_root = self._tiles_root
         if tiles_root.exists():
             for path in tiles_root.rglob("*"):
@@ -440,6 +459,9 @@ class TileCacheServer(TileCacheService):
         except OSError:
             return
         with self._lock:
+            previous = self._index.get(tile.key)
+            if previous is not None:
+                self._total_bytes -= int(previous.get("size", 0))
             self._index[tile.key] = {
                 "key": tile.key,
                 "provider": tile.provider,
@@ -452,6 +474,7 @@ class TileCacheServer(TileCacheService):
                 "size": stat.st_size,
                 "updated_at": int(time.time()),
             }
+            self._total_bytes += stat.st_size
             if persist:
                 self._persist_index_locked()
 
@@ -472,7 +495,7 @@ class TileCacheServer(TileCacheService):
 
     def _prune_if_needed_locked(self) -> None:
         limit_bytes = max(32, int(self._limit_mb)) * 1024 * 1024
-        total = sum(int(entry.get("size", 0)) for entry in self._index.values())
+        total = self._total_bytes
         if total <= limit_bytes:
             return
         target = int(limit_bytes * 0.9)
@@ -484,6 +507,7 @@ class TileCacheServer(TileCacheService):
             total -= size
             if total <= target:
                 break
+        self._total_bytes = max(0, total)
 
     @staticmethod
     def _looks_like_image(payload: bytes | None, extension: str) -> bool:

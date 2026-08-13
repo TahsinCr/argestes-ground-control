@@ -9,7 +9,7 @@ from typing import Any
 
 from src.core.events import EventBus
 from src.models.video import VideoFrame, VideoStreamStats
-from src.services.contracts.video import VideoService
+from src.services.abstracts.video import VideoService
 from src.services.logging_service import ServiceLogger
 
 
@@ -141,7 +141,7 @@ class GStreamerVideoService(MutableVideoService):
         self._frame_count = 0
         self._last_frame_at = 0.0
         self._last_stats_at = 0.0
-        self._peak_fps = 0.0
+        self._target_fps: float | None = None
         self._frame_times: deque[float] = deque()
         self._transport_samples: deque[tuple[float, int]] = deque()
         self._measurement_lock = threading.RLock()
@@ -216,7 +216,7 @@ class GStreamerVideoService(MutableVideoService):
         self._last_frame_at = 0.0
         self._frame_count = 0
         self._last_stats_at = 0.0
-        self._peak_fps = 0.0
+        self._target_fps = None
         with self._measurement_lock:
             self._frame_times.clear()
             self._transport_samples.clear()
@@ -271,6 +271,18 @@ class GStreamerVideoService(MutableVideoService):
             structure = caps.get_structure(0)
             width = int(structure.get_value("width"))
             height = int(structure.get_value("height"))
+            try:
+                fraction = tuple(structure.get_fraction("framerate"))
+                if len(fraction) == 3:
+                    success, numerator, denominator = fraction
+                    if not success:
+                        raise ValueError("framerate is unavailable")
+                else:
+                    numerator, denominator = fraction
+                if int(numerator) > 0 and int(denominator) > 0:
+                    self._target_fps = float(numerator) / float(denominator)
+            except (AttributeError, TypeError, ValueError):
+                pass
             buffer = sample.get_buffer()
             success, info = buffer.map(Gst.MapFlags.READ)
             if not success:
@@ -333,19 +345,17 @@ class GStreamerVideoService(MutableVideoService):
                 self._frame_times.popleft()
             while self._transport_samples and self._transport_samples[0][0] < cutoff:
                 self._transport_samples.popleft()
+            if now - self._last_stats_at < 0.45 and self._frame_count > 1:
+                return
+            self._last_stats_at = now
             frame_times = tuple(self._frame_times)
             transport_samples = tuple(self._transport_samples)
-
-        if now - self._last_stats_at < 0.45 and self._frame_count > 1:
-            return
-        self._last_stats_at = now
         fps = 0.0
         if len(frame_times) >= 2:
             span = frame_times[-1] - frame_times[0]
             if span > 0.0:
                 fps = (len(frame_times) - 1) / span
-        self._peak_fps = max(self._peak_fps, fps)
-        target_fps = max(self._peak_fps, 1.0)
+        target_fps = max(self._target_fps or fps, 1.0)
         delivery_score = min(1.0, fps / target_fps) if fps > 0.0 else 1.0
         jitter_score = 1.0
         if len(frame_times) >= 4:

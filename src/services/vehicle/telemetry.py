@@ -12,9 +12,9 @@ from src.models.geometry import Point
 from src.models.settings import BatteryTelemetrySettings
 from src.models.telemetry import TelemetrySnapshot
 from src.models.vehicle import VehicleConnectionState, VehicleTransportStats
-from src.services.contracts.telemetry import TelemetryService
-from src.services.contracts.settings import SettingsRepository
-from src.services.contracts.vehicle import VehicleService
+from src.services.abstracts.telemetry import TelemetryService
+from src.services.abstracts.settings import SettingsRepository
+from src.services.abstracts.vehicle import VehicleService
 from src.services.logging_service import ServiceLogger
 from src.services.vehicle.battery import VoltageBatteryEstimator
 
@@ -138,6 +138,7 @@ class TelemetryDecoder:
             )
             vx = float(getattr(message, "vx", 0.0)) / 100.0
             vy = float(getattr(message, "vy", 0.0)) / 100.0
+            raw_heading = int(getattr(message, "hdg", 65_535))
             updates.update(
                 latitude=latitude,
                 longitude=longitude,
@@ -146,10 +147,11 @@ class TelemetryDecoder:
                 altitude_agl=float(message.relative_alt) / 1000.0,
                 ground_speed=math.hypot(vx, vy),
                 climb_rate=-float(getattr(message, "vz", 0.0)) / 100.0,
-                heading=float(getattr(message, "hdg", 0.0)) / 100.0,
                 position_received_at=received_at,
                 global_position_received_at=received_at,
             )
+            if 0 <= raw_heading < 36_000:
+                updates["heading"] = raw_heading / 100.0
             home_metrics = self._home_metrics(
                 latitude,
                 longitude,
@@ -172,15 +174,17 @@ class TelemetryDecoder:
                 attitude_received_at=received_at,
             )
         elif message_type == "VFR_HUD":
+            hud_heading = self._finite_float(getattr(message, "heading", None))
             updates.update(
                 air_speed=float(message.airspeed),
                 ground_speed=float(message.groundspeed),
-                heading=float(message.heading) % 360.0,
                 throttle_percent=float(message.throttle),
                 altitude_msl=float(message.alt),
                 climb_rate=float(message.climb),
                 hud_received_at=received_at,
             )
+            if hud_heading is not None and 0.0 <= hud_heading < 360.0:
+                updates["heading"] = hud_heading
         elif message_type == "SYS_STATUS":
             remaining = int(getattr(message, "battery_remaining", -1))
             voltage_mv = int(getattr(message, "voltage_battery", 0))
@@ -226,10 +230,14 @@ class TelemetryDecoder:
         elif message_type == "GPS_RAW_INT":
             fix_type = int(getattr(message, "fix_type", 0))
             gps_time = self._unix_time(getattr(message, "time_usec", 0))
+            satellites_raw = int(getattr(message, "satellites_visible", 255))
             updates.update(
                 gps_fix=self.FIX_TYPES.get(fix_type, f"FIX {fix_type}"),
-                gps_satellites=int(getattr(message, "satellites_visible", 0)),
+                gps_satellites=(
+                    satellites_raw if 0 <= satellites_raw < 255 else None
+                ),
                 gps_hdop=self._scaled_gps_accuracy(getattr(message, "eph", None)),
+                gps_received_at=received_at,
             )
             if gps_time is not None:
                 updates["uav_time"] = gps_time
@@ -626,6 +634,10 @@ class VehicleTelemetryService(MutableTelemetryService):
                     attitude_received_at=None,
                     global_position_received_at=None,
                     hud_received_at=None,
+                    gps_received_at=None,
+                    gps_satellites=None,
+                    gps_fix="NO FIX",
+                    gps_hdop=None,
                     link_quality=0,
                     link_quality_source="",
                     link_quality_received_at=None,
@@ -748,6 +760,7 @@ class MockTelemetryService(MutableTelemetryService):
             gps_satellites=18 + int((math.sin(phase * 0.34) + 1.0) * 2),
             gps_fix="RTK" if int(phase) % 11 else "3D FIX",
             gps_hdop=0.7 + abs(math.sin(phase * 0.2)) * 0.25,
+            gps_received_at=vehicle_now,
             flight_mode=["AUTO", "GUIDED", "LOITER", "AUTO"][int(phase // 12) % 4],
             mission_index=4 + int(phase // 10) % 3,
             mission_total=9,

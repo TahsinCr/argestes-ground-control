@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import math
 from typing import Any
 
@@ -58,12 +58,93 @@ class CompetitionConnectionState(Model):
     telemetry_tx_active: bool = False
     last_error: str = ""
     last_success_at: datetime | None = None
+    session_health: str = "offline"
+    telemetry_health: str = "unknown"
+    clock_health: str = "unknown"
+    qr_health: str = "unknown"
+    hss_health: str = "unknown"
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         if self.last_success_at is not None:
             payload["last_success_at"] = self.last_success_at.isoformat()
         return payload
+
+
+@dataclass(frozen=True, slots=True)
+class CompetitionServerTime(Model):
+    """Date fragment returned by the competition protocol."""
+
+    day: int
+    hour: int
+    minute: int
+    second: int
+    millisecond: int = 0
+
+    def __post_init__(self) -> None:
+        if not 1 <= int(self.day) <= 31:
+            raise ValueError("Sunucu günü 1..31 aralığında olmalı")
+        if not 0 <= int(self.hour) <= 23:
+            raise ValueError("Sunucu saati 0..23 aralığında olmalı")
+        if not 0 <= int(self.minute) <= 59 or not 0 <= int(self.second) <= 59:
+            raise ValueError("Sunucu dakika/saniye değeri geçersiz")
+        if not 0 <= int(self.millisecond) <= 999:
+            raise ValueError("Sunucu milisaniyesi 0..999 aralığında olmalı")
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "CompetitionServerTime":
+        if not isinstance(payload, dict):
+            raise ValueError("Sunucu saati JSON nesnesi olmalı")
+        return cls(
+            day=int(payload["gun"]),
+            hour=int(payload["saat"]),
+            minute=int(payload["dakika"]),
+            second=int(payload["saniye"]),
+            millisecond=int(payload.get("milisaniye", 0)),
+        )
+
+    def resolve_near(self, reference: datetime) -> datetime:
+        """Resolve the day-only protocol value to the closest calendar month."""
+
+        reference = reference.astimezone(UTC)
+        candidates: list[datetime] = []
+        for month_delta in (-1, 0, 1):
+            month_index = reference.year * 12 + reference.month - 1 + month_delta
+            year, zero_based_month = divmod(month_index, 12)
+            try:
+                candidates.append(
+                    datetime(
+                        year,
+                        zero_based_month + 1,
+                        self.day,
+                        self.hour,
+                        self.minute,
+                        self.second,
+                        self.millisecond * 1000,
+                        tzinfo=UTC,
+                    )
+                )
+            except ValueError:
+                continue
+        if not candidates:
+            raise ValueError("Sunucu günü yakın takvim aylarında geçerli değil")
+        return min(candidates, key=lambda value: abs((value - reference).total_seconds()))
+
+
+@dataclass(frozen=True, slots=True)
+class CompetitionClockSample(Model):
+    server_time: CompetitionServerTime
+    received_monotonic: float
+    request_started_monotonic: float
+    resolved_at: datetime
+
+    @property
+    def rtt_s(self) -> float:
+        return max(0.0, self.received_monotonic - self.request_started_monotonic)
+
+    def estimate(self, monotonic_now: float) -> datetime:
+        elapsed = max(0.0, float(monotonic_now) - self.received_monotonic)
+        return self.resolved_at + timedelta(seconds=elapsed)
 
 
 def _competition_time(value: datetime) -> dict[str, int]:

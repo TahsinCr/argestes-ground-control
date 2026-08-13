@@ -10,8 +10,8 @@ from typing import Any
 from src.core.events import EventBus, Subscription
 from src.models.parameters import Parameter
 from src.models.vehicle import VehicleConnectionState
-from src.services.contracts.parameters import ParameterService
-from src.services.contracts.vehicle import VehicleService
+from src.services.abstracts.parameters import ParameterService
+from src.services.abstracts.vehicle import VehicleService
 from src.services.logging_service import ServiceLogger
 
 

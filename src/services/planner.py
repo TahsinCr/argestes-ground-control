@@ -8,7 +8,7 @@ from typing import Any
 from src.core.abstracts import Service
 from src.core.events import EventBus, Subscription
 from src.models.mission import MapContact, MapOverlay, MissionState
-from src.services.contracts.vehicle import MissionTransferInterrupted, VehicleService
+from src.services.abstracts.vehicle import MissionTransferInterrupted, VehicleService
 from src.services.logging_service import ServiceLogger
 
 

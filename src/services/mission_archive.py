@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src.models.mission import MapOverlay, MissionState
-from src.services.contracts.archive import MissionArchiveRepository
+from src.services.abstracts.archive import MissionArchiveRepository
 from src.services.storage import ensure_directory, load_json_file, save_json_file
 
 
@@ -29,11 +29,14 @@ class MissionArchiveService(MissionArchiveRepository):
             path = self._directory / path
         if path.suffix.lower() != ".json":
             path = path.with_suffix(".json")
-        return path
+        resolved_root = self._directory.resolve()
+        resolved_path = path.resolve()
+        if not resolved_path.is_relative_to(resolved_root):
+            raise ValueError("Görev arşivi yolu missions dizininin dışına çıkamaz")
+        return resolved_path
 
     def save_plan(self, target: str | Path, state: MissionState) -> Path:
         path = self._resolve_path(target)
-        path.parent.mkdir(parents=True, exist_ok=True)
         overlays = [overlay for overlay in state.overlays if overlay.is_archivable]
         archived_ids = {overlay.overlay_id for overlay in overlays}
         payload = {

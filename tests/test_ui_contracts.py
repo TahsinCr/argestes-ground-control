@@ -53,6 +53,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class UiContractTests(unittest.TestCase):
+    def test_map_escapes_backend_labels_before_inserting_html(self) -> None:
+        source = (ROOT / "src/ui/web/map.html").read_text(encoding="utf-8")
+        self.assertIn("function escapeHtml(value)", source)
+        self.assertIn("escapeHtml(layer.overlayData.label)", source)
+        self.assertIn("escapeHtml(data.label || data.contact_id || 'Temas')", source)
+
+    def test_map_hot_paths_are_bounded_and_incremental(self) -> None:
+        source = (ROOT / "src/ui/web/map.html").read_text(encoding="utf-8")
+        self.assertIn("const CURSOR_UPDATE_INTERVAL_MS = 50", source)
+        self.assertIn("state.cursorTimer = window.setTimeout", source)
+        self.assertIn("entry.trail.addLatLng", source)
+        self.assertIn("updateContactTrail(entry, trailPoints)", source)
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication(["yki-ui-tests"])

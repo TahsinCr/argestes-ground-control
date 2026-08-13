@@ -7,7 +7,7 @@ from pathlib import Path
 
 from src.models.mission import MapContact, MapOverlay, MissionState
 from src.models.vehicle import VehicleConnectionState
-from src.services.contracts.vehicle import MissionTransferInterrupted
+from src.services.abstracts.vehicle import MissionTransferInterrupted
 from src.services.mission_archive import MissionArchiveService
 from src.services.planner import PlannerService
 
@@ -79,6 +79,21 @@ class MissionTests(unittest.TestCase):
             self.assertEqual(restored.overlays[0].overlay_type, "land")
             self.assertEqual(restored.contacts, [])
             self.assertTrue(restored.mission_loop)
+
+    def test_archive_rejects_paths_outside_the_mission_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = MissionArchiveService(root)
+            outside = root / "data" / "settings.json"
+
+            with self.assertRaises(ValueError):
+                archive.save_plan("../settings", MissionState())
+            with self.assertRaises(ValueError):
+                archive.load_plan(outside)
+            with self.assertRaises(ValueError):
+                archive.delete_plan("../../outside")
+
+            self.assertFalse(outside.exists())
 
     def test_mission_loop_is_central_planner_state(self) -> None:
         revisions: list[int] = []

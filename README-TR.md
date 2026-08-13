@@ -573,19 +573,31 @@ testlerde hata üretir.
 ## Test
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python -B -m unittest discover -s tests -v
-PYTHONDONTWRITEBYTECODE=1 python -B src/core/tests/run.py
+python run_tests.py
 ```
 
-İlk komut; uygulama mimarisi, sabitlenmiş core sınırı, DI bileşimi, ortak
+Bu komut YKİ ve sabitlenmiş core testlerini tek sonuç altında çalıştırır.
+Toplam **331 testin** **206 tanesi** uygulama mimarisi, sabitlenmiş core sınırı, DI bileşimi, ortak
 araç/Orin istemcisi, Onboard görev/QR akışı, uzak loglar, parametre
 varsayılanları, komut tekrarları, eşzamanlı planlama, TEKNOFEST haberleşmesi,
 batarya voltaj tahmini ve politikaları, dil paketleri, GStreamer, harita geçmişi,
 yüksek hızlı veri birleştirme, ayırıcılar, çerçevesiz pencere ve offscreen Qt
-açılışı için **194 YKİ testi** çalıştırır. İkinci komut core'un
-dependency, event, mission ve MAVLink iç yapılarına ait **125 testi**
-çalıştırır. Paketleri ayrı tutmak aynı alt seviye testlerin iki repoda
-birden bakımını önler.
+açılışı gibi YKİ davranışlarını kapsar. Kalan **125 test**, core'un dependency,
+event, mission ve MAVLink iç yapılarını doğrular. Paketlerin test sahipliği ayrı
+kalır; kök çalıştırıcı yalnızca tek bir nihai durum sunar.
+
+Linux üzerinde çalışma zamanı ölçümü için YKİ'yi performans izleyicisiyle
+başlatabilirsiniz:
+
+```bash
+python monitor_performance.py --interval 1 --details-every 10
+python monitor_performance.py --csv performance.csv
+```
+
+Uygulamanın gerçek bellek maliyetine en yakın değer olarak PSS'yi kullanın;
+karşılaştırma için RSS de gösterilir. Periyodik döküm, YKİ sürecini Qt WebEngine
+renderer ve zygote süreçlerinden ayırdığı için özellikle harita etkileşimlerini
+incelerken kullanışlıdır.
 
 Sürüm geçmişi [değişiklik günlüğünde][changelog-url] tutulur.
 

@@ -21,7 +21,7 @@ from src.models.vehicle import (
     VehicleConnectionState,
     VehicleTransportStats,
 )
-from src.services.contracts.vehicle import MissionTransferInterrupted, VehicleService
+from src.services.abstracts.vehicle import MissionTransferInterrupted, VehicleService
 from src.services.logging_service import ServiceLogger
 
 

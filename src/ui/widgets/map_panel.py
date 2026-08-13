@@ -344,8 +344,8 @@ class MapPanel(PanelFrame):
             "armed": snapshot.armed,
             "gpsReady": bool(
                 snapshot.autopilot_link
-                and snapshot.gps_satellites > 0
-                and snapshot.gps_fix not in {"NO GPS", "NO FIX"}
+                and snapshot.has_valid_position
+                and snapshot.has_fresh_gps(3.0)
             ),
             "gpsFix": snapshot.gps_fix,
             "gpsSatellites": snapshot.gps_satellites,

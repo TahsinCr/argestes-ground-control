@@ -1,6 +1,63 @@
 # **Change Log**
 All notable changes to this project will be documented in this file.
 
+## **[1.4.2-beta] - 13.08.2026**
+The **"Runtime and Map Performance Patch"** release. This update focuses on
+keeping the operator interface responsive under live telemetry and map load,
+while tightening the validity and persistence rules around backend data.
+
+### Added
+* **Runtime diagnostics**:
+    * Added a single Python test entry point that runs the YKİ and pinned core
+      suites as one result.
+    * Added a Linux performance monitor with aggregate CPU, PSS and RSS
+      reporting, per-process WebEngine breakdowns and optional CSV output.
+    * Made the monitor tolerate application and renderer processes exiting in
+      the middle of a `/proc` sample.
+
+### Updated
+* **Service boundaries**:
+    * Consolidated service interfaces under `services/abstracts` and updated
+      dependency composition without introducing another service layer.
+* **Map and video hot paths**:
+    * Bounded cursor updates and changed contact trails to append incrementally
+      when possible instead of rebuilding the full polyline on every sample.
+    * Reduced temporary video-stat allocations and retained negotiated frame
+      rate information without accumulating historical peaks.
+    * Moved tile-cache cleanup away from the UI thread, bounded tile reads and
+      replaced repeated directory-size scans with incremental accounting.
+* **Compact operator layout**:
+    * Reduced the left sidebar footprint and let Autonomous Control use the
+      available vertical space below Flight Telemetry.
+
+### Fixed
+* **Telemetry validity**:
+    * GPS state now expires using source freshness, treats MAVLink sentinel
+      values as unavailable and no longer presents stale coordinates as a
+      healthy fix after disconnect.
+* **TEKNOFEST client resilience**:
+    * Separated session, telemetry, clock, QR and HSS endpoint health so one
+      reference-data failure does not incorrectly drop an authenticated
+      session.
+    * Added bounded HTTP responses and a monotonic estimate of competition
+      server time.
+* **Persistence safety**:
+    * Made settings updates atomic across concurrent read-modify-write calls
+      and used same-directory temporary files with `fsync` before replacement.
+    * Prevented mission archive paths from escaping the configured archive
+      directory.
+* **Web map safety**:
+    * Escaped backend-provided map labels before inserting them into HTML.
+
+### Testing
+* The combined runner passes **331 tests**: **206 YKİ tests** and **125 Vehicle
+  Autonomy Core v1.2 tests**.
+* Coverage now includes process-exit sampling races, GPS freshness and MAVLink
+  sentinels, TEKNOFEST endpoint isolation and clock handling, concurrent
+  settings writes, archive confinement and bounded map hot paths.
+
+<br>
+
 ## **[1.4.1-beta] - 13.08.2026**
 The **"Core Reliability Patch"** release. This patch updates the shared
 Vehicle Autonomy Core dependency without changing the operator workflow or the

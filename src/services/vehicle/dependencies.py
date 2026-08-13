@@ -4,10 +4,10 @@ from dataclasses import dataclass
 
 from src.core.dependency import BaseDependencyContainer
 from src.core.mavlink import MavlinkClient, MavlinkEndpoint
-from src.services.contracts.orin import OrinService
-from src.services.contracts.parameters import ParameterService
-from src.services.contracts.telemetry import TelemetryService
-from src.services.contracts.vehicle import VehicleService
+from src.services.abstracts.orin import OrinService
+from src.services.abstracts.parameters import ParameterService
+from src.services.abstracts.telemetry import TelemetryService
+from src.services.abstracts.vehicle import VehicleService
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
 from src.services.vehicle import (

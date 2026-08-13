@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +14,27 @@ from src.ui.config.settings_schema import iter_fields
 
 
 class SettingsTests(unittest.TestCase):
+    def test_concurrent_path_updates_are_one_read_modify_write_transaction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service = SettingsService(Path(directory))
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = (
+                    executor.submit(service.set_value, "ui.theme", "light"),
+                    executor.submit(
+                        service.set_value,
+                        "backend.mavlink.auto_connect",
+                        True,
+                    ),
+                )
+                for future in futures:
+                    future.result()
+
+            restored = SettingsService(Path(directory)).current
+            self.assertEqual(restored.ui.theme, "light")
+            self.assertTrue(restored.backend.mavlink.auto_connect)
+            self.assertFalse(list((Path(directory) / "data").glob("*.tmp")))
+
     def test_legacy_settings_are_split_between_backend_and_ui(self) -> None:
         model = SettingsModel.from_dict(
             {

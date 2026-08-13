@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from src.core.events import EventBus
 from src.models.settings import SettingsModel
-from src.services.contracts.settings import SettingsRepository
+from src.services.abstracts.settings import SettingsRepository
 from src.services.logging_service import ServiceLogger
 from src.services.storage import clear_directory_contents, ensure_directory, load_json_file, save_json_file
 
@@ -92,31 +93,72 @@ class SettingsService(SettingsRepository):
     def save(self, settings: SettingsModel, *, notify: bool = True) -> None:
         snapshot = SettingsModel.from_dict(settings.to_dict())
         self._prepare_runtime_paths(snapshot)
-        previous = self.current if hasattr(self, "_settings") else None
-        if previous is not None and previous.to_dict() == snapshot.to_dict():
-            return
-        save_json_file(self._settings_path, snapshot.to_dict())
         with self._lock:
-            self._settings = snapshot
-        if notify:
-            self._changed.publish(self.current)
-            changed_paths = self._changed_paths(
-                previous.to_dict() if previous is not None else {},
-                snapshot.to_dict(),
-            )
-            if changed_paths and self._logger:
-                self._logger.event(
-                    "settings.saved",
-                    f"{len(changed_paths)} ayar kalıcı olarak güncellendi",
-                    severity="success",
-                    details={"changed_paths": changed_paths},
-                )
+            committed = self._commit_locked(snapshot)
+        self._notify_commit(committed, notify=notify)
 
     def set_value(self, path: str, value: object) -> None:
-        self.save(self.current.with_value(path, value))
+        self.update(lambda settings: settings.with_value(path, value))
 
     def patch(self, **changes: object) -> None:
-        self.save(self.current.patch(**changes))
+        self.update(lambda settings: settings.patch(**changes))
+
+    def update(
+        self,
+        mutator: Callable[[SettingsModel], SettingsModel],
+        *,
+        notify: bool = True,
+    ) -> SettingsModel:
+        """Apply a read-modify-write operation as one settings transaction."""
+
+        with self._lock:
+            current = SettingsModel.from_dict(self._settings.to_dict())
+            updated = mutator(current)
+            if not isinstance(updated, SettingsModel):
+                raise TypeError("Ayar güncelleme işlevi SettingsModel döndürmeli")
+            snapshot = SettingsModel.from_dict(updated.to_dict())
+            self._prepare_runtime_paths(snapshot)
+            committed = self._commit_locked(snapshot)
+            result = SettingsModel.from_dict(self._settings.to_dict())
+        self._notify_commit(committed, notify=notify)
+        return result
+
+    def _commit_locked(
+        self,
+        snapshot: SettingsModel,
+    ) -> tuple[SettingsModel | None, SettingsModel] | None:
+        previous = (
+            SettingsModel.from_dict(self._settings.to_dict())
+            if hasattr(self, "_settings")
+            else None
+        )
+        if previous is not None and previous.to_dict() == snapshot.to_dict():
+            return None
+        save_json_file(self._settings_path, snapshot.to_dict())
+        self._settings = snapshot
+        return previous, SettingsModel.from_dict(snapshot.to_dict())
+
+    def _notify_commit(
+        self,
+        committed: tuple[SettingsModel | None, SettingsModel] | None,
+        *,
+        notify: bool,
+    ) -> None:
+        if committed is None or not notify:
+            return
+        previous, published = committed
+        self._changed.publish(published)
+        changed_paths = self._changed_paths(
+            previous.to_dict() if previous is not None else {},
+            published.to_dict(),
+        )
+        if changed_paths and self._logger:
+            self._logger.event(
+                "settings.saved",
+                f"{len(changed_paths)} ayar kalıcı olarak güncellendi",
+                severity="success",
+                details={"changed_paths": changed_paths},
+            )
 
     def clear_cache(self) -> None:
         cache_path = Path(self.current.backend.cache.path)

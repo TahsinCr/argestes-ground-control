@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.core.dependency import BaseDependencyContainer, DependencyContainer
-from src.services.contracts.logging import LogService
-from src.services.contracts.settings import SettingsRepository
+from src.services.abstracts.logging import LogService
+from src.services.abstracts.settings import SettingsRepository
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
 from src.services.vehicle import configured_orin_commands

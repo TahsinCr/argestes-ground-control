@@ -10,7 +10,7 @@ from typing import Any
 
 from src.core.events import EventBus
 from src.models.logs import LogEntry
-from src.services.contracts.logging import LogService
+from src.services.abstracts.logging import LogService
 
 
 class ServiceLogger:

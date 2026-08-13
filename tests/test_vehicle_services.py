@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import tempfile
 import threading
 import time
@@ -24,7 +24,7 @@ from src.services.vehicle.parameters import VehicleParameterService
 from src.services.vehicle.parameter_defaults import decode_parameter_defaults
 from src.services.vehicle.battery import VoltageBatteryEstimator
 from src.services.vehicle.telemetry import TelemetryDecoder, VehicleTelemetryService
-from src.services.contracts.vehicle import MissionTransferInterrupted
+from src.services.abstracts.vehicle import MissionTransferInterrupted
 from src.services.vehicle.mavlink import MavlinkVehicleService
 from src.services.video import GStreamerVideoService
 from src.ui.i18n import localized_log_message
@@ -450,6 +450,54 @@ class VehicleServiceTests(unittest.TestCase):
             ),
         )
         self.assertIsNone(snapshot.gps_hdop)
+
+    def test_gps_freshness_uses_its_own_message_timestamp_and_sentinels(self) -> None:
+        decoder = TelemetryDecoder()
+        snapshot = decoder.apply(
+            TelemetrySnapshot.zero(),
+            _Message(
+                message_type="GPS_RAW_INT",
+                fix_type=3,
+                satellites_visible=14,
+                eph=90,
+                time_usec=0,
+            ),
+        )
+        snapshot = decoder.apply(
+            snapshot,
+            _Message(
+                message_type="GLOBAL_POSITION_INT",
+                lat=399000000,
+                lon=328000000,
+                alt=100_000,
+                relative_alt=50_000,
+                vx=0,
+                vy=0,
+                vz=0,
+                hdg=65_535,
+            ),
+        )
+        self.assertTrue(snapshot.has_fresh_gps(2.0))
+        self.assertEqual(snapshot.heading, 0.0)
+
+        stale = snapshot.copy(
+            gps_received_at=datetime.now(UTC) - timedelta(seconds=5),
+            position_received_at=datetime.now(UTC),
+        )
+        self.assertFalse(stale.has_fresh_gps(2.0))
+
+        unknown = decoder.apply(
+            stale,
+            _Message(
+                message_type="GPS_RAW_INT",
+                fix_type=1,
+                satellites_visible=255,
+                eph=65_535,
+                time_usec=0,
+            ),
+        )
+        self.assertIsNone(unknown.gps_satellites)
+        self.assertFalse(unknown.has_fresh_gps(2.0))
 
     def test_arm_command_waits_for_heartbeat_state_confirmation(self) -> None:
         mavlink = SimpleNamespace(

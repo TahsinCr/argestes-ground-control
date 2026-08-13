@@ -10,15 +10,15 @@ from src.core.dependency import DependencyContainer
 from src.core.events import Subscription
 from src.models.logs import LogEntry
 from src.models.orin import OrinLogRecord
-from src.services.contracts.commands import CommandService
-from src.services.contracts.competition import CompetitionService
-from src.services.contracts.connections import ConnectionControlService
-from src.services.contracts.orin import OrinService
-from src.services.contracts.onboard import OnboardMissionServiceContract
-from src.services.contracts.parameters import ParameterService
-from src.services.contracts.telemetry import TelemetryService
-from src.services.contracts.vehicle import VehicleService
-from src.services.contracts.video import VideoService
+from src.services.abstracts.commands import CommandService
+from src.services.abstracts.competition import CompetitionService
+from src.services.abstracts.connections import ConnectionControlService
+from src.services.abstracts.orin import OrinService
+from src.services.abstracts.onboard import OnboardMissionServiceContract
+from src.services.abstracts.parameters import ParameterService
+from src.services.abstracts.telemetry import TelemetryService
+from src.services.abstracts.vehicle import VehicleService
+from src.services.abstracts.video import VideoService
 from src.services.facade import BackendFacade
 from src.services.logging_service import LoggingService, ServiceLogHandler
 from src.services.mission_archive import MissionArchiveService

@@ -15,9 +15,9 @@ from src.models.onboard import (
     OnboardMissionState,
 )
 from src.models.orin import OrinCommandReceipt, OrinConnectionState, OrinMessage
-from src.services.contracts.competition import CompetitionService
-from src.services.contracts.onboard import OnboardMissionServiceContract
-from src.services.contracts.orin import OrinService
+from src.services.abstracts.competition import CompetitionService
+from src.services.abstracts.onboard import OnboardMissionServiceContract
+from src.services.abstracts.orin import OrinService
 from src.services.logging_service import ServiceLogger
 
 

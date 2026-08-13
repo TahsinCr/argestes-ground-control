@@ -5,12 +5,12 @@ from pathlib import Path
 
 from src.core.dependency import BaseDependencyContainer
 from src.services.battery_alarm import BatteryAlarmService
-from src.services.contracts.commands import CommandService
-from src.services.contracts.connections import ConnectionControlService
-from src.services.contracts.parameters import ParameterService
-from src.services.contracts.telemetry import TelemetryService
-from src.services.contracts.video import VideoService
-from src.services.contracts.onboard import OnboardMissionServiceContract
+from src.services.abstracts.commands import CommandService
+from src.services.abstracts.connections import ConnectionControlService
+from src.services.abstracts.parameters import ParameterService
+from src.services.abstracts.telemetry import TelemetryService
+from src.services.abstracts.video import VideoService
+from src.services.abstracts.onboard import OnboardMissionServiceContract
 from src.services.logging_service import LoggingService
 from src.services.mission_archive import MissionArchiveService
 from src.services.planner import PlannerService

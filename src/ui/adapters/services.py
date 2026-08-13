@@ -18,13 +18,13 @@ from src.models.mission import MapContact, MapOverlay, MissionState
 from src.models.settings import SettingsModel
 from src.models.telemetry import TelemetrySnapshot
 from src.models.video import VideoFrame
-from src.services.contracts.commands import CommandService
-from src.services.contracts.connections import ConnectionControlService
+from src.services.abstracts.commands import CommandService
+from src.services.abstracts.connections import ConnectionControlService
 from src.services.planner import PlannerService
-from src.services.contracts.parameters import ParameterService
-from src.services.contracts.telemetry import TelemetryService
-from src.services.contracts.video import VideoService
-from src.services.contracts.onboard import OnboardMissionServiceContract
+from src.services.abstracts.parameters import ParameterService
+from src.services.abstracts.telemetry import TelemetryService
+from src.services.abstracts.video import VideoService
+from src.services.abstracts.onboard import OnboardMissionServiceContract
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
@@ -244,7 +244,8 @@ class QtSettingsService(_QtAdapter):
     def save(self, settings: SettingsModel) -> None: self.backend.save(settings)
     def patch(self, **changes: object) -> None: self.backend.patch(**changes)
     def set_value(self, path: str, value: object) -> None: self.backend.set_value(path, value)
-    def clear_cache(self) -> None: self.backend.clear_cache()
+    def clear_cache(self) -> None:
+        self._start_worker(self.backend.clear_cache, name="SettingsCacheClear")
 
 
 class QtTelemetryService(_QtAdapter):

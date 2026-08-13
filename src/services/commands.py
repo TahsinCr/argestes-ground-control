@@ -6,11 +6,11 @@ from collections.abc import Iterable
 from src.core.events import EventBus
 from src.models.commands import CommandRequest, CommandResult
 from src.models.mission import MapOverlay
-from src.services.contracts.commands import CommandService
-from src.services.contracts.orin import OrinService
-from src.services.contracts.onboard import OnboardMissionServiceContract
-from src.services.contracts.parameters import ParameterService
-from src.services.contracts.vehicle import VehicleService
+from src.services.abstracts.commands import CommandService
+from src.services.abstracts.orin import OrinService
+from src.services.abstracts.onboard import OnboardMissionServiceContract
+from src.services.abstracts.parameters import ParameterService
+from src.services.abstracts.vehicle import VehicleService
 from src.services.logging_service import ServiceLogger
 
 

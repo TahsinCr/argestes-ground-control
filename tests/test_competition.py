@@ -8,6 +8,7 @@ import unittest
 
 from fake_teknofest_server import create_server
 from src.models.competition import (
+    CompetitionServerTime,
     CompetitionServerConfig,
     HssZone,
     KamikazeEvent,
@@ -16,7 +17,11 @@ from src.models.competition import (
 from src.models.geometry import Point
 from src.models.mission import MissionState
 from src.models.telemetry import TargetTrack, TelemetrySnapshot
-from src.services.competition import TeknofestCompetitionService
+from src.services.competition import (
+    CompetitionHttpError,
+    CompetitionProtocolError,
+    TeknofestCompetitionService,
+)
 from src.services.logging_service import LoggingService
 from src.services.planner import PlannerService
 from src.services.vehicle.telemetry import MutableTelemetryService
@@ -448,6 +453,81 @@ class CompetitionTests(unittest.TestCase):
             if entry.action == "competition.hss_unavailable"
         ]
         self.assertEqual(len(unavailable), 1)
+
+    def test_qr_endpoint_failure_does_not_drop_authenticated_session(self) -> None:
+        self.service._publish_state(
+            connected=True,
+            authenticated=True,
+            running=True,
+            session_health="authenticated",
+        )
+
+        def fail_qr(_method, path, _payload=None):
+            if path == "/api/qr_koordinati":
+                raise CompetitionHttpError(500, "temporary QR failure")
+            raise AssertionError(path)
+
+        self.service._request_json = fail_qr  # type: ignore[method-assign]
+        self.service._poll_qr_coordinate()
+        self.service._poll_qr_coordinate()
+
+        state = self.service.state
+        self.assertTrue(state.connected)
+        self.assertTrue(state.authenticated)
+        self.assertEqual(state.session_health, "authenticated")
+        self.assertEqual(state.qr_health, "degraded")
+        self.assertEqual(
+            sum(
+                entry.action == "competition.qr_unavailable"
+                for entry in self.logs.history
+            ),
+            1,
+        )
+
+    def test_qr_unauthorized_response_is_forwarded_for_session_recovery(self) -> None:
+        self.service._request_json = (  # type: ignore[method-assign]
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                CompetitionHttpError(401, "login required")
+            )
+        )
+        with self.assertRaises(CompetitionHttpError):
+            self.service._poll_qr_coordinate()
+
+    def test_server_clock_preserves_day_only_protocol_and_advances_monotonically(self) -> None:
+        now = datetime.now(UTC)
+        protocol_time = CompetitionServerTime(
+            day=now.day,
+            hour=now.hour,
+            minute=now.minute,
+            second=now.second,
+            millisecond=123,
+        )
+        resolved = protocol_time.resolve_near(now)
+        self.assertEqual(resolved.day, now.day)
+        first = self.service._update_server_clock(
+            {
+                "gun": now.day,
+                "saat": now.hour,
+                "dakika": now.minute,
+                "saniye": now.second,
+                "milisaniye": 123,
+            }
+        )
+        self.assertIsNotNone(first)
+        time.sleep(0.01)
+        second = self.service.estimated_server_time()
+        self.assertIsNotNone(second)
+        self.assertGreater(second, first)
+
+    def test_http_response_body_is_bounded(self) -> None:
+        class OversizedResponse:
+            headers = {"Content-Length": str(3 * 1024 * 1024)}
+
+            def read(self, _limit: int) -> bytes:
+                raise AssertionError("oversized body must not be read")
+
+        with self.assertRaises(CompetitionProtocolError):
+            self.service._read_limited(OversizedResponse())
 
     def test_identical_state_updates_are_not_republished(self) -> None:
         states = []

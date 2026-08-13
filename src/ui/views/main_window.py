@@ -20,7 +20,7 @@ from src.models.settings import SettingsModel
 from src.models.telemetry import TelemetrySnapshot
 from src.models.video import VideoStreamStats
 from src.models.connections import ConnectionStatus
-from src.services.contracts import CommandService, TelemetryService, VideoService
+from src.services.abstracts import CommandService, TelemetryService, VideoService
 from src.services.logging_service import LoggingService
 from src.services.battery_alarm import BatteryAlarmService
 from src.services.mission_archive import MissionArchiveService
@@ -179,15 +179,15 @@ class MainWindow(QMainWindow):
         self.main_splitter = self._smooth_splitter(Qt.Orientation.Horizontal)
         self.main_splitter.addWidget(self._build_sidebar())
         self.main_splitter.addWidget(self._build_workspace())
-        self.main_splitter.setStretchFactor(0, 28)
-        self.main_splitter.setStretchFactor(1, 72)
-        self.main_splitter.setSizes([350, 1250])
+        self.main_splitter.setStretchFactor(0, 26)
+        self.main_splitter.setStretchFactor(1, 74)
+        self.main_splitter.setSizes([330, 1270])
         return self.main_splitter
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget(self)
-        sidebar.setMinimumWidth(320)
-        sidebar.setMaximumWidth(390)
+        sidebar.setMinimumWidth(310)
+        sidebar.setMaximumWidth(370)
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(0)
@@ -200,8 +200,8 @@ class MainWindow(QMainWindow):
             self,
             task_codes=self.command_service.available_tasks,
         )
-        sidebar_layout.addWidget(self.telemetry_panel, 5)
-        sidebar_layout.addWidget(self.command_panel, 4)
+        sidebar_layout.addWidget(self.telemetry_panel, 4)
+        sidebar_layout.addWidget(self.command_panel, 6)
         return sidebar
 
     def _build_workspace(self) -> QSplitter:

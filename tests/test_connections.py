@@ -72,6 +72,7 @@ class ConnectionHealthTests(unittest.TestCase):
                     gps_fix="3D FIX",
                     timestamp=stale_at,
                     position_received_at=stale_at,
+                    gps_received_at=stale_at,
                 )
             )
             self.assertTrue(service.status("autopilot").connected)
@@ -84,6 +85,7 @@ class ConnectionHealthTests(unittest.TestCase):
                 telemetry.current.copy(
                     timestamp=now,
                     position_received_at=now,
+                    gps_received_at=now,
                     link_quality=82,
                     link_quality_source="rf",
                     link_quality_received_at=now,

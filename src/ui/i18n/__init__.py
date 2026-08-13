@@ -225,10 +225,13 @@ def connection_status_text(status: Any, language: str) -> tuple[str, str]:
         else:
             detail = t("connection.detail.orin.waiting", language)
     elif channel == "gps":
-        age = options.get("position_age_s")
+        age = options.get("gps_age_s")
+        raw_satellites = options.get("satellites")
         values = {
             "fix": str(options.get("gps_fix", "NO FIX")),
-            "satellites": int(options.get("satellites", 0)),
+            "satellites": (
+                int(raw_satellites) if raw_satellites is not None else "--"
+            ),
         }
         detail = (
             t("connection.detail.gps.age", language, **values, age=float(age))
