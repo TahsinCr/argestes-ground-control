@@ -416,7 +416,10 @@ class UiSmokeTests(unittest.TestCase):
             )
             window._on_telemetry(packet_snapshot)
             self.assertEqual(window.link_meters["command"].value.text(), "93%")
-            self.assertEqual(window.link_meters["command"].detail.text(), "↓391 ↑8")
+            self.assertEqual(
+                window.link_meters["command"].detail.text(),
+                "↓391 ↑8 · ML93",
+            )
             rf_snapshot = packet_snapshot.copy(
                 link_quality=61,
                 link_quality_source="rf",
@@ -431,10 +434,10 @@ class UiSmokeTests(unittest.TestCase):
                 estimated_dropped_packets=12,
             )
             window._on_telemetry(rf_snapshot)
-            self.assertEqual(window.link_meters["command"].value.text(), "88%")
+            self.assertEqual(window.link_meters["command"].value.text(), "61%")
             self.assertEqual(
                 window.link_meters["command"].detail.text(),
-                "↓391 ↑8 · RF61 · TB91",
+                "↓391 ↑8 · ML88 · TB91",
             )
             command_meter = window.link_meters["command"]
             self.assertIn("Yerel RFD", command_meter.label.toolTip())

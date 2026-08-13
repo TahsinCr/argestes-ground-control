@@ -624,17 +624,22 @@ class MainWindow(QMainWindow):
         rf_available = bool(
             quality_available and snapshot.link_quality_source == "rf"
         )
+        delivery = snapshot.packet_delivery_percent
+        if (
+            delivery is None
+            and quality_available
+            and snapshot.link_quality_source == "mavlink_packets"
+        ):
+            delivery = snapshot.link_quality
         compact = [f"↓{snapshot.packets_in} ↑{snapshot.packets_out}"]
+        if delivery is not None:
+            compact.append(f"ML{delivery}")
         if rf_available:
-            compact.append(f"RF{snapshot.link_quality}")
             if snapshot.radio_tx_buffer is not None:
                 compact.append(f"TB{snapshot.radio_tx_buffer}")
         detail = " · ".join(compact)
-        delivery = snapshot.packet_delivery_percent
         if snapshot.telemetry_link and snapshot.autopilot_link:
-            quality = delivery
-            if quality is None and quality_available:
-                quality = snapshot.link_quality
+            quality = snapshot.link_quality if rf_available else delivery
             if quality is None:
                 meter.set_unavailable(detail)
             else:
