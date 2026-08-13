@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from unittest.mock import patch
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -192,6 +193,22 @@ class UiContractTests(unittest.TestCase):
 
         meter.set_value(30, "↓ 4 ↑ 2")
         self.assertEqual(restyle_calls, 1)
+        meter.close()
+
+    def test_signal_meter_refreshes_an_open_title_tooltip(self) -> None:
+        meter = SignalMeter("TELEMETRY")
+        meter.set_metric_tooltip("RF 75%")
+
+        with (
+            patch.object(meter, "_metric_tooltip_is_open", return_value=True),
+            patch("src.ui.widgets.common.QToolTip.showText") as show_tooltip,
+        ):
+            meter.set_metric_tooltip("RF 82%")
+            QTest.qWait(120)
+
+        show_tooltip.assert_called_once()
+        self.assertEqual(show_tooltip.call_args.args[1], "RF 82%")
+        self.assertIs(show_tooltip.call_args.args[2], meter.label)
         meter.close()
         meter.deleteLater()
         self.app.processEvents()

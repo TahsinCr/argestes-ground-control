@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QMouseEvent
+from PyQt6.QtGui import QColor, QCursor, QMouseEvent
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QSizePolicy,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -213,6 +214,11 @@ class SignalMeter(QFrame):
         self._label = label
         self._detail_text = ""
         self._available = True
+        self._metric_tooltip_text = ""
+        self._tooltip_refresh_timer = QTimer(self)
+        self._tooltip_refresh_timer.setInterval(100)
+        self._tooltip_refresh_timer.setSingleShot(True)
+        self._tooltip_refresh_timer.timeout.connect(self._refresh_metric_tooltip)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 3, 8, 3)
         layout.setSpacing(6)
@@ -228,14 +234,30 @@ class SignalMeter(QFrame):
         """Expose metric details only from the descriptive title label."""
 
         tooltip = str(text).strip()
-        if tooltip == self.label.toolTip():
+        if tooltip == self._metric_tooltip_text:
             return
+        self._metric_tooltip_text = tooltip
         # Do not attach the tooltip to the meter itself: QWidget tooltips can be
         # inherited by child labels and make the live value area feel hoverable.
         self.setToolTip("")
         self.label.setToolTip(tooltip)
         self.value.setToolTip("")
         self.detail.setToolTip("")
+        if self._metric_tooltip_is_open() and not self._tooltip_refresh_timer.isActive():
+            self._tooltip_refresh_timer.start()
+
+    def _metric_tooltip_is_open(self) -> bool:
+        return self.label.underMouse() and QToolTip.isVisible()
+
+    def _refresh_metric_tooltip(self) -> None:
+        if not self._metric_tooltip_is_open():
+            return
+        QToolTip.showText(
+            QCursor.pos(),
+            self._metric_tooltip_text,
+            self.label,
+            self.label.rect(),
+        )
 
     def set_theme(self, theme: ThemePalette) -> None:
         self._theme = theme
