@@ -410,16 +410,18 @@ confirmation. It is never triggered automatically in the background.
 
 ## SIHA Onboard v0.2-beta link
 
-YKİ uses Vehicle Autonomy Core v1.2's application channel over the existing
+YKİ uses Vehicle Autonomy Core v1.3's application channel over the existing
 MAVLink connection. It does not open another serial port, UDP socket or receive
 loop. `V2_EXTENSION` uses network ID `77`, message type `42000`, YKİ system ID
 `255`, onboard system ID `1` and onboard component ID `191`. The application
 heartbeat runs once per second and expires after 10 seconds. These values are
 available under the Onboard/Orin settings.
 
-Core v1.2 bounds both incomplete application-packet assemblies and the MAVLink
-async bridge queues. This keeps malformed, duplicated or bursty application
-traffic from growing memory use without changing the normal telemetry path.
+Core v1.3 bounds incomplete application-packet assemblies and uses one
+thread-safe, latest-biased MAVLink async queue. Application packets and remote
+log records are deeply immutable at runtime, while their serialization methods
+still return detached `dict` and `list` values. YKİ decodes `logs.push` from
+that detached wire representation before validation and acknowledgement.
 
 `OnboardMissionService` sends `task.start`, `task.pause`, `task.resume`,
 `task.stop`, `task.cancel`, `mission.status`, `mission.list`, `mission.events`
@@ -621,13 +623,13 @@ python run_tests.py
 ```
 
 The runner reports the YKİ and pinned core suites as one result. It currently
-runs **331 tests**: **206 YKİ tests** covering application architecture,
+runs **341 tests**: **206 YKİ tests** covering application architecture,
 the pinned core boundary, dependency composition, vehicle/Orin sharing,
 Onboard mission/QR handling, remote logs, parameter defaults, command retries,
 concurrent planning, TEKNOFEST communication, battery estimation and policies,
 localization, GStreamer pipelines, map history, high-rate data coalescing,
 responsive autonomous/map controls, splitters, frameless resizing and offscreen
-Qt startup, plus **125 core tests** for dependency, event, mission and MAVLink
+Qt startup, plus **135 core tests** for dependency, event, mission and MAVLink
 internals. The suites remain independently owned even though the root runner
 presents one final status.
 

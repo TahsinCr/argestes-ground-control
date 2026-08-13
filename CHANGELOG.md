@@ -1,6 +1,49 @@
 # **Change Log**
 All notable changes to this project will be documented in this file.
 
+## **[1.4.3-beta] - 13.08.2026**
+The **"Core Concurrency Compatibility Patch"** release. This patch adopts
+Vehicle Autonomy Core v1.3 and keeps the YKİ–Onboard application link
+compatible with the core's stricter immutable packet model.
+
+### Updated
+* **Vehicle Autonomy Core v1.3**:
+    * Updated the pinned submodule from v1.2 to the official v1.3 release.
+    * Adopted serialized mission launches, monotonic queue timeouts and stricter
+      mission completion phase checks.
+    * Adopted shared sync/async dependency initialization gates so singleton
+      and scoped services cannot be constructed twice during resolution races.
+    * Adopted ordered event replay, thread-safe latest-biased MAVLink async
+      queues and safer dispatcher shutdown from worker callbacks.
+    * Adopted deeply immutable application packets, mission snapshots, results
+      and remote-log records while retaining mutable serialization output.
+* **Release identity**:
+    * Updated the YKİ application heartbeat version to `1.4.3-beta`.
+
+### Fixed
+* **Onboard remote-log compatibility**:
+    * Decode `logs.push` batches from the packet's detached wire
+      representation. This preserves core's immutable runtime payload while
+      supplying the JSON `dict`/`list` shape required by remote-log validation.
+    * Kept remote-log acknowledgement, session/sequence deduplication and
+      retry-after-storage-failure behavior unchanged.
+
+### Compatibility
+* Core v1.3 does not rename the public classes or methods used by YKİ.
+* Vehicle telemetry, Onboard heartbeat, task requests, ACK correlation and
+  remote logs continue to share one MAVLink client and router.
+* The stricter `complete()` and stopped-channel behavior is internal to core;
+  existing YKİ mission and connection lifecycles require no additional API
+  adaptation.
+
+### Testing
+* The combined runner passes **341 tests**: **206 YKİ tests** and **135 Vehicle
+  Autonomy Core v1.3 tests**.
+* The Orin communication suite passes **16 tests**, including remote-log
+  validation, acknowledgement, deduplication and delivery-retry behavior.
+
+<br>
+
 ## **[1.4.2-beta] - 13.08.2026**
 The **"Runtime and Map Performance Patch"** release. This update focuses on
 keeping the operator interface responsive under live telemetry and map load,

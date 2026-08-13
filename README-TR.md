@@ -372,17 +372,18 @@ Normal ARM başarısız olursa zorla ARM yalnızca operatör onayıyla denenir. 
 
 ## SİHA Onboard v0.2-beta bağlantısı
 
-YKİ, Vehicle Autonomy Core v1.2 uygulama kanalını mevcut MAVLink bağlantısı
+YKİ, Vehicle Autonomy Core v1.3 uygulama kanalını mevcut MAVLink bağlantısı
 üzerinden kullanır. İkinci seri port, UDP socket veya receive döngüsü açılmaz.
 `V2_EXTENSION`; ağ ID `77`, mesaj tipi `42000`, YKİ system ID `255`, onboard
 system ID `1` ve onboard component ID `191` ile çalışır. Uygulama heartbeat'i
 saniyede bir gönderilir ve 10 saniyede zaman aşımına uğrar. Bu değerler
 Onboard/Orin ayarlarından değiştirilebilir.
 
-Core v1.2, tamamlanmamış uygulama paketlerinin birleştirme alanını ve MAVLink
-async köprü kuyruklarını sınırlar. Böylece hatalı, yinelenen veya ani yoğun
-uygulama trafiği normal telemetri yolunu değiştirmeden bellek kullanımını
-sınırsız büyütemez.
+Core v1.3, tamamlanmamış uygulama paketlerinin birleştirme alanını sınırlar ve
+thread-safe, son mesajı koruyan tek bir MAVLink async kuyruğu kullanır. Uygulama
+paketleri ve uzak log kayıtları çalışma sırasında iç içe seviyede değiştirilemez;
+serialization metotları ise ayrık `dict` ve `list` değerleri döndürür. YKİ,
+`logs.push` paketini doğrulayıp ACK üretmeden önce bu wire temsilinden çözer.
 
 `OnboardMissionService`; `task.start`, `task.pause`, `task.resume`, `task.stop`,
 `task.cancel`, `mission.status`, `mission.list`, `mission.events` ve `chain.start`
@@ -577,12 +578,12 @@ python run_tests.py
 ```
 
 Bu komut YKİ ve sabitlenmiş core testlerini tek sonuç altında çalıştırır.
-Toplam **331 testin** **206 tanesi** uygulama mimarisi, sabitlenmiş core sınırı, DI bileşimi, ortak
+Toplam **341 testin** **206 tanesi** uygulama mimarisi, sabitlenmiş core sınırı, DI bileşimi, ortak
 araç/Orin istemcisi, Onboard görev/QR akışı, uzak loglar, parametre
 varsayılanları, komut tekrarları, eşzamanlı planlama, TEKNOFEST haberleşmesi,
 batarya voltaj tahmini ve politikaları, dil paketleri, GStreamer, harita geçmişi,
 yüksek hızlı veri birleştirme, ayırıcılar, çerçevesiz pencere ve offscreen Qt
-açılışı gibi YKİ davranışlarını kapsar. Kalan **125 test**, core'un dependency,
+açılışı gibi YKİ davranışlarını kapsar. Kalan **135 test**, core'un dependency,
 event, mission ve MAVLink iç yapılarını doğrular. Paketlerin test sahipliği ayrı
 kalır; kök çalıştırıcı yalnızca tek bir nihai durum sunar.
 

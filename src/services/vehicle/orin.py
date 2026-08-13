@@ -440,7 +440,10 @@ class MavlinkOrinService(OrinService):
         """Validate, de-duplicate and acknowledge one onboard log batch."""
 
         try:
-            batch = MavlinkRemoteLogBatch.from_payload(packet.payload)
+            # Core keeps application payloads deeply immutable. The remote-log
+            # decoder validates the serialized wire shape, where records are a
+            # JSON list, so decode from the packet's detached representation.
+            batch = MavlinkRemoteLogBatch.from_payload(packet.to_dict()["payload"])
         except (TypeError, ValueError) as exc:
             raise LogValidationError("Invalid remote log batch") from exc
         with self._lock:
@@ -528,7 +531,7 @@ class MavlinkOrinService(OrinService):
         return {
             "role": "yki",
             "health": "ok",
-            "version": "1.4.2-beta",
+            "version": "1.4.3-beta",
             "vehicle_system_id": self._target_system(),
             "capabilities": [
                 "application.notify",
