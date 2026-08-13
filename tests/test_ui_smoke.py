@@ -437,7 +437,7 @@ class UiSmokeTests(unittest.TestCase):
             self.assertEqual(window.link_meters["command"].value.text(), "61%")
             self.assertEqual(
                 window.link_meters["command"].detail.text(),
-                "↓391 ↑8 · ML88 · TB91",
+                "↓391 ↑8 · ML88",
             )
             command_meter = window.link_meters["command"]
             self.assertIn("Yerel RFD", command_meter.label.toolTip())

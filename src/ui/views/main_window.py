@@ -634,9 +634,6 @@ class MainWindow(QMainWindow):
         compact = [f"↓{snapshot.packets_in} ↑{snapshot.packets_out}"]
         if delivery is not None:
             compact.append(f"ML{delivery}")
-        if rf_available:
-            if snapshot.radio_tx_buffer is not None:
-                compact.append(f"TB{snapshot.radio_tx_buffer}")
         detail = " · ".join(compact)
         if snapshot.telemetry_link and snapshot.autopilot_link:
             quality = snapshot.link_quality if rf_available else delivery
