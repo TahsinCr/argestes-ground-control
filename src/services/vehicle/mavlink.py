@@ -105,6 +105,7 @@ class MavlinkVehicleService(VehicleService):
     """Vehicle adapter hiding core MAVLink details from domain services."""
 
     FORCE_ARM_MAGIC = 21_196.0
+    GCS_HEARTBEAT_INTERVAL_S = 1.0
     TRANSPORT_STATUS_TYPES = frozenset({"RADIO", "RADIO_STATUS"})
     DEFAULT_STREAM_RATES_HZ = {
         "ATTITUDE": 20.0,
@@ -1093,13 +1094,29 @@ class MavlinkVehicleService(VehicleService):
     def _watch_heartbeat(self) -> None:
         timeout = float(self._client.endpoint.heartbeat_timeout)
         poll_interval = min(1.0, max(0.2, timeout / 4.0))
-        while not self._watchdog_stop.wait(poll_interval):
+        next_gcs_heartbeat = 0.0
+        while True:
+            wait_seconds = min(
+                poll_interval,
+                max(0.01, next_gcs_heartbeat - time.monotonic()),
+            )
+            if self._watchdog_stop.wait(wait_seconds):
+                return
+            now = time.monotonic()
+            if now >= next_gcs_heartbeat:
+                try:
+                    self._send_gcs_heartbeat()
+                except Exception:
+                    # Connection/router error events already retain the technical
+                    # failure. The watchdog must stay alive for link recovery.
+                    pass
+                next_gcs_heartbeat = now + self.GCS_HEARTBEAT_INTERVAL_S
             lost: VehicleConnectionState | None = None
             with self._state_lock:
                 if (
                     self._state.connected
                     and self._last_heartbeat > 0
-                    and time.monotonic() - self._last_heartbeat > timeout
+                    and now - self._last_heartbeat > timeout
                 ):
                     previous = self._state
                     self._state = VehicleConnectionState(
@@ -1120,6 +1137,19 @@ class MavlinkVehicleService(VehicleService):
                     details={"heartbeat_timeout_s": timeout},
                     device_id=lost.device_id,
                 )
+
+    def _send_gcs_heartbeat(self) -> None:
+        """Advertise this GCS and trigger SiK/RFD RADIO_STATUS reporting."""
+
+        mavlink = self._client.mavlink
+        self._client.call_mav(
+            "heartbeat_send",
+            mavlink.MAV_TYPE_GCS,
+            mavlink.MAV_AUTOPILOT_INVALID,
+            0,
+            0,
+            mavlink.MAV_STATE_ACTIVE,
+        )
 
     def _on_router_error(self, error: Any) -> None:
         self._event(

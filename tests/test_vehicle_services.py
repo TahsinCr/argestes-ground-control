@@ -184,6 +184,68 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(requested_rates["ATTITUDE"], 20.0)
         self.assertLessEqual(sum(requested_rates.values()), 80.0)
 
+    def test_vehicle_sends_standard_gcs_heartbeat_for_radio_status(self) -> None:
+        mavlink = SimpleNamespace(
+            MAV_TYPE_GCS=6,
+            MAV_AUTOPILOT_INVALID=8,
+            MAV_STATE_ACTIVE=4,
+        )
+
+        class Client:
+            endpoint = SimpleNamespace(uri="test")
+
+            def __init__(self) -> None:
+                self.mavlink = mavlink
+                self.sent: list[tuple[str, tuple[object, ...]]] = []
+
+            def call_mav(self, method: str, *args: object) -> None:
+                self.sent.append((method, args))
+
+        client = Client()
+        vehicle = MavlinkVehicleService(client)  # type: ignore[arg-type]
+
+        vehicle._send_gcs_heartbeat()
+
+        self.assertEqual(
+            client.sent,
+            [("heartbeat_send", (6, 8, 0, 0, 4))],
+        )
+
+    def test_vehicle_gcs_heartbeat_repeats_until_watchdog_stops(self) -> None:
+        mavlink = SimpleNamespace(
+            MAV_TYPE_GCS=6,
+            MAV_AUTOPILOT_INVALID=8,
+            MAV_STATE_ACTIVE=4,
+        )
+
+        class Client:
+            endpoint = SimpleNamespace(uri="test", heartbeat_timeout=0.2)
+
+            def __init__(self) -> None:
+                self.mavlink = mavlink
+                self.sent: list[tuple[str, tuple[object, ...]]] = []
+
+            def call_mav(self, method: str, *args: object) -> None:
+                self.sent.append((method, args))
+
+        client = Client()
+        vehicle = MavlinkVehicleService(client)  # type: ignore[arg-type]
+        vehicle.GCS_HEARTBEAT_INTERVAL_S = 0.02
+        worker = threading.Thread(target=vehicle._watch_heartbeat)
+        worker.start()
+        deadline = time.monotonic() + 0.5
+        while len(client.sent) < 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+
+        vehicle._watchdog_stop.set()
+        worker.join(timeout=0.5)
+        sent_at_stop = len(client.sent)
+        time.sleep(0.03)
+
+        self.assertGreaterEqual(sent_at_stop, 2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(client.sent), sent_at_stop)
+
     def test_telemetry_decoder_exposes_critical_flight_readouts(self) -> None:
         decoder = TelemetryDecoder()
         snapshot = decoder.apply(
