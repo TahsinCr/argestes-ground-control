@@ -931,7 +931,7 @@ class UiContractTests(unittest.TestCase):
                 phase="reconciling",
             )
         )
-        self.assertFalse(panel.task_cancel_button.isEnabled())
+        self.assertTrue(panel.task_cancel_button.isEnabled())
 
         panel.update_onboard_state(
             OnboardMissionState(

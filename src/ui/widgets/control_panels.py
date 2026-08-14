@@ -715,6 +715,7 @@ class CommandPanel(PanelFrame):
                 "pausing",
                 "paused",
                 "stopping",
+                "reconciling",
             }
         )
         self.task_cancel_button.setEnabled(task_active and not state.pending_command)
@@ -749,6 +750,9 @@ class CommandPanel(PanelFrame):
         elif state.phase == "succeeded":
             status_text = t("onboard.actuator.succeeded", self._language)
             visual_state = "success"
+        elif state.phase == "reconciling":
+            status_text = t("onboard.actuator.reconciling", self._language)
+            visual_state = "warning"
         elif state.pending_command or state.phase in {"requesting", "starting"}:
             status_text = t("onboard.actuator.starting", self._language)
             visual_state = "warning"

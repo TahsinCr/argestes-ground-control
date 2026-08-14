@@ -61,6 +61,8 @@ class OnboardMissionService(OnboardMissionServiceContract):
         self._lock = threading.RLock()
         self._started = False
         self._recovery_running = False
+        self._recovery_timer: threading.Timer | None = None
+        self._remote_active_observed = False
         self._reference_sync_event = threading.Event()
         self._reference_sync_stop = threading.Event()
         self._reference_sync_thread: threading.Thread | None = None
@@ -130,6 +132,10 @@ class OnboardMissionService(OnboardMissionServiceContract):
     def stop(self) -> None:
         with self._lock:
             self._started = False
+            recovery_timer = self._recovery_timer
+            self._recovery_timer = None
+        if recovery_timer is not None:
+            recovery_timer.cancel()
         self._reference_sync_stop.set()
         self._reference_sync_event.set()
         for subscription in self._subscriptions:
@@ -591,6 +597,11 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 )
             if packet_type.startswith("task.") or packet_type == "mission.status":
                 self._apply_ack(receipt.response, task=task)
+            if packet_type == "task.start":
+                # A mission may finish before its transition/result packets
+                # cross a busy MAVLink route. Reconcile once after the ACK so
+                # the UI cannot remain on "starting" forever.
+                self._schedule_recovery(2.0)
             return receipt
         except OnboardCommandRejectedError as exc:
             self._set_error(
@@ -707,6 +718,8 @@ class OnboardMissionService(OnboardMissionServiceContract):
         payload = message.payload
         snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else {}
         result = snapshot.get("result") if isinstance(snapshot.get("result"), dict) else {}
+        if not result and isinstance(payload.get("result"), dict):
+            result = dict(payload["result"])
         execution = str(payload.get("execution") or snapshot.get("phase") or "failed").lower()
         mission_id = self._optional_int(payload.get("mission_id") or snapshot.get("mission_id"))
         with self._lock:
@@ -716,9 +729,13 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 mission_id=mission_id or self._state.mission_id,
                 phase=execution,
                 waiting_for_guided=False,
-                result=dict(snapshot),
+                result=(dict(snapshot) if snapshot else dict(payload)),
                 result_received=True,
-                last_error=(str(snapshot.get("reason", "")) if execution == "failed" else self._state.last_error),
+                last_error=(
+                    str(snapshot.get("reason") or payload.get("reason") or "")
+                    if execution == "failed"
+                    else self._state.last_error
+                ),
             )
         qr_text = result.get("qr_text")
         if qr_text is not None and str(qr_text):
@@ -1022,6 +1039,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
         )
 
     def _on_orin_changed(self, state: OrinConnectionState) -> None:
+        recover_finished_mission = False
         with self._lock:
             was_connected = self._state.connected
             session_changed = bool(
@@ -1071,6 +1089,28 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 mission_id = None
                 phase = "idle"
                 waiting_for_guided = False
+                self._remote_active_observed = False
+            elif (
+                self._state.mission_id is not None
+                and (
+                    self._state.mission_id in state.active_missions
+                    or self._state.active_task in state.active_tasks
+                    or (
+                        bool(state.active_task)
+                        and self._state.active_task == state.active_task
+                    )
+                )
+            ):
+                self._remote_active_observed = True
+            elif (
+                self._remote_active_observed
+                and not self._state.terminal
+                and not state.active_missions
+                and not state.active_tasks
+                and not state.active_task
+            ):
+                self._remote_active_observed = False
+                recover_finished_mission = True
             self._state = replace(
                 self._state,
                 connected=state.alive,
@@ -1093,6 +1133,8 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 last_error=state.last_error if not state.alive else self._state.last_error,
             )
         self._publish()
+        if recover_finished_mission:
+            self._schedule_recovery(0.1)
         if state.alive and (not was_connected or session_changed):
             self._reference_sync_event.set()
         if state.alive and not was_connected:
@@ -1104,6 +1146,23 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 return
             self._recovery_running = True
         threading.Thread(target=self._recover, name="OnboardMissionRecovery", daemon=True).start()
+
+    def _schedule_recovery(self, delay: float) -> None:
+        def run() -> None:
+            with self._lock:
+                self._recovery_timer = None
+            self._start_recovery()
+
+        with self._lock:
+            if not self._started:
+                return
+            previous = self._recovery_timer
+            timer = threading.Timer(max(0.0, float(delay)), run)
+            timer.daemon = True
+            self._recovery_timer = timer
+        if previous is not None:
+            previous.cancel()
+        timer.start()
 
     def _recover(self) -> None:
         reconciled = False
@@ -1215,6 +1274,11 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 phase = str(terminal.get("phase", "failed")).lower()
                 result = dict(terminal)
                 result_received = True
+                last_error = (
+                    str(terminal.get("reason") or "")
+                    if phase == "failed"
+                    else ""
+                )
             elif not self._state.terminal:
                 active_task = ""
                 mission_id = None
@@ -1227,6 +1291,11 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 phase = self._state.phase
                 result = self._state.result
                 result_received = self._state.result_received
+                last_error = self._state.last_error
+            if active is not None:
+                last_error = self._state.last_error
+            elif terminal is None and not self._state.terminal:
+                last_error = self._state.last_error
             self._state = replace(
                 self._state,
                 available_tasks=available_tasks,
@@ -1238,6 +1307,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 ),
                 result=result,
                 result_received=result_received,
+                last_error=last_error,
             )
         self._publish()
 

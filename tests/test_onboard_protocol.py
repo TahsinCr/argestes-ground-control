@@ -287,6 +287,49 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertEqual(state.phase, "succeeded")
         self.assertTrue(state.result_received)
 
+    def test_reconciled_failure_exposes_the_real_onboard_reason(self) -> None:
+        self.service._state = replace(
+            self.service.state,
+            active_task=ACTUATOR_TEST_TASK,
+            mission_id=84,
+            phase="reconciling",
+        )
+
+        self.service._apply_mission_list(
+            {
+                "missions": [
+                    {
+                        "mission_id": 84,
+                        "task": ACTUATOR_TEST_TASK,
+                        "phase": "failed",
+                        "reason": "Actuator test is blocked while the vehicle is armed",
+                        "updated_at": 10.0,
+                    }
+                ]
+            }
+        )
+
+        state = self.service.state
+        self.assertEqual(state.phase, "failed")
+        self.assertIn("vehicle is armed", state.last_error)
+
+    def test_compact_terminal_result_is_applied_without_snapshot(self) -> None:
+        self.orin.emit(
+            "mission.result",
+            {
+                "task": ACTUATOR_TEST_TASK,
+                "mission_id": 84,
+                "execution": "failed",
+                "reason": "Actuator test is blocked while the vehicle is armed",
+                "result": {},
+            },
+        )
+
+        state = self.service.state
+        self.assertEqual(state.phase, "failed")
+        self.assertTrue(state.result_received)
+        self.assertIn("vehicle is armed", state.last_error)
+
     def test_qr_report_is_submitted_once_and_duplicate_is_acknowledged(self) -> None:
         handler = self.orin.handlers["kamikaze.qr.report"]
         message = OrinMessage(

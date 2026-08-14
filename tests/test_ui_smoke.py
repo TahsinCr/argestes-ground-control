@@ -99,6 +99,22 @@ class UiSmokeTests(unittest.TestCase):
                 self.assertFalse(window._confirm_actuator_test())
                 confirmation.assert_called_once()
 
+            window._last_snapshot = TelemetrySnapshot.zero().copy(
+                telemetry_link=True,
+                autopilot_link=True,
+                armed=True,
+            )
+            with (
+                patch.object(QMessageBox, "warning") as warning,
+                patch.object(window.command_service, "issue_command") as issue,
+            ):
+                window._request_command(
+                    "SET_MISSION_TASK",
+                    {"task": "ACTUATOR_TEST"},
+                )
+                warning.assert_called_once()
+                issue.assert_not_called()
+
             QTest.mouseClick(window.battery_meter, Qt.MouseButton.LeftButton)
             QTest.qWait(25)
             self.assertTrue(window.battery_popup.isVisible())

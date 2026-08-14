@@ -349,6 +349,23 @@ class MainWindow(QMainWindow):
             code in {"SET_MISSION_TASK", "RESTART_MISSION_TASK"}
             and task == "ACTUATOR_TEST"
         ):
+            if self._last_snapshot.armed:
+                message = t(
+                    "onboard.actuator.armed_blocked",
+                    self.language,
+                )
+                QMessageBox.warning(
+                    self,
+                    t("onboard.actuator.confirm.title", self.language),
+                    message,
+                )
+                self.ui_log.event(
+                    "actuator_test.armed_blocked",
+                    message,
+                    severity="danger",
+                    details={"armed": True},
+                )
+                return
             if not self._confirm_actuator_test():
                 self.ui_log.event(
                     "actuator_test.start_cancelled",
