@@ -7,7 +7,6 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from src.core.events import ErrorPolicy, EventBus, Subscription
 from src.core.mavlink import (
@@ -173,7 +172,6 @@ class MavlinkOrinService(OrinService):
         self._peer: MavlinkApplicationPeer | None = None
         self._handlers = MavlinkApplicationHandlerRegistry()
         self._remote_log_sessions: OrderedDict[str, int] = OrderedDict()
-        self._session_id = uuid4().hex
         self._remote_log_handler = self._handlers.register(
             REMOTE_LOG_PACKET_TYPE,
             self._handle_remote_logs,
@@ -536,8 +534,6 @@ class MavlinkOrinService(OrinService):
             "role": "yki",
             "health": "ok",
             "version": "1.4.3-beta",
-            "session": self._session_id,
-            "utc_ms": int(datetime.now(UTC).timestamp() * 1_000),
         }
 
     def _on_packet(self, packet: MavlinkApplicationPacket) -> None:

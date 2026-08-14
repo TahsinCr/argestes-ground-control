@@ -24,7 +24,12 @@ from src.core.mavlink import (
 )
 from src.models.commands import CommandRequest
 from src.models.competition import CompetitionConnectionState
-from src.models.orin import OrinCommandReceipt, OrinConnectionState, OrinLogRecord
+from src.models.orin import (
+    OrinCommandReceipt,
+    OrinConnectionState,
+    OrinLinkConfig,
+    OrinLogRecord,
+)
 from src.models.vehicle import VehicleConnectionState
 from src.services.logging_service import LoggingService
 from src.services.vehicle.orin import configured_orin_commands
@@ -38,7 +43,48 @@ from src.services.video import MutableVideoService
 
 
 class OrinLinkTests(unittest.TestCase):
-    def test_liveness_payload_is_compact_and_carries_utc_time(self) -> None:
+    def test_yki_channel_matches_the_onboard_gcs_endpoint_contract(self) -> None:
+        vehicle = SimpleNamespace(
+            connected=True,
+            state=VehicleConnectionState(True, "COM3", 1, 1),
+            connection_changed=EventBus(),
+        )
+        client = SimpleNamespace(
+            endpoint=SimpleNamespace(
+                uri="COM3",
+                source_system=255,
+                source_component=0,
+            ),
+            connection=SimpleNamespace(target_system=1),
+        )
+        config = OrinLinkConfig(
+            system_id=1,
+            component_id=191,
+            network_id=77,
+            message_type=42_000,
+            heartbeat_timeout_s=10.0,
+            command_timeout_s=5.0,
+        )
+        service = MavlinkOrinService(  # type: ignore[arg-type]
+            client,
+            vehicle,
+            config,
+        )
+
+        channel = service._create_channel()
+        peer = service._create_peer(channel)
+
+        self.assertEqual(channel.network_id, 77)
+        self.assertEqual(channel.message_type, 42_000)
+        self.assertEqual((channel.local_system, channel.local_component), (255, 0))
+        self.assertEqual(channel._source_systems, 1)
+        self.assertEqual(channel._source_components, 191)
+        self.assertEqual(peer._resolve_target(peer._target_system), 1)
+        self.assertEqual(peer._resolve_target(peer._target_component), 191)
+        self.assertEqual(peer._heartbeat_interval, 1.0)
+        self.assertEqual(peer._heartbeat_timeout, 10.0)
+
+    def test_liveness_payload_omits_state_only_provided_by_onboard(self) -> None:
         vehicle = SimpleNamespace(
             connected=True,
             state=VehicleConnectionState(True, "COM3", 1, 1),
@@ -57,8 +103,8 @@ class OrinLinkTests(unittest.TestCase):
         payload = service._heartbeat_payload()
 
         self.assertEqual(payload["role"], "yki")
-        self.assertIn("utc_ms", payload)
-        self.assertTrue(payload["session"])
+        self.assertNotIn("utc_ms", payload)
+        self.assertNotIn("session", payload)
         self.assertNotIn("capabilities", payload)
         self.assertLess(len(json.dumps(payload).encode("utf-8")), 180)
 
