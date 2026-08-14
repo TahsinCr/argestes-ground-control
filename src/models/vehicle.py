@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 
 from src.core.abstracts import Model
@@ -28,6 +29,7 @@ class VehicleTransportStats(Model):
     sent_packets: int = 0
     estimated_dropped_packets: int = 0
     delivery_quality: int | None = None
+    round_trip_ms: float | None = None
 
     def __post_init__(self) -> None:
         counts = (
@@ -39,6 +41,10 @@ class VehicleTransportStats(Model):
             raise ValueError("Taşıyıcı paket sayaçları negatif olamaz")
         if self.delivery_quality is not None and not 0 <= int(self.delivery_quality) <= 100:
             raise ValueError("Paket teslim kalitesi 0..100 aralığında olmalı")
+        if self.round_trip_ms is not None and (
+            not math.isfinite(float(self.round_trip_ms)) or self.round_trip_ms < 0.0
+        ):
+            raise ValueError("MAVLink gidiş-dönüş süresi negatif veya sonlu olmayan değer olamaz")
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

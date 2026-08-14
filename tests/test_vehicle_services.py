@@ -469,6 +469,7 @@ class VehicleServiceTests(unittest.TestCase):
             sent_packets=7,
             estimated_dropped_packets=4,
             delivery_quality=97,
+            round_trip_ms=83.5,
         )
         telemetry = VehicleTelemetryService(vehicle)  # type: ignore[arg-type]
         telemetry.start()
@@ -487,6 +488,54 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(snapshot.estimated_dropped_packets, 4)
         self.assertEqual(snapshot.packets_in, 128)
         self.assertEqual(snapshot.packets_out, 7)
+        self.assertEqual(snapshot.telemetry_round_trip_ms, 83.5)
+
+    def test_vehicle_link_ping_measures_correlated_round_trip_time(self) -> None:
+        sent: list[tuple[str, tuple[object, ...]]] = []
+        router_stats = SimpleNamespace(
+            received_messages=10,
+            estimated_dropped_messages=0,
+            delivery_quality=100,
+        )
+        connection = SimpleNamespace(
+            target_system=1,
+            target_component=1,
+            sent_messages=2,
+        )
+        client = SimpleNamespace(
+            endpoint=SimpleNamespace(uri="test"),
+            connection=connection,
+            router=SimpleNamespace(stats=router_stats),
+            is_connected=True,
+            call_mav=lambda name, *args: sent.append((name, args)),
+        )
+        service = MavlinkVehicleService(client)  # type: ignore[arg-type]
+        service._state = VehicleConnectionState(True, "test", 1, 1)
+
+        sent_at = time.monotonic()
+        sequence = service._send_link_ping(now=sent_at)
+        time_usec = service._pending_pings[sequence][0]
+        service._on_ping(
+            _Message(message_type="PING", seq=sequence, time_usec=time_usec),
+            received_at=sent_at + 0.084,
+        )
+
+        self.assertEqual(sent[0][0], "ping_send")
+        self.assertEqual(sent[0][1][1:], (sequence, 1, 1))
+        self.assertAlmostEqual(service.transport_stats.round_trip_ms or 0.0, 84.0)
+
+    def test_vehicle_link_ping_ignores_uncorrelated_response(self) -> None:
+        client = SimpleNamespace(
+            endpoint=SimpleNamespace(uri="test"),
+            connection=SimpleNamespace(target_system=1, target_component=1),
+            is_connected=True,
+        )
+        service = MavlinkVehicleService(client)  # type: ignore[arg-type]
+        service._on_ping(
+            _Message(message_type="PING", seq=99, time_usec=123),
+            received_at=5.0,
+        )
+        self.assertIsNone(service._round_trip_ms)
 
     def test_gps_hdop_is_decoded_and_unknown_value_is_not_displayed(self) -> None:
         decoder = TelemetryDecoder()
@@ -1600,6 +1649,32 @@ class VehicleServiceTests(unittest.TestCase):
 
         self.assertEqual(sink_pad.calls, 2)
         self.assertEqual(service._active_resolution, (640, 480))
+
+    def test_video_frame_age_advances_when_capture_stalls(self) -> None:
+        service = GStreamerVideoService(
+            "usb",
+            "/dev/video0",
+            frame_timeout_s=1.0,
+        )
+        service._last_frame_at = 10.0
+        service._last_frame_pipeline_age_s = 0.08
+        service._publish_stats(
+            service.stats.__class__(
+                connected=True,
+                quality_percent=95,
+                frames_received=12,
+                fps=30.0,
+                width=1920,
+                height=1080,
+                frame_age_s=0.08,
+            )
+        )
+        service._set_connected(True)
+
+        service._check_frame_timeout(now=10.2)
+
+        self.assertTrue(service.connected)
+        self.assertAlmostEqual(service.stats.frame_age_s or 0.0, 0.28)
 
     def test_structured_logs_are_persisted_outside_ui(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

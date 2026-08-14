@@ -193,6 +193,7 @@ def connection_status_text(status: Any, language: str) -> tuple[str, str]:
                 fps=float(options.get("fps", 0.0)),
                 bitrate=float(options.get("bitrate_kbps", 0.0)),
                 quality=int(options.get("quality_percent", 0)),
+                age=float(options.get("frame_age_s", 0.0) or 0.0),
             )
         else:
             detail = t(
@@ -276,6 +277,17 @@ def connection_status_text(status: Any, language: str) -> tuple[str, str]:
                     quality=quality,
                 )
             )
+            round_trip_ms = options.get("round_trip_ms")
+            latency = (
+                t(
+                    "connection.detail.telemetry.latency",
+                    language,
+                    latency=float(round_trip_ms),
+                )
+                if round_trip_ms is not None
+                else t("connection.detail.telemetry.latency_waiting", language)
+            )
+            detail = f"{detail} / {latency}"
     else:
         if connected:
             detail = t(

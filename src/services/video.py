@@ -142,6 +142,7 @@ class GStreamerVideoService(MutableVideoService):
         self._stop_event = threading.Event()
         self._frame_count = 0
         self._last_frame_at = 0.0
+        self._last_frame_pipeline_age_s = 0.0
         self._last_stats_at = 0.0
         self._target_fps: float | None = None
         self._frame_times: deque[float] = deque()
@@ -233,6 +234,7 @@ class GStreamerVideoService(MutableVideoService):
         self._pipeline = pipeline
         self._stop_event.clear()
         self._last_frame_at = 0.0
+        self._last_frame_pipeline_age_s = 0.0
         self._frame_count = 0
         self._last_stats_at = 0.0
         self._target_fps = None
@@ -302,6 +304,7 @@ class GStreamerVideoService(MutableVideoService):
             except (AttributeError, TypeError, ValueError):
                 pass
             buffer = sample.get_buffer()
+            frame_pipeline_age_s = self._buffer_pipeline_age_s(buffer)
             success, info = buffer.map(Gst.MapFlags.READ)
             if not success:
                 return Gst.FlowReturn.ERROR
@@ -311,6 +314,7 @@ class GStreamerVideoService(MutableVideoService):
                 buffer.unmap(info)
             was_connected = self.connected
             self._last_frame_at = time.monotonic()
+            self._last_frame_pipeline_age_s = frame_pipeline_age_s
             frame = VideoFrame(
                 width=width,
                 height=height,
@@ -321,7 +325,12 @@ class GStreamerVideoService(MutableVideoService):
             self._set_connected(True)
             self._frames.publish(frame)
             self._frame_count += 1
-            self._record_frame_stats(width, height, self._last_frame_at)
+            self._record_frame_stats(
+                width,
+                height,
+                self._last_frame_at,
+                frame_pipeline_age_s,
+            )
             if not was_connected and self._frame_count > 1:
                 self._event(
                     "video.stream_recovered",
@@ -407,7 +416,33 @@ class GStreamerVideoService(MutableVideoService):
                 self._transport_samples.append((now, int(buffer.get_size())))
         return Gst.PadProbeReturn.OK
 
-    def _record_frame_stats(self, width: int, height: int, now: float) -> None:
+    def _buffer_pipeline_age_s(self, buffer: Any) -> float:
+        Gst = self._gst
+        pipeline = self._pipeline
+        if Gst is None or pipeline is None:
+            return 0.0
+        pts = int(getattr(buffer, "pts", Gst.CLOCK_TIME_NONE))
+        if pts == int(Gst.CLOCK_TIME_NONE):
+            return 0.0
+        clock = pipeline.get_clock()
+        if clock is None:
+            return 0.0
+        base_time = int(pipeline.get_base_time())
+        clock_time = int(clock.get_time())
+        if base_time <= 0 or clock_time < base_time:
+            return 0.0
+        running_time = clock_time - base_time
+        if running_time < pts:
+            return 0.0
+        return min(60.0, (running_time - pts) / float(Gst.SECOND))
+
+    def _record_frame_stats(
+        self,
+        width: int,
+        height: int,
+        now: float,
+        frame_age_s: float = 0.0,
+    ) -> None:
         with self._measurement_lock:
             self._frame_times.append(now)
             cutoff = now - 2.0
@@ -462,7 +497,7 @@ class GStreamerVideoService(MutableVideoService):
                 bitrate_kbps=bitrate_kbps,
                 width=width,
                 height=height,
-                frame_age_s=0.0,
+                frame_age_s=max(0.0, float(frame_age_s)),
             )
         )
 
@@ -516,6 +551,24 @@ class GStreamerVideoService(MutableVideoService):
         if not self.connected or self._last_frame_at <= 0:
             return
         elapsed = (time.monotonic() if now is None else float(now)) - self._last_frame_at
+        current = self.stats
+        measured_age = self._last_frame_pipeline_age_s + max(0.0, elapsed)
+        if (
+            current.frame_age_s is None
+            or abs(measured_age - current.frame_age_s) >= 0.05
+        ):
+            self._publish_stats(
+                VideoStreamStats(
+                    connected=current.connected,
+                    quality_percent=current.quality_percent,
+                    frames_received=current.frames_received,
+                    fps=current.fps,
+                    bitrate_kbps=current.bitrate_kbps,
+                    width=current.width,
+                    height=current.height,
+                    frame_age_s=measured_age,
+                )
+            )
         if elapsed <= self._frame_timeout_s:
             return
         self._set_connected(False)

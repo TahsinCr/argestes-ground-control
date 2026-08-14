@@ -106,6 +106,8 @@ class MavlinkVehicleService(VehicleService):
 
     FORCE_ARM_MAGIC = 21_196.0
     GCS_HEARTBEAT_INTERVAL_S = 1.0
+    LINK_PING_INTERVAL_S = 1.0
+    LINK_PING_STALE_S = 5.0
     TRANSPORT_STATUS_TYPES = frozenset({"RADIO", "RADIO_STATUS"})
     DEFAULT_STREAM_RATES_HZ = {
         "ATTITUDE": 20.0,
@@ -151,6 +153,11 @@ class MavlinkVehicleService(VehicleService):
         self._sent_packets_baseline = 0
         self._watchdog_stop = threading.Event()
         self._watchdog_thread: threading.Thread | None = None
+        self._ping_lock = threading.RLock()
+        self._ping_sequence = 0
+        self._pending_pings: dict[int, tuple[int, float]] = {}
+        self._round_trip_ms: float | None = None
+        self._round_trip_measured_at = 0.0
         self._custom_handlers = {
             code.strip().upper(): handler for code, handler in (custom_handlers or {}).items()
         }
@@ -182,6 +189,14 @@ class MavlinkVehicleService(VehicleService):
     @property
     def transport_stats(self) -> VehicleTransportStats:
         router_stats = self._client.router.stats
+        now = time.monotonic()
+        with self._ping_lock:
+            round_trip_ms = (
+                self._round_trip_ms
+                if self._round_trip_ms is not None
+                and now - self._round_trip_measured_at <= self.LINK_PING_STALE_S
+                else None
+            )
         return VehicleTransportStats(
             received_packets=max(
                 0,
@@ -193,6 +208,7 @@ class MavlinkVehicleService(VehicleService):
             ),
             estimated_dropped_packets=router_stats.estimated_dropped_messages,
             delivery_quality=router_stats.delivery_quality,
+            round_trip_ms=round_trip_ms,
         )
 
     def configure_connection(self, config: VehicleConnectionConfig) -> None:
@@ -230,6 +246,7 @@ class MavlinkVehicleService(VehicleService):
                 self._client.connection.errors.subscribe(self._on_connection_error),
                 self._client.router.errors.subscribe(self._on_router_error),
                 self.subscribe("HEARTBEAT", self._on_heartbeat),
+                self.subscribe("PING", self._on_ping),
             ]
         )
         try:
@@ -251,6 +268,10 @@ class MavlinkVehicleService(VehicleService):
             self._last_heartbeat = time.monotonic()
         self._started = True
         self._watchdog_stop.clear()
+        with self._ping_lock:
+            self._pending_pings.clear()
+            self._round_trip_ms = None
+            self._round_trip_measured_at = 0.0
         self._watchdog_thread = threading.Thread(
             target=self._watch_heartbeat,
             name="VehicleHeartbeatWatchdog",
@@ -1095,10 +1116,12 @@ class MavlinkVehicleService(VehicleService):
         timeout = float(self._client.endpoint.heartbeat_timeout)
         poll_interval = min(1.0, max(0.2, timeout / 4.0))
         next_gcs_heartbeat = 0.0
+        next_link_ping = 0.0
         while True:
             wait_seconds = min(
                 poll_interval,
                 max(0.01, next_gcs_heartbeat - time.monotonic()),
+                max(0.01, next_link_ping - time.monotonic()),
             )
             if self._watchdog_stop.wait(wait_seconds):
                 return
@@ -1111,6 +1134,12 @@ class MavlinkVehicleService(VehicleService):
                     # failure. The watchdog must stay alive for link recovery.
                     pass
                 next_gcs_heartbeat = now + self.GCS_HEARTBEAT_INTERVAL_S
+            if now >= next_link_ping:
+                try:
+                    self._send_link_ping(now)
+                except Exception:
+                    pass
+                next_link_ping = now + self.LINK_PING_INTERVAL_S
             lost: VehicleConnectionState | None = None
             with self._state_lock:
                 if (
@@ -1150,6 +1179,48 @@ class MavlinkVehicleService(VehicleService):
             0,
             mavlink.MAV_STATE_ACTIVE,
         )
+
+    def _send_link_ping(self, now: float | None = None) -> int:
+        sent_at = time.monotonic() if now is None else float(now)
+        with self._ping_lock:
+            self._ping_sequence = (self._ping_sequence + 1) & 0xFFFFFFFF
+            if self._ping_sequence == 0:
+                self._ping_sequence = 1
+            sequence = self._ping_sequence
+            time_usec = time.monotonic_ns() // 1_000
+            self._pending_pings[sequence] = (time_usec, sent_at)
+            cutoff = sent_at - self.LINK_PING_STALE_S
+            self._pending_pings = {
+                key: value
+                for key, value in self._pending_pings.items()
+                if value[1] >= cutoff
+            }
+        system, component = self._target
+        self._client.call_mav(
+            "ping_send",
+            time_usec,
+            sequence,
+            system,
+            component,
+        )
+        return sequence
+
+    def _on_ping(self, message: Any, *, received_at: float | None = None) -> None:
+        sequence = int(getattr(message, "seq", -1))
+        time_usec = int(getattr(message, "time_usec", -1))
+        now = time.monotonic() if received_at is None else float(received_at)
+        with self._ping_lock:
+            pending = self._pending_pings.get(sequence)
+            if pending is None or pending[0] != time_usec:
+                return
+            self._pending_pings.pop(sequence, None)
+            measured_ms = max(0.0, (now - pending[1]) * 1_000.0)
+            self._round_trip_ms = (
+                measured_ms
+                if self._round_trip_ms is None
+                else self._round_trip_ms * 0.7 + measured_ms * 0.3
+            )
+            self._round_trip_measured_at = now
 
     def _on_router_error(self, error: Any) -> None:
         self._event(

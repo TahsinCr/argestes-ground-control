@@ -634,6 +634,8 @@ class MainWindow(QMainWindow):
         compact = [f"↓{snapshot.packets_in} ↑{snapshot.packets_out}"]
         if delivery is not None:
             compact.append(f"ML{delivery}")
+        if snapshot.telemetry_round_trip_ms is not None:
+            compact.append(f"RTT{snapshot.telemetry_round_trip_ms:.0f}ms")
         detail = " · ".join(compact)
         if snapshot.telemetry_link and snapshot.autopilot_link:
             quality = snapshot.link_quality if rf_available else delivery
@@ -662,6 +664,15 @@ class MainWindow(QMainWindow):
             (
                 t("link.tooltip.delivery", self.language, value=delivery),
                 t("link.tooltip.rf_quality", self.language, value=rf_quality),
+                t(
+                    "link.tooltip.latency",
+                    self.language,
+                    value=self._metric(
+                        snapshot.telemetry_round_trip_ms,
+                        " ms",
+                        precision=0,
+                    ),
+                ),
                 t(
                     "link.tooltip.local_radio",
                     self.language,

@@ -109,6 +109,7 @@ class TelemetrySnapshot(Model):
     local_north_m: float | None = None
     local_east_m: float | None = None
     local_down_m: float | None = None
+    telemetry_round_trip_ms: float | None = None
 
     @property
     def battery_available(self) -> bool:

@@ -569,6 +569,7 @@ class VehicleTelemetryService(MutableTelemetryService):
                 packets_out=transport.sent_packets,
                 packet_delivery_percent=transport.delivery_quality,
                 estimated_dropped_packets=transport.estimated_dropped_packets,
+                telemetry_round_trip_ms=transport.round_trip_ms,
             )
             rf_is_fresh = bool(
                 snapshot.link_quality_source == "rf"

@@ -378,6 +378,7 @@ class BackendConnectionControlService(ConnectionControlService):
                     "estimated_dropped_packets": snapshot.estimated_dropped_packets,
                     "packets_in": snapshot.packets_in,
                     "packets_out": snapshot.packets_out,
+                    "round_trip_ms": snapshot.telemetry_round_trip_ms,
                 },
             )
         summary = "Otopilot heartbeat bağlı" if connected else "Otopilot heartbeat bağlantısı yok"
