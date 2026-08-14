@@ -422,7 +422,50 @@ class OnboardMissionService(OnboardMissionServiceContract):
         return self._task_control("task.stop", task, "stop")
 
     def cancel_task(self, task: str = "kamikaze.execute") -> OrinCommandReceipt:
-        return self._task_control("task.cancel", task, "cancel")
+        canonical = self._canonical_task(task)
+        try:
+            return self._task_control("task.cancel", canonical, "cancel")
+        except OnboardCommandRejectedError as exc:
+            # Cancellation is idempotent for the operator. A lost start ACK
+            # may leave YKİ uncertain even though onboard never instantiated
+            # the task; MissionNotFound means the desired end state is met.
+            if str(exc.response.get("error_type", "")) != "MissionNotFoundError":
+                raise
+            request_id = self._optional_int(exc.response.get("request_id")) or 0
+            message = "Görev zaten aktif değildi; iptal edilmiş kabul edildi"
+            response = {
+                **exc.response,
+                "accepted": True,
+                "execution": "cancelled",
+                "task": canonical,
+                "already_inactive": True,
+            }
+            with self._lock:
+                self._state = replace(
+                    self._state,
+                    active_task="",
+                    mission_id=None,
+                    phase="idle",
+                    waiting_for_guided=False,
+                    last_error="",
+                )
+            self._log(
+                "onboard.cancel_idempotent",
+                message,
+                "success",
+                {
+                    "task": canonical,
+                    "request_id": request_id,
+                    "onboard_error": str(exc),
+                },
+            )
+            self._publish()
+            return OrinCommandReceipt(
+                request_id,
+                True,
+                message,
+                response,
+            )
 
     def refresh(self) -> OrinCommandReceipt:
         receipt = self._issue("mission.list", {}, pending="refresh")
@@ -571,7 +614,10 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 "Komut yanıtı zaman aşımına uğradı; aynı görev otomatik "
                 "başlatılmadı. Görev durumu yeniden sorgulanacak."
             )
-            self._set_error(message)
+            self._set_error(
+                message,
+                phase=("reconciling" if packet_type.startswith("task.") else None),
+            )
             self._log("onboard.command_timeout", message, "warning", {"type": packet_type})
             self._start_recovery()
             raise TimeoutError(message) from exc
@@ -1012,19 +1058,30 @@ class OnboardMissionService(OnboardMissionServiceContract):
             available_tasks = tuple(
                 dict.fromkeys((*self._state.available_tasks, *advertised_tasks))
             )
+            active_task = state.active_task or self._state.active_task
+            mission_id = (
+                state.active_missions[0]
+                if len(state.active_missions) == 1
+                else self._state.mission_id
+            )
+            phase = self._state.phase
+            waiting_for_guided = self._state.waiting_for_guided
+            if session_changed:
+                active_task = ""
+                mission_id = None
+                phase = "idle"
+                waiting_for_guided = False
             self._state = replace(
                 self._state,
                 connected=state.alive,
                 onboard_version=state.version,
                 vehicle_mode=state.vehicle_mode,
-                active_task=state.active_task or self._state.active_task,
+                active_task=active_task,
                 available_tasks=available_tasks,
                 queued_tasks=tuple(state.queued_tasks),
-                mission_id=(
-                    state.active_missions[0]
-                    if len(state.active_missions) == 1
-                    else self._state.mission_id
-                ),
+                mission_id=mission_id,
+                phase=phase,
+                waiting_for_guided=waiting_for_guided,
                 target_ready=target_ready,
                 target_revision=(
                     state.kamikaze_target_revision
@@ -1049,10 +1106,12 @@ class OnboardMissionService(OnboardMissionServiceContract):
         threading.Thread(target=self._recover, name="OnboardMissionRecovery", daemon=True).start()
 
     def _recover(self) -> None:
+        reconciled = False
         try:
             receipt = self._orin.issue("mission.list", {})
             if receipt.accepted:
                 self._apply_mission_list(receipt.response)
+                reconciled = True
             mission_ids = set(self._event_cursors)
             if self.state.mission_id is not None:
                 mission_ids.add(self.state.mission_id)
@@ -1080,6 +1139,9 @@ class OnboardMissionService(OnboardMissionServiceContract):
         finally:
             with self._lock:
                 self._recovery_running = False
+                if not reconciled and self._state.phase == "reconciling":
+                    self._state = replace(self._state, phase="failed")
+            self._publish()
 
     def _apply_mission_list(self, response: Any) -> None:
         if isinstance(response, dict):
@@ -1119,25 +1181,63 @@ class OnboardMissionService(OnboardMissionServiceContract):
             ),
             None,
         )
+        current = self.state
+        terminal = None
+        if active is None and (current.active_task or current.mission_id is not None):
+            candidates = [
+                item
+                for item in missions
+                if isinstance(item, dict)
+                and str(item.get("task", "")).strip()
+                and str(item.get("phase", "")).strip().lower()
+                in {"stopped", "succeeded", "failed", "cancelled"}
+                and (
+                    self._optional_int(item.get("mission_id")) == current.mission_id
+                    or self._canonical_task(str(item.get("task", "")))
+                    == current.active_task
+                )
+            ]
+            if candidates:
+                terminal = max(
+                    candidates,
+                    key=lambda item: float(item.get("updated_at") or 0.0),
+                )
         with self._lock:
+            if active is not None:
+                active_task = self._canonical_task(str(active.get("task", "")))
+                mission_id = self._optional_int(active.get("mission_id"))
+                phase = str(active.get("phase", self._state.phase)).lower()
+                result = self._state.result
+                result_received = self._state.result_received
+            elif terminal is not None:
+                active_task = self._canonical_task(str(terminal.get("task", "")))
+                mission_id = self._optional_int(terminal.get("mission_id"))
+                phase = str(terminal.get("phase", "failed")).lower()
+                result = dict(terminal)
+                result_received = True
+            elif not self._state.terminal:
+                active_task = ""
+                mission_id = None
+                phase = "idle"
+                result = self._state.result
+                result_received = self._state.result_received
+            else:
+                active_task = self._state.active_task
+                mission_id = self._state.mission_id
+                phase = self._state.phase
+                result = self._state.result
+                result_received = self._state.result_received
             self._state = replace(
                 self._state,
                 available_tasks=available_tasks,
-                active_task=(
-                    self._canonical_task(str(active.get("task", "")))
-                    if active is not None
-                    else self._state.active_task
+                active_task=active_task,
+                mission_id=mission_id,
+                phase=phase,
+                waiting_for_guided=(
+                    self._state.waiting_for_guided if active is not None else False
                 ),
-                mission_id=(
-                    self._optional_int(active.get("mission_id"))
-                    if active is not None
-                    else self._state.mission_id
-                ),
-                phase=(
-                    str(active.get("phase", self._state.phase)).lower()
-                    if active is not None
-                    else self._state.phase
-                ),
+                result=result,
+                result_received=result_received,
             )
         self._publish()
 

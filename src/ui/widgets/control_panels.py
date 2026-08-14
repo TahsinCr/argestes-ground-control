@@ -707,7 +707,15 @@ class CommandPanel(PanelFrame):
         task_active = bool(
             state.connected
             and state.active_task
-            and not state.terminal
+            and state.phase
+            in {
+                "queued",
+                "starting",
+                "running",
+                "pausing",
+                "paused",
+                "stopping",
+            }
         )
         self.task_cancel_button.setEnabled(task_active and not state.pending_command)
         self._sync_command_availability()

@@ -236,6 +236,57 @@ class OnboardMissionProtocolTests(unittest.TestCase):
 
         self.assertEqual(len(target_requests), 2)
 
+    def test_new_orin_session_clears_a_stale_requesting_task(self) -> None:
+        self.service._state = replace(
+            self.service.state,
+            connected=True,
+            active_task=ACTUATOR_TEST_TASK,
+            mission_id=84,
+            phase="requesting",
+        )
+        self.service._last_orin_session = "old-session"
+        state = replace(
+            self.orin.state,
+            alive=True,
+            session_id="new-session",
+            active_task="",
+            active_missions=(),
+        )
+
+        self.service._on_orin_changed(state)
+
+        self.assertEqual(self.service.state.active_task, "")
+        self.assertIsNone(self.service.state.mission_id)
+        self.assertEqual(self.service.state.phase, "idle")
+
+    def test_mission_list_reconciles_a_lost_start_ack_to_terminal_state(self) -> None:
+        self.service._state = replace(
+            self.service.state,
+            active_task=ACTUATOR_TEST_TASK,
+            phase="requesting",
+        )
+
+        self.service._apply_mission_list(
+            {
+                "available_tasks": [ACTUATOR_TEST_TASK],
+                "missions": [
+                    {
+                        "mission_id": 84,
+                        "task": ACTUATOR_TEST_TASK,
+                        "phase": "succeeded",
+                        "updated_at": 10.0,
+                        "result": {"execution": "notification_only"},
+                    }
+                ],
+            }
+        )
+
+        state = self.service.state
+        self.assertEqual(state.active_task, ACTUATOR_TEST_TASK)
+        self.assertEqual(state.mission_id, 84)
+        self.assertEqual(state.phase, "succeeded")
+        self.assertTrue(state.result_received)
+
     def test_qr_report_is_submitted_once_and_duplicate_is_acknowledged(self) -> None:
         handler = self.orin.handlers["kamikaze.qr.report"]
         message = OrinMessage(
@@ -606,6 +657,61 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         )
         self.assertIn(ACTUATOR_TEST_TASK, service.state.available_tasks)
         self.assertEqual(service.state.active_task, "")
+
+    def test_empty_mission_list_clears_uncertain_started_task(self) -> None:
+        self.service._state = replace(
+            self.service.state,
+            connected=True,
+            active_task=ACTUATOR_TEST_TASK,
+            phase="reconciling",
+            last_error="Start acknowledgement timed out",
+        )
+
+        self.service._apply_mission_list(
+            {
+                "missions": [],
+                "available_tasks": [ACTUATOR_TEST_TASK],
+            }
+        )
+
+        state = self.service.state
+        self.assertEqual(state.active_task, "")
+        self.assertIsNone(state.mission_id)
+        self.assertEqual(state.phase, "idle")
+
+    def test_cancel_is_idempotent_when_onboard_task_is_already_absent(self) -> None:
+        self.service._state = replace(
+            self.service.state,
+            connected=True,
+            active_task=ACTUATOR_TEST_TASK,
+            mission_id=84,
+            phase="running",
+        )
+        self.orin.responses.append(
+            OrinCommandReceipt(
+                205,
+                False,
+                "Task is not instantiated: system.actuator.test",
+                {
+                    "request_id": 205,
+                    "accepted": False,
+                    "message": "Task is not instantiated: system.actuator.test",
+                    "error_type": "MissionNotFoundError",
+                },
+            )
+        )
+
+        receipt = self.service.cancel_task(ACTUATOR_TEST_TASK)
+
+        self.assertTrue(receipt.accepted)
+        self.assertEqual(receipt.response["execution"], "cancelled")
+        self.assertTrue(receipt.response["already_inactive"])
+        self.assertEqual(self.service.state.active_task, "")
+        self.assertEqual(self.service.state.phase, "idle")
+        self.assertEqual(
+            self.logs.history[-1].action,
+            "onboard.cancel_idempotent",
+        )
 
 
 if __name__ == "__main__":

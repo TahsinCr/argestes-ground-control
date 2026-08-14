@@ -921,6 +921,17 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("84", panel.actuator_detail.text())
         self.assertIn("1700", panel.actuator_detail.text())
         self.assertGreater(panel.actuator_progress.maximum(), 0)
+        self.assertTrue(panel.task_cancel_button.isEnabled())
+
+        panel.update_onboard_state(
+            OnboardMissionState(
+                connected=True,
+                active_task=ACTUATOR_TEST_TASK,
+                available_tasks=(ACTUATOR_TEST_TASK,),
+                phase="reconciling",
+            )
+        )
+        self.assertFalse(panel.task_cancel_button.isEnabled())
 
         panel.update_onboard_state(
             OnboardMissionState(
