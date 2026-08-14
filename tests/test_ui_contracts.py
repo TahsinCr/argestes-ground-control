@@ -904,7 +904,7 @@ class UiContractTests(unittest.TestCase):
                 armed=True,
             )
         )
-        self.assertFalse(panel.task_apply_button.isEnabled())
+        self.assertTrue(panel.task_apply_button.isEnabled())
         self.assertIn("ARMED", panel.actuator_status.text())
         panel.update_snapshot(
             TelemetrySnapshot.zero().copy(

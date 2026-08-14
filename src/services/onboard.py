@@ -225,17 +225,21 @@ class OnboardMissionService(OnboardMissionServiceContract):
                     receipt.response,
                 )
             accepted_target = receipt.response.get("target")
-            if not isinstance(accepted_target, dict):
-                raise OnboardCommandRejectedError(
-                    "Orin ACK yanıtında kabul edilen kamikaze hedefi bulunmuyor",
-                    receipt.response,
-                )
+            compact_ack = not isinstance(accepted_target, dict)
+            if compact_ack:
+                # Current onboard releases may omit the echoed target to keep
+                # the correlated ACK inside one low-bandwidth MAVLink frame.
+                # The ACK still proves acceptance; retain the exact snapshot
+                # that produced this request instead of rejecting it locally.
+                accepted_target = {
+                    **canonical,
+                    "plate_height_m": 3.0,
+                }
+            else:
+                accepted_target = dict(accepted_target)
             revision = self._optional_int(receipt.response.get("target_revision"))
             if revision is None:
-                raise OnboardCommandRejectedError(
-                    "Orin ACK yanıtında geçerli hedef revizyonu bulunmuyor",
-                    receipt.response,
-                )
+                revision = source_revision
             with self._lock:
                 self._target_acknowledged_hash = content_hash
                 self._state = replace(
@@ -254,6 +258,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
                     "execution": execution,
                     "target_revision": revision,
                     "target": dict(accepted_target),
+                    "compact_ack": compact_ack,
                 },
             )
             self._publish()

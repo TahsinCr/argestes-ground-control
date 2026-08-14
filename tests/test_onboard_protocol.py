@@ -172,6 +172,36 @@ class OnboardMissionProtocolTests(unittest.TestCase):
             any(entry.action == "kamikaze.target_failed" for entry in self.logs.history)
         )
 
+    def test_compact_target_ack_allows_kamikaze_start(self) -> None:
+        original_issue = self.orin.issue
+
+        def compact_target_ack(packet_type, payload=None, *, timeout=None):
+            if packet_type == "kamikaze.target.update":
+                self.orin.requests.append((packet_type, dict(payload or {})))
+                return OrinCommandReceipt(
+                    77,
+                    True,
+                    "Command accepted",
+                    {"execution": "updated"},
+                )
+            return original_issue(packet_type, payload, timeout=timeout)
+
+        self.orin.issue = compact_target_ack
+        receipt = self.service.start_task("KAMIKAZE")
+
+        self.assertTrue(receipt.accepted)
+        self.assertEqual(self.orin.requests[-1][0], "task.start")
+        self.assertTrue(self.service.state.target_ready)
+        self.assertEqual(
+            self.service.state.target["latitude_deg"],
+            self.competition.qr_coordinate.latitude,
+        )
+        target_logs = [
+            entry for entry in self.logs.history
+            if entry.action == "kamikaze.target_ack"
+        ]
+        self.assertTrue(target_logs[-1].details["compact_ack"])
+
     def test_missing_teknofest_target_blocks_kamikaze_start(self) -> None:
         self.competition.qr_coordinate = None
 
