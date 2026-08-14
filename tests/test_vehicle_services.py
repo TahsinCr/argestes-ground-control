@@ -1542,6 +1542,65 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(states, [True, False])
         self.assertEqual(logs.history[-1].action, "video.frame_timeout")
 
+    def test_video_resolution_change_bypasses_stats_throttle(self) -> None:
+        logs = LoggingService()
+        service = GStreamerVideoService(
+            "usb",
+            "/dev/video0",
+            logs.child("VIDEO"),
+        )
+        service._frame_count = 2
+        service._last_stats_at = 10.0
+        service._observe_resolution(1280, 720)
+        service._record_frame_stats(1280, 720, 10.0)
+
+        service._frame_count = 3
+        changed = service._observe_resolution(1920, 1080)
+        service._record_frame_stats(1920, 1080, 10.01)
+
+        self.assertTrue(changed)
+        self.assertEqual((service.stats.width, service.stats.height), (1920, 1080))
+        resolution_logs = [
+            event for event in logs.history
+            if event.action == "video.resolution_changed"
+        ]
+        self.assertEqual(len(resolution_logs), 1)
+        self.assertEqual(resolution_logs[0].details["previous_width"], 1280)
+        self.assertEqual(resolution_logs[0].details["width"], 1920)
+
+    def test_video_resolution_verification_is_rate_limited(self) -> None:
+        class _CapsStructure:
+            values = {"width": 640, "height": 480}
+
+            def get_value(self, key):
+                return self.values[key]
+
+        class _Caps:
+            def get_size(self):
+                return 1
+
+            def get_structure(self, _index):
+                return _CapsStructure()
+
+        class _SinkPad:
+            def __init__(self):
+                self.calls = 0
+
+            def get_current_caps(self):
+                self.calls += 1
+                return _Caps()
+
+        service = GStreamerVideoService("usb", "/dev/video0")
+        sink_pad = _SinkPad()
+        service._sink_pad = sink_pad
+
+        service._verify_negotiated_resolution(now=5.0)
+        service._verify_negotiated_resolution(now=7.0)
+        service._verify_negotiated_resolution(now=10.0)
+
+        self.assertEqual(sink_pad.calls, 2)
+        self.assertEqual(service._active_resolution, (640, 480))
+
     def test_structured_logs_are_persisted_outside_ui(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "events.jsonl"

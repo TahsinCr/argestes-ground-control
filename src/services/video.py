@@ -114,6 +114,8 @@ class MutableVideoService(VideoService):
 class GStreamerVideoService(MutableVideoService):
     """Convert GStreamer appsink frames into the shared VideoFrame model."""
 
+    _RESOLUTION_VERIFY_INTERVAL_S = 5.0
+
     def __init__(
         self,
         source_type: str,
@@ -145,6 +147,10 @@ class GStreamerVideoService(MutableVideoService):
         self._frame_times: deque[float] = deque()
         self._transport_samples: deque[tuple[float, int]] = deque()
         self._measurement_lock = threading.RLock()
+        self._active_resolution: tuple[int, int] | None = None
+        self._resolution_publish_pending = False
+        self._last_resolution_verify_at = 0.0
+        self._sink_pad: Any | None = None
         self._started = False
 
     @property
@@ -202,11 +208,24 @@ class GStreamerVideoService(MutableVideoService):
         if sink is None:
             raise ValueError("GStreamer pipeline yki_sink appsink öğesi üretmedi")
         sink.connect("new-sample", self._on_sample)
+        sink_pad = sink.get_static_pad("sink")
+        if sink_pad is not None:
+            sink_pad.add_probe(
+                Gst.PadProbeType.EVENT_DOWNSTREAM,
+                self._on_sink_event,
+            )
         transport_meter = pipeline.get_by_name("yki_transport_stats")
         if transport_meter is not None:
             transport_pad = transport_meter.get_static_pad("src")
             if transport_pad is not None:
                 transport_pad.add_probe(Gst.PadProbeType.BUFFER, self._on_transport_buffer)
+        with self._measurement_lock:
+            self._frame_times.clear()
+            self._transport_samples.clear()
+            self._active_resolution = None
+            self._resolution_publish_pending = False
+            self._last_resolution_verify_at = 0.0
+        self._sink_pad = sink_pad
         result = pipeline.set_state(Gst.State.PLAYING)
         if result == Gst.StateChangeReturn.FAILURE:
             pipeline.set_state(Gst.State.NULL)
@@ -217,9 +236,6 @@ class GStreamerVideoService(MutableVideoService):
         self._frame_count = 0
         self._last_stats_at = 0.0
         self._target_fps = None
-        with self._measurement_lock:
-            self._frame_times.clear()
-            self._transport_samples.clear()
         self._publish_stats(VideoStreamStats())
         self._started = True
         self._bus_thread = threading.Thread(
@@ -245,6 +261,7 @@ class GStreamerVideoService(MutableVideoService):
         self._stop_event.set()
         pipeline = self._pipeline
         self._pipeline = None
+        self._sink_pad = None
         if pipeline is not None and self._gst is not None:
             pipeline.set_state(self._gst.State.NULL)
         thread = self._bus_thread
@@ -271,6 +288,7 @@ class GStreamerVideoService(MutableVideoService):
             structure = caps.get_structure(0)
             width = int(structure.get_value("width"))
             height = int(structure.get_value("height"))
+            self._observe_resolution(width, height)
             try:
                 fraction = tuple(structure.get_fraction("framerate"))
                 if len(fraction) == 3:
@@ -326,6 +344,58 @@ class GStreamerVideoService(MutableVideoService):
             )
             return Gst.FlowReturn.ERROR
 
+    def _on_sink_event(self, _pad: Any, info: Any) -> Any:
+        Gst = self._gst
+        if Gst is None:
+            return 0
+        event = info.get_event()
+        if event is not None and event.type == Gst.EventType.CAPS:
+            resolution = self._caps_resolution(event.parse_caps())
+            if resolution is not None:
+                self._observe_resolution(*resolution)
+        return Gst.PadProbeReturn.OK
+
+    @staticmethod
+    def _caps_resolution(caps: Any) -> tuple[int, int] | None:
+        if caps is None or caps.get_size() <= 0:
+            return None
+        structure = caps.get_structure(0)
+        try:
+            width = int(structure.get_value("width"))
+            height = int(structure.get_value("height"))
+        except (TypeError, ValueError):
+            return None
+        if width <= 0 or height <= 0:
+            return None
+        return width, height
+
+    def _observe_resolution(self, width: int, height: int) -> bool:
+        resolution = (int(width), int(height))
+        if resolution[0] <= 0 or resolution[1] <= 0:
+            return False
+        with self._measurement_lock:
+            previous = self._active_resolution
+            if previous == resolution:
+                return False
+            self._active_resolution = resolution
+            self._resolution_publish_pending = True
+        if previous is not None:
+            self._event(
+                "video.resolution_changed",
+                (
+                    f"Video çözünürlüğü {previous[0]}x{previous[1]} "
+                    f"→ {resolution[0]}x{resolution[1]} olarak değişti"
+                ),
+                severity="success",
+                details={
+                    "previous_width": previous[0],
+                    "previous_height": previous[1],
+                    "width": resolution[0],
+                    "height": resolution[1],
+                },
+            )
+        return True
+
     def _on_transport_buffer(self, _pad: Any, info: Any) -> Any:
         Gst = self._gst
         if Gst is None:
@@ -345,9 +415,15 @@ class GStreamerVideoService(MutableVideoService):
                 self._frame_times.popleft()
             while self._transport_samples and self._transport_samples[0][0] < cutoff:
                 self._transport_samples.popleft()
-            if now - self._last_stats_at < 0.45 and self._frame_count > 1:
+            resolution_changed = self._resolution_publish_pending
+            if (
+                not resolution_changed
+                and now - self._last_stats_at < 0.45
+                and self._frame_count > 1
+            ):
                 return
             self._last_stats_at = now
+            self._resolution_publish_pending = False
             frame_times = tuple(self._frame_times)
             transport_samples = tuple(self._transport_samples)
         fps = 0.0
@@ -400,6 +476,7 @@ class GStreamerVideoService(MutableVideoService):
         while not self._stop_event.is_set():
             message = bus.timed_pop_filtered(250 * Gst.MSECOND, mask)
             if message is None:
+                self._verify_negotiated_resolution()
                 self._check_frame_timeout()
                 continue
             if message.type == Gst.MessageType.ERROR:
@@ -416,7 +493,24 @@ class GStreamerVideoService(MutableVideoService):
                 self._event("video.end_of_stream", "Video akışı sona erdi", severity="warning")
                 self._set_connected(False)
                 self._stop_event.set()
+            self._verify_negotiated_resolution()
             self._check_frame_timeout()
+
+    def _verify_negotiated_resolution(self, now: float | None = None) -> None:
+        checked_at = time.monotonic() if now is None else float(now)
+        with self._measurement_lock:
+            if (
+                checked_at - self._last_resolution_verify_at
+                < self._RESOLUTION_VERIFY_INTERVAL_S
+            ):
+                return
+            self._last_resolution_verify_at = checked_at
+        sink_pad = self._sink_pad
+        if sink_pad is None:
+            return
+        resolution = self._caps_resolution(sink_pad.get_current_caps())
+        if resolution is not None:
+            self._observe_resolution(*resolution)
 
     def _check_frame_timeout(self, now: float | None = None) -> None:
         if not self.connected or self._last_frame_at <= 0:
