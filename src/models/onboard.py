@@ -112,6 +112,11 @@ class OnboardMissionState(Model):
     target_ready: bool = False
     target_revision: int = 0
     target: dict[str, Any] = field(default_factory=dict)
+    hss_ready: bool = False
+    hss_active: bool = False
+    hss_revision: int = 0
+    hss_count: int = 0
+    hss_content_hash: str = ""
     critical_event: str = ""
     actuator_step: str = ""
     actuator_step_count: int = 0
@@ -169,6 +174,11 @@ class OnboardMissionState(Model):
             "target_ready": self.target_ready,
             "target_revision": self.target_revision,
             "target": dict(self.target),
+            "hss_ready": self.hss_ready,
+            "hss_active": self.hss_active,
+            "hss_revision": self.hss_revision,
+            "hss_count": self.hss_count,
+            "hss_content_hash": self.hss_content_hash,
             "critical_event": self.critical_event,
             "actuator_step": self.actuator_step,
             "actuator_step_count": self.actuator_step_count,

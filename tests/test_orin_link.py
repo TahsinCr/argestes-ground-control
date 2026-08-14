@@ -38,6 +38,64 @@ from src.services.video import MutableVideoService
 
 
 class OrinLinkTests(unittest.TestCase):
+    def test_liveness_payload_is_compact_and_carries_utc_time(self) -> None:
+        vehicle = SimpleNamespace(
+            connected=True,
+            state=VehicleConnectionState(True, "COM3", 1, 1),
+            connection_changed=EventBus(),
+        )
+        client = SimpleNamespace(
+            endpoint=SimpleNamespace(
+                uri="COM3",
+                source_system=255,
+                source_component=0,
+            ),
+            connection=SimpleNamespace(target_system=1),
+        )
+        service = MavlinkOrinService(client, vehicle)  # type: ignore[arg-type]
+
+        payload = service._heartbeat_payload()
+
+        self.assertEqual(payload["role"], "yki")
+        self.assertIn("utc_ms", payload)
+        self.assertNotIn("capabilities", payload)
+        self.assertLess(len(json.dumps(payload).encode("utf-8")), 180)
+
+    def test_orin_heartbeat_tracks_session_and_onboard_clock(self) -> None:
+        vehicle = SimpleNamespace(
+            connected=True,
+            state=VehicleConnectionState(True, "COM3", 1, 1),
+            connection_changed=EventBus(),
+        )
+        client = SimpleNamespace(
+            endpoint=SimpleNamespace(
+                uri="COM3",
+                source_system=255,
+                source_component=0,
+            ),
+            connection=SimpleNamespace(target_system=1),
+        )
+        service = MavlinkOrinService(client, vehicle)  # type: ignore[arg-type]
+        onboard_time = datetime(2026, 8, 14, 12, 30, 15, tzinfo=UTC)
+
+        service._on_packet(
+            MavlinkApplicationPacket(
+                "system.pong",
+                {
+                    "role": "orin",
+                    "health": "ok",
+                    "session": "orin-boot-42",
+                    "utc_ms": int(onboard_time.timestamp() * 1_000),
+                },
+                source_system=1,
+                source_component=191,
+            )
+        )
+
+        self.assertEqual(service.state.session_id, "orin-boot-42")
+        self.assertEqual(service.state.onboard_time_utc, onboard_time)
+        self.assertIsNotNone(service.state.onboard_time_received_at)
+
     def test_orin_heartbeat_exposes_onboard_available_tasks(self) -> None:
         vehicle = SimpleNamespace(
             connected=True,

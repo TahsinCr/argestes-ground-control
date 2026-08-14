@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
+from collections import OrderedDict
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
 from src.core.events import EventBus, Subscription
+from src.models.competition import HssZone, KamikazeEvent, QrCoordinate
 from src.models.onboard import (
     ACTUATOR_TEST_EVENTS,
     ACTUATOR_TEST_TASK,
@@ -37,6 +41,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
     """Correlate onboard commands, mission events and recoverable QR state."""
 
     _TIMELINE_LIMIT = 200
+    _QR_REPORT_HISTORY_LIMIT = 256
 
     def __init__(
         self,
@@ -56,6 +61,22 @@ class OnboardMissionService(OnboardMissionServiceContract):
         self._lock = threading.RLock()
         self._started = False
         self._recovery_running = False
+        self._reference_sync_event = threading.Event()
+        self._reference_sync_stop = threading.Event()
+        self._reference_sync_thread: threading.Thread | None = None
+        self._hss_observed = False
+        self._hss_revision = 0
+        self._hss_content_hash = ""
+        self._hss_acknowledged_hash = ""
+        self._hss_snapshot: tuple[HssZone, ...] = ()
+        self._target_source_revision = 0
+        self._target_content_hash = ""
+        self._target_acknowledged_hash = ""
+        self._last_orin_session = ""
+        self._submitted_qr_reports: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._target_sync_lock = threading.RLock()
+        self._hss_sync_lock = threading.RLock()
+        self._qr_report_lock = threading.RLock()
 
     @property
     def state(self) -> OnboardMissionState:
@@ -88,16 +109,36 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 self._orin.register_handler("mission.event", self._handle_mission_event),
                 self._orin.register_handler("mission.chain", self._handle_chain),
                 self._orin.register_handler("kamikaze.event", self._handle_kamikaze_event),
+                self._orin.register_handler("kamikaze.qr.report", self._handle_qr_report),
+                self._competition.hss_updated.subscribe(self._on_hss_updated),
+                self._competition.qr_updated.subscribe(self._on_qr_updated),
             ]
         )
+        self._reference_sync_stop.clear()
+        self._reference_sync_thread = threading.Thread(
+            target=self._reference_sync_loop,
+            name="OnboardReferenceSync",
+            daemon=True,
+        )
+        self._reference_sync_thread.start()
+        if self._competition.hss_zones:
+            self._on_hss_updated(self._competition.hss_zones)
+        if self._competition.qr_coordinate is not None:
+            self._on_qr_updated(self._competition.qr_coordinate)
         self._on_orin_changed(self._orin.state)
 
     def stop(self) -> None:
         with self._lock:
             self._started = False
+        self._reference_sync_stop.set()
+        self._reference_sync_event.set()
         for subscription in self._subscriptions:
             subscription.cancel()
         self._subscriptions.clear()
+        thread = self._reference_sync_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+        self._reference_sync_thread = None
 
     def start_task(self, task: str, *, source: str = "ui") -> OrinCommandReceipt:
         canonical = self._canonical_task(task)
@@ -120,7 +161,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
             task=canonical,
         )
 
-    def _sync_kamikaze_target(self) -> OrinCommandReceipt:
+    def _sync_kamikaze_target(self) -> OrinCommandReceipt | None:
         """Forward the latest TEKNOFEST QR target before a kamikaze launch."""
 
         try:
@@ -128,10 +169,33 @@ class OnboardMissionService(OnboardMissionServiceContract):
             target = self._competition.qr_coordinate
             if target is None:
                 raise RuntimeError("TEKNOFEST sunucusundan QR hedef koordinatı alınamadı")
+            return self._send_target_update(target)
+        except Exception as exc:
+            self._record_target_failure(exc)
+            raise
+
+    def _send_target_update(self, target: QrCoordinate) -> OrinCommandReceipt | None:
+        with self._target_sync_lock:
+            canonical = {
+                "latitude_deg": round(float(target.latitude), 7),
+                "longitude_deg": round(float(target.longitude), 7),
+            }
+            content_hash = self._content_hash(canonical)
+            with self._lock:
+                if content_hash != self._target_content_hash:
+                    self._target_source_revision += 1
+                    self._target_content_hash = content_hash
+                source_revision = self._target_source_revision
+                if (
+                    content_hash == self._target_acknowledged_hash
+                    and self._state.target_ready
+                ):
+                    return None
             payload = {
-                "latitude_deg": float(target.latitude),
-                "longitude_deg": float(target.longitude),
+                **canonical,
                 "source": "teknofest",
+                "source_revision": source_revision,
+                "content_hash": content_hash,
                 "fetched_at_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             }
             self._log(
@@ -165,6 +229,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
                     receipt.response,
                 )
             with self._lock:
+                self._target_acknowledged_hash = content_hash
                 self._state = replace(
                     self._state,
                     target_ready=True,
@@ -185,21 +250,158 @@ class OnboardMissionService(OnboardMissionServiceContract):
             )
             self._publish()
             return receipt
-        except Exception as exc:
+
+    def _record_target_failure(self, exc: Exception) -> None:
+        with self._lock:
+            self._state = replace(
+                self._state,
+                target_ready=False,
+                last_error=str(exc),
+            )
+        self._log(
+            "kamikaze.target_failed",
+            f"Kamikaze hedefi Orin'e aktarılamadı: {exc}",
+            "danger",
+            {"error": str(exc), "error_type": type(exc).__name__},
+        )
+        self._publish()
+
+    def _on_hss_updated(self, zones: tuple[HssZone, ...]) -> None:
+        snapshot = tuple(sorted(zones, key=lambda zone: zone.identifier))
+        payload_zones = self._hss_payload(snapshot)
+        content_hash = self._content_hash(
+            {"active": bool(snapshot), "zones": payload_zones}
+        )
+        with self._lock:
+            self._hss_observed = True
+            self._hss_snapshot = snapshot
+            if content_hash != self._hss_content_hash:
+                self._hss_revision += 1
+                self._hss_content_hash = content_hash
+        self._reference_sync_event.set()
+
+    def _on_qr_updated(self, target: QrCoordinate | None) -> None:
+        if target is not None:
+            self._reference_sync_event.set()
+
+    def _reference_sync_loop(self) -> None:
+        while not self._reference_sync_stop.is_set():
+            self._reference_sync_event.wait()
+            self._reference_sync_event.clear()
+            if self._reference_sync_stop.is_set():
+                return
+            if not self.state.connected:
+                continue
             with self._lock:
+                hss_observed = self._hss_observed
+            if hss_observed:
+                try:
+                    self._send_hss_update()
+                except Exception as exc:
+                    self._log(
+                        "competition.hss_sync_failed",
+                        "HSS durumu Orin'e aktarılamadı",
+                        "warning",
+                        {"error": str(exc), "error_type": type(exc).__name__},
+                    )
+            target = self._competition.qr_coordinate
+            if target is not None:
+                try:
+                    self._send_target_update(target)
+                except Exception as exc:
+                    self._record_target_failure(exc)
+
+    def _send_hss_update(self) -> OrinCommandReceipt | None:
+        with self._hss_sync_lock:
+            with self._lock:
+                zones = self._hss_snapshot
+                revision = self._hss_revision
+                content_hash = self._hss_content_hash
+                if content_hash == self._hss_acknowledged_hash:
+                    return None
+            active = bool(zones)
+            payload = {
+                "revision": revision,
+                "active": active,
+                "content_hash": content_hash,
+                "zones": self._hss_payload(zones),
+                "reason": "source-active" if active else "source-ended",
+            }
+            self._log(
+                "competition.hss_sync_tx",
+                "TEKNOFEST HSS durumu Orin'e gönderiliyor",
+                "info",
+                {
+                    "revision": revision,
+                    "active": active,
+                    "hss_count": len(zones),
+                    "content_hash": content_hash,
+                },
+            )
+            receipt = self._orin.issue("competition.hss.update", payload)
+            execution = str(receipt.response.get("execution", "")).strip().lower()
+            accepted_executions = {"updated", "unchanged"}
+            if not active:
+                accepted_executions.add("cleared")
+            if not receipt.accepted or execution not in accepted_executions:
+                raise OnboardCommandRejectedError(
+                    receipt.message or "Orin HSS güncellemesini reddetti",
+                    receipt.response,
+                )
+            acknowledged_revision = self._optional_int(
+                receipt.response.get("revision")
+            )
+            if acknowledged_revision is not None and acknowledged_revision != revision:
+                raise OnboardCommandRejectedError(
+                    "Orin farklı bir HSS revizyonunu onayladı",
+                    receipt.response,
+                )
+            with self._lock:
+                self._hss_acknowledged_hash = content_hash
                 self._state = replace(
                     self._state,
-                    target_ready=False,
-                    last_error=str(exc),
+                    hss_ready=True,
+                    hss_active=active,
+                    hss_revision=revision,
+                    hss_count=len(zones),
+                    hss_content_hash=content_hash,
                 )
             self._log(
-                "kamikaze.target_failed",
-                f"Kamikaze hedefi Orin'e aktarılamadı: {exc}",
-                "danger",
-                {"error": str(exc), "error_type": type(exc).__name__},
+                "competition.hss_sync_ack",
+                "HSS durumu Orin tarafından kabul edildi",
+                "success",
+                {
+                    "request_id": receipt.request_id,
+                    "execution": execution,
+                    "revision": revision,
+                    "hss_count": len(zones),
+                },
             )
             self._publish()
-            raise
+            return receipt
+
+    @staticmethod
+    def _hss_payload(zones: tuple[HssZone, ...]) -> list[dict[str, int | float]]:
+        return [
+            {
+                "id": int(zone.identifier),
+                "latitude_deg": round(float(zone.latitude), 7),
+                "longitude_deg": round(float(zone.longitude), 7),
+                "radius_m": round(float(zone.radius_m), 2),
+            }
+            for zone in zones
+        ]
+
+    @staticmethod
+    def _content_hash(payload: dict[str, Any]) -> str:
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()[:16]
 
     def pause_task(self, task: str = "kamikaze.execute") -> OrinCommandReceipt:
         return self._task_control("task.pause", task, "pause")
@@ -492,9 +694,112 @@ class OnboardMissionService(OnboardMissionServiceContract):
         self._process_event_payload(message.payload, source="live")
         return {}
 
+    def _handle_qr_report(self, message: OrinMessage) -> dict[str, Any]:
+        with self._qr_report_lock:
+            return self._submit_qr_report(message)
+
+    def _submit_qr_report(self, message: OrinMessage) -> dict[str, Any]:
+        payload = dict(message.payload)
+        report_id = str(payload.get("report_id", "")).strip()[:128]
+        if not report_id:
+            raise ValueError("QR report_id alanı zorunlu")
+        with self._lock:
+            previous = self._submitted_qr_reports.get(report_id)
+            if previous is not None:
+                return dict(previous)
+
+        qr_text = str(payload.get("qr_text", "")).strip()
+        if not qr_text:
+            raise ValueError("QR raporu boş qr_text içeremez")
+        if len(qr_text) > 4096:
+            raise ValueError("QR raporu 4096 karakteri aşamaz")
+        ended_at = self._payload_datetime(
+            payload,
+            "ended_at_utc",
+            "observed_at_utc",
+            "time_utc",
+        )
+        started_at = self._payload_datetime(
+            payload,
+            "started_at_utc",
+            required=False,
+        ) or ended_at
+        mission_id = self._optional_int(payload.get("mission_id"))
+        altitude = payload.get("altitude_m")
+        event = OnboardMissionEvent(
+            event=str(payload.get("event") or "QR_DECODED"),
+            time_utc=ended_at.isoformat().replace("+00:00", "Z"),
+            mission_id=mission_id or self.state.mission_id,
+            source="report",
+            qr_text=qr_text,
+            altitude_m=(float(altitude) if altitude is not None else None),
+            fields={**payload, "report_id": report_id},
+        )
+        self._process_event_payload(
+            event.to_dict(),
+            source="report",
+            mission_id=event.mission_id,
+        )
+        self._competition.submit_kamikaze_event(
+            KamikazeEvent(
+                started_at=started_at,
+                ended_at=ended_at,
+                qr_text=qr_text,
+                vehicle_source="orin",
+            )
+        )
+        response = {
+            "execution": "submitted",
+            "report_id": report_id,
+            "mission_id": event.mission_id,
+        }
+        with self._lock:
+            self._submitted_qr_reports[report_id] = dict(response)
+            self._submitted_qr_reports.move_to_end(report_id)
+            while len(self._submitted_qr_reports) > self._QR_REPORT_HISTORY_LIMIT:
+                self._submitted_qr_reports.popitem(last=False)
+        self._log(
+            "kamikaze.qr_submitted",
+            "Orin QR raporu TEKNOFEST sunucusuna gönderildi",
+            "success",
+            {
+                "report_id": report_id,
+                "mission_id": event.mission_id,
+                "qr_text_length": len(qr_text),
+            },
+        )
+        return response
+
     def _handle_mission_event(self, message: OrinMessage) -> dict[str, Any]:
         self._process_event_payload(message.payload, source="live")
         return {}
+
+    @staticmethod
+    def _payload_datetime(
+        payload: dict[str, Any],
+        *keys: str,
+        required: bool = True,
+    ) -> datetime | None:
+        for key in keys:
+            value = payload.get(key)
+            if value is None:
+                continue
+            try:
+                if isinstance(value, (int, float)):
+                    resolved = datetime.fromtimestamp(float(value) / 1_000.0, UTC)
+                else:
+                    resolved = datetime.fromisoformat(
+                        str(value).strip().replace("Z", "+00:00")
+                    )
+                    if resolved.tzinfo is None:
+                        raise ValueError("timezone is required")
+                    resolved = resolved.astimezone(UTC)
+            except (OSError, OverflowError, TypeError, ValueError) as exc:
+                raise ValueError(f"Geçersiz QR zaman alanı: {key}") from exc
+            return resolved
+        if required:
+            raise ValueError(f"QR zaman alanı zorunlu: {'/'.join(keys)}")
+        return None
 
     def _process_event_payload(
         self,
@@ -660,15 +965,27 @@ class OnboardMissionService(OnboardMissionServiceContract):
     def _on_orin_changed(self, state: OrinConnectionState) -> None:
         with self._lock:
             was_connected = self._state.connected
+            session_changed = bool(
+                state.alive
+                and state.session_id
+                and state.session_id != self._last_orin_session
+            )
+            if state.session_id:
+                self._last_orin_session = state.session_id
             target_ready = self._state.target_ready
             target_revision = self._state.target_revision
             target = dict(self._state.target)
-            if state.alive and not was_connected:
+            hss_ready = self._state.hss_ready
+            if state.alive and (not was_connected or session_changed):
                 target_ready = False
                 target_revision = 0
                 target = {}
+                hss_ready = False
+                self._target_acknowledged_hash = ""
+                self._hss_acknowledged_hash = ""
             elif state.alive and not state.kamikaze_target_ready:
                 target_ready = False
+                self._target_acknowledged_hash = ""
             advertised_tasks = self._normalized_tasks(
                 (
                     *state.available_tasks,
@@ -702,9 +1019,12 @@ class OnboardMissionService(OnboardMissionServiceContract):
                     else target_revision
                 ),
                 target=target,
+                hss_ready=hss_ready,
                 last_error=state.last_error if not state.alive else self._state.last_error,
             )
         self._publish()
+        if state.alive and (not was_connected or session_changed):
+            self._reference_sync_event.set()
         if state.alive and not was_connected:
             self._start_recovery()
 

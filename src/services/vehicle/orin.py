@@ -528,16 +528,13 @@ class MavlinkOrinService(OrinService):
         )
 
     def _heartbeat_payload(self) -> dict[str, Any]:
+        # Keep the one-hertz liveness packet compact. Capabilities and mission
+        # inventories are transferred only by explicit state/list responses.
         return {
             "role": "yki",
             "health": "ok",
             "version": "1.4.3-beta",
-            "vehicle_system_id": self._target_system(),
-            "capabilities": [
-                "application.notify",
-                "application.request",
-                *self._handlers.packet_types,
-            ],
+            "utc_ms": int(datetime.now(UTC).timestamp() * 1_000),
         }
 
     def _on_packet(self, packet: MavlinkApplicationPacket) -> None:
@@ -574,6 +571,12 @@ class MavlinkOrinService(OrinService):
             kamikaze_target = payload.get("kamikaze_target")
             if not isinstance(kamikaze_target, dict):
                 kamikaze_target = {}
+            onboard_time = self._utc_milliseconds(payload.get("utc_ms"))
+            session_id = str(
+                payload.get("session")
+                or payload.get("session_id")
+                or self._state.session_id
+            ).strip()[:96]
             self._state = replace(
                 self._state,
                 alive=True if is_liveness else self._state.alive,
@@ -581,6 +584,17 @@ class MavlinkOrinService(OrinService):
                 system_id=int(packet.source_system or self._target_system()),
                 component_id=int(packet.source_component or self._config.component_id),
                 health=str(payload.get("health", self._state.health or "ok")),
+                session_id=session_id,
+                onboard_time_utc=(
+                    onboard_time
+                    if onboard_time is not None
+                    else self._state.onboard_time_utc
+                ),
+                onboard_time_received_at=(
+                    now
+                    if onboard_time is not None
+                    else self._state.onboard_time_received_at
+                ),
                 active_task=str(payload.get("active_task", self._state.active_task)),
                 active_tasks=active_tasks,
                 available_tasks=available_tasks,
@@ -755,6 +769,14 @@ class MavlinkOrinService(OrinService):
             return float(value)
         except (TypeError, ValueError, OverflowError):
             return float(fallback)
+
+    @staticmethod
+    def _utc_milliseconds(value: Any) -> datetime | None:
+        try:
+            resolved = datetime.fromtimestamp(int(value) / 1_000.0, UTC)
+        except (OSError, OverflowError, TypeError, ValueError):
+            return None
+        return resolved if 2020 <= resolved.year <= 2200 else None
 
     @staticmethod
     def _message(

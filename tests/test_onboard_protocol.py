@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import unittest
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 
 from src.core.events import EventBus, Subscription
-from src.models.competition import QrCoordinate
+from src.models.competition import HssZone, KamikazeEvent, QrCoordinate
 from src.models.onboard import ACTUATOR_TEST_TASK
 from src.models.orin import OrinCommandReceipt, OrinConnectionState, OrinMessage
 from src.services.logging_service import LoggingService
@@ -48,6 +49,20 @@ class FakeOrinService:
                     },
                 },
             )
+        if packet_type == "competition.hss.update":
+            hss_payload = dict(payload or {})
+            return OrinCommandReceipt(
+                len(self.requests),
+                True,
+                "HSS synchronized",
+                {
+                    "execution": (
+                        "updated" if hss_payload.get("active") else "cleared"
+                    ),
+                    "revision": hss_payload.get("revision"),
+                    "content_hash": hss_payload.get("content_hash"),
+                },
+            )
         if not self.responses:
             return OrinCommandReceipt(len(self.requests), True, "ok", {})
         response = self.responses.pop(0)
@@ -64,10 +79,17 @@ class FakeCompetitionService:
     def __init__(self) -> None:
         self.state = SimpleNamespace(connected=True, authenticated=True)
         self.qr_coordinate: QrCoordinate | None = QrCoordinate(39.925533, 32.866287)
+        self.hss_zones: tuple[HssZone, ...] = ()
+        self.hss_updated = EventBus[tuple[HssZone, ...]]()
+        self.qr_updated = EventBus[QrCoordinate | None]()
+        self.submitted_kamikaze: list[KamikazeEvent] = []
         self.refresh_count = 0
 
     def refresh_qr_coordinate(self) -> None:
         self.refresh_count += 1
+
+    def submit_kamikaze_event(self, event: KamikazeEvent) -> None:
+        self.submitted_kamikaze.append(event)
 
 
 class OnboardMissionProtocolTests(unittest.TestCase):
@@ -157,6 +179,126 @@ class OnboardMissionProtocolTests(unittest.TestCase):
             self.service.start_task("KAMIKAZE")
 
         self.assertEqual(self.orin.requests, [])
+
+    def test_hss_sync_only_sends_changes_and_clears_expired_zones(self) -> None:
+        zones = (
+            HssZone(2, 39.9256, 32.8664, 80.0),
+            HssZone(1, 39.9255, 32.8663, 75.0),
+        )
+        self.service._on_hss_updated(zones)
+        first = self.service._send_hss_update()
+        duplicate = self.service._send_hss_update()
+
+        self.assertIsNotNone(first)
+        self.assertIsNone(duplicate)
+        packet_type, payload = self.orin.requests[-1]
+        self.assertEqual(packet_type, "competition.hss.update")
+        self.assertTrue(payload["active"])
+        self.assertEqual([zone["id"] for zone in payload["zones"]], [1, 2])
+        self.assertEqual(payload["revision"], 1)
+
+        self.service._on_hss_updated(())
+        cleared = self.service._send_hss_update()
+
+        self.assertIsNotNone(cleared)
+        _packet_type, clear_payload = self.orin.requests[-1]
+        self.assertFalse(clear_payload["active"])
+        self.assertEqual(clear_payload["zones"], [])
+        self.assertEqual(clear_payload["reason"], "source-ended")
+        self.assertEqual(clear_payload["revision"], 2)
+        self.assertFalse(self.service.state.hss_active)
+        self.assertEqual(self.service.state.hss_count, 0)
+
+    def test_new_orin_session_invalidates_reference_acknowledgements(self) -> None:
+        target = self.competition.qr_coordinate
+        assert target is not None
+        self.service._send_target_update(target)
+        self.assertIsNone(self.service._send_target_update(target))
+
+        self.orin.state = replace(
+            self.orin.state,
+            alive=True,
+            session_id="orin-session-2",
+            kamikaze_target_ready=False,
+        )
+        self.service._on_orin_changed(self.orin.state)
+        deadline = time.monotonic() + 0.5
+        target_requests = []
+        while time.monotonic() < deadline:
+            target_requests = [
+                request for request in self.orin.requests
+                if request[0] == "kamikaze.target.update"
+            ]
+            if len(target_requests) >= 2:
+                break
+            time.sleep(0.005)
+
+        self.assertEqual(len(target_requests), 2)
+
+    def test_qr_report_is_submitted_once_and_duplicate_is_acknowledged(self) -> None:
+        handler = self.orin.handlers["kamikaze.qr.report"]
+        message = OrinMessage(
+            "kamikaze.qr.report",
+            {
+                "report_id": "mission-42:qr-1",
+                "mission_id": 42,
+                "event": "QR_DECODED_DURING_PULL_UP",
+                "qr_text": "KIRLANGIC-QR",
+                "started_at_utc": "2026-08-14T12:00:00Z",
+                "ended_at_utc": "2026-08-14T12:00:04Z",
+                "altitude_m": 48.2,
+            },
+            701,
+            1,
+            191,
+        )
+
+        first = handler(message)
+        duplicate = handler(message)
+
+        self.assertEqual(first, duplicate)
+        self.assertEqual(first["execution"], "submitted")
+        self.assertEqual(len(self.competition.submitted_kamikaze), 1)
+        self.assertEqual(
+            self.competition.submitted_kamikaze[0].qr_text,
+            "KIRLANGIC-QR",
+        )
+        self.assertEqual(self.service.state.qr_text, "KIRLANGIC-QR")
+        self.assertTrue(
+            any(entry.action == "kamikaze.qr_submitted" for entry in self.logs.history)
+        )
+
+    def test_failed_qr_submission_is_not_cached_and_can_be_retried(self) -> None:
+        attempts = 0
+
+        def submit(event: KamikazeEvent) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise ConnectionError("competition server unavailable")
+            self.competition.submitted_kamikaze.append(event)
+
+        self.competition.submit_kamikaze_event = submit
+        handler = self.orin.handlers["kamikaze.qr.report"]
+        message = OrinMessage(
+            "kamikaze.qr.report",
+            {
+                "report_id": "retryable-report",
+                "qr_text": "RETRY-QR",
+                "time_utc": "2026-08-14T12:00:04Z",
+            },
+            702,
+            1,
+            191,
+        )
+
+        with self.assertRaisesRegex(ConnectionError, "unavailable"):
+            handler(message)
+        response = handler(message)
+
+        self.assertEqual(response["execution"], "submitted")
+        self.assertEqual(attempts, 2)
+        self.assertEqual(len(self.competition.submitted_kamikaze), 1)
 
     def test_transition_and_terminal_result_are_not_confused_with_ack(self) -> None:
         self.orin.emit(

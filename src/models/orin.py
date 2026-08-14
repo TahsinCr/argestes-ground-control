@@ -42,6 +42,9 @@ class OrinConnectionState(Model):
     system_id: int = 0
     component_id: int = 191
     health: str = "unknown"
+    session_id: str = ""
+    onboard_time_utc: datetime | None = None
+    onboard_time_received_at: datetime | None = None
     active_task: str = ""
     active_tasks: tuple[str, ...] = field(default_factory=tuple)
     available_tasks: tuple[str, ...] = field(default_factory=tuple)

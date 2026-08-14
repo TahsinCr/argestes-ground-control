@@ -255,6 +255,20 @@ class BackendConnectionControlService(ConnectionControlService):
                     "queued_tasks": list(orin_state.queued_tasks) if orin_state is not None else [],
                     "vehicle_mode": orin_state.vehicle_mode if orin_state is not None else "",
                     "onboard_version": orin_state.version if orin_state is not None else "",
+                    "onboard_session_id": (
+                        orin_state.session_id if orin_state is not None else ""
+                    ),
+                    "onboard_time_utc": (
+                        orin_state.onboard_time_utc.isoformat()
+                        if orin_state is not None
+                        and orin_state.onboard_time_utc is not None
+                        else ""
+                    ),
+                    "onboard_time_age_s": self._age_seconds(
+                        orin_state.onboard_time_received_at
+                        if orin_state is not None
+                        else None
+                    ),
                     "remote_log_running": orin_state.remote_log_running if orin_state is not None else False,
                     "remote_log_queued": orin_state.remote_log_queued if orin_state is not None else 0,
                     "remote_log_sent": orin_state.remote_log_sent if orin_state is not None else 0,

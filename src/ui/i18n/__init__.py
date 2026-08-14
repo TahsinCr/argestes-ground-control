@@ -211,6 +211,12 @@ def connection_status_text(status: Any, language: str) -> tuple[str, str]:
                 if latency_value is not None
                 else ""
             )
+            onboard_time = str(options.get("onboard_time_utc") or "")
+            clock = (
+                f" / UTC {onboard_time[11:19]}"
+                if len(onboard_time) >= 19
+                else ""
+            )
             detail = t(
                 "connection.detail.orin.connected",
                 language,
@@ -218,6 +224,7 @@ def connection_status_text(status: Any, language: str) -> tuple[str, str]:
                 task=str(options.get("active_task") or t("connection.state.idle", language)),
                 age=float(age),
                 latency=latency,
+                clock=clock,
             )
         elif not options.get("service_available", True):
             detail = t("connection.detail.orin.unavailable", language)
