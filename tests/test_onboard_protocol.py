@@ -313,6 +313,49 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertEqual(state.phase, "failed")
         self.assertIn("vehicle is armed", state.last_error)
 
+    def test_kamikaze_terminal_state_and_qr_are_recovered_after_lost_live_packets(self) -> None:
+        self.service._state = replace(
+            self.service.state,
+            active_task="kamikaze.execute",
+            mission_id=42,
+            phase="reconciling",
+            qr_status="pending",
+        )
+
+        self.service._apply_mission_list(
+            {
+                "missions": [
+                    {
+                        "mission_id": 42,
+                        "task": "kamikaze.execute",
+                        "phase": "succeeded",
+                        "updated_at": 10.0,
+                        "result": {"reason": "QR_DECODED"},
+                    }
+                ]
+            }
+        )
+        self.service._apply_recovered_events(
+            42,
+            [
+                {
+                    "sequence": 9,
+                    "type": "log",
+                    "fields": {
+                        "event": "QR_DECODED_DURING_PULL_UP",
+                        "qr_text": "RECOVERED-KAMIKAZE-QR",
+                    },
+                }
+            ],
+        )
+
+        state = self.service.state
+        self.assertEqual(state.phase, "succeeded")
+        self.assertTrue(state.result_received)
+        self.assertEqual(state.qr_status, "decoded")
+        self.assertEqual(state.qr_text, "RECOVERED-KAMIKAZE-QR")
+        self.assertEqual(state.timeline[-1].source, "recovery")
+
     def test_compact_terminal_result_is_applied_without_snapshot(self) -> None:
         self.orin.emit(
             "mission.result",

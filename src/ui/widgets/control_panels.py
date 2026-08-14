@@ -744,6 +744,9 @@ class CommandPanel(PanelFrame):
                 self._language,
             )
             visual_state = "danger"
+        elif self._armed and not active:
+            status_text = t("onboard.actuator.armed_blocked", self._language)
+            visual_state = "danger"
         elif state.actuator_notification_only:
             status_text = t("onboard.actuator.notification_only", self._language)
             visual_state = "success"
@@ -999,6 +1002,7 @@ class CommandPanel(PanelFrame):
             "SURVEY_AREA",
         }
         selected_canonical = self._canonical_ui_task(selected_task)
+        actuator_blocked = selected_task == "ACTUATOR_TEST" and self._armed
         same_task_active = bool(
             selected_canonical
             and self._onboard_state.active_task == selected_canonical
@@ -1006,6 +1010,7 @@ class CommandPanel(PanelFrame):
         )
         task_available = bool(
             available
+            and not actuator_blocked
             and (
                 not onboard_task
                 or (

@@ -897,6 +897,24 @@ class UiContractTests(unittest.TestCase):
         self.assertNotIn("pwm", requested[0][1])
         self.assertNotIn("armed", requested[0][1])
 
+        panel.update_snapshot(
+            TelemetrySnapshot.zero().copy(
+                telemetry_link=True,
+                autopilot_link=True,
+                armed=True,
+            )
+        )
+        self.assertFalse(panel.task_apply_button.isEnabled())
+        self.assertIn("ARMED", panel.actuator_status.text())
+        panel.update_snapshot(
+            TelemetrySnapshot.zero().copy(
+                telemetry_link=True,
+                autopilot_link=True,
+                armed=False,
+            )
+        )
+        self.assertTrue(panel.task_apply_button.isEnabled())
+
         panel.update_onboard_state(
             OnboardMissionState(
                 connected=True,
