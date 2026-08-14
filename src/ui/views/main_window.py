@@ -813,6 +813,12 @@ class MainWindow(QMainWindow):
     def _on_connection_status(self, status: ConnectionStatus) -> None:
         if self._shutdown_prepared:
             return
+        if status.channel == "orin":
+            self.telemetry_panel.update_orin_time(
+                status.options.get("onboard_time_utc")
+                if status.connected
+                else None
+            )
         chip = self.bottom_status.get(status.channel)
         if chip is not None:
             state = "success" if status.connected else "danger"

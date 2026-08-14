@@ -474,6 +474,8 @@
   "table.parameters.value": "DEĞER",
   "telemetry.altitude_agl": "AGL irtifa",
   "telemetry.altitude_msl": "MSL irtifa",
+  "telemetry.clock.orin": "Orin saati",
+  "telemetry.clock.teknofest": "TEKNOFEST sunucu saati",
   "telemetry.axis_x": "X ileri",
   "telemetry.axis_y": "Y sağ",
   "telemetry.axis_z": "Z aşağı",

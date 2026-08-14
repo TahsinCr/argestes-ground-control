@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import UTC, datetime
 
 from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -37,6 +38,7 @@ from src.ui.widgets.common import PanelFrame, compact_button
 
 
 class TelemetryPanel(PanelFrame):
+    CLOCK_PLACEHOLDER = "--:--:--.---"
     SECTION_SPECS = (
         (
             "flight",
@@ -112,10 +114,42 @@ class TelemetryPanel(PanelFrame):
         self.readout_labels: dict[str, QLabel] = {}
         self.section_titles: dict[str, QLabel] = {}
         self._readout_cache: dict[str, str] = {}
+        self._build_clock_strip()
         for section_key, items in self.SECTION_SPECS:
             self._add_readout_section(section_key, items)
         self.content_layout.addStretch(1)
         self.set_language(self._language)
+
+    def _build_clock_strip(self) -> None:
+        self.clock_strip = QFrame(self.scroll_content)
+        self.clock_strip.setObjectName("TelemetrySection")
+        layout = QGridLayout(self.clock_strip)
+        layout.setContentsMargins(7, 5, 7, 5)
+        layout.setHorizontalSpacing(10)
+        layout.setVerticalSpacing(2)
+
+        self.server_clock_title = QLabel("", self.clock_strip)
+        self.orin_clock_title = QLabel("", self.clock_strip)
+        self.server_clock_value = QLabel(self.CLOCK_PLACEHOLDER, self.clock_strip)
+        self.orin_clock_value = QLabel(self.CLOCK_PLACEHOLDER, self.clock_strip)
+        for title in (self.server_clock_title, self.orin_clock_title):
+            title.setProperty("role", "readout-label")
+            title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        for value in (self.server_clock_value, self.orin_clock_value):
+            value.setProperty("role", "readout-value")
+            value.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            value.setMinimumWidth(0)
+            value.setSizePolicy(
+                QSizePolicy.Policy.Ignored,
+                QSizePolicy.Policy.Preferred,
+            )
+        layout.addWidget(self.server_clock_title, 0, 0)
+        layout.addWidget(self.orin_clock_title, 0, 1)
+        layout.addWidget(self.server_clock_value, 1, 0)
+        layout.addWidget(self.orin_clock_value, 1, 1)
+        layout.setColumnStretch(0, 1)
+        layout.setColumnStretch(1, 1)
+        self.content_layout.addWidget(self.clock_strip)
 
     def _add_readout_section(
         self,
@@ -162,6 +196,10 @@ class TelemetryPanel(PanelFrame):
 
     def set_language(self, language: str) -> None:
         self._language = language
+        self.server_clock_title.setText(
+            t("telemetry.clock.teknofest", language).upper()
+        )
+        self.orin_clock_title.setText(t("telemetry.clock.orin", language).upper())
         for section_key, items in self.SECTION_SPECS:
             self.section_titles[section_key].setText(
                 t(f"telemetry.section.{section_key}", language).upper()
@@ -170,6 +208,9 @@ class TelemetryPanel(PanelFrame):
                 self.readout_labels[key].setText(t(label_key, language).upper())
 
     def update_snapshot(self, snapshot: TelemetrySnapshot) -> None:
+        self.update_server_time(
+            snapshot.server_time if snapshot.server_link else None
+        )
         connected = bool(snapshot.telemetry_link and snapshot.autopilot_link)
         if not connected:
             values = {key: "--" for key in self.readouts}
@@ -225,6 +266,45 @@ class TelemetryPanel(PanelFrame):
                 "ekf": "OK" if snapshot.ekf_ok else "WAIT",
             }
         )
+
+    def update_server_time(self, value: datetime | str | None) -> None:
+        self._set_clock_value(self.server_clock_value, value)
+
+    def update_orin_time(self, value: datetime | str | None) -> None:
+        self._set_clock_value(self.orin_clock_value, value)
+
+    def _set_clock_value(
+        self,
+        label: QLabel,
+        value: datetime | str | None,
+    ) -> None:
+        timestamp = self._clock_datetime(value)
+        if timestamp is None:
+            text = self.CLOCK_PLACEHOLDER
+            tooltip = ""
+        else:
+            timestamp = timestamp.astimezone(UTC)
+            text = (
+                timestamp.strftime("%H:%M:%S.")
+                + f"{timestamp.microsecond // 1000:03d}"
+            )
+            tooltip = timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + " UTC"
+        if label.text() != text:
+            label.setText(text)
+        if label.toolTip() != tooltip:
+            label.setToolTip(tooltip)
+
+    @staticmethod
+    def _clock_datetime(value: datetime | str | None) -> datetime | None:
+        if isinstance(value, datetime):
+            return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            resolved = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return resolved if resolved.tzinfo is not None else resolved.replace(tzinfo=UTC)
 
     def _set_readout_values(self, values: dict[str, str]) -> None:
         for key, text in values.items():

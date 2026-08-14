@@ -474,6 +474,8 @@
   "table.parameters.value": "VALUE",
   "telemetry.altitude_agl": "AGL altitude",
   "telemetry.altitude_msl": "MSL altitude",
+  "telemetry.clock.orin": "Orin time",
+  "telemetry.clock.teknofest": "TEKNOFEST server time",
   "telemetry.axis_x": "X forward",
   "telemetry.axis_y": "Y right",
   "telemetry.axis_z": "Z down",

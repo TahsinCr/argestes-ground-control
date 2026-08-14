@@ -1022,6 +1022,32 @@ class UiContractTests(unittest.TestCase):
         panel.deleteLater()
         self.app.processEvents()
 
+    def test_telemetry_panel_shows_teknofest_and_orin_utc_clocks(self) -> None:
+        panel = TelemetryPanel("", "", DARK)
+        server_time = datetime(2026, 8, 14, 16, 20, 31, 456_000, tzinfo=UTC)
+        panel.update_snapshot(
+            TelemetrySnapshot.zero().copy(
+                server_link=True,
+                server_time=server_time,
+            )
+        )
+        panel.update_orin_time("2026-08-14T16:20:32.789Z")
+
+        self.assertEqual(panel.server_clock_value.text(), "16:20:31.456")
+        self.assertEqual(panel.orin_clock_value.text(), "16:20:32.789")
+        self.assertEqual(panel.content_layout.itemAt(0).widget(), panel.clock_strip)
+        self.assertIn("UTC", panel.server_clock_value.toolTip())
+
+        panel.set_language("en")
+        self.assertEqual(panel.server_clock_title.text(), "TEKNOFEST SERVER TIME")
+        self.assertEqual(panel.orin_clock_title.text(), "ORIN TIME")
+
+        panel.update_orin_time(None)
+        self.assertEqual(panel.orin_clock_value.text(), panel.CLOCK_PLACEHOLDER)
+        panel.close()
+        panel.deleteLater()
+        self.app.processEvents()
+
     def test_live_connection_status_does_not_overwrite_popup_edits(self) -> None:
         popup = ConnectionPopup(DARK)
         popup.show_status(
