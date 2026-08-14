@@ -862,6 +862,15 @@ class UiContractTests(unittest.TestCase):
 
     def test_actuator_test_card_is_discovered_and_emits_only_task_start_intent(self) -> None:
         panel = CommandPanel("", "")
+        actuator_row = next(
+            row
+            for row in range(panel.task_list.count())
+            if panel.task_list.item(row).data(Qt.ItemDataRole.UserRole)
+            == "ACTUATOR_TEST"
+        )
+        panel.task_list.setCurrentRow(actuator_row)
+        panel.update_onboard_state(OnboardMissionState(connected=False))
+        self.assertTrue(panel.task_apply_button.isEnabled())
         panel.update_snapshot(
             TelemetrySnapshot.zero().copy(
                 telemetry_link=True,
@@ -881,12 +890,6 @@ class UiContractTests(unittest.TestCase):
         requested: list[tuple[str, dict]] = []
         panel.command_requested.connect(
             lambda code, params: requested.append((code, params))
-        )
-        actuator_row = next(
-            row
-            for row in range(panel.task_list.count())
-            if panel.task_list.item(row).data(Qt.ItemDataRole.UserRole)
-            == "ACTUATOR_TEST"
         )
         panel.task_list.setCurrentRow(actuator_row)
         panel._emit_task_command()
@@ -950,6 +953,52 @@ class UiContractTests(unittest.TestCase):
             )
         )
         self.assertTrue(panel.task_cancel_button.isEnabled())
+
+        # A short application-heartbeat flap must not make an in-flight task
+        # impossible to cancel; the backend remains the connection authority.
+        panel.update_onboard_state(
+            OnboardMissionState(
+                connected=False,
+                active_task=ACTUATOR_TEST_TASK,
+                available_tasks=(ACTUATOR_TEST_TASK,),
+                phase="reconciling",
+            )
+        )
+        self.assertTrue(panel.task_cancel_button.isEnabled())
+        panel.task_cancel_button.click()
+        self.assertEqual(
+            requested[-1],
+            ("ONBOARD_TASK_CANCEL", {"task": ACTUATOR_TEST_TASK}),
+        )
+
+        panel.update_onboard_state(
+            OnboardMissionState(
+                connected=True,
+                active_task=ACTUATOR_TEST_TASK,
+                available_tasks=(ACTUATOR_TEST_TASK,),
+                phase="requesting",
+                pending_command="start",
+            )
+        )
+        self.assertTrue(panel.task_cancel_button.isEnabled())
+        panel.task_cancel_button.click()
+        self.assertEqual(
+            requested[-1],
+            ("ONBOARD_TASK_CANCEL", {"task": ACTUATOR_TEST_TASK}),
+        )
+        panel.command_started("ONBOARD_TASK_CANCEL")
+        self.assertFalse(panel.task_cancel_button.isEnabled())
+
+        panel.update_onboard_state(
+            OnboardMissionState(
+                connected=True,
+                active_task=ACTUATOR_TEST_TASK,
+                available_tasks=(ACTUATOR_TEST_TASK,),
+                phase="requesting",
+                pending_command="cancel",
+            )
+        )
+        self.assertFalse(panel.task_cancel_button.isEnabled())
 
         panel.update_onboard_state(
             OnboardMissionState(

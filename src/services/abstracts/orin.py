@@ -9,6 +9,7 @@ from src.core.events import EventBus, Subscription
 from src.models.orin import (
     OrinCommandReceipt,
     OrinConnectionState,
+    OrinHandlerResponse,
     OrinLinkConfig,
     OrinLogRecord,
     OrinMessage,
@@ -17,7 +18,7 @@ from src.models.orin import (
 
 OrinMessageHandler = Callable[
     [OrinMessage],
-    Mapping[str, Any] | None,
+    OrinHandlerResponse | Mapping[str, Any] | None,
 ]
 
 

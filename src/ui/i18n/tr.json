@@ -534,7 +534,7 @@
   "onboard.task.cancel": "İptal",
   "onboard.confirm.title": "Kamikaze görevi",
   "onboard.confirm.message": "Kamikaze görevini onboard sisteminde başlatmak istiyor musunuz?",
-  "onboard.confirm.guided": "Komut kabul edilince araç kontrolü için GUIDED modunu operatör seçmelidir.",
+  "onboard.confirm.guided": "Komut kabul edilince YKİ aracı otomatik olarak GUIDED moda alır; görev bitince AUTO moda döner.",
   "onboard.actuator.title": "Aktüatör Testi",
   "onboard.actuator.offline": "Onboard bağlantısı yok",
   "onboard.actuator.ready": "Test başlatılmaya hazır",

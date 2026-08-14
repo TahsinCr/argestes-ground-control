@@ -328,6 +328,13 @@ class MainWindow(QMainWindow):
 
     def _request_command(self, code: str, parameters: dict) -> None:
         task = str(parameters.get("task", "")).strip().upper()
+        if code == "ONBOARD_TASK_CANCEL":
+            self.ui_log.event(
+                "onboard.cancel_requested",
+                "Operatör onboard görevini iptal etmek istedi",
+                severity="warning",
+                details={"task": str(parameters.get("task", "")).strip()},
+            )
         if code in {"SET_MISSION_TASK", "RESTART_MISSION_TASK"} and task == "KAMIKAZE":
             dialog = QMessageBox(self)
             dialog.setIcon(QMessageBox.Icon.Warning)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import threading
+import time
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,9 +25,11 @@ from src.core.mavlink import (
 )
 from src.models.commands import CommandRequest
 from src.models.competition import CompetitionConnectionState
+from src.models.onboard import OnboardMissionState
 from src.models.orin import (
     OrinCommandReceipt,
     OrinConnectionState,
+    OrinHandlerResponse,
     OrinLinkConfig,
     OrinLogRecord,
 )
@@ -43,6 +46,70 @@ from src.services.video import MutableVideoService
 
 
 class OrinLinkTests(unittest.TestCase):
+    def test_orin_handler_response_preserves_qr_ack_contract(self) -> None:
+        vehicle = SimpleNamespace(
+            connected=True,
+            state=VehicleConnectionState(True, "COM3", 1, 1),
+            connection_changed=EventBus(),
+        )
+        client = SimpleNamespace(
+            endpoint=SimpleNamespace(uri="COM3", source_system=255, source_component=0),
+            connection=SimpleNamespace(target_system=1),
+        )
+        service = MavlinkOrinService(client, vehicle)  # type: ignore[arg-type]
+        service.register_handler(
+            "kamikaze.qr.report",
+            lambda _message: OrinHandlerResponse(
+                {
+                    "execution": "submitted",
+                    "report_id": "session:42:qr",
+                    "mission_id": 42,
+                },
+                message="QR report accepted",
+            ),
+        )
+
+        class Peer:
+            def __init__(self) -> None:
+                self.packets = EventBus()
+                self.sent: list[MavlinkApplicationPacket] = []
+
+            def send(self, packet_type, payload=None, **_kwargs):
+                packet = MavlinkApplicationPacket(packet_type, payload or {})
+                self.sent.append(packet)
+                return packet
+
+        peer = Peer()
+        dispatcher = MavlinkApplicationDispatcher(
+            peer,  # type: ignore[arg-type]
+            handlers=service._handlers,
+        )
+        dispatcher.start()
+        try:
+            peer.packets.publish(
+                MavlinkApplicationPacket(
+                    "kamikaze.qr.report",
+                    {"report_id": "session:42:qr"},
+                    packet_id=456,
+                    source_system=1,
+                    source_component=191,
+                    expects_response=True,
+                )
+            )
+            deadline = time.monotonic() + 0.5
+            while not peer.sent and time.monotonic() < deadline:
+                threading.Event().wait(0.01)
+            response = peer.sent[-1]
+            self.assertEqual(response.packet_type, "system.ack")
+            self.assertEqual(response.payload["request_id"], 456)
+            self.assertTrue(response.payload["accepted"])
+            self.assertEqual(response.payload["execution"], "submitted")
+            self.assertEqual(response.payload["report_id"], "session:42:qr")
+            self.assertEqual(response.payload["mission_id"], 42)
+            self.assertEqual(response.payload["message"], "QR report accepted")
+        finally:
+            dispatcher.stop()
+
     def test_yki_channel_matches_the_onboard_gcs_endpoint_contract(self) -> None:
         vehicle = SimpleNamespace(
             connected=True,
@@ -750,6 +817,115 @@ class OrinLinkTests(unittest.TestCase):
             ],
         )
         self.assertTrue(result.details["restarted"])
+
+    def test_cancel_queued_during_start_reaches_onboard_and_terminal_returns_auto(self) -> None:
+        calls: list[tuple[str, str]] = []
+        modes: list[str] = []
+        start_entered = threading.Event()
+        release_start = threading.Event()
+
+        class Vehicle:
+            connected = True
+            state = VehicleConnectionState(True, "COM3", 1, 1)
+
+            def execute(self, request) -> bool:
+                if request.code in {"SET_MODE", "APPLY_MODE"}:
+                    modes.append(str(request.parameters["mode"]))
+                    return True
+                raise AssertionError(f"Unexpected vehicle command: {request.code}")
+
+        class Onboard:
+            changed = EventBus()
+
+            def start_task(self, task, *, source="ui"):
+                calls.append(("start", task))
+                start_entered.set()
+                self.changed.publish(
+                    OnboardMissionState(
+                        connected=True,
+                        active_task="kamikaze.execute",
+                        phase="requesting",
+                        pending_command="start",
+                    )
+                )
+                release_start.wait(1.0)
+                return OrinCommandReceipt(
+                    41,
+                    True,
+                    "starting",
+                    {
+                        "execution": "starting",
+                        "mission_id": 73,
+                        "waiting_for_mode": True,
+                    },
+                    4.0,
+                )
+
+            def cancel_task(self, task):
+                calls.append(("cancel", task))
+                return OrinCommandReceipt(
+                    42,
+                    True,
+                    "cancelled",
+                    {"execution": "cancelled", "mission_id": 73},
+                    3.0,
+                )
+
+        onboard = Onboard()
+        service = DispatchCommandService(
+            Vehicle(),  # type: ignore[arg-type]
+            MutableParameterService(),
+            orin=object(),  # type: ignore[arg-type]
+            onboard=onboard,  # type: ignore[arg-type]
+        )
+        results = []
+        start_thread = threading.Thread(
+            target=lambda: results.append(
+                service.dispatch(
+                    CommandRequest("SET_MISSION_TASK", {"task": "KAMIKAZE"})
+                )
+            )
+        )
+        cancel_thread = threading.Thread(
+            target=lambda: results.append(
+                service.dispatch(
+                    CommandRequest(
+                        "ONBOARD_TASK_CANCEL",
+                        {"task": "kamikaze.execute"},
+                    )
+                )
+            )
+        )
+        start_thread.start()
+        self.assertTrue(start_entered.wait(1.0))
+        cancel_thread.start()
+        time.sleep(0.03)
+        self.assertEqual(calls, [("start", "KAMIKAZE")])
+        release_start.set()
+        start_thread.join(1.0)
+        cancel_thread.join(1.0)
+
+        self.assertFalse(start_thread.is_alive())
+        self.assertFalse(cancel_thread.is_alive())
+        self.assertEqual(
+            calls,
+            [("start", "KAMIKAZE"), ("cancel", "kamikaze.execute")],
+        )
+        self.assertEqual(modes, ["GUIDED"])
+        self.assertTrue(all(result.accepted for result in results))
+
+        onboard.changed.publish(
+            OnboardMissionState(
+                connected=True,
+                active_task="kamikaze.execute",
+                mission_id=73,
+                phase="cancelled",
+            )
+        )
+        deadline = time.monotonic() + 1.0
+        while modes != ["GUIDED", "AUTO"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(modes, ["GUIDED", "AUTO"])
 
     def test_configured_ping_task_is_exposed_and_routed_to_orin(self) -> None:
         class Vehicle:

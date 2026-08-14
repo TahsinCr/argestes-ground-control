@@ -24,6 +24,7 @@ from src.core.mavlink import (
 from src.models.orin import (
     OrinCommandReceipt,
     OrinConnectionState,
+    OrinHandlerResponse,
     OrinLinkConfig,
     OrinLogRecord,
     OrinMessage,
@@ -428,10 +429,17 @@ class MavlinkOrinService(OrinService):
     ) -> Subscription:
         """Handle future Orin-to-YKİ commands without changing this service."""
 
-        return self._handlers.register(
-            packet_type,
-            lambda packet: handler(self._message(packet)),
-        )
+        def adapted(packet: MavlinkApplicationPacket):
+            response = handler(self._message(packet))
+            if isinstance(response, OrinHandlerResponse):
+                return MavlinkApplicationResult(
+                    accepted=response.accepted,
+                    message=response.message,
+                    payload=response.payload,
+                )
+            return response
+
+        return self._handlers.register(packet_type, adapted)
 
     def _handle_remote_logs(
         self,

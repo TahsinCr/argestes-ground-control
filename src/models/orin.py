@@ -92,6 +92,27 @@ class OrinCommandReceipt(Model):
 
 
 @dataclass(frozen=True, slots=True)
+class OrinHandlerResponse(Model):
+    """Transport-neutral response produced for an onboard request."""
+
+    payload: dict[str, Any] = field(default_factory=dict)
+    message: str = "Command accepted"
+    accepted: bool = True
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload", MappingProxyType(dict(self.payload)))
+        object.__setattr__(self, "message", str(self.message))
+        object.__setattr__(self, "accepted", bool(self.accepted))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "payload": dict(self.payload),
+            "message": self.message,
+            "accepted": self.accepted,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class OrinMessage(Model):
     packet_type: str
     payload: dict[str, Any]

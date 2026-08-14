@@ -705,10 +705,9 @@ class CommandPanel(PanelFrame):
         self.onboard_status.style().unpolish(self.onboard_status)
         self.onboard_status.style().polish(self.onboard_status)
         task_active = bool(
-            state.connected
-            and state.active_task
-            and state.phase
+            state.phase
             in {
+                "requesting",
                 "queued",
                 "starting",
                 "running",
@@ -718,7 +717,11 @@ class CommandPanel(PanelFrame):
                 "reconciling",
             }
         )
-        self.task_cancel_button.setEnabled(task_active and not state.pending_command)
+        # Starting/recovery requests can legitimately wait for an onboard ACK.
+        # Keep the operator's escape path available during that wait; only
+        # suppress repeated clicks while a cancellation is already in flight.
+        cancel_pending = state.pending_command == "cancel"
+        self.task_cancel_button.setEnabled(task_active and not cancel_pending)
         self._sync_command_availability()
 
     def _update_actuator_card(self) -> None:
@@ -1007,15 +1010,17 @@ class CommandPanel(PanelFrame):
             and self._onboard_state.active_task == selected_canonical
             and not self._onboard_state.terminal
         )
+        # Onboard liveness can briefly flap on the constrained RFD route even
+        # while the shared MAVLink transport is usable. Keep task intent
+        # available and let the backend return the authoritative connection or
+        # safety error instead of leaving the operator with an inert button.
         task_available = bool(
-            available
+            not self._pending_commands
             and (
-                not onboard_task
-                or (
-                    self._onboard_state.connected
-                    and not self._onboard_state.pending_command
-                )
+                onboard_task
+                or self._vehicle_connected
             )
+            and self._onboard_state.pending_command != "cancel"
         )
         self.task_apply_button.setEnabled(task_available)
         button_key = "command.task_restart" if same_task_active else "command.task_start"
@@ -1030,6 +1035,24 @@ class CommandPanel(PanelFrame):
             self.task_apply_button.style().polish(self.task_apply_button)
         if self.mode_combo.isEnabled() != available:
             self.mode_combo.setEnabled(available)
+        task_control_active = bool(
+            self._onboard_state.phase
+            in {
+                "requesting",
+                "queued",
+                "starting",
+                "running",
+                "pausing",
+                "paused",
+                "stopping",
+                "reconciling",
+            }
+        )
+        cancel_pending = bool(
+            self._onboard_state.pending_command == "cancel"
+            or "ONBOARD_TASK_CANCEL" in self._pending_commands
+        )
+        self.task_cancel_button.setEnabled(task_control_active and not cancel_pending)
         self._sync_arm_controls()
         self._update_actuator_card()
 
@@ -1095,8 +1118,25 @@ class CommandPanel(PanelFrame):
         }.get(normalized, normalized.lower())
 
     def _emit_active_task_control(self, command: str) -> None:
+        if self._onboard_state.phase not in {
+            "requesting",
+            "queued",
+            "starting",
+            "running",
+            "pausing",
+            "paused",
+            "stopping",
+            "reconciling",
+        }:
+            return
         task = self._onboard_state.active_task
-        if not task or self._onboard_state.terminal:
+        if not task:
+            item = self.task_list.currentItem()
+            selected = (
+                str(item.data(Qt.ItemDataRole.UserRole) or "") if item else ""
+            )
+            task = self._canonical_ui_task(selected) if selected else ""
+        if not task:
             return
         self.command_requested.emit(command, {"task": task})
 

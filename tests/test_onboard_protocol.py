@@ -8,7 +8,12 @@ from types import SimpleNamespace
 from src.core.events import EventBus, Subscription
 from src.models.competition import HssZone, KamikazeEvent, QrCoordinate
 from src.models.onboard import ACTUATOR_TEST_TASK
-from src.models.orin import OrinCommandReceipt, OrinConnectionState, OrinMessage
+from src.models.orin import (
+    OrinCommandReceipt,
+    OrinConnectionState,
+    OrinHandlerResponse,
+    OrinMessage,
+)
 from src.services.logging_service import LoggingService
 from src.services.onboard import OnboardMissionService
 
@@ -133,6 +138,8 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertEqual(target_payload["latitude_deg"], 39.925533)
         self.assertEqual(target_payload["longitude_deg"], 32.866287)
         self.assertEqual(target_payload["source"], "teknofest")
+        self.assertEqual(target_payload["plate_height_m"], 3.0)
+        self.assertEqual(target_payload["target_id"], "teknofest-qr-target")
         self.assertTrue(target_payload["fetched_at_utc"].endswith("Z"))
         self.assertEqual(
             self.orin.requests[-1],
@@ -201,6 +208,37 @@ class OnboardMissionProtocolTests(unittest.TestCase):
             if entry.action == "kamikaze.target_ack"
         ]
         self.assertTrue(target_logs[-1].details["compact_ack"])
+
+    def test_mismatched_target_ack_blocks_kamikaze_start(self) -> None:
+        original_issue = self.orin.issue
+
+        def wrong_target_ack(packet_type, payload=None, *, timeout=None):
+            if packet_type == "kamikaze.target.update":
+                request = dict(payload or {})
+                self.orin.requests.append((packet_type, request))
+                return OrinCommandReceipt(
+                    78,
+                    True,
+                    "Command accepted",
+                    {
+                        "execution": "updated",
+                        "target_revision": request["source_revision"],
+                        "target": {
+                            "latitude_deg": 41.0,
+                            "longitude_deg": 29.0,
+                        },
+                    },
+                )
+            return original_issue(packet_type, payload, timeout=timeout)
+
+        self.orin.issue = wrong_target_ack
+
+        with self.assertRaisesRegex(RuntimeError, "farklı bir kamikaze hedefini"):
+            self.service.start_task("KAMIKAZE")
+
+        self.assertFalse(
+            any(packet_type == "task.start" for packet_type, _ in self.orin.requests)
+        )
 
     def test_missing_teknofest_target_blocks_kamikaze_start(self) -> None:
         self.competition.qr_coordinate = None
@@ -273,6 +311,7 @@ class OnboardMissionProtocolTests(unittest.TestCase):
             active_task=ACTUATOR_TEST_TASK,
             mission_id=84,
             phase="requesting",
+            pending_command="start",
         )
         self.service._last_orin_session = "old-session"
         state = replace(
@@ -288,6 +327,7 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertEqual(self.service.state.active_task, "")
         self.assertIsNone(self.service.state.mission_id)
         self.assertEqual(self.service.state.phase, "idle")
+        self.assertEqual(self.service.state.pending_command, "")
 
     def test_mission_list_reconciles_a_lost_start_ack_to_terminal_state(self) -> None:
         self.service._state = replace(
@@ -424,8 +464,11 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         first = handler(message)
         duplicate = handler(message)
 
-        self.assertEqual(first, duplicate)
-        self.assertEqual(first["execution"], "submitted")
+        self.assertIsInstance(first, OrinHandlerResponse)
+        self.assertIsInstance(duplicate, OrinHandlerResponse)
+        self.assertEqual(dict(first.payload), dict(duplicate.payload))
+        self.assertEqual(first.payload["execution"], "submitted")
+        self.assertEqual(first.message, "QR report accepted")
         self.assertEqual(len(self.competition.submitted_kamikaze), 1)
         self.assertEqual(
             self.competition.submitted_kamikaze[0].qr_text,
@@ -465,7 +508,8 @@ class OnboardMissionProtocolTests(unittest.TestCase):
             handler(message)
         response = handler(message)
 
-        self.assertEqual(response["execution"], "submitted")
+        self.assertIsInstance(response, OrinHandlerResponse)
+        self.assertEqual(response.payload["execution"], "submitted")
         self.assertEqual(attempts, 2)
         self.assertEqual(len(self.competition.submitted_kamikaze), 1)
 
@@ -483,7 +527,8 @@ class OnboardMissionProtocolTests(unittest.TestCase):
             OrinMessage("kamikaze.qr.report", payload, 703, 1, 191)
         )
 
-        self.assertEqual(response["report_id"], report_id)
+        self.assertIsInstance(response, OrinHandlerResponse)
+        self.assertEqual(response.payload["report_id"], report_id)
         with self.assertRaisesRegex(ValueError, "192"):
             handler(
                 OrinMessage(
@@ -533,6 +578,52 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertEqual(self.service.state.phase, "succeeded")
         self.assertTrue(self.service.state.result_received)
         self.assertEqual(self.service.state.qr_text, "QR-42")
+
+    def test_late_packets_from_another_mission_do_not_replace_active_state(self) -> None:
+        self.service._state = replace(
+            self.service.state,
+            active_task="kamikaze.execute",
+            mission_id=42,
+            phase="running",
+        )
+
+        self.orin.emit(
+            "mission.transition",
+            {
+                "task": ACTUATOR_TEST_TASK,
+                "mission_id": 84,
+                "previous": "running",
+                "current": "succeeded",
+            },
+        )
+        self.orin.emit(
+            "mission.result",
+            {
+                "task": ACTUATOR_TEST_TASK,
+                "mission_id": 84,
+                "execution": "succeeded",
+            },
+        )
+        self.orin.emit(
+            "mission.event",
+            {
+                "mission": ACTUATOR_TEST_TASK,
+                "mission_id": 84,
+                "event": "actuator_test.step",
+                "step": 1,
+                "servo_output": 9,
+                "pwm": 1300,
+            },
+        )
+
+        state = self.service.state
+        self.assertEqual(state.active_task, "kamikaze.execute")
+        self.assertEqual(state.mission_id, 42)
+        self.assertEqual(state.phase, "running")
+        self.assertEqual(state.timeline, ())
+        self.assertTrue(
+            any(entry.action == "mission.packet_ignored" for entry in self.logs.history)
+        )
 
     def test_both_qr_events_are_inert_deduplicated_and_logged(self) -> None:
         malicious = '<img src=x onerror="boom()">; rm -rf /'
@@ -630,7 +721,7 @@ class OnboardMissionProtocolTests(unittest.TestCase):
             self.orin.requests[-1],
             (
                 "task.start",
-                {"task": "ACTUATOR_TEST", "source": "operator-ui"},
+                {"task": "ACTUATOR_TEST", "source": "ui"},
             ),
         )
         state = self.service.state
@@ -822,12 +913,89 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertTrue(receipt.accepted)
         self.assertEqual(receipt.response["execution"], "cancelled")
         self.assertTrue(receipt.response["already_inactive"])
-        self.assertEqual(self.service.state.active_task, "")
-        self.assertEqual(self.service.state.phase, "idle")
+        self.assertEqual(self.service.state.active_task, ACTUATOR_TEST_TASK)
+        self.assertEqual(self.service.state.phase, "cancelled")
         self.assertEqual(
             self.logs.history[-1].action,
             "onboard.cancel_idempotent",
         )
+
+    def test_positive_already_inactive_cancel_ack_is_terminal_and_uses_alias(self) -> None:
+        self.service._state = replace(
+            self.service.state,
+            connected=True,
+            active_task="kamikaze.execute",
+            mission_id=42,
+            phase="reconciling",
+        )
+        self.orin.responses.append(
+            OrinCommandReceipt(
+                206,
+                True,
+                "Already inactive",
+                {
+                    "request_id": 206,
+                    "accepted": True,
+                    "execution": "cancelled",
+                    "mission_id": None,
+                    "already_inactive": True,
+                },
+            )
+        )
+
+        receipt = self.service.cancel_task("kamikaze.execute")
+
+        self.assertTrue(receipt.accepted)
+        self.assertEqual(
+            self.orin.requests[-1],
+            ("task.cancel", {"task": "KAMIKAZE"}),
+        )
+        self.assertEqual(self.service.state.phase, "cancelled")
+        self.assertIsNone(self.service.state.mission_id)
+        self.assertEqual(self.service.state.pending_command, "")
+
+    def test_cancel_timeout_reconciles_with_mission_list_without_retry(self) -> None:
+        self.service._state = replace(
+            self.service.state,
+            connected=True,
+            active_task="kamikaze.execute",
+            mission_id=42,
+            phase="running",
+        )
+        self.orin.responses.extend(
+            [
+                TimeoutError("lost cancel ack"),
+                OrinCommandReceipt(
+                    208,
+                    True,
+                    "listed",
+                    {
+                        "missions": [
+                            {
+                                "mission_id": 42,
+                                "task": "kamikaze.execute",
+                                "phase": "cancelled",
+                                "reason": "operator_cancelled",
+                                "updated_at": 10.0,
+                            }
+                        ]
+                    },
+                ),
+                OrinCommandReceipt(209, True, "events", {"events": []}),
+            ]
+        )
+
+        with self.assertRaises(TimeoutError):
+            self.service.cancel_task("kamikaze.execute")
+
+        deadline = time.monotonic() + 1.0
+        while self.service.state.phase == "reconciling" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        cancels = [item for item in self.orin.requests if item[0] == "task.cancel"]
+        self.assertEqual(cancels, [("task.cancel", {"task": "KAMIKAZE"})])
+        self.assertIn(("mission.list", {}), self.orin.requests)
+        self.assertEqual(self.service.state.phase, "cancelled")
+        self.assertEqual(self.service.state.pending_command, "")
 
 
 if __name__ == "__main__":

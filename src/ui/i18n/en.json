@@ -534,7 +534,7 @@
   "onboard.task.cancel": "Cancel",
   "onboard.confirm.title": "Kamikaze task",
   "onboard.confirm.message": "Start the Kamikaze task on the onboard system?",
-  "onboard.confirm.guided": "After the command is accepted, the operator must select GUIDED mode for vehicle control.",
+  "onboard.confirm.guided": "After acceptance, YKİ requests GUIDED mode automatically and returns the vehicle to AUTO when the task ends.",
   "onboard.actuator.title": "Actuator Test",
   "onboard.actuator.offline": "Onboard connection is offline",
   "onboard.actuator.ready": "Ready to start the test",

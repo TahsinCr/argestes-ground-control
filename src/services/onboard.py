@@ -18,7 +18,12 @@ from src.models.onboard import (
     OnboardMissionEvent,
     OnboardMissionState,
 )
-from src.models.orin import OrinCommandReceipt, OrinConnectionState, OrinMessage
+from src.models.orin import (
+    OrinCommandReceipt,
+    OrinConnectionState,
+    OrinHandlerResponse,
+    OrinMessage,
+)
 from src.services.abstracts.competition import CompetitionService
 from src.services.abstracts.onboard import OnboardMissionServiceContract
 from src.services.abstracts.orin import OrinService
@@ -156,13 +161,11 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 raise RuntimeError(f"Onboard görevi zaten çalışıyor: {canonical}")
         if canonical == "kamikaze.execute":
             self._sync_kamikaze_target()
-        wire_task = {
-            "kamikaze.execute": "KAMIKAZE",
-            ACTUATOR_TEST_TASK: "ACTUATOR_TEST",
-        }.get(canonical, canonical)
+        wire_task = self._wire_task(canonical)
+        wire_source = "ui" if source in {"ui", "qt-ui", "operator-ui"} else source
         return self._issue(
             "task.start",
-            {"task": wire_task, "source": source},
+            {"task": wire_task, "source": wire_source},
             pending="start",
             task=canonical,
         )
@@ -185,6 +188,8 @@ class OnboardMissionService(OnboardMissionServiceContract):
             canonical = {
                 "latitude_deg": round(float(target.latitude), 7),
                 "longitude_deg": round(float(target.longitude), 7),
+                "plate_height_m": 3.0,
+                "target_id": "teknofest-qr-target",
             }
             content_hash = self._content_hash(canonical)
             with self._lock:
@@ -238,8 +243,31 @@ class OnboardMissionService(OnboardMissionServiceContract):
             else:
                 accepted_target = dict(accepted_target)
             revision = self._optional_int(receipt.response.get("target_revision"))
+            if revision is not None and revision != source_revision:
+                raise OnboardCommandRejectedError(
+                    "Orin ACK yanıtındaki hedef revizyonu gönderilen revizyonla uyuşmuyor",
+                    receipt.response,
+                )
             if revision is None:
                 revision = source_revision
+            try:
+                accepted_coordinates = (
+                    round(float(accepted_target["latitude_deg"]), 7),
+                    round(float(accepted_target["longitude_deg"]), 7),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise OnboardCommandRejectedError(
+                    "Orin ACK yanıtındaki hedef koordinatları geçersiz",
+                    receipt.response,
+                ) from exc
+            if accepted_coordinates != (
+                canonical["latitude_deg"],
+                canonical["longitude_deg"],
+            ):
+                raise OnboardCommandRejectedError(
+                    "Orin farklı bir kamikaze hedefini kabul ettiğini bildirdi",
+                    receipt.response,
+                )
             with self._lock:
                 self._target_acknowledged_hash = content_hash
                 self._state = replace(
@@ -454,9 +482,9 @@ class OnboardMissionService(OnboardMissionServiceContract):
             with self._lock:
                 self._state = replace(
                     self._state,
-                    active_task="",
+                    active_task=canonical,
                     mission_id=None,
-                    phase="idle",
+                    phase="cancelled",
                     waiting_for_guided=False,
                     last_error="",
                 )
@@ -531,11 +559,12 @@ class OnboardMissionService(OnboardMissionServiceContract):
         return self._issue("chain.start", {"chain": chain_id}, pending="chain")
 
     def _task_control(self, packet_type: str, task: str, pending: str) -> OrinCommandReceipt:
+        canonical = self._canonical_task(task)
         return self._issue(
             packet_type,
-            {"task": self._canonical_task(task)},
+            {"task": self._wire_task(canonical)},
             pending=pending,
-            task=self._canonical_task(task),
+            task=canonical,
         )
 
     def _issue(
@@ -594,6 +623,17 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 self._event_keys.clear()
         self._publish()
         try:
+            self._log(
+                "onboard.command_dispatch",
+                f"Onboard komutu gönderiliyor: {packet_type}",
+                "warning" if packet_type == "task.cancel" else "info",
+                {
+                    "type": packet_type,
+                    "task": task,
+                    "payload": dict(payload),
+                    "pending": pending,
+                },
+            )
             receipt = self._orin.issue(packet_type, payload)
             if not receipt.accepted:
                 raise OnboardCommandRejectedError(
@@ -602,6 +642,21 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 )
             if packet_type.startswith("task.") or packet_type == "mission.status":
                 self._apply_ack(receipt.response, task=task)
+            if packet_type == "task.cancel":
+                self._log(
+                    "onboard.cancel_acknowledged",
+                    "Onboard görev iptali doğrulandı",
+                    "success",
+                    {
+                        "task": task,
+                        "request_id": receipt.request_id,
+                        "execution": receipt.response.get("execution", ""),
+                        "mission_id": receipt.response.get("mission_id"),
+                        "already_inactive": bool(
+                            receipt.response.get("already_inactive", False)
+                        ),
+                    },
+                )
             if packet_type == "task.start":
                 # A mission may finish before its transition/result packets
                 # cross a busy MAVLink route. Reconcile once after the ACK so
@@ -666,13 +721,21 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 snapshot_payload.get("vehicle_mode", self._state.vehicle_mode),
             )
         ).upper()
+        already_inactive = bool(payload.get("already_inactive", False))
         with self._lock:
+            acknowledged_task = str(
+                payload.get("task") or task or self._state.active_task
+            ).strip()
             self._state = replace(
                 self._state,
-                active_task=str(payload.get("task") or task or self._state.active_task).lower(),
-                mission_id=mission_id or self._state.mission_id,
-                phase=("starting" if phase == "starting" else phase or self._state.phase),
-                waiting_for_guided=waiting,
+                active_task=(
+                    self._canonical_task(acknowledged_task)
+                    if acknowledged_task
+                    else self._state.active_task
+                ),
+                mission_id=(None if already_inactive else mission_id or self._state.mission_id),
+                phase=("cancelled" if already_inactive else phase or self._state.phase),
+                waiting_for_guided=(False if already_inactive else waiting),
                 vehicle_mode=vehicle_mode,
                 acknowledgement_snapshot=snapshot_payload,
             )
@@ -699,12 +762,16 @@ class OnboardMissionService(OnboardMissionServiceContract):
         payload = message.payload
         current = str(payload.get("current", "unknown")).strip().lower()
         mission_id = self._optional_int(payload.get("mission_id"))
-        task = str(payload.get("task", self.state.active_task)).strip().lower()
+        task_value = str(payload.get("task") or self.state.active_task).strip()
+        task = self._canonical_task(task_value) if task_value else ""
         reason = str(payload.get("reason", "")).strip()
+        if not self._matches_current_mission(task, mission_id):
+            self._log_ignored_mission_packet("mission.transition", task, mission_id)
+            return {}
         with self._lock:
             self._state = replace(
                 self._state,
-                active_task=task,
+                active_task=task or self._state.active_task,
                 mission_id=mission_id or self._state.mission_id,
                 phase=current,
                 waiting_for_guided=(current == "starting" and self._state.waiting_for_guided),
@@ -727,10 +794,17 @@ class OnboardMissionService(OnboardMissionServiceContract):
             result = dict(payload["result"])
         execution = str(payload.get("execution") or snapshot.get("phase") or "failed").lower()
         mission_id = self._optional_int(payload.get("mission_id") or snapshot.get("mission_id"))
+        task_value = str(
+            payload.get("task") or snapshot.get("task") or self.state.active_task
+        ).strip()
+        task = self._canonical_task(task_value) if task_value else ""
+        if not self._matches_current_mission(task, mission_id):
+            self._log_ignored_mission_packet("mission.result", task, mission_id)
+            return {}
         with self._lock:
             self._state = replace(
                 self._state,
-                active_task=str(payload.get("task") or snapshot.get("task") or self._state.active_task).lower(),
+                active_task=task or self._state.active_task,
                 mission_id=mission_id or self._state.mission_id,
                 phase=execution,
                 waiting_for_guided=False,
@@ -768,12 +842,18 @@ class OnboardMissionService(OnboardMissionServiceContract):
         return {}
 
     def _handle_kamikaze_event(self, message: OrinMessage) -> dict[str, Any]:
-        self._process_event_payload(message.payload, source="live")
+        payload = dict(message.payload)
+        payload.setdefault("task", "kamikaze.execute")
+        self._process_event_payload(payload, source="live")
         return {}
 
-    def _handle_qr_report(self, message: OrinMessage) -> dict[str, Any]:
+    def _handle_qr_report(self, message: OrinMessage) -> OrinHandlerResponse:
         with self._qr_report_lock:
-            return self._submit_qr_report(message)
+            response = self._submit_qr_report(message)
+        return OrinHandlerResponse(
+            response,
+            message="QR report accepted",
+        )
 
     def _submit_qr_report(self, message: OrinMessage) -> dict[str, Any]:
         payload = dict(message.payload)
@@ -896,6 +976,22 @@ class OnboardMissionService(OnboardMissionServiceContract):
             for key, value in nested_fields.items():
                 normalized_payload.setdefault(str(key), value)
         event_name = str(normalized_payload.get("event", "UNKNOWN")).strip().upper()
+        resolved_mission_id = (
+            mission_id
+            or self._optional_int(normalized_payload.get("mission_id"))
+            or self.state.mission_id
+        )
+        event_task_value = normalized_payload.get("task") or normalized_payload.get("mission")
+        event_task = ""
+        if event_task_value:
+            event_task = self._canonical_task(str(event_task_value))
+        if not self._matches_current_mission(event_task, resolved_mission_id):
+            self._log_ignored_mission_packet(
+                "mission.event",
+                event_task,
+                resolved_mission_id,
+            )
+            return
         altitude = normalized_payload.get("altitude_m")
         event = OnboardMissionEvent(
             event=event_name,
@@ -905,9 +1001,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 or ""
             ),
             mission_id=(
-                mission_id
-                or self._optional_int(normalized_payload.get("mission_id"))
-                or self.state.mission_id
+                resolved_mission_id
             ),
             sequence=sequence,
             source=source,
@@ -1081,7 +1175,12 @@ class OnboardMissionService(OnboardMissionServiceContract):
             available_tasks = tuple(
                 dict.fromkeys((*self._state.available_tasks, *advertised_tasks))
             )
-            active_task = state.active_task or self._state.active_task
+            remote_active_tasks = self._normalized_tasks(state.active_tasks)
+            active_task = (
+                self._canonical_task(state.active_task)
+                if state.active_task
+                else self._state.active_task
+            )
             mission_id = (
                 state.active_missions[0]
                 if len(state.active_missions) == 1
@@ -1099,10 +1198,10 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 self._state.mission_id is not None
                 and (
                     self._state.mission_id in state.active_missions
-                    or self._state.active_task in state.active_tasks
+                    or self._state.active_task in remote_active_tasks
                     or (
                         bool(state.active_task)
-                        and self._state.active_task == state.active_task
+                        and self._state.active_task == active_task
                     )
                 )
             ):
@@ -1127,6 +1226,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 mission_id=mission_id,
                 phase=phase,
                 waiting_for_guided=waiting_for_guided,
+                pending_command=("" if session_changed else self._state.pending_command),
                 target_ready=target_ready,
                 target_revision=(
                     state.kamikaze_target_revision
@@ -1142,7 +1242,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
             self._schedule_recovery(0.1)
         if state.alive and (not was_connected or session_changed):
             self._reference_sync_event.set()
-        if state.alive and not was_connected:
+        if state.alive and (not was_connected or session_changed):
             self._start_recovery()
 
     def _start_recovery(self) -> None:
@@ -1362,6 +1462,49 @@ class OnboardMissionService(OnboardMissionServiceContract):
         if not normalized:
             raise ValueError("Görev adı boş olamaz")
         return TASK_ALIASES.get(normalized.upper(), normalized.lower())
+
+    @staticmethod
+    def _wire_task(task: str) -> str:
+        canonical = OnboardMissionService._canonical_task(task)
+        return {
+            "kamikaze.execute": "KAMIKAZE",
+            ACTUATOR_TEST_TASK: "ACTUATOR_TEST",
+        }.get(canonical, canonical)
+
+    def _matches_current_mission(self, task: str, mission_id: int | None) -> bool:
+        current = self.state
+        if (
+            current.mission_id is not None
+            and mission_id is not None
+            and current.mission_id != mission_id
+        ):
+            return False
+        if current.active_task and task:
+            try:
+                return current.active_task == self._canonical_task(task)
+            except ValueError:
+                return False
+        return True
+
+    def _log_ignored_mission_packet(
+        self,
+        packet_type: str,
+        task: str,
+        mission_id: int | None,
+    ) -> None:
+        current = self.state
+        self._log(
+            "mission.packet_ignored",
+            "Başka bir göreve ait onboard paketi aktif durumu değiştirmedi",
+            "warning",
+            {
+                "packet_type": packet_type,
+                "task": task,
+                "mission_id": mission_id,
+                "active_task": current.active_task,
+                "active_mission_id": current.mission_id,
+            },
+        )
 
     @staticmethod
     def _optional_int(value: Any) -> int | None:
