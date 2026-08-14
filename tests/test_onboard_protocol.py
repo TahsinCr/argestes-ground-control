@@ -41,7 +41,7 @@ class FakeOrinService:
                 "Target updated",
                 {
                     "execution": "updated",
-                    "target_revision": 1,
+                    "target_revision": target_payload["source_revision"],
                     "target": {
                         "latitude_deg": target_payload["latitude_deg"],
                         "longitude_deg": target_payload["longitude_deg"],
@@ -142,7 +142,7 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertEqual(self.service.state.phase, "starting")
         self.assertEqual(self.service.state.mission_id, 42)
         self.assertTrue(self.service.state.target_ready)
-        self.assertEqual(self.service.state.target_revision, 1)
+        self.assertGreater(self.service.state.target_revision, 0)
 
     def test_target_rejection_blocks_kamikaze_start(self) -> None:
         original_issue = self.orin.issue
@@ -195,7 +195,8 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertEqual(packet_type, "competition.hss.update")
         self.assertTrue(payload["active"])
         self.assertEqual([zone["id"] for zone in payload["zones"]], [1, 2])
-        self.assertEqual(payload["revision"], 1)
+        first_revision = payload["revision"]
+        self.assertGreater(first_revision, 0)
 
         self.service._on_hss_updated(())
         cleared = self.service._send_hss_update()
@@ -205,7 +206,7 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertFalse(clear_payload["active"])
         self.assertEqual(clear_payload["zones"], [])
         self.assertEqual(clear_payload["reason"], "source-ended")
-        self.assertEqual(clear_payload["revision"], 2)
+        self.assertGreater(clear_payload["revision"], first_revision)
         self.assertFalse(self.service.state.hss_active)
         self.assertEqual(self.service.state.hss_count, 0)
 
@@ -284,6 +285,7 @@ class OnboardMissionProtocolTests(unittest.TestCase):
             "kamikaze.qr.report",
             {
                 "report_id": "retryable-report",
+                "mission_id": 43,
                 "qr_text": "RETRY-QR",
                 "time_utc": "2026-08-14T12:00:04Z",
             },
@@ -299,6 +301,39 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertEqual(response["execution"], "submitted")
         self.assertEqual(attempts, 2)
         self.assertEqual(len(self.competition.submitted_kamikaze), 1)
+
+    def test_qr_report_id_uses_the_same_192_character_contract(self) -> None:
+        handler = self.orin.handlers["kamikaze.qr.report"]
+        report_id = "r" * 192
+        payload = {
+            "report_id": report_id,
+            "mission_id": 45,
+            "qr_text": "BOUNDARY-QR",
+            "time_utc": "2026-08-14T12:00:04Z",
+        }
+
+        response = handler(
+            OrinMessage("kamikaze.qr.report", payload, 703, 1, 191)
+        )
+
+        self.assertEqual(response["report_id"], report_id)
+        with self.assertRaisesRegex(ValueError, "192"):
+            handler(
+                OrinMessage(
+                    "kamikaze.qr.report",
+                    {**payload, "report_id": "r" * 193},
+                    704,
+                    1,
+                    191,
+                )
+            )
+
+    def test_source_revisions_remain_monotonic_above_wall_clock_value(self) -> None:
+        high_revision = 9_000_000_000_000_000
+
+        next_revision = self.service._next_revision(high_revision)
+
+        self.assertEqual(next_revision, high_revision + 1)
 
     def test_transition_and_terminal_result_are_not_confused_with_ack(self) -> None:
         self.orin.emit(

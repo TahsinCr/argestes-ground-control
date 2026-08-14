@@ -183,7 +183,9 @@ class OnboardMissionService(OnboardMissionServiceContract):
             content_hash = self._content_hash(canonical)
             with self._lock:
                 if content_hash != self._target_content_hash:
-                    self._target_source_revision += 1
+                    self._target_source_revision = self._next_revision(
+                        self._target_source_revision
+                    )
                     self._target_content_hash = content_hash
                 source_revision = self._target_source_revision
                 if (
@@ -276,7 +278,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
             self._hss_observed = True
             self._hss_snapshot = snapshot
             if content_hash != self._hss_content_hash:
-                self._hss_revision += 1
+                self._hss_revision = self._next_revision(self._hss_revision)
                 self._hss_content_hash = content_hash
         self._reference_sync_event.set()
 
@@ -402,6 +404,13 @@ class OnboardMissionService(OnboardMissionServiceContract):
             separators=(",", ":"),
         ).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()[:16]
+
+    @staticmethod
+    def _next_revision(current: int) -> int:
+        """Keep source revisions increasing even when the YKİ process restarts."""
+
+        epoch_milliseconds = int(datetime.now(UTC).timestamp() * 1_000)
+        return max(int(current) + 1, epoch_milliseconds)
 
     def pause_task(self, task: str = "kamikaze.execute") -> OrinCommandReceipt:
         return self._task_control("task.pause", task, "pause")
@@ -700,9 +709,11 @@ class OnboardMissionService(OnboardMissionServiceContract):
 
     def _submit_qr_report(self, message: OrinMessage) -> dict[str, Any]:
         payload = dict(message.payload)
-        report_id = str(payload.get("report_id", "")).strip()[:128]
+        report_id = str(payload.get("report_id", "")).strip()
         if not report_id:
             raise ValueError("QR report_id alanı zorunlu")
+        if len(report_id) > 192:
+            raise ValueError("QR report_id alanı 192 karakteri aşamaz")
         with self._lock:
             previous = self._submitted_qr_reports.get(report_id)
             if previous is not None:
@@ -725,11 +736,13 @@ class OnboardMissionService(OnboardMissionServiceContract):
             required=False,
         ) or ended_at
         mission_id = self._optional_int(payload.get("mission_id"))
+        if mission_id is None or mission_id <= 0:
+            raise ValueError("QR mission_id alanı pozitif olmalı")
         altitude = payload.get("altitude_m")
         event = OnboardMissionEvent(
             event=str(payload.get("event") or "QR_DECODED"),
             time_utc=ended_at.isoformat().replace("+00:00", "Z"),
-            mission_id=mission_id or self.state.mission_id,
+            mission_id=mission_id,
             source="report",
             qr_text=qr_text,
             altitude_m=(float(altitude) if altitude is not None else None),

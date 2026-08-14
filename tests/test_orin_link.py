@@ -58,6 +58,7 @@ class OrinLinkTests(unittest.TestCase):
 
         self.assertEqual(payload["role"], "yki")
         self.assertIn("utc_ms", payload)
+        self.assertTrue(payload["session"])
         self.assertNotIn("capabilities", payload)
         self.assertLess(len(json.dumps(payload).encode("utf-8")), 180)
 
