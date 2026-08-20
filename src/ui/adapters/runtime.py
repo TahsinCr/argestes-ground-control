@@ -50,6 +50,8 @@ class QtRuntimeServices:
     def archive_service(self): return self.backend.archive_service
     @property
     def facade(self): return self.backend.facade
+    @property
+    def kamikaze_approach_service(self): return self.backend.kamikaze_approach_service
 
     def start(self) -> None:
         self.video_service.start()
