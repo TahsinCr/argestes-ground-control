@@ -26,6 +26,7 @@ from src.services.mission_archive import MissionArchiveService
 from src.services.planner import PlannerService
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
+from src.services.kamikaze_approach import KamikazeApproachService
 
 
 @dataclass(slots=True)
@@ -44,6 +45,7 @@ class RuntimeServices:
     video_service: VideoService
     tile_cache_service: TileCacheServer
     competition_service: CompetitionService
+    kamikaze_approach_service: KamikazeApproachService
     connection_service: ConnectionControlService
     archive_service: MissionArchiveService
     facade: BackendFacade
