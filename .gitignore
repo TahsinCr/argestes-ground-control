@@ -8,7 +8,7 @@ __pycache__/
 htmlcov/
 .mypy_cache/
 .ruff_cache/
-
+.serena/
 src-kirlangic/
 build/
 dist/

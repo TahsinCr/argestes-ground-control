@@ -541,7 +541,7 @@ class MavlinkOrinService(OrinService):
         return {
             "role": "yki",
             "health": "ok",
-            "version": "1.4.3-beta",
+            "version": "1.4.4-beta",
         }
 
     def _on_packet(self, packet: MavlinkApplicationPacket) -> None:

@@ -1029,6 +1029,7 @@
     const TOOL_DOCK_MAX_GAP_PX = 32;
     const TOOL_DOCK_SIDE_CLEARANCE_PX = 12;
     const CURSOR_UPDATE_INTERVAL_MS = 50;
+    const MARKER_MOTION_FRAME_INTERVAL_MS = 33;
 
     let map;
     let bridge = null;
@@ -1050,6 +1051,7 @@
     let pendingBridgeTelemetry = null;
     let bridgeTelemetryFrame = 0;
     let markerMotionFrame = 0;
+    let lastMarkerMotionRenderAt = 0;
 
     const state = {
       ui: {
@@ -2792,6 +2794,14 @@
 
     function renderMarkerMotions(now) {
       markerMotionFrame = 0;
+      if (
+        lastMarkerMotionRenderAt
+        && now - lastMarkerMotionRenderAt < MARKER_MOTION_FRAME_INTERVAL_MS
+      ) {
+        markerMotionFrame = window.requestAnimationFrame(renderMarkerMotions);
+        return;
+      }
+      lastMarkerMotionRenderAt = now;
       let active = false;
       state.contacts.forEach((entry) => {
         active = advanceMarkerMotion(entry, entry.marker, now) || active;
@@ -2799,6 +2809,8 @@
       active = advanceMarkerMotion(state.vehicleMotion, vehicleMarker, now) || active;
       if (active) {
         markerMotionFrame = window.requestAnimationFrame(renderMarkerMotions);
+      } else {
+        lastMarkerMotionRenderAt = 0;
       }
     }
 
@@ -2813,8 +2825,11 @@
         return;
       }
       const latlng = [data.latitude, data.longitude];
-      const trailPoints = trimTrail((data.trail_points || []).concat([latlng]), state.contactTrailLimit);
       let entry = state.contacts.get(data.contact_id);
+      const incomingTrail = data.trail_incremental && entry
+        ? (entry.trailPoints || []).concat(data.trail_points || [])
+        : (data.trail_points || []);
+      const trailPoints = trimTrail(incomingTrail.concat([latlng]), state.contactTrailLimit);
       if (!entry) {
         const tooltip = contactTooltip(data);
         const color = contactColor(data);

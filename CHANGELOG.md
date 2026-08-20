@@ -1,6 +1,66 @@
 # **Change Log**
 All notable changes to this project will be documented in this file.
 
+## **[1.4.4-beta] - 21.08.2026**
+The **"Async Runtime and Operator Performance Update"** moves auxiliary I/O
+off the interface thread, reduces map traffic under live telemetry and keeps
+flight-mode authority with the operator.
+
+### Added
+* **Shared asynchronous runtime**:
+    * Added one application-owned asyncio loop for backend waiters instead of
+      creating independent polling threads for each service.
+    * Added lifecycle-safe scheduling, cancellation and shutdown behavior for
+      dependency-managed services.
+* **Operator feedback**:
+    * Added task-specific Kamikaze and actuator-test status cards with a shared
+      mission progress indicator.
+    * Added a third video presentation mode that stretches the complete frame
+      to the panel without cropping it.
+
+### Updated
+* **Non-blocking backend I/O**:
+    * Moved TEKNOFEST polling, connection health checks, Onboard reference
+      synchronization and local tile serving onto the shared async runtime.
+    * Kept blocking HTTP work outside the event loop and retained bounded
+      request, reconnect and shutdown behavior.
+* **Map hot path**:
+    * Limited moving-marker rendering to a stable display cadence and changed
+      contact trails to send incremental points instead of rebuilding complete
+      paths for every telemetry sample.
+    * Preserved the existing map appearance, controls and planning behavior.
+* **Vehicle Autonomy Core v1.3.1**:
+    * Updated the pinned submodule to the latest compatible release.
+    * Adopted the core's expanded mission orchestration, parallel/background
+      execution and reliability improvements without adding another MAVLink
+      connection or receive loop.
+* **Cross-platform runtime**:
+    * Isolated POSIX serial-permission handling so Windows and macOS startup do
+      not depend on Linux-only account modules.
+
+### Changed
+* **Flight-mode ownership**:
+    * Starting an Onboard task no longer changes the vehicle to GUIDED.
+    * Completing or cancelling a task no longer changes the vehicle to AUTO.
+      Mode selection remains an explicit operator action.
+
+### Fixed
+* Coalesced repeated Onboard reference synchronization so slow links cannot
+  accumulate stale work.
+* Hardened asynchronous cancellation and shutdown paths to avoid orphaned
+  timers, idle threads and late callbacks during application exit.
+* Kept command acknowledgements and high-rate MAVLink ingestion independent
+  from map, video and TEKNOFEST refresh work.
+
+### Testing
+* The combined runner passes **393 tests**: **242 YKİ tests** and **151 Vehicle
+  Autonomy Core v1.3.1 tests**.
+* Coverage includes shared-runtime lifecycle, async service scheduling,
+  incremental map transport, video view modes, task progress and operator-owned
+  flight-mode behavior.
+
+<br>
+
 ## **[1.4.3-beta] - 13.08.2026**
 The **"Core Concurrency Compatibility Patch"** release. This patch adopts
 Vehicle Autonomy Core v1.3 and keeps the YKİ–Onboard application link

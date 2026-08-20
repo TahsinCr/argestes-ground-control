@@ -727,6 +727,31 @@ class MapPanel(PanelFrame):
             for payload in contacts
             if self._contact_cache.get(payload["contact_id"]) != payload
         ]
+        compact_contacts: list[dict[str, Any]] = []
+        for payload in changed_contacts:
+            previous = self._contact_cache.get(payload["contact_id"])
+            previous_trail = list((previous or {}).get("trail_points", []))
+            current_trail = list(payload.get("trail_points", []))
+            if (
+                previous is not None
+                and (
+                    (
+                        len(current_trail) == len(previous_trail) + 1
+                        and current_trail[:-1] == previous_trail
+                    )
+                    or (
+                        len(current_trail) == len(previous_trail)
+                        and len(current_trail) > 1
+                        and current_trail[:-1] == previous_trail[1:]
+                    )
+                )
+            ):
+                compact = dict(payload)
+                compact["trail_points"] = current_trail[-1:]
+                compact["trail_incremental"] = True
+                compact_contacts.append(compact)
+            else:
+                compact_contacts.append(payload)
         overlay_order = [overlay["overlay_id"] for overlay in overlays]
         overlay_order_changed = list(self._overlay_cache) != overlay_order
         if (
@@ -740,7 +765,7 @@ class MapPanel(PanelFrame):
                 "removeOverlays": removed_overlays,
                 "upsertOverlays": changed_overlays,
                 "removeContacts": removed_contacts,
-                "upsertContacts": changed_contacts,
+                "upsertContacts": compact_contacts,
                 "overlayOrder": overlay_order if overlay_order_changed else None,
             }
             self._push_state_delta(delta)

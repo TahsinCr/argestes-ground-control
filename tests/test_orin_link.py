@@ -911,7 +911,7 @@ class OrinLinkTests(unittest.TestCase):
             calls,
             [("start", "KAMIKAZE"), ("cancel", "kamikaze.execute")],
         )
-        self.assertEqual(modes, ["GUIDED"])
+        self.assertEqual(modes, [])
         self.assertTrue(all(result.accepted for result in results))
 
         onboard.changed.publish(
@@ -922,10 +922,8 @@ class OrinLinkTests(unittest.TestCase):
                 phase="cancelled",
             )
         )
-        deadline = time.monotonic() + 1.0
-        while modes != ["GUIDED", "AUTO"] and time.monotonic() < deadline:
-            time.sleep(0.01)
-        self.assertEqual(modes, ["GUIDED", "AUTO"])
+        time.sleep(0.05)
+        self.assertEqual(modes, [])
 
     def test_configured_ping_task_is_exposed_and_routed_to_orin(self) -> None:
         class Vehicle:

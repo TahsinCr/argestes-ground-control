@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import json
 import shutil
 import threading
 import time
 from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, NamedTuple
 from urllib.error import HTTPError, URLError
@@ -14,6 +15,7 @@ from urllib.request import Request, urlopen
 
 from src.core.events import EventBus
 from src.services.abstracts.tile_cache import TileCacheService
+from src.services.async_runtime import AsyncRuntime
 from src.services.storage import ensure_directory
 
 
@@ -52,65 +54,6 @@ class TileResult(NamedTuple):
     redirect_url: str | None = None
 
 
-class _TileHttpServer(ThreadingHTTPServer):
-    daemon_threads = True
-    allow_reuse_address = True
-    block_on_close = False
-
-    def __init__(self, *args: Any, max_workers: int = 8, **kwargs: Any) -> None:
-        self._worker_gate = threading.BoundedSemaphore(max_workers)
-        super().__init__(*args, **kwargs)
-
-    def process_request(self, request: Any, client_address: Any) -> None:
-        if not self._worker_gate.acquire(timeout=0.25):
-            try:
-                request.sendall(
-                    b"HTTP/1.1 503 Service Unavailable\r\n"
-                    b"Content-Length: 0\r\n"
-                    b"Connection: close\r\n\r\n"
-                )
-            except OSError:
-                pass
-            finally:
-                self.shutdown_request(request)
-            return
-        try:
-            super().process_request(request, client_address)
-        except Exception:
-            self._worker_gate.release()
-            raise
-
-    def process_request_thread(self, request: Any, client_address: Any) -> None:
-        try:
-            super().process_request_thread(request, client_address)
-        finally:
-            self._worker_gate.release()
-
-
-class _TileHandler(BaseHTTPRequestHandler):
-    server_version = "YKITileCache/2.0"
-
-    def do_GET(self) -> None:  # noqa: N802 - stdlib callback name
-        result = self.server.cache.handle_request(self.path)  # type: ignore[attr-defined]
-        self.send_response(result.status)
-        if result.redirect_url:
-            self.send_header("Location", result.redirect_url)
-        self.send_header("Content-Type", result.content_type)
-        self.send_header("Content-Length", str(len(result.payload)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Cache-Control", "no-store, max-age=0")
-        self.send_header("X-YKI-Tile-Cache", result.cache_state)
-        self.end_headers()
-        try:
-            self.wfile.write(result.payload)
-        except (BrokenPipeError, ConnectionResetError):
-            # WebEngine may cancel an in-flight tile request while shutting down.
-            return
-
-    def log_message(self, _format: str, *_args: Any) -> None:
-        return
-
-
 class TileCacheServer(TileCacheService):
     """Cache-first local tile server used by Leaflet.
 
@@ -128,13 +71,20 @@ class TileCacheServer(TileCacheService):
         enabled: bool,
         limit_mb: int,
         parent: object | None = None,
+        async_runtime: AsyncRuntime | None = None,
     ) -> None:
         del parent
         self._cache_changed = EventBus[int]()
         self._cache_path = Path(cache_path)
         self._enabled = enabled
         self._limit_mb = limit_mb
-        self._server: _TileHttpServer | None = None
+        self._async_runtime = async_runtime or AsyncRuntime()
+        self._owns_async_runtime = async_runtime is None
+        self._server: asyncio.AbstractServer | None = None
+        self._server_address: tuple[str, int] | None = None
+        self._request_gate: asyncio.Semaphore | None = None
+        # Retained as a compatibility probe for older diagnostics. The async
+        # listener never allocates a dedicated server thread.
         self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
         self._index: dict[str, dict[str, Any]] = {}
@@ -151,13 +101,13 @@ class TileCacheServer(TileCacheService):
 
     @property
     def running(self) -> bool:
-        return self._server is not None and self._thread is not None and self._thread.is_alive()
+        return self._server is not None and self._server.is_serving()
 
     @property
     def base_url(self) -> str:
-        if not self._server:
+        if not self._server_address:
             return ""
-        host, port = self._server.server_address[:2]
+        host, port = self._server_address
         return f"http://{host}:{port}"
 
     @property
@@ -178,41 +128,112 @@ class TileCacheServer(TileCacheService):
         with self._lock:
             if not self._enabled or self._server:
                 return
-            try:
-                server = _TileHttpServer(("127.0.0.1", 0), _TileHandler)
-            except OSError:
-                # A hardened runtime may forbid local sockets. The map already
-                # falls back to direct provider URLs when base_url is empty, so
-                # cache availability must never prevent the UI from opening.
+        future = self._async_runtime.submit(self._start_server())
+        try:
+            future.result(timeout=2.0)
+        except (OSError, concurrent.futures.TimeoutError):
+            # A hardened runtime may forbid local sockets. The map falls back
+            # to provider URLs when base_url is empty.
+            future.cancel()
+            with self._lock:
                 self._server = None
-                self._thread = None
-                return
-            server.cache = self  # type: ignore[attr-defined]
-            thread = threading.Thread(
-                target=server.serve_forever,
-                name="YKITileCache",
-                daemon=True,
-            )
-            self._server = server
-            self._thread = thread
-            thread.start()
+                self._server_address = None
 
     def stop(self) -> None:
         with self._lock:
             server = self._server
-            thread = self._thread
         if server is None:
+            if self._owns_async_runtime:
+                self._async_runtime.stop()
             return
-        server.shutdown()
-        server.server_close()
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=2.0)
+        future = self._async_runtime.submit(self._stop_server(server))
+        try:
+            future.result(timeout=2.0)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
         with self._lock:
             self._persist_index_locked()
             if self._server is server:
                 self._server = None
-            if self._thread is thread:
-                self._thread = None
+            self._server_address = None
+        if self._owns_async_runtime:
+            self._async_runtime.stop()
+
+    async def _start_server(self) -> None:
+        self._request_gate = asyncio.Semaphore(8)
+        server = await asyncio.start_server(
+            self._handle_client,
+            host="127.0.0.1",
+            port=0,
+            limit=16 * 1024,
+        )
+        socket = next(iter(server.sockets or ()), None)
+        if socket is None:
+            server.close()
+            await server.wait_closed()
+            raise OSError("Local tile cache socket could not be opened")
+        host, port = socket.getsockname()[:2]
+        with self._lock:
+            self._server = server
+            self._server_address = (str(host), int(port))
+
+    async def _stop_server(self, server: asyncio.AbstractServer) -> None:
+        server.close()
+        await server.wait_closed()
+
+    async def _handle_client(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        try:
+            header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 2.0)
+            request_line = header.split(b"\r\n", 1)[0].decode("ascii", "replace")
+            method, path, _version = request_line.split(" ", 2)
+            if method != "GET":
+                result = TileResult(405, "text/plain", b"", "method-not-allowed")
+            else:
+                gate = self._request_gate
+                if gate is None:
+                    return
+                async with gate:
+                    result = await asyncio.to_thread(self.handle_request, path)
+            reason = {
+                200: "OK",
+                302: "Found",
+                400: "Bad Request",
+                404: "Not Found",
+                405: "Method Not Allowed",
+                503: "Service Unavailable",
+            }.get(result.status, "OK")
+            headers = [
+                f"HTTP/1.1 {result.status} {reason}",
+                f"Content-Type: {result.content_type}",
+                f"Content-Length: {len(result.payload)}",
+                "Access-Control-Allow-Origin: *",
+                "Cache-Control: no-store, max-age=0",
+                f"X-YKI-Tile-Cache: {result.cache_state}",
+                "Connection: close",
+            ]
+            if result.redirect_url:
+                headers.append(f"Location: {result.redirect_url}")
+            writer.write(("\r\n".join(headers) + "\r\n\r\n").encode("ascii"))
+            writer.write(result.payload)
+            await writer.drain()
+        except (
+            asyncio.IncompleteReadError,
+            asyncio.LimitOverrunError,
+            asyncio.TimeoutError,
+            ConnectionError,
+            ValueError,
+        ):
+            pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except ConnectionError:
+                pass
 
     def restart(self) -> None:
         self.stop()

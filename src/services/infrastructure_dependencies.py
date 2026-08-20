@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.core.dependency import BaseDependencyContainer, DependencyContainer
+from src.services.async_runtime import AsyncRuntime
 from src.services.abstracts.logging import LogService
 from src.services.abstracts.settings import SettingsRepository
 from src.services.logging_service import LoggingService
@@ -75,6 +76,7 @@ def register_infrastructure_dependencies(
 ) -> None:
     container.instance(ApplicationContext, context, priority=priority)
     container.instance(DependencyContainer, container.container, priority=priority)
+    container.singleton(AsyncRuntime, concrete=AsyncRuntime, priority=priority)
     container.singleton(
         LoggingService,
         factory=_logging,
@@ -109,6 +111,7 @@ def register_infrastructure_dependencies(
 
 __all__ = [
     "ApplicationContext",
+    "AsyncRuntime",
     "OrinCommandCatalog",
     "register_infrastructure_dependencies",
 ]

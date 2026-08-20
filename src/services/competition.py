@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 from dataclasses import replace
 from datetime import UTC, datetime
 import http.cookiejar
@@ -27,6 +29,7 @@ from src.services.abstracts.competition import CompetitionService
 from src.services.planner import PlannerService
 from src.services.abstracts.telemetry import TelemetryService
 from src.services.abstracts.vehicle import VehicleService
+from src.services.async_runtime import AsyncRuntime
 from src.services.logging_service import ServiceLogger
 
 
@@ -57,6 +60,7 @@ class TeknofestCompetitionService(CompetitionService):
         logger: ServiceLogger | None = None,
         *,
         telemetry_freshness_timeout_s: float | None = None,
+        async_runtime: AsyncRuntime | None = None,
     ) -> None:
         if telemetry_freshness_timeout_s is not None and telemetry_freshness_timeout_s <= 0:
             raise ValueError("Telemetri tazelik zaman aşımı pozitif olmalı")
@@ -83,8 +87,9 @@ class TeknofestCompetitionService(CompetitionService):
         self._lock = threading.RLock()
         self._lifecycle_lock = threading.RLock()
         self._http_lock = threading.RLock()
-        self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._async_runtime = async_runtime or AsyncRuntime()
+        self._owns_async_runtime = async_runtime is None
+        self._run_future: concurrent.futures.Future[Any] | None = None
         self._opener = self._new_opener()
         self._last_hss_refresh = 0.0
         self._last_qr_refresh = 0.0
@@ -158,11 +163,17 @@ class TeknofestCompetitionService(CompetitionService):
 
     def disconnect(self) -> None:
         with self._lifecycle_lock:
-            self._stop_event.set()
-            thread = self._thread
-            if thread is not None and thread is not threading.current_thread():
-                thread.join(timeout=min(self.config.timeout_s + 0.5, 5.0))
-            self._thread = None
+            future = self._run_future
+            self._run_future = None
+            if future is not None and not future.done():
+                future.cancel()
+                try:
+                    future.result(timeout=min(self.config.timeout_s + 0.5, 5.0))
+                except (
+                    concurrent.futures.CancelledError,
+                    concurrent.futures.TimeoutError,
+                ):
+                    pass
             self._opener = self._new_opener()
             self._telemetry.patch(server_link=False, server_time=None)
             self._planner.replace_contacts((), source="teknofest")
@@ -199,28 +210,42 @@ class TeknofestCompetitionService(CompetitionService):
 
     def stop(self) -> None:
         self.disconnect()
+        if self._owns_async_runtime:
+            self._async_runtime.stop()
 
     def _launch(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
+        future = self._run_future
+        if future is not None and not future.done():
             return
-        self._stop_event.clear()
         self._opener = self._new_opener()
         with self._lock:
             self._last_connection_error_signature = ""
             self._last_connection_error_log_at = 0.0
         self._publish_state(running=True, last_error="")
-        self._thread = threading.Thread(
-            target=self._run,
-            name="TeknofestCompetition",
-            daemon=True,
-        )
-        self._thread.start()
+        self._run_future = self._async_runtime.submit(self._run_async())
+        self._run_future.add_done_callback(self._run_finished)
 
-    def _run(self) -> None:
+    def _run_finished(self, future: concurrent.futures.Future[Any]) -> None:
+        with self._lifecycle_lock:
+            if self._run_future is future:
+                self._run_future = None
+        if future.cancelled():
+            return
+        try:
+            future.result()
+        except Exception as exc:
+            self._publish_state(
+                connected=False,
+                authenticated=False,
+                running=False,
+                last_error=str(exc) or type(exc).__name__,
+            )
+
+    async def _run_async(self) -> None:
         announced_waiting_for_vehicle_data = False
-        while not self._stop_event.is_set():
+        while True:
             try:
-                self._login()
+                await asyncio.to_thread(self._login)
                 self._log_protocol(
                     "competition.server_time_request_tx",
                     "TX TEKNOFEST sunucu saati isteği gönderiliyor",
@@ -228,7 +253,11 @@ class TeknofestCompetitionService(CompetitionService):
                     severity="debug",
                 )
                 clock_started = time.monotonic()
-                server_payload = self._request_json("GET", "/api/sunucusaati")
+                server_payload = await asyncio.to_thread(
+                    self._request_json,
+                    "GET",
+                    "/api/sunucusaati",
+                )
                 server_time = self._update_server_clock(server_payload, clock_started)
                 self._log_protocol(
                     "competition.server_time_rx",
@@ -267,11 +296,14 @@ class TeknofestCompetitionService(CompetitionService):
                 # server see the ownship position before requesting nearby
                 # reference data. Real competition servers are unaffected.
                 if not initial_feed_ready:
-                    self._refresh_reference_data_if_due(force=True)
+                    await asyncio.to_thread(
+                        self._refresh_reference_data_if_due,
+                        force=True,
+                    )
                 first_telemetry_sent = False
                 next_telemetry_at = 0.0
 
-                while not self._stop_event.is_set():
+                while True:
                     started = time.monotonic()
                     period_s = self.config.telemetry_period_ms / 1000.0
                     if started >= next_telemetry_at:
@@ -287,7 +319,8 @@ class TeknofestCompetitionService(CompetitionService):
                             outbound = self._telemetry_payload(snapshot, vehicle_time)
                             self._log_telemetry_tx(outbound)
                             telemetry_started = time.monotonic()
-                            response = self._request_json(
+                            response = await asyncio.to_thread(
+                                self._request_json,
                                 "POST",
                                 "/api/telemetri_gonder",
                                 outbound,
@@ -295,7 +328,10 @@ class TeknofestCompetitionService(CompetitionService):
                             self._consume_telemetry_response(response, telemetry_started)
                             if not first_telemetry_sent:
                                 first_telemetry_sent = True
-                                self._refresh_reference_data_if_due(force=True)
+                                await asyncio.to_thread(
+                                    self._refresh_reference_data_if_due,
+                                    force=True,
+                                )
                             announced_waiting_for_vehicle_data = False
                         elif not announced_waiting_for_vehicle_data:
                             announced_waiting_for_vehicle_data = True
@@ -320,7 +356,11 @@ class TeknofestCompetitionService(CompetitionService):
                                 severity="debug",
                             )
                             clock_started = time.monotonic()
-                            health = self._request_json("GET", "/api/sunucusaati")
+                            health = await asyncio.to_thread(
+                                self._request_json,
+                                "GET",
+                                "/api/sunucusaati",
+                            )
                             health_time = self._update_server_clock(health, clock_started)
                             self._telemetry.patch(
                                 server_link=True,
@@ -344,17 +384,17 @@ class TeknofestCompetitionService(CompetitionService):
                                 ),
                             )
                         next_telemetry_at = started + period_s
-                    self._refresh_reference_data_if_due()
+                    await asyncio.to_thread(self._refresh_reference_data_if_due)
                     now = time.monotonic()
                     with self._lock:
                         next_hss_at = (
                             self._last_hss_refresh + self.HSS_REFRESH_PERIOD_S
                         )
                     next_wakeup = min(next_telemetry_at, next_hss_at)
-                    self._stop_event.wait(max(0.0, next_wakeup - now))
+                    await asyncio.sleep(max(0.0, next_wakeup - now))
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
-                if self._stop_event.is_set():
-                    break
                 message = str(exc) or exc.__class__.__name__
                 self._replace_hss_zones(())
                 self._replace_qr_coordinate(None)
@@ -377,7 +417,7 @@ class TeknofestCompetitionService(CompetitionService):
                     and exc.status_code in {400, 403, 404}
                     else 2.0
                 )
-                self._stop_event.wait(retry_delay)
+                await asyncio.sleep(retry_delay)
 
     def refresh_reference_data(self) -> None:
         if not self.state.connected:

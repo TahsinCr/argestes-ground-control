@@ -14,6 +14,27 @@ from src.services.tile_cache import TileCacheServer
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_backend_io_services_share_one_async_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = create_runtime_services(Path(directory))
+
+            self.assertIs(
+                runtime.competition_service._async_runtime,
+                runtime.async_runtime,
+            )
+            self.assertIs(
+                runtime.connection_service._async_runtime,
+                runtime.async_runtime,
+            )
+            self.assertIs(
+                runtime.onboard_service._async_runtime,
+                runtime.async_runtime,
+            )
+            self.assertIs(
+                runtime.tile_cache_service._async_runtime,
+                runtime.async_runtime,
+            )
+
     def test_orin_remote_logs_enter_the_central_log_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             runtime = create_runtime_services(Path(directory))
@@ -71,7 +92,7 @@ class RuntimeTests(unittest.TestCase):
                 start.assert_called_once_with()
                 runtime.stop()
 
-    def test_disabled_tile_cache_keeps_no_idle_server_thread(self) -> None:
+    def test_tile_cache_uses_shared_async_listener_without_dedicated_thread(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cache = TileCacheServer(
                 cache_path=Path(directory),
@@ -81,19 +102,9 @@ class RuntimeTests(unittest.TestCase):
             cache.start()
             self.assertFalse(cache.running)
             self.assertEqual(cache.base_url, "")
-
-            cache.configure(
-                cache_path=Path(directory),
-                enabled=True,
-                limit_mb=64,
-            )
-            cache.start()
-            self.assertTrue(cache.running)
-            thread = cache._thread
+            self.assertIsNone(cache._thread)
             cache.stop()
             self.assertFalse(cache.running)
-            self.assertIsNotNone(thread)
-            self.assertFalse(thread.is_alive())
 
     def test_facade_supports_non_qt_callers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from src.core.dependency import BaseDependencyContainer, DependencyContainer
 from src.models.mission import MissionState
 from src.services.commands import DispatchCommandService
+from src.services.async_runtime import AsyncRuntime
 from src.services.battery_alarm import BatteryAlarmService
 from src.services.competition import TeknofestCompetitionService
 from src.services.connections import BackendConnectionControlService
@@ -69,11 +70,13 @@ def _onboard(
     orin: OrinService,
     competition: CompetitionService,
     logging: LoggingService,
+    async_runtime: AsyncRuntime,
 ) -> OnboardMissionService:
     return OnboardMissionService(
         orin,
         competition,
         logging.child("ONBOARD"),
+        async_runtime=async_runtime,
     )
 
 
@@ -98,12 +101,16 @@ def _video(
     )
 
 
-def _tile_cache(settings_service: SettingsService) -> TileCacheServer:
+def _tile_cache(
+    settings_service: SettingsService,
+    async_runtime: AsyncRuntime,
+) -> TileCacheServer:
     cache = settings_service.current.backend.cache
     return TileCacheServer(
         cache_path=cache.path,
         enabled=cache.enabled,
         limit_mb=cache.limit_mb,
+        async_runtime=async_runtime,
     )
 
 
@@ -125,6 +132,7 @@ def _competition(
     planner: PlannerService,
     vehicle: VehicleService,
     logging: LoggingService,
+    async_runtime: AsyncRuntime,
 ) -> CompetitionService:
     return TeknofestCompetitionService(
         settings_service.current.backend.competition,
@@ -132,6 +140,7 @@ def _competition(
         planner,
         vehicle,
         logging.child("TEKNOFEST"),
+        async_runtime=async_runtime,
     )
 
 
@@ -143,6 +152,7 @@ def _connections(
     competition: CompetitionService,
     orin: OrinService,
     logging: LoggingService,
+    async_runtime: AsyncRuntime,
 ) -> ConnectionControlService:
     return BackendConnectionControlService(
         settings=settings,
@@ -152,6 +162,7 @@ def _connections(
         competition=competition,
         orin=orin,
         logger=logging.child("CONNECTION"),
+        async_runtime=async_runtime,
     )
 
 
@@ -212,6 +223,7 @@ def register_application_dependencies(
             "orin": OrinService,
             "competition": CompetitionService,
             "logging": LoggingService,
+            "async_runtime": AsyncRuntime,
         },
         priority=priority,
     )
@@ -244,7 +256,10 @@ def register_application_dependencies(
     container.singleton(
         TileCacheServer,
         factory=_tile_cache,
-        dependencies={"settings_service": SettingsService},
+        dependencies={
+            "settings_service": SettingsService,
+            "async_runtime": AsyncRuntime,
+        },
         priority=priority,
     )
     container.singleton(
@@ -274,6 +289,7 @@ def register_application_dependencies(
             "planner": PlannerService,
             "vehicle": VehicleService,
             "logging": LoggingService,
+            "async_runtime": AsyncRuntime,
         },
         priority=priority,
     )
@@ -288,6 +304,7 @@ def register_application_dependencies(
             "competition": CompetitionService,
             "orin": OrinService,
             "logging": LoggingService,
+            "async_runtime": AsyncRuntime,
         },
         priority=priority,
     )
@@ -319,6 +336,7 @@ def register_application_dependencies(
         concrete=RuntimeServices,
         dependencies={
             "container": DependencyContainer,
+            "async_runtime": AsyncRuntime,
             "log_service": LoggingService,
             "settings_service": SettingsService,
             "vehicle_service": VehicleService,

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
+import getpass
 import os
-import pwd
 import re
 import shutil
 import stat
@@ -23,6 +25,7 @@ from src.services.abstracts.settings import SettingsRepository
 from src.services.abstracts.telemetry import TelemetryService
 from src.services.abstracts.vehicle import VehicleService
 from src.services.abstracts.video import VideoService
+from src.services.async_runtime import AsyncRuntime
 from src.services.logging_service import ServiceLogger
 
 
@@ -43,6 +46,7 @@ class BackendConnectionControlService(ConnectionControlService):
         competition: CompetitionService,
         orin: OrinService | None = None,
         logger: ServiceLogger | None = None,
+        async_runtime: AsyncRuntime | None = None,
     ) -> None:
         self._settings = settings
         self._vehicle = vehicle
@@ -54,8 +58,9 @@ class BackendConnectionControlService(ConnectionControlService):
         self._changed = EventBus[ConnectionStatus]()
         self._subscriptions: list[Subscription] = []
         self._operation_lock = threading.RLock()
-        self._health_stop = threading.Event()
-        self._health_thread: threading.Thread | None = None
+        self._async_runtime = async_runtime or AsyncRuntime()
+        self._owns_async_runtime = async_runtime is None
+        self._health_future: concurrent.futures.Future[Any] | None = None
 
     @property
     def changed(self) -> EventBus[ConnectionStatus]:
@@ -75,24 +80,26 @@ class BackendConnectionControlService(ConnectionControlService):
             self._subscriptions.append(
                 self._orin.changed.subscribe(lambda _state: self._publish("orin"))
             )
-        self._health_stop.clear()
-        self._health_thread = threading.Thread(
-            target=self._watch_health,
-            name="ConnectionHealthWatchdog",
-            daemon=True,
-        )
-        self._health_thread.start()
+        self._health_future = self._async_runtime.submit(self._watch_health())
         self._publish_all()
 
     def stop(self) -> None:
         for subscription in self._subscriptions:
             subscription.cancel()
         self._subscriptions.clear()
-        self._health_stop.set()
-        thread = self._health_thread
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=1.0)
-        self._health_thread = None
+        future = self._health_future
+        self._health_future = None
+        if future is not None and not future.done():
+            future.cancel()
+            try:
+                future.result(timeout=1.0)
+            except (
+                concurrent.futures.CancelledError,
+                concurrent.futures.TimeoutError,
+            ):
+                pass
+        if self._owns_async_runtime:
+            self._async_runtime.stop()
 
     def status(self, channel: str) -> ConnectionStatus:
         key = self._normalize(channel)
@@ -461,7 +468,11 @@ class BackendConnectionControlService(ConnectionControlService):
         settings = self._settings.current
         mavlink = settings.backend.mavlink
         device = self._serial_device_path(mavlink.endpoint)
-        username = pwd.getpwuid(os.getuid()).pw_name
+        if os.name != "posix":
+            raise RuntimeError(
+                "Serial ACL repair is only available on POSIX/Linux systems"
+            )
+        username = getpass.getuser()
 
         with self._operation_lock:
             self._event(
@@ -705,11 +716,12 @@ class BackendConnectionControlService(ConnectionControlService):
             return
         self._publish(channel)
 
-    def _watch_health(self) -> None:
+    async def _watch_health(self) -> None:
         # Link state changes are published immediately by their services.
         # This periodic pass only expires stale health data, so one pass per
         # second avoids synchronized idle UI wakeups without delaying control.
-        while not self._health_stop.wait(1.0):
+        while True:
+            await asyncio.sleep(1.0)
             self._publish_all()
 
     def _publish_all(self) -> None:

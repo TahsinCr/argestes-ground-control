@@ -507,9 +507,7 @@ class CommandPanel(PanelFrame):
         self.task_list.setAlternatingRowColors(False)
         self.task_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.task_list.setMinimumHeight(76)
-        self.task_list.currentRowChanged.connect(
-            lambda _row: self._sync_command_availability()
-        )
+        self.task_list.currentRowChanged.connect(self._on_task_selection_changed)
         self.set_task_codes(
             (command.code for command in AUTONOMOUS_COMMANDS)
             if task_codes is None
@@ -551,6 +549,34 @@ class CommandPanel(PanelFrame):
         self.actuator_card.hide()
         task_layout.addWidget(self.actuator_card)
 
+        self.kamikaze_card = QFrame(self)
+        self.kamikaze_card.setObjectName("MetricCard")
+        kamikaze_layout = QGridLayout(self.kamikaze_card)
+        kamikaze_layout.setContentsMargins(7, 6, 7, 6)
+        kamikaze_layout.setHorizontalSpacing(6)
+        kamikaze_layout.setVerticalSpacing(3)
+        self.kamikaze_title = QLabel(self.kamikaze_card)
+        self.kamikaze_title.setObjectName("MetricTitle")
+        self.kamikaze_status = QLabel(self.kamikaze_card)
+        self.kamikaze_status.setWordWrap(True)
+        self.kamikaze_status.setProperty("role", "readout-value")
+        self.kamikaze_detail = QLabel(self.kamikaze_card)
+        self.kamikaze_detail.setWordWrap(True)
+        self.kamikaze_detail.setProperty("role", "readout-label")
+        self.kamikaze_qr = QLabel(self.kamikaze_card)
+        self.kamikaze_qr.setWordWrap(True)
+        self.kamikaze_qr.setTextFormat(Qt.TextFormat.PlainText)
+        self.kamikaze_qr.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.kamikaze_qr.setProperty("role", "readout-value")
+        kamikaze_layout.addWidget(self.kamikaze_title, 0, 0)
+        kamikaze_layout.addWidget(self.kamikaze_status, 1, 0)
+        kamikaze_layout.addWidget(self.kamikaze_detail, 2, 0)
+        kamikaze_layout.addWidget(self.kamikaze_qr, 3, 0)
+        self.kamikaze_card.hide()
+        task_layout.addWidget(self.kamikaze_card)
+
         self.task_apply_button = compact_button("START", "primary")
         self.task_apply_button.clicked.connect(self._emit_task_command)
 
@@ -573,6 +599,22 @@ class CommandPanel(PanelFrame):
         task_control_layout.setColumnStretch(0, 1)
         task_control_layout.setColumnStretch(1, 1)
         task_page_layout.addWidget(task_control_row)
+        self.task_progress = QProgressBar(self)
+        self.task_progress.setObjectName("ActuatorTestProgress")
+        self.task_progress.setTextVisible(False)
+        self.task_progress.setFixedHeight(7)
+        self.task_progress.hide()
+        self._task_progress_animation = QPropertyAnimation(
+            self.task_progress,
+            b"value",
+            self,
+        )
+        self._task_progress_animation.setDuration(280)
+        self._task_progress_animation.setEasingCurve(
+            QEasingCurve.Type.OutCubic
+        )
+        self._task_progress_visual_state = ""
+        task_page_layout.addWidget(self.task_progress)
         task_page_layout.addWidget(self.onboard_status)
 
         self.set_language(self._language)
@@ -588,6 +630,7 @@ class CommandPanel(PanelFrame):
         self.mode_apply_button.setText(t("command.apply", language).upper())
         self.profile_apply_button.setText(t("command.apply", language).upper())
         self.actuator_title.setText(t("onboard.actuator.title", language).upper())
+        self.kamikaze_title.setText(t("onboard.kamikaze.title", language).upper())
         self.task_cancel_button.setText(t("onboard.task.cancel", language).upper())
         self.update_onboard_state(self._onboard_state)
         self._sync_arm_controls()
@@ -726,12 +769,10 @@ class CommandPanel(PanelFrame):
 
     def _update_actuator_card(self) -> None:
         state = self._onboard_state
-        supported = bool(
-            ACTUATOR_TEST_TASK in state.available_tasks
-            or state.active_task == ACTUATOR_TEST_TASK
-        )
-        self.actuator_card.setVisible(supported)
-        if not supported:
+        selected = self._selected_task_code()
+        visible = selected == "ACTUATOR_TEST"
+        self.actuator_card.setVisible(visible)
+        if not visible:
             return
 
         active = bool(
@@ -746,9 +787,6 @@ class CommandPanel(PanelFrame):
                 "onboard.actuator.failed",
                 self._language,
             )
-            visual_state = "danger"
-        elif self._armed and not active:
-            status_text = t("onboard.actuator.armed_blocked", self._language)
             visual_state = "danger"
         elif state.actuator_notification_only:
             status_text = t("onboard.actuator.notification_only", self._language)
@@ -820,6 +858,168 @@ class CommandPanel(PanelFrame):
             self._set_actuator_progress(
                 min(92, max(8, state.actuator_step_count * 16))
             )
+
+    def _update_kamikaze_card(self) -> None:
+        state = self._onboard_state
+        visible = self._selected_task_code() == "KAMIKAZE"
+        self.kamikaze_card.setVisible(visible)
+        if not visible:
+            return
+
+        relevant = state.active_task == "kamikaze.execute"
+        if not state.connected:
+            status_text = t("onboard.kamikaze.offline", self._language)
+            visual_state = "danger"
+        elif relevant and state.critical_event:
+            status_text = state.last_error or t(
+                "onboard.kamikaze.critical",
+                self._language,
+                event=state.critical_event,
+            )
+            visual_state = "danger"
+        elif relevant and state.phase == "failed":
+            status_text = state.last_error or t(
+                "onboard.kamikaze.failed", self._language
+            )
+            visual_state = "danger"
+        elif relevant and state.phase == "cancelled":
+            status_text = t("onboard.kamikaze.cancelled", self._language)
+            visual_state = "warning"
+        elif relevant and state.phase == "succeeded":
+            status_text = t("onboard.kamikaze.succeeded", self._language)
+            visual_state = "success"
+        elif relevant and state.waiting_for_guided:
+            status_text = t("onboard.kamikaze.waiting_guided", self._language)
+            visual_state = "warning"
+        elif relevant and state.phase == "reconciling":
+            status_text = t("onboard.kamikaze.reconciling", self._language)
+            visual_state = "warning"
+        elif relevant and state.phase in {"requesting", "queued", "starting"}:
+            status_text = t("onboard.kamikaze.starting", self._language)
+            visual_state = "warning"
+        elif relevant and state.phase == "running":
+            status_text = t("onboard.kamikaze.running", self._language)
+            visual_state = "success"
+        elif state.target_ready:
+            status_text = t("onboard.kamikaze.ready", self._language)
+            visual_state = "neutral"
+        else:
+            status_text = t("onboard.kamikaze.target_pending", self._language)
+            visual_state = "warning"
+
+        self.kamikaze_status.setText(status_text)
+        self.kamikaze_status.setProperty("state", visual_state)
+        self.kamikaze_status.style().unpolish(self.kamikaze_status)
+        self.kamikaze_status.style().polish(self.kamikaze_status)
+
+        mission_id = state.mission_id if relevant and state.mission_id is not None else "—"
+        phase = state.phase if relevant else "idle"
+        target = dict(state.target)
+        try:
+            target_text = f"{float(target['latitude_deg']):.7f}, {float(target['longitude_deg']):.7f}"
+        except (KeyError, TypeError, ValueError):
+            target_text = "—"
+        self.kamikaze_detail.setText(
+            t(
+                "onboard.kamikaze.detail",
+                self._language,
+                mission_id=mission_id,
+                phase=phase,
+                target=target_text,
+                revision=state.target_revision or "—",
+            )
+        )
+
+        qr_text = state.qr_text if relevant else None
+        if qr_text:
+            qr_label = t(
+                "onboard.kamikaze.qr_result",
+                self._language,
+                qr=str(qr_text),
+            )
+            qr_state = "danger" if state.qr_status == "conflict" else "success"
+        elif relevant and state.result_received:
+            qr_label = t("onboard.kamikaze.qr_missing", self._language)
+            qr_state = "warning"
+        else:
+            qr_label = t("onboard.kamikaze.qr_pending", self._language)
+            qr_state = "neutral"
+        self.kamikaze_qr.setText(qr_label)
+        self.kamikaze_qr.setProperty("state", qr_state)
+        self.kamikaze_qr.style().unpolish(self.kamikaze_qr)
+        self.kamikaze_qr.style().polish(self.kamikaze_qr)
+
+    def _on_task_selection_changed(self, _row: int) -> None:
+        self._sync_command_availability()
+
+    def _selected_task_code(self) -> str:
+        item = self.task_list.currentItem()
+        return (
+            str(item.data(Qt.ItemDataRole.UserRole) or "").strip().upper()
+            if item is not None
+            else ""
+        )
+
+    def _update_task_progress(self) -> None:
+        selected = self._selected_task_code()
+        state = self._onboard_state
+        relevant_task = {
+            "KAMIKAZE": "kamikaze.execute",
+            "ACTUATOR_TEST": ACTUATOR_TEST_TASK,
+        }.get(selected, selected.lower())
+        visible = bool(selected)
+        self.task_progress.setVisible(visible)
+        if not visible:
+            return
+
+        relevant = state.active_task == relevant_task
+        phase = state.phase if relevant else "idle"
+        visual_state = (
+            "danger"
+            if phase in {"failed", "cancelled"}
+            else "success" if phase == "succeeded" else "warning"
+        )
+        if visual_state != self._task_progress_visual_state:
+            self._task_progress_visual_state = visual_state
+            self.task_progress.setProperty("state", visual_state)
+            self.task_progress.style().unpolish(self.task_progress)
+            self.task_progress.style().polish(self.task_progress)
+
+        if phase in {"requesting", "queued", "starting", "running", "stopping"}:
+            if selected == "ACTUATOR_TEST" and state.actuator_step_count > 0:
+                value = min(92, max(8, state.actuator_step_count * 16))
+            else:
+                snapshot = dict(state.acknowledgement_snapshot)
+                try:
+                    value = int(float(snapshot.get("progress", -1)) * 100.0)
+                except (TypeError, ValueError):
+                    value = -1
+                if value < 0 and phase == "running":
+                    self._task_progress_animation.stop()
+                    self.task_progress.setRange(0, 0)
+                    return
+                if value < 0:
+                    value = {
+                        "requesting": 5,
+                        "queued": 10,
+                        "starting": 18,
+                        "stopping": 92,
+                    }.get(phase, 0)
+        elif phase in {"succeeded", "failed", "cancelled", "stopped"}:
+            value = 100
+        else:
+            value = 0
+
+        if self.task_progress.minimum() == 0 and self.task_progress.maximum() == 0:
+            self.task_progress.setRange(0, 100)
+        target = max(0, min(100, int(value)))
+        if self.task_progress.value() == target:
+            return
+        self._task_progress_animation.stop()
+        self._task_progress_animation.setStartValue(self.task_progress.value())
+        self._task_progress_animation.setEndValue(target)
+        self._task_progress_animation.start()
+
 
     def _set_actuator_progress(self, value: int) -> None:
         if self.actuator_progress.minimum() == 0 and self.actuator_progress.maximum() == 0:
@@ -1055,6 +1255,8 @@ class CommandPanel(PanelFrame):
         self.task_cancel_button.setEnabled(task_control_active and not cancel_pending)
         self._sync_arm_controls()
         self._update_actuator_card()
+        self._update_kamikaze_card()
+        self._update_task_progress()
 
     def _set_command_status(self, message: str, state: str) -> None:
         self.command_status.setText(message)

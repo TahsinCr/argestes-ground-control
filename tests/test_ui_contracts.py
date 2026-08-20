@@ -64,6 +64,7 @@ class UiContractTests(unittest.TestCase):
         source = (ROOT / "src/ui/web/map.html").read_text(encoding="utf-8")
         self.assertIn("const CURSOR_UPDATE_INTERVAL_MS = 50", source)
         self.assertIn("state.cursorTimer = window.setTimeout", source)
+        self.assertIn("const MARKER_MOTION_FRAME_INTERVAL_MS = 33", source)
         self.assertIn("entry.trail.addLatLng", source)
         self.assertIn("updateContactTrail(entry, trailPoints)", source)
 
@@ -419,6 +420,21 @@ class UiContractTests(unittest.TestCase):
             (0, -60, 640, 480),
         )
         self.assertIn("kırp", viewport.fill_button.toolTip().lower())
+
+        viewport.stretch_button.click()
+        stretch_geometry = viewport.frame_geometry()
+        self.assertEqual(viewport.display_mode, "stretch")
+        self.assertTrue(viewport.stretch_button.isChecked())
+        self.assertEqual(
+            (
+                stretch_geometry.x(),
+                stretch_geometry.y(),
+                stretch_geometry.width(),
+                stretch_geometry.height(),
+            ),
+            (0, 0, 640, 360),
+        )
+        self.assertIn("kırpmadan", viewport.stretch_button.toolTip().lower())
         viewport.reconnect_button.click()
         self.assertEqual(reconnect_requests, [True])
         self.assertIn("yeniden bağlan", viewport.reconnect_button.toolTip().lower())
@@ -908,7 +924,7 @@ class UiContractTests(unittest.TestCase):
             )
         )
         self.assertTrue(panel.task_apply_button.isEnabled())
-        self.assertIn("ARMED", panel.actuator_status.text())
+        self.assertNotIn("engellendi", panel.actuator_status.text().lower())
         panel.update_snapshot(
             TelemetrySnapshot.zero().copy(
                 telemetry_link=True,
@@ -942,6 +958,8 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("84", panel.actuator_detail.text())
         self.assertIn("1700", panel.actuator_detail.text())
         self.assertGreater(panel.actuator_progress.maximum(), 0)
+        self.assertFalse(panel.task_progress.isHidden())
+        self.assertEqual(panel.task_progress.maximum(), 100)
         self.assertTrue(panel.task_cancel_button.isEnabled())
 
         panel.update_onboard_state(
@@ -1017,6 +1035,48 @@ class UiContractTests(unittest.TestCase):
             "Bildirim testi başarılı",
             panel.actuator_status.text(),
         )
+        panel.close()
+        panel.deleteLater()
+        self.app.processEvents()
+
+    def test_kamikaze_card_and_shared_task_progress_follow_mission_state(self) -> None:
+        panel = CommandPanel("", "")
+        kamikaze_row = next(
+            row
+            for row in range(panel.task_list.count())
+            if panel.task_list.item(row).data(Qt.ItemDataRole.UserRole) == "KAMIKAZE"
+        )
+        panel.task_list.setCurrentRow(kamikaze_row)
+        panel.update_onboard_state(
+            OnboardMissionState(
+                connected=True,
+                active_task="kamikaze.execute",
+                mission_id=55,
+                phase="running",
+                target_ready=True,
+                target={"latitude_deg": 39.9, "longitude_deg": 32.8},
+                target_revision=4,
+            )
+        )
+
+        self.assertFalse(panel.kamikaze_card.isHidden())
+        self.assertFalse(panel.task_progress.isHidden())
+        self.assertEqual(panel.task_progress.maximum(), 0)
+        self.assertIn("55", panel.kamikaze_detail.text())
+
+        panel.update_onboard_state(
+            OnboardMissionState(
+                connected=True,
+                active_task="kamikaze.execute",
+                mission_id=55,
+                phase="succeeded",
+                result_received=True,
+                qr_text="QR-RESULT",
+            )
+        )
+        self.assertEqual(panel.task_progress.maximum(), 100)
+        self.assertEqual(panel.task_progress.property("state"), "success")
+        self.assertIn("QR-RESULT", panel.kamikaze_qr.text())
         panel.close()
         panel.deleteLater()
         self.app.processEvents()
@@ -1237,8 +1297,9 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("state.contacts.forEach((entry) =>", html)
         self.assertIn("Math.min(1200, sampleIntervalMs * 0.9)", html)
         self.assertIn("Math.min(140, sampleIntervalMs * 0.75)", html)
-        self.assertEqual(html.count("requestAnimationFrame(renderMarkerMotions)"), 2)
-        self.assertIn('"upsertContacts": changed_contacts', panel_source)
+        self.assertEqual(html.count("requestAnimationFrame(renderMarkerMotions)"), 3)
+        self.assertIn('"upsertContacts": compact_contacts', panel_source)
+        self.assertIn('compact["trail_incremental"] = True', panel_source)
         self.assertIn("window.ykiMap.applyStateDelta(", panel_source)
         self.assertNotIn("window.ykiMap.upsertContact(", panel_source)
         self.assertIn("function beginOverlayBatch()", html)

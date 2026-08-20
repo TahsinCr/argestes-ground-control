@@ -58,17 +58,23 @@ class VideoViewport(QWidget):
         self.mode_group.setExclusive(True)
         self.fit_button = self._mode_button("▣", "fit")
         self.fill_button = self._mode_button("⛶", "fill")
+        self.stretch_button = self._mode_button("↔", "stretch")
         self.reconnect_button = self._action_button("↻", "reconnect")
         self.mode_group.addButton(self.fit_button)
         self.mode_group.addButton(self.fill_button)
+        self.mode_group.addButton(self.stretch_button)
         toolbar_layout.addWidget(self.fit_button)
         toolbar_layout.addWidget(self.fill_button)
+        toolbar_layout.addWidget(self.stretch_button)
         toolbar_layout.addWidget(self.reconnect_button)
         self.fit_button.clicked.connect(
             lambda _checked=False: self.set_display_mode("fit")
         )
         self.fill_button.clicked.connect(
             lambda _checked=False: self.set_display_mode("fill")
+        )
+        self.stretch_button.clicked.connect(
+            lambda _checked=False: self.set_display_mode("stretch")
         )
         self.reconnect_button.clicked.connect(self.reconnect_requested.emit)
 
@@ -147,6 +153,8 @@ class VideoViewport(QWidget):
         self.fit_button.setAccessibleName(t("video.view.fit", language))
         self.fill_button.setToolTip(t("video.view.fill", language))
         self.fill_button.setAccessibleName(t("video.view.fill", language))
+        self.stretch_button.setToolTip(t("video.view.stretch", language))
+        self.stretch_button.setAccessibleName(t("video.view.stretch", language))
         self.reconnect_button.setToolTip(t("video.reconnect", language))
         self.reconnect_button.setAccessibleName(t("video.reconnect", language))
         if self.stats_label.property("offline"):
@@ -155,7 +163,7 @@ class VideoViewport(QWidget):
 
     def set_display_mode(self, mode: str) -> None:
         normalized = mode.strip().lower()
-        if normalized not in {"fit", "fill"}:
+        if normalized not in {"fit", "fill", "stretch"}:
             raise ValueError(f"Desteklenmeyen video görünüm modu: {mode}")
         changed = normalized != self._display_mode
         self._display_mode = normalized
@@ -167,6 +175,7 @@ class VideoViewport(QWidget):
     def _sync_mode_buttons(self) -> None:
         self.fit_button.setChecked(self._display_mode == "fit")
         self.fill_button.setChecked(self._display_mode == "fill")
+        self.stretch_button.setChecked(self._display_mode == "stretch")
 
     def set_reconnect_busy(self, busy: bool) -> None:
         self.reconnect_button.setEnabled(not busy)
@@ -198,6 +207,8 @@ class VideoViewport(QWidget):
     def frame_geometry(self) -> QRect:
         if self._pixmap.isNull() or self.width() <= 0 or self.height() <= 0:
             return QRect()
+        if self._display_mode == "stretch":
+            return self.rect()
         aspect_mode = (
             Qt.AspectRatioMode.KeepAspectRatio
             if self._display_mode == "fit"

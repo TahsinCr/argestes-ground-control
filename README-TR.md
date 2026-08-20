@@ -206,7 +206,9 @@ ise yalnızca en yeni kareyi çizer; gecikmiş kareler kuyrukta birikmez.
 
 Kompakt video göstergesinde kalite, bitrate, FPS ve çözünürlük bulunur. Kaynak,
 codec, kare yaşı, gecikme ve zaman aşımı ayrıntıları için **Video Aktarımı**
-yazısının üzerinde bekleyin.
+yazısının üzerinde bekleyin. Sağ alttaki kontrollerle görüntü alanı
+dolduracak biçimde kırpılabilir, tamamı sığdırılabilir veya kırpılmadan
+panelin tamamına esnetilebilir.
 
 ## Yüksek hızlı telemetri ve arayüz
 
@@ -222,7 +224,10 @@ işlemez ve araç ikonunu her yön değişiminde yeniden oluşturmaz.
 Harita verisi kalıcı QWebChannel hattından geçer ve tarayıcı animasyon karesi
 başına en fazla bir kez uygulanır. Parametre snapshot’ları ile log patlamaları da
 toplu işlenir; parametre tablosu mevcut satırları yerinde günceller. Bu görsel
-sınırlar backend MAVLink alımını veya komut onaylarını yavaşlatmaz.
+sınırlar backend MAVLink alımını veya komut onaylarını yavaşlatmaz. Hareketli
+temaslar rota çizgilerini artımlı günceller; yardımcı ağ bekleyicileri UI thread'i
+ve servis başına polling thread'i yerine uygulamaya ait tek asyncio döngüsünü
+paylaşır.
 
 ## Harita planlama
 
@@ -372,14 +377,14 @@ Normal ARM başarısız olursa zorla ARM yalnızca operatör onayıyla denenir. 
 
 ## SİHA Onboard v0.2-beta bağlantısı
 
-YKİ, Vehicle Autonomy Core v1.3 uygulama kanalını mevcut MAVLink bağlantısı
+YKİ, Vehicle Autonomy Core v1.3.1 uygulama kanalını mevcut MAVLink bağlantısı
 üzerinden kullanır. İkinci seri port, UDP socket veya receive döngüsü açılmaz.
 `V2_EXTENSION`; ağ ID `77`, mesaj tipi `42000`, YKİ system ID `255`, onboard
 system ID `1` ve onboard component ID `191` ile çalışır. Uygulama heartbeat'i
 saniyede bir gönderilir ve 10 saniyede zaman aşımına uğrar. Bu değerler
 Onboard/Orin ayarlarından değiştirilebilir.
 
-Core v1.3, tamamlanmamış uygulama paketlerinin birleştirme alanını sınırlar ve
+Core v1.3.1, tamamlanmamış uygulama paketlerinin birleştirme alanını sınırlar ve
 thread-safe, son mesajı koruyan tek bir MAVLink async kuyruğu kullanır. Uygulama
 paketleri ve uzak log kayıtları çalışma sırasında iç içe seviyede değiştirilemez;
 serialization metotları ise ayrık `dict` ve `list` değerleri döndürür. YKİ,
@@ -397,6 +402,8 @@ Kamikaze eylemi `KAMIKAZE` göndermeden önce operatör onayı ister. ACK içind
 `mission.transition` paketinden gelir. Görevler sekmesi Başlat/Yeniden Başlat
 ve İptal eylemlerini sunar; yeniden başlatma yeni `task.start` isteğinden önce
 başarılı iptal ACK'ini bekler.
+YKİ, görev başlarken otomatik GUIDED veya görev biterken otomatik AUTO seçmez;
+uçuş modu değişiklikleri operatörün açık kararı olarak kalır.
 
 QR sonucu üç kaynaktan kurtarılır:
 
@@ -578,12 +585,12 @@ python run_tests.py
 ```
 
 Bu komut YKİ ve sabitlenmiş core testlerini tek sonuç altında çalıştırır.
-Toplam **341 testin** **206 tanesi** uygulama mimarisi, sabitlenmiş core sınırı, DI bileşimi, ortak
+Toplam **393 testin** **242 tanesi** uygulama mimarisi, sabitlenmiş core sınırı, DI bileşimi, ortak
 araç/Orin istemcisi, Onboard görev/QR akışı, uzak loglar, parametre
 varsayılanları, komut tekrarları, eşzamanlı planlama, TEKNOFEST haberleşmesi,
 batarya voltaj tahmini ve politikaları, dil paketleri, GStreamer, harita geçmişi,
 yüksek hızlı veri birleştirme, ayırıcılar, çerçevesiz pencere ve offscreen Qt
-açılışı gibi YKİ davranışlarını kapsar. Kalan **135 test**, core'un dependency,
+açılışı gibi YKİ davranışlarını kapsar. Kalan **151 test**, core'un dependency,
 event, mission ve MAVLink iç yapılarını doğrular. Paketlerin test sahipliği ayrı
 kalır; kök çalıştırıcı yalnızca tek bir nihai durum sunar.
 

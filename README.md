@@ -225,7 +225,8 @@ from accumulating.
 
 The compact video meter reports quality, bitrate, FPS and resolution. Hover
 **Video Stream** for the complete source, codec, frame-age, latency and timeout
-details.
+details. The lower-right controls can crop-to-fill, fit the complete frame or
+stretch the complete frame across the panel without cropping.
 
 ## High-rate telemetry and UI rendering
 
@@ -243,6 +244,9 @@ Map updates use a persistent QWebChannel path and are applied at most once per
 browser animation frame. Parameter snapshots and log bursts are also batched,
 while the parameter table updates existing rows in place. Backend MAVLink
 ingestion and command acknowledgements remain independent from these display
+limits. Moving contacts use incremental trail updates, and auxiliary network
+waiters share one application-owned asyncio runtime instead of occupying the UI
+thread or creating a polling thread per service.
 limits.
 
 ## Map planning
@@ -410,14 +414,14 @@ confirmation. It is never triggered automatically in the background.
 
 ## SIHA Onboard v0.2-beta link
 
-YKİ uses Vehicle Autonomy Core v1.3's application channel over the existing
+YKİ uses Vehicle Autonomy Core v1.3.1's application channel over the existing
 MAVLink connection. It does not open another serial port, UDP socket or receive
 loop. `V2_EXTENSION` uses network ID `77`, message type `42000`, YKİ system ID
 `255`, onboard system ID `1` and onboard component ID `191`. The application
 heartbeat runs once per second and expires after 10 seconds. These values are
 available under the Onboard/Orin settings.
 
-Core v1.3 bounds incomplete application-packet assemblies and uses one
+Core v1.3.1 bounds incomplete application-packet assemblies and uses one
 thread-safe, latest-biased MAVLink async queue. Application packets and remote
 log records are deeply immutable at runtime, while their serialization methods
 still return detached `dict` and `list` values. YKİ decodes `logs.push` from
@@ -435,7 +439,9 @@ The Kamikaze operator action asks for confirmation before sending `KAMIKAZE`.
 If the ACK contains `waiting_for_mode=true`, the panel tells the operator to
 select GUIDED. Phase comes from `mission.transition`. The Tasks tab exposes
 Start/Restart and Cancel: restarting waits for a successful cancel ACK before
-sending the next `task.start` request.
+sending the next `task.start` request. YKİ does not automatically select GUIDED
+when a task starts or AUTO when it ends; flight-mode changes remain explicit
+operator actions.
 
 QR data is recovered from three sources:
 
@@ -623,13 +629,13 @@ python run_tests.py
 ```
 
 The runner reports the YKİ and pinned core suites as one result. It currently
-runs **341 tests**: **206 YKİ tests** covering application architecture,
+runs **393 tests**: **242 YKİ tests** covering application architecture,
 the pinned core boundary, dependency composition, vehicle/Orin sharing,
 Onboard mission/QR handling, remote logs, parameter defaults, command retries,
 concurrent planning, TEKNOFEST communication, battery estimation and policies,
 localization, GStreamer pipelines, map history, high-rate data coalescing,
 responsive autonomous/map controls, splitters, frameless resizing and offscreen
-Qt startup, plus **135 core tests** for dependency, event, mission and MAVLink
+Qt startup, plus **151 core tests** for dependency, event, mission and MAVLink
 internals. The suites remain independently owned even though the root runner
 presents one final status.
 

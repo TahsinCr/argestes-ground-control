@@ -69,15 +69,6 @@ class DispatchCommandService(CommandService):
         # Serializing operator commands prevents concurrent waits from racing
         # for the same COMMAND_ACK or HEARTBEAT response.
         self._dispatch_lock = threading.Lock()
-        self._mode_policy_lock = threading.RLock()
-        self._kamikaze_mode_epoch = 0
-        self._kamikaze_mode_managed = False
-        self._onboard_subscription = None
-        onboard_changes = getattr(onboard, "changed", None)
-        if onboard_changes is not None:
-            self._onboard_subscription = onboard_changes.subscribe(
-                self._on_onboard_state_changed
-            )
 
     @property
     def available_tasks(self) -> tuple[str, ...]:
@@ -278,58 +269,9 @@ class DispatchCommandService(CommandService):
         assert self._orin is not None
         if self._onboard is not None and task in {"KAMIKAZE", "ACTUATOR_TEST"}:
             source = "operator-ui" if task == "ACTUATOR_TEST" else request.source
-            mode_epoch = 0
-            if task == "KAMIKAZE":
-                with self._mode_policy_lock:
-                    self._kamikaze_mode_epoch += 1
-                    mode_epoch = self._kamikaze_mode_epoch
-                    self._kamikaze_mode_managed = True
-            try:
-                receipt = self._onboard.start_task(task, source=source)
-            except Exception:
-                if task == "KAMIKAZE":
-                    with self._mode_policy_lock:
-                        if self._kamikaze_mode_epoch == mode_epoch:
-                            self._kamikaze_mode_managed = False
-                raise
+            receipt = self._onboard.start_task(task, source=source)
             if not receipt.accepted:
-                if task == "KAMIKAZE":
-                    with self._mode_policy_lock:
-                        if self._kamikaze_mode_epoch == mode_epoch:
-                            self._kamikaze_mode_managed = False
                 raise RuntimeError(receipt.message)
-            guided_requested = False
-            guided_error = ""
-            if task == "KAMIKAZE":
-                try:
-                    guided_requested = self._vehicle.execute(
-                        CommandRequest(
-                            "SET_MODE",
-                            {"mode": "GUIDED"},
-                            "onboard-lifecycle",
-                        )
-                    )
-                    if not guided_requested:
-                        guided_error = "Pixhawk GUIDED modunu doğrulamadı"
-                except Exception as exc:
-                    guided_error = str(exc)
-                if self._logger:
-                    self._logger.event(
-                        "onboard.mode_guided",
-                        (
-                            "Kamikaze başlangıcında GUIDED modu doğrulandı"
-                            if guided_requested
-                            else "Kamikaze başladı ancak GUIDED modu doğrulanamadı"
-                        ),
-                        severity="success" if guided_requested else "danger",
-                        details={
-                            "task": "kamikaze.execute",
-                            "mission_id": receipt.response.get("mission_id"),
-                            "request_id": receipt.request_id,
-                            "mode": "GUIDED",
-                            "error": guided_error,
-                        },
-                    )
             return True, {
                 "task": task,
                 "target": "orin",
@@ -341,8 +283,6 @@ class DispatchCommandService(CommandService):
                 "vehicle_mode": receipt.response.get("vehicle_mode"),
                 "snapshot": receipt.response.get("snapshot", {}),
                 "orin_response": receipt.response,
-                "guided_requested": guided_requested,
-                "guided_error": guided_error,
             }
         parameters = {
             key: value
@@ -368,45 +308,6 @@ class DispatchCommandService(CommandService):
             "orin_execution": receipt.response.get("execution", "acknowledged"),
             "orin_response": receipt.response,
         }
-
-    def _on_onboard_state_changed(self, state) -> None:
-        """Return to AUTO once a YKİ-started kamikaze reaches a terminal phase."""
-
-        if str(getattr(state, "active_task", "")).strip().lower() != "kamikaze.execute":
-            return
-        if str(getattr(state, "phase", "")).strip().lower() not in {
-            "stopped",
-            "succeeded",
-            "failed",
-            "cancelled",
-        }:
-            return
-        with self._mode_policy_lock:
-            if not self._kamikaze_mode_managed:
-                return
-            self._kamikaze_mode_managed = False
-            epoch = self._kamikaze_mode_epoch
-        threading.Thread(
-            target=self._return_to_auto,
-            args=(epoch, getattr(state, "mission_id", None)),
-            name="OnboardModeAuto",
-            daemon=True,
-        ).start()
-
-    def _return_to_auto(self, epoch: int, mission_id: object) -> None:
-        # Serialize the mode request with operator commands. A new task start
-        # supersedes an AUTO request queued by an older terminal event.
-        with self._dispatch_lock:
-            with self._mode_policy_lock:
-                if epoch != self._kamikaze_mode_epoch or self._kamikaze_mode_managed:
-                    return
-            self._dispatch_serial(
-                CommandRequest(
-                    "APPLY_MODE",
-                    {"mode": "AUTO", "mission_id": mission_id},
-                    "onboard-lifecycle",
-                )
-            )
 
     @staticmethod
     def _success_message(

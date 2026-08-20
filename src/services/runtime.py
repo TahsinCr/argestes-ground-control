@@ -19,6 +19,7 @@ from src.services.abstracts.parameters import ParameterService
 from src.services.abstracts.telemetry import TelemetryService
 from src.services.abstracts.vehicle import VehicleService
 from src.services.abstracts.video import VideoService
+from src.services.async_runtime import AsyncRuntime
 from src.services.facade import BackendFacade
 from src.services.logging_service import LoggingService, ServiceLogHandler
 from src.services.mission_archive import MissionArchiveService
@@ -30,6 +31,7 @@ from src.services.tile_cache import TileCacheServer
 @dataclass(slots=True)
 class RuntimeServices:
     container: DependencyContainer
+    async_runtime: AsyncRuntime
     log_service: LoggingService
     settings_service: SettingsService
     vehicle_service: VehicleService
@@ -216,6 +218,7 @@ class RuntimeServices:
 
     def _service_start_order(self):
         return (
+            ("async_runtime", self.async_runtime),
             ("tile_cache", self.tile_cache_service),
             ("planner", self.planner_service),
             ("telemetry", self.telemetry_service),
@@ -238,6 +241,7 @@ class RuntimeServices:
             ("planner", self.planner_service),
             ("video", self.video_service),
             ("tile_cache", self.tile_cache_service),
+            ("async_runtime", self.async_runtime),
         )
 
     close = stop

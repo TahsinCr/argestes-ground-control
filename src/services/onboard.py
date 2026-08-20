@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import hashlib
 import json
 import threading
@@ -27,6 +29,7 @@ from src.models.orin import (
 from src.services.abstracts.competition import CompetitionService
 from src.services.abstracts.onboard import OnboardMissionServiceContract
 from src.services.abstracts.orin import OrinService
+from src.services.async_runtime import AsyncRuntime
 from src.services.logging_service import ServiceLogger
 
 
@@ -53,6 +56,8 @@ class OnboardMissionService(OnboardMissionServiceContract):
         orin: OrinService,
         competition: CompetitionService,
         logger: ServiceLogger | None = None,
+        *,
+        async_runtime: AsyncRuntime | None = None,
     ) -> None:
         self._orin = orin
         self._competition = competition
@@ -68,9 +73,11 @@ class OnboardMissionService(OnboardMissionServiceContract):
         self._recovery_running = False
         self._recovery_timer: threading.Timer | None = None
         self._remote_active_observed = False
-        self._reference_sync_event = threading.Event()
-        self._reference_sync_stop = threading.Event()
-        self._reference_sync_thread: threading.Thread | None = None
+        self._async_runtime = async_runtime or AsyncRuntime()
+        self._owns_async_runtime = async_runtime is None
+        self._reference_sync_future: concurrent.futures.Future[Any] | None = None
+        self._reference_sync_generation = 0
+        self._reference_sync_processed = 0
         self._hss_observed = False
         self._hss_revision = 0
         self._hss_content_hash = ""
@@ -121,13 +128,6 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 self._competition.qr_updated.subscribe(self._on_qr_updated),
             ]
         )
-        self._reference_sync_stop.clear()
-        self._reference_sync_thread = threading.Thread(
-            target=self._reference_sync_loop,
-            name="OnboardReferenceSync",
-            daemon=True,
-        )
-        self._reference_sync_thread.start()
         if self._competition.hss_zones:
             self._on_hss_updated(self._competition.hss_zones)
         if self._competition.qr_coordinate is not None:
@@ -141,15 +141,15 @@ class OnboardMissionService(OnboardMissionServiceContract):
             self._recovery_timer = None
         if recovery_timer is not None:
             recovery_timer.cancel()
-        self._reference_sync_stop.set()
-        self._reference_sync_event.set()
+        future = self._reference_sync_future
+        self._reference_sync_future = None
+        if future is not None and not future.done():
+            future.cancel()
         for subscription in self._subscriptions:
             subscription.cancel()
         self._subscriptions.clear()
-        thread = self._reference_sync_thread
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=1.0)
-        self._reference_sync_thread = None
+        if self._owns_async_runtime:
+            self._async_runtime.stop()
 
     def start_task(self, task: str, *, source: str = "ui") -> OrinCommandReceipt:
         canonical = self._canonical_task(task)
@@ -319,38 +319,87 @@ class OnboardMissionService(OnboardMissionServiceContract):
             if content_hash != self._hss_content_hash:
                 self._hss_revision = self._next_revision(self._hss_revision)
                 self._hss_content_hash = content_hash
-        self._reference_sync_event.set()
+        self._schedule_reference_sync()
 
     def _on_qr_updated(self, target: QrCoordinate | None) -> None:
         if target is not None:
-            self._reference_sync_event.set()
+            self._schedule_reference_sync()
 
-    def _reference_sync_loop(self) -> None:
-        while not self._reference_sync_stop.is_set():
-            self._reference_sync_event.wait()
-            self._reference_sync_event.clear()
-            if self._reference_sync_stop.is_set():
+    def _schedule_reference_sync(self) -> None:
+        with self._lock:
+            if not self._started:
                 return
-            if not self.state.connected:
-                continue
+            self._reference_sync_generation += 1
+            future = self._reference_sync_future
+            if future is not None and not future.done():
+                return
+            future = self._async_runtime.submit(self._reference_sync_loop())
+            self._reference_sync_future = future
+        future.add_done_callback(self._reference_sync_done)
+
+    def _reference_sync_done(self, future: concurrent.futures.Future[Any]) -> None:
+        failed = False
+        if not future.cancelled():
+            try:
+                future.result()
+            except Exception as exc:
+                failed = True
+                self._log(
+                    "competition.reference_sync_failed",
+                    "Onboard referans senkronizasyonu beklenmedik şekilde durdu",
+                    "warning",
+                    {"error": str(exc), "error_type": type(exc).__name__},
+                )
+        with self._lock:
+            if self._reference_sync_future is not future:
+                return
+            self._reference_sync_future = None
+            reschedule = (
+                not failed
+                and self._started
+                and self._reference_sync_processed < self._reference_sync_generation
+            )
+        if reschedule:
             with self._lock:
-                hss_observed = self._hss_observed
-            if hss_observed:
-                try:
-                    self._send_hss_update()
-                except Exception as exc:
-                    self._log(
-                        "competition.hss_sync_failed",
-                        "HSS durumu Orin'e aktarılamadı",
-                        "warning",
-                        {"error": str(exc), "error_type": type(exc).__name__},
-                    )
-            target = self._competition.qr_coordinate
-            if target is not None:
-                try:
-                    self._send_target_update(target)
-                except Exception as exc:
-                    self._record_target_failure(exc)
+                if not self._started or self._reference_sync_future is not None:
+                    return
+                next_future = self._async_runtime.submit(
+                    self._reference_sync_loop()
+                )
+                self._reference_sync_future = next_future
+            next_future.add_done_callback(self._reference_sync_done)
+
+    async def _reference_sync_loop(self) -> None:
+        while True:
+            with self._lock:
+                generation = self._reference_sync_generation
+            await asyncio.to_thread(self._sync_reference_once)
+            with self._lock:
+                self._reference_sync_processed = generation
+                if generation == self._reference_sync_generation:
+                    return
+
+    def _sync_reference_once(self) -> None:
+        if not self.state.connected:
+            return
+        with self._lock:
+            hss_observed = self._hss_observed
+        if hss_observed:
+            try:
+                self._send_hss_update()
+            except Exception as exc:
+                self._log(
+                    "competition.hss_sync_failed",
+                    "HSS durumu Orin'e aktarılamadı",
+                    "warning",
+                    {"error": str(exc), "error_type": type(exc).__name__},
+                )
+        target = self._competition.qr_coordinate
+        if target is not None:
+            try:
+                self._send_target_update(target)
+            except Exception as exc:
+                self._record_target_failure(exc)
 
     def _send_hss_update(self) -> OrinCommandReceipt | None:
         with self._hss_sync_lock:
@@ -1241,7 +1290,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
         if recover_finished_mission:
             self._schedule_recovery(0.1)
         if state.alive and (not was_connected or session_changed):
-            self._reference_sync_event.set()
+            self._schedule_reference_sync()
         if state.alive and (not was_connected or session_changed):
             self._start_recovery()
 
