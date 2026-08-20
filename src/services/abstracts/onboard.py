@@ -61,5 +61,11 @@ class OnboardMissionServiceContract(Service):
     @abstractmethod
     def start_chain(self, chain: str) -> OrinCommandReceipt: ...
 
+    @abstractmethod
+    def select_combat_target(self, team_number: int) -> OrinCommandReceipt: ...
+
+    @abstractmethod
+    def clear_combat_target(self) -> OrinCommandReceipt | None: ...
+
 
 __all__ = ["OnboardMissionServiceContract"]

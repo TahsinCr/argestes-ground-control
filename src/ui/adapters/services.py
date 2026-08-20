@@ -28,6 +28,7 @@ from src.services.abstracts.onboard import OnboardMissionServiceContract
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
+from src.services.target_selection import TargetSelectionService
 
 
 class _QtAdapter(QObject):
@@ -429,6 +430,7 @@ class QtCommandService(_QtAdapter):
 class QtOnboardMissionService(_QtAdapter):
     state_changed = pyqtSignal(object)
     event_received = pyqtSignal(object)
+    combat_target_operation_finished = pyqtSignal(str, bool, str, object)
 
     def __init__(
         self,
@@ -443,6 +445,84 @@ class QtOnboardMissionService(_QtAdapter):
     @property
     def state(self):
         return self.backend.state
+
+    def select_combat_target(self, team_number: int) -> threading.Thread:
+        return self._start_worker(
+            self._run_combat_target_operation,
+            name=f"QtCombatTargetSelect-{int(team_number)}",
+            args=("select", int(team_number)),
+        )
+
+    def clear_combat_target(self) -> threading.Thread:
+        return self._start_worker(
+            self._run_combat_target_operation,
+            name="QtCombatTargetClear",
+            args=("clear", None),
+        )
+
+    def _run_combat_target_operation(self, action: str, team_number: int | None) -> None:
+        try:
+            if action == "select":
+                receipt = self.backend.select_combat_target(int(team_number or 0))
+            else:
+                receipt = self.backend.clear_combat_target()
+            message = (
+                receipt.message
+                if receipt is not None
+                else "Aktif av hedefi yok"
+            )
+            self._post(
+                self.combat_target_operation_finished.emit,
+                action,
+                True,
+                message,
+                receipt,
+            )
+        except Exception as exc:
+            self._post(
+                self.combat_target_operation_finished.emit,
+                action,
+                False,
+                str(exc),
+                None,
+            )
+
+
+class QtTargetSelectionService(_QtAdapter):
+    ranking_started = pyqtSignal()
+    ranking_finished = pyqtSignal(object)
+    ranking_failed = pyqtSignal(str)
+    # Continuous backend Top-5 updates. This is ranking only; it never activates
+    # a combat target. UI/operator selection remains explicit.
+    results_updated = pyqtSignal(object)
+
+    def __init__(
+        self,
+        backend: TargetSelectionService,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.backend = backend
+        self._subscribe(backend.updated, self.results_updated.emit)
+
+    @property
+    def last_result(self):
+        return self.backend.last_result
+
+    def rank_targets(self) -> threading.Thread:
+        self.ranking_started.emit()
+        return self._start_worker(
+            self._rank_targets,
+            name="QtTargetSelectionRank",
+        )
+
+    def _rank_targets(self) -> None:
+        try:
+            result = self.backend.rank_targets()
+        except Exception as exc:
+            self._post(self.ranking_failed.emit, str(exc))
+            return
+        self._post(self.ranking_finished.emit, result)
 
 
 class QtConnectionControlService(_QtAdapter):

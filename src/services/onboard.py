@@ -5,11 +5,11 @@ import json
 import threading
 from collections import OrderedDict
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from src.core.events import EventBus, Subscription
-from src.models.competition import HssZone, KamikazeEvent, QrCoordinate
+from src.models.competition import CompetitorTelemetry, HssZone, KamikazeEvent, QrCoordinate
 from src.models.onboard import (
     ACTUATOR_TEST_EVENTS,
     ACTUATOR_TEST_TASK,
@@ -47,6 +47,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
 
     _TIMELINE_LIMIT = 200
     _QR_REPORT_HISTORY_LIMIT = 256
+    _COMBAT_TARGET_MAX_AGE_MS = 2500
 
     def __init__(
         self,
@@ -84,6 +85,15 @@ class OnboardMissionService(OnboardMissionServiceContract):
         self._target_sync_lock = threading.RLock()
         self._hss_sync_lock = threading.RLock()
         self._qr_report_lock = threading.RLock()
+        self._combat_sync_lock = threading.RLock()
+        self._combat_sync_event = threading.Event()
+        self._combat_sync_stop = threading.Event()
+        self._combat_sync_thread: threading.Thread | None = None
+        self._combat_target_team_number: int | None = None
+        self._combat_target_snapshot: CompetitorTelemetry | None = None
+        self._combat_stream_sequence = 0
+        self._combat_last_stream_valid: bool | None = None
+        self._combat_last_invalid_reason = ""
 
     @property
     def state(self) -> OnboardMissionState:
@@ -92,6 +102,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 self._state,
                 result=dict(self._state.result),
                 target=dict(self._state.target),
+                combat_target=dict(self._state.combat_target),
                 timeline=tuple(self._state.timeline),
             )
 
@@ -108,19 +119,23 @@ class OnboardMissionService(OnboardMissionServiceContract):
             if self._started:
                 return
             self._started = True
-        self._subscriptions.extend(
-            [
-                self._orin.changed.subscribe(self._on_orin_changed),
-                self._orin.register_handler("mission.transition", self._handle_transition),
-                self._orin.register_handler("mission.result", self._handle_result),
-                self._orin.register_handler("mission.event", self._handle_mission_event),
-                self._orin.register_handler("mission.chain", self._handle_chain),
-                self._orin.register_handler("kamikaze.event", self._handle_kamikaze_event),
-                self._orin.register_handler("kamikaze.qr.report", self._handle_qr_report),
-                self._competition.hss_updated.subscribe(self._on_hss_updated),
-                self._competition.qr_updated.subscribe(self._on_qr_updated),
-            ]
-        )
+        subscriptions = [
+            self._orin.changed.subscribe(self._on_orin_changed),
+            self._orin.register_handler("mission.transition", self._handle_transition),
+            self._orin.register_handler("mission.result", self._handle_result),
+            self._orin.register_handler("mission.event", self._handle_mission_event),
+            self._orin.register_handler("mission.chain", self._handle_chain),
+            self._orin.register_handler("kamikaze.event", self._handle_kamikaze_event),
+            self._orin.register_handler("kamikaze.qr.report", self._handle_qr_report),
+            self._competition.hss_updated.subscribe(self._on_hss_updated),
+            self._competition.qr_updated.subscribe(self._on_qr_updated),
+        ]
+        competitor_events = getattr(self._competition, "competitors_updated", None)
+        if competitor_events is not None:
+            subscriptions.append(
+                competitor_events.subscribe(self._on_competitors_updated)
+            )
+        self._subscriptions.extend(subscriptions)
         self._reference_sync_stop.clear()
         self._reference_sync_thread = threading.Thread(
             target=self._reference_sync_loop,
@@ -128,10 +143,20 @@ class OnboardMissionService(OnboardMissionServiceContract):
             daemon=True,
         )
         self._reference_sync_thread.start()
+        self._combat_sync_stop.clear()
+        self._combat_sync_thread = threading.Thread(
+            target=self._combat_sync_loop,
+            name="OnboardCombatTargetSync",
+            daemon=True,
+        )
+        self._combat_sync_thread.start()
         if self._competition.hss_zones:
             self._on_hss_updated(self._competition.hss_zones)
         if self._competition.qr_coordinate is not None:
             self._on_qr_updated(self._competition.qr_coordinate)
+        self._on_competitors_updated(
+            tuple(getattr(self._competition, "competitors", ()) or ())
+        )
         self._on_orin_changed(self._orin.state)
 
     def stop(self) -> None:
@@ -143,6 +168,8 @@ class OnboardMissionService(OnboardMissionServiceContract):
             recovery_timer.cancel()
         self._reference_sync_stop.set()
         self._reference_sync_event.set()
+        self._combat_sync_stop.set()
+        self._combat_sync_event.set()
         for subscription in self._subscriptions:
             subscription.cancel()
         self._subscriptions.clear()
@@ -150,6 +177,10 @@ class OnboardMissionService(OnboardMissionServiceContract):
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=1.0)
         self._reference_sync_thread = None
+        combat_thread = self._combat_sync_thread
+        if combat_thread is not None and combat_thread is not threading.current_thread():
+            combat_thread.join(timeout=1.0)
+        self._combat_sync_thread = None
 
     def start_task(self, task: str, *, source: str = "ui") -> OrinCommandReceipt:
         canonical = self._canonical_task(task)
@@ -450,6 +481,248 @@ class OnboardMissionService(OnboardMissionServiceContract):
 
         epoch_milliseconds = int(datetime.now(UTC).timestamp() * 1_000)
         return max(int(current) + 1, epoch_milliseconds)
+
+    def select_combat_target(self, team_number: int) -> OrinCommandReceipt:
+        team_number = int(team_number)
+        if team_number <= 0:
+            raise ValueError("Hedef takım numarası pozitif olmalı")
+        target = next(
+            (
+                item
+                for item in tuple(getattr(self._competition, "competitors", ()) or ())
+                if item.team_number == team_number
+            ),
+            None,
+        )
+        if target is None:
+            raise RuntimeError(f"Takım {team_number} için güncel TEKNOFEST telemetrisi yok")
+        if self._combat_target_current_age_ms(target) > self._COMBAT_TARGET_MAX_AGE_MS:
+            raise RuntimeError(
+                f"Takım {team_number} telemetrisi eski "
+                f"({self._combat_target_current_age_ms(target)} ms)"
+            )
+        payload = self._combat_target_payload(target, valid=True)
+        payload["stream_sequence"] = 0
+        self._log(
+            "combat.target_select_tx",
+            f"Av hedefi Takım {team_number} Orin'e gönderiliyor",
+            "info",
+            {"team_number": team_number, "data_age_ms": target.data_age_ms},
+        )
+        receipt = self._orin.issue("combat.target.select", payload)
+        if not receipt.accepted:
+            raise OnboardCommandRejectedError(
+                receipt.message or "Orin av hedefini reddetti",
+                receipt.response,
+            )
+        with self._combat_sync_lock:
+            self._combat_target_team_number = team_number
+            self._combat_target_snapshot = target
+            self._combat_stream_sequence = 0
+            self._combat_last_stream_valid = None
+            self._combat_last_invalid_reason = ""
+        with self._lock:
+            self._state = replace(
+                self._state,
+                combat_target_active=True,
+                combat_target_team_number=team_number,
+                combat_target=dict(payload),
+                combat_target_last_update_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                last_error="",
+            )
+        self._combat_sync_event.set()
+        self._log(
+            "combat.target_select_ack",
+            f"Takım {team_number} aktif av hedefi oldu",
+            "success",
+            {"team_number": team_number, "request_id": receipt.request_id},
+        )
+        self._publish()
+        return receipt
+
+    def clear_combat_target(self) -> OrinCommandReceipt | None:
+        with self._combat_sync_lock:
+            team_number = self._combat_target_team_number
+        if team_number is None:
+            with self._lock:
+                if self._state.combat_target_active:
+                    self._state = replace(
+                        self._state,
+                        combat_target_active=False,
+                        combat_target_team_number=None,
+                        combat_target={},
+                        combat_target_last_update_at="",
+                    )
+                    self._publish()
+            return None
+        receipt = self._orin.issue(
+            "combat.target.clear",
+            {"team_number": int(team_number), "source": "gcs-operator"},
+        )
+        if not receipt.accepted:
+            raise OnboardCommandRejectedError(
+                receipt.message or "Orin hedef iptalini reddetti",
+                receipt.response,
+            )
+        with self._combat_sync_lock:
+            self._combat_target_team_number = None
+            self._combat_target_snapshot = None
+            self._combat_stream_sequence = 0
+            self._combat_last_stream_valid = None
+            self._combat_last_invalid_reason = ""
+        with self._lock:
+            self._state = replace(
+                self._state,
+                combat_target_active=False,
+                combat_target_team_number=None,
+                combat_target={},
+                combat_target_last_update_at="",
+                last_error="",
+            )
+        self._log(
+            "combat.target_clear_ack",
+            f"Takım {team_number} av hedefi iptal edildi",
+            "success",
+            {"team_number": team_number, "request_id": receipt.request_id},
+        )
+        self._publish()
+        return receipt
+
+    @staticmethod
+    def _combat_target_payload(
+        target: CompetitorTelemetry,
+        *,
+        valid: bool,
+    ) -> dict[str, Any]:
+        sample_time = target.received_at.astimezone(UTC) - timedelta(
+            milliseconds=target.data_age_ms
+        )
+        raw = dict(target.raw)
+        return {
+            "valid": bool(valid),
+            "team_number": int(target.team_number),
+            "latitude_deg": round(float(target.latitude), 7),
+            "longitude_deg": round(float(target.longitude), 7),
+            "altitude_agl_m": round(float(target.altitude_m), 2),
+            "pitch_deg": round(float(target.pitch), 2),
+            "heading_deg": round(float(target.heading) % 360.0, 2),
+            "roll_deg": round(float(target.roll), 2),
+            "speed_m_s": round(float(target.speed_m_s), 2),
+            "battery_percent": raw.get("iha_batarya"),
+            "autonomous": raw.get("iha_otonom"),
+            "locked": raw.get("iha_kilitlenme"),
+            "target_center_x": raw.get("hedef_merkez_X"),
+            "target_center_y": raw.get("hedef_merkez_Y"),
+            "target_width_px": raw.get("hedef_genislik"),
+            "target_height_px": raw.get("hedef_yukseklik"),
+            "gps_time": raw.get("gps_saati"),
+            "data_age_ms": int(target.data_age_ms),
+            "source_sample_time_utc": sample_time.isoformat().replace("+00:00", "Z"),
+            "gcs_received_at_utc": target.received_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+            "gcs_emitted_at_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "source": "teknofest-gcs",
+            # Full original competition row is kept so APN/estimator adapters can
+            # consume future TEKNOFEST fields without changing this transport.
+            "raw": raw,
+        }
+
+    @staticmethod
+    def _combat_target_current_age_ms(target: CompetitorTelemetry) -> int:
+        sample_time = target.received_at.astimezone(UTC) - timedelta(
+            milliseconds=target.data_age_ms
+        )
+        return max(
+            0,
+            int((datetime.now(UTC) - sample_time).total_seconds() * 1000.0),
+        )
+
+    def _on_competitors_updated(
+        self,
+        competitors: tuple[CompetitorTelemetry, ...],
+    ) -> None:
+        with self._combat_sync_lock:
+            team_number = self._combat_target_team_number
+            if team_number is None:
+                return
+            self._combat_target_snapshot = next(
+                (item for item in competitors if item.team_number == team_number),
+                None,
+            )
+        self._combat_sync_event.set()
+
+    def _combat_sync_loop(self) -> None:
+        """Forward only the operator-selected team to onboard/APN.
+
+        New competition frames are sent immediately. A short timeout also
+        detects the case where the server stops producing updates entirely.
+        Invalid/stale state is emitted once per state transition rather than
+        replaying old coordinates as if they were fresh.
+        """
+        while not self._combat_sync_stop.is_set():
+            triggered = self._combat_sync_event.wait(timeout=0.25)
+            if triggered:
+                self._combat_sync_event.clear()
+            if self._combat_sync_stop.is_set():
+                return
+            with self._combat_sync_lock:
+                team_number = self._combat_target_team_number
+                target = self._combat_target_snapshot
+            if team_number is None or not self._orin.connected:
+                continue
+
+            reason = ""
+            valid = target is not None
+            if target is None:
+                reason = "target-not-present-in-latest-competition-frame"
+            elif self._combat_target_current_age_ms(target) > self._COMBAT_TARGET_MAX_AGE_MS:
+                valid = False
+                reason = "stale-target-telemetry"
+
+            # Timer wakeups are only for detecting stale/lost transitions.
+            # Fresh telemetry is forwarded only when a competition update
+            # actually triggered the loop.
+            if not triggered and valid:
+                continue
+            with self._combat_sync_lock:
+                if (
+                    not valid
+                    and self._combat_last_stream_valid is False
+                    and self._combat_last_invalid_reason == reason
+                ):
+                    continue
+                self._combat_stream_sequence += 1
+                stream_sequence = self._combat_stream_sequence
+
+            try:
+                if valid and target is not None:
+                    payload = self._combat_target_payload(target, valid=True)
+                else:
+                    payload = {
+                        "valid": False,
+                        "team_number": int(team_number),
+                        "reason": reason,
+                        "gcs_emitted_at_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                        "source": "teknofest-gcs",
+                    }
+                payload["stream_sequence"] = int(stream_sequence)
+                self._orin.send("combat.target.telemetry", payload)
+                with self._combat_sync_lock:
+                    self._combat_last_stream_valid = bool(valid)
+                    self._combat_last_invalid_reason = "" if valid else reason
+                with self._lock:
+                    self._state = replace(
+                        self._state,
+                        combat_target=dict(payload),
+                        combat_target_last_update_at=str(payload.get("gcs_emitted_at_utc", "")),
+                    )
+                self._publish()
+            except Exception as exc:
+                self._log(
+                    "combat.target_stream_failed",
+                    f"Av hedef telemetrisi Orin'e gönderilemedi: {exc}",
+                    "warning",
+                    {"team_number": team_number, "error": str(exc)},
+                )
 
     def pause_task(self, task: str = "kamikaze.execute") -> OrinCommandReceipt:
         return self._task_control("task.pause", task, "pause")
@@ -1152,12 +1425,17 @@ class OnboardMissionService(OnboardMissionServiceContract):
             target_revision = self._state.target_revision
             target = dict(self._state.target)
             hss_ready = self._state.hss_ready
-            if state.alive and (not was_connected or session_changed):
+            combat_reset = bool(state.alive and (not was_connected or session_changed))
+            if combat_reset:
                 target_ready = False
                 target_revision = 0
                 target = {}
                 hss_ready = False
                 self._target_acknowledged_hash = ""
+                with self._combat_sync_lock:
+                    self._combat_target_team_number = None
+                    self._combat_target_snapshot = None
+                    self._combat_stream_sequence = 0
                 self._hss_acknowledged_hash = ""
             elif state.alive and not state.kamikaze_target_ready:
                 target_ready = False
@@ -1235,6 +1513,10 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 ),
                 target=target,
                 hss_ready=hss_ready,
+                combat_target_active=(False if combat_reset else self._state.combat_target_active),
+                combat_target_team_number=(None if combat_reset else self._state.combat_target_team_number),
+                combat_target=({} if combat_reset else dict(self._state.combat_target)),
+                combat_target_last_update_at=("" if combat_reset else self._state.combat_target_last_update_at),
                 last_error=state.last_error if not state.alive else self._state.last_error,
             )
         self._publish()

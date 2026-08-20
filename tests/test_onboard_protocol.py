@@ -3,10 +3,11 @@ from __future__ import annotations
 import unittest
 import time
 from dataclasses import replace
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from src.core.events import EventBus, Subscription
-from src.models.competition import HssZone, KamikazeEvent, QrCoordinate
+from src.models.competition import CompetitorTelemetry, HssZone, KamikazeEvent, QrCoordinate
 from src.models.onboard import ACTUATOR_TEST_TASK
 from src.models.orin import (
     OrinCommandReceipt,
@@ -29,6 +30,7 @@ class FakeOrinService:
         self.handlers: dict[str, object] = {}
         self.responses: list[OrinCommandReceipt | Exception] = []
         self.requests: list[tuple[str, dict]] = []
+        self.sent: list[tuple[str, dict]] = []
 
     def register_handler(self, packet_type, handler):
         key = str(packet_type).lower()
@@ -75,6 +77,10 @@ class FakeOrinService:
             raise response
         return response
 
+
+    def send(self, packet_type, payload=None):
+        self.sent.append((packet_type, dict(payload or {})))
+
     def emit(self, packet_type: str, payload: dict, packet_id: int = 1) -> None:
         handler = self.handlers[packet_type]
         handler(OrinMessage(packet_type, payload, packet_id, 1, 191))
@@ -86,6 +92,8 @@ class FakeCompetitionService:
         self.qr_coordinate: QrCoordinate | None = QrCoordinate(39.925533, 32.866287)
         self.hss_zones: tuple[HssZone, ...] = ()
         self.hss_updated = EventBus[tuple[HssZone, ...]]()
+        self.competitors: tuple[CompetitorTelemetry, ...] = ()
+        self.competitors_updated = EventBus[tuple[CompetitorTelemetry, ...]]()
         self.qr_updated = EventBus[QrCoordinate | None]()
         self.submitted_kamikaze: list[KamikazeEvent] = []
         self.refresh_count = 0
@@ -111,6 +119,100 @@ class OnboardMissionProtocolTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.service.stop()
+
+    def test_combat_target_selection_streams_full_team_telemetry_and_clears(self) -> None:
+        received_at = datetime.now(UTC)
+        target = CompetitorTelemetry(
+            team_number=17,
+            latitude=39.925533,
+            longitude=32.866287,
+            altitude_m=112.5,
+            pitch=2.4,
+            heading=84.0,
+            roll=-3.2,
+            speed_m_s=24.7,
+            data_age_ms=180,
+            received_at=received_at,
+            raw={"takim_numarasi": 17, "custom_field": "preserved"},
+        )
+        self.competition.competitors = (target,)
+        self.competition.competitors_updated.publish((target,))
+
+        receipt = self.service.select_combat_target(17)
+
+        self.assertTrue(receipt.accepted)
+        self.assertEqual(self.orin.requests[-1][0], "combat.target.select")
+        selected = self.orin.requests[-1][1]
+        self.assertEqual(selected["team_number"], 17)
+        self.assertEqual(selected["heading_deg"], 84.0)
+        self.assertEqual(selected["speed_m_s"], 24.7)
+        self.assertEqual(selected["raw"]["custom_field"], "preserved")
+        self.assertIn("source_sample_time_utc", selected)
+        self.assertEqual(selected["stream_sequence"], 0)
+        self.assertTrue(self.service.state.combat_target_active)
+        self.assertEqual(self.service.state.combat_target_team_number, 17)
+
+        deadline = time.time() + 0.5
+        while time.time() < deadline and not self.orin.sent:
+            time.sleep(0.01)
+        self.assertTrue(self.orin.sent)
+        packet_type, streamed = self.orin.sent[-1]
+        self.assertEqual(packet_type, "combat.target.telemetry")
+        self.assertTrue(streamed["valid"])
+        self.assertEqual(streamed["team_number"], 17)
+        self.assertGreaterEqual(streamed["stream_sequence"], 1)
+        self.assertEqual(streamed["raw"]["takim_numarasi"], 17)
+
+        updated = replace(target, longitude=32.866500, data_age_ms=90, received_at=datetime.now(UTC))
+        self.competition.competitors = (updated,)
+        self.competition.competitors_updated.publish((updated,))
+        previous_count = len(self.orin.sent)
+        deadline = time.time() + 0.5
+        while time.time() < deadline and len(self.orin.sent) == previous_count:
+            time.sleep(0.01)
+        self.assertGreater(len(self.orin.sent), previous_count)
+        self.assertAlmostEqual(self.orin.sent[-1][1]["longitude_deg"], 32.8665, places=7)
+
+        stale = replace(
+            updated,
+            data_age_ms=4000,
+            received_at=datetime.now(UTC),
+        )
+        self.competition.competitors = (stale,)
+        previous_count = len(self.orin.sent)
+        self.competition.competitors_updated.publish((stale,))
+        deadline = time.time() + 0.5
+        while time.time() < deadline and len(self.orin.sent) == previous_count:
+            time.sleep(0.01)
+        self.assertGreater(len(self.orin.sent), previous_count)
+        self.assertFalse(self.orin.sent[-1][1]["valid"])
+        self.assertEqual(self.orin.sent[-1][1]["reason"], "stale-target-telemetry")
+
+        clear_receipt = self.service.clear_combat_target()
+        self.assertIsNotNone(clear_receipt)
+        self.assertEqual(self.orin.requests[-1][0], "combat.target.clear")
+        self.assertFalse(self.service.state.combat_target_active)
+        self.assertIsNone(self.service.state.combat_target_team_number)
+
+
+    def test_stale_combat_target_cannot_be_selected(self) -> None:
+        target = CompetitorTelemetry(
+            team_number=21,
+            latitude=39.925533,
+            longitude=32.866287,
+            altitude_m=110.0,
+            pitch=0.0,
+            heading=90.0,
+            roll=0.0,
+            speed_m_s=25.0,
+            data_age_ms=5000,
+            received_at=datetime.now(UTC),
+            raw={"takim_numarasi": 21},
+        )
+        self.competition.competitors = (target,)
+        with self.assertRaisesRegex(RuntimeError, "telemetrisi eski"):
+            self.service.select_combat_target(21)
+        self.assertFalse(self.service.state.combat_target_active)
 
     def test_kamikaze_start_uses_contract_payload_and_waits_for_guided(self) -> None:
         self.orin.responses.append(

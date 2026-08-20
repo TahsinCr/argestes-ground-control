@@ -117,6 +117,10 @@ class OnboardMissionState(Model):
     hss_revision: int = 0
     hss_count: int = 0
     hss_content_hash: str = ""
+    combat_target_active: bool = False
+    combat_target_team_number: int | None = None
+    combat_target: dict[str, Any] = field(default_factory=dict)
+    combat_target_last_update_at: str = ""
     critical_event: str = ""
     actuator_step: str = ""
     actuator_step_count: int = 0
@@ -135,6 +139,11 @@ class OnboardMissionState(Model):
             MappingProxyType(dict(self.acknowledgement_snapshot)),
         )
         object.__setattr__(self, "target", MappingProxyType(dict(self.target)))
+        object.__setattr__(
+            self,
+            "combat_target",
+            MappingProxyType(dict(self.combat_target)),
+        )
         object.__setattr__(
             self,
             "available_tasks",
@@ -179,6 +188,10 @@ class OnboardMissionState(Model):
             "hss_revision": self.hss_revision,
             "hss_count": self.hss_count,
             "hss_content_hash": self.hss_content_hash,
+            "combat_target_active": self.combat_target_active,
+            "combat_target_team_number": self.combat_target_team_number,
+            "combat_target": dict(self.combat_target),
+            "combat_target_last_update_at": self.combat_target_last_update_at,
             "critical_event": self.critical_event,
             "actuator_step": self.actuator_step,
             "actuator_step_count": self.actuator_step_count,

@@ -17,12 +17,14 @@ from src.services.planner import PlannerService
 from src.services.runtime import RuntimeServices
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
+from src.services.target_selection import TargetSelectionService
 from src.ui.adapters.runtime import QtRuntimeServices
 from src.ui.adapters.services import (
     QtCommandService,
     QtConnectionControlService,
     QtLoggingService,
     QtOnboardMissionService,
+    QtTargetSelectionService,
     QtParameterService,
     QtPlannerService,
     QtSettingsService,
@@ -65,6 +67,7 @@ def _runtime(
     video_service: QtVideoService,
     tile_cache_service: QtTileCacheService,
     connection_service: QtConnectionControlService,
+    target_selection_service: QtTargetSelectionService,
     onboard_service: QtOnboardMissionService,
 ) -> QtRuntimeServices:
     runtime = QtRuntimeServices(
@@ -78,6 +81,7 @@ def _runtime(
         video_service=video_service,
         tile_cache_service=tile_cache_service,
         connection_service=connection_service,
+        target_selection_service=target_selection_service,
         onboard_service=onboard_service,
     )
     telemetry_service.telemetry_updated.connect(video_service.consume_snapshot)
@@ -97,6 +101,7 @@ def _main_window(
     tile_cache_service: QtTileCacheService,
     archive_service: MissionArchiveService,
     battery_alarm_service: BatteryAlarmService,
+    target_selection_service: QtTargetSelectionService,
     onboard_service: QtOnboardMissionService,
 ) -> MainWindow:
     if context.theme is None:
@@ -113,6 +118,7 @@ def _main_window(
         tile_cache_service=tile_cache_service,
         archive_service=archive_service,
         battery_alarm_service=battery_alarm_service,
+        target_selection_service=target_selection_service,
         onboard_service=onboard_service,
         base_dir=context.base_dir,
         theme=context.theme,
@@ -135,6 +141,7 @@ def register_ui_dependencies(
         (QtParameterService, ParameterService),
         (QtTileCacheService, TileCacheServer),
         (QtConnectionControlService, ConnectionControlService),
+        (QtTargetSelectionService, TargetSelectionService),
         (QtOnboardMissionService, OnboardMissionServiceContract),
     )
     for adapter, backend in adapters:
@@ -164,6 +171,7 @@ def register_ui_dependencies(
             "video_service": QtVideoService,
             "tile_cache_service": QtTileCacheService,
             "connection_service": QtConnectionControlService,
+            "target_selection_service": QtTargetSelectionService,
             "onboard_service": QtOnboardMissionService,
         },
         priority=priority,
@@ -185,6 +193,7 @@ def register_ui_dependencies(
                 "tile_cache_service": QtTileCacheService,
                 "archive_service": MissionArchiveService,
                 "battery_alarm_service": BatteryAlarmService,
+                "target_selection_service": QtTargetSelectionService,
                 "onboard_service": QtOnboardMissionService,
             },
             priority=priority,

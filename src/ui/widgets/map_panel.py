@@ -159,6 +159,8 @@ class MapPanel(PanelFrame):
         self._cache_count_timer.timeout.connect(self._flush_cache_count)
         self._overlay_cache: dict[str, dict[str, Any]] = {}
         self._contact_cache: dict[str, dict[str, Any]] = {}
+        self._target_preview_contact_id: str | None = None
+        self._active_target_contact_id: str | None = None
         self._selected_overlay_id: str | None = None
         self._active_tool = "pan"
         self._mission_loop = bool(
@@ -593,6 +595,7 @@ class MapPanel(PanelFrame):
         self._send_ui_config()
         state = getattr(self._planner_service, "state", MissionState())
         self._sync_mission_state(state)
+        self._apply_target_selection_highlight()
         message_key = {
             "pending": "map.transfer.sending",
             "idle": "map.transfer.empty",
@@ -860,6 +863,34 @@ class MapPanel(PanelFrame):
         self._last_cache_count = self._pending_cache_count
         self._run_script(
             f"window.ykiMap && window.ykiMap.setCacheCount({json.dumps(self._pending_cache_count)});"
+        )
+
+    def set_target_selection_highlight(
+        self,
+        *,
+        preview_team_number: int | None = None,
+        active_team_number: int | None = None,
+    ) -> None:
+        """Highlight preview/active TEKNOFEST contacts without changing map state."""
+
+        self._target_preview_contact_id = (
+            f"teknofest-{int(preview_team_number)}"
+            if preview_team_number is not None
+            else None
+        )
+        self._active_target_contact_id = (
+            f"teknofest-{int(active_team_number)}"
+            if active_team_number is not None
+            else None
+        )
+        self._apply_target_selection_highlight()
+
+    def _apply_target_selection_highlight(self) -> None:
+        preview = json.dumps(self._target_preview_contact_id)
+        active = json.dumps(self._active_target_contact_id)
+        self._run_script(
+            "window.ykiMap && window.ykiMap.setTargetSelection("
+            f"{preview}, {active});"
         )
 
     def _run_script(self, script: str) -> None:

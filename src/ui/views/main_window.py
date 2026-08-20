@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -38,6 +39,7 @@ from src.ui.widgets.control_panels import CommandPanel, TelemetryPanel
 from src.ui.widgets.logs import EventLogPanel
 from src.ui.widgets.map_panel import MapPanel
 from src.ui.widgets.parameters import ParametersPanel
+from src.ui.widgets.target_selection import TargetSelectionPanel
 from src.ui.widgets.title_bar import AppTitleBar
 from src.ui.widgets.video import VideoPanel
 
@@ -59,6 +61,7 @@ class MainWindow(QMainWindow):
         tile_cache_service,
         archive_service: MissionArchiveService,
         battery_alarm_service: BatteryAlarmService,
+        target_selection_service,
         onboard_service,
         base_dir: Path,
         theme: ThemePalette,
@@ -80,6 +83,7 @@ class MainWindow(QMainWindow):
         self.ui_log = log_service.child("UI")
         self.battery_alarm_service = battery_alarm_service
         self.archive_service = archive_service
+        self.target_selection_service = target_selection_service
         self.onboard_service = onboard_service
         self._last_warning_signature = ""
         self._last_snapshot = telemetry_service.current
@@ -247,9 +251,22 @@ class MainWindow(QMainWindow):
         self.log_panel.setMinimumWidth(460)
         self.bottom_splitter.addWidget(self.log_panel)
 
-        self.parameters_panel = ParametersPanel("", "", "", self)
-        self.parameters_panel.setMinimumWidth(320)
-        self.bottom_splitter.addWidget(self.parameters_panel)
+        # Parameters and target selection share the existing right-hand slot.
+        # A tab container preserves the current splitter geometry while keeping
+        # both tools usable when the operator narrows or shortens the panel.
+        self.bottom_tools_tabs = QTabWidget(self)
+        self.bottom_tools_tabs.setObjectName("CommandTabs")
+        self.bottom_tools_tabs.setMinimumWidth(0)
+        self.bottom_tools_tabs.setMinimumHeight(0)
+
+        self.parameters_panel = ParametersPanel("", "", "", self.bottom_tools_tabs)
+        self.parameters_panel.setMinimumWidth(0)
+        self.target_selection_panel = TargetSelectionPanel("", "", self.bottom_tools_tabs)
+        self.target_selection_panel.setMinimumWidth(0)
+
+        self.bottom_tools_tabs.addTab(self.parameters_panel, "")
+        self.bottom_tools_tabs.addTab(self.target_selection_panel, "")
+        self.bottom_splitter.addWidget(self.bottom_tools_tabs)
         self.bottom_splitter.setStretchFactor(0, 64)
         self.bottom_splitter.setStretchFactor(1, 36)
         self.bottom_splitter.setSizes([900, 500])
@@ -324,7 +341,134 @@ class MainWindow(QMainWindow):
             self._open_battery_full_settings
         )
         self.onboard_service.state_changed.connect(self.command_panel.update_onboard_state)
+        self.onboard_service.state_changed.connect(self._on_onboard_state_for_target)
+        self.onboard_service.combat_target_operation_finished.connect(
+            self._on_combat_target_operation_finished
+        )
+        self.target_selection_panel.rank_requested.connect(
+            self.target_selection_service.rank_targets
+        )
+        self.target_selection_service.ranking_started.connect(
+            lambda: self.target_selection_panel.set_busy(True)
+        )
+        self.target_selection_service.ranking_finished.connect(
+            self._on_target_ranking_finished
+        )
+        self.target_selection_service.ranking_failed.connect(
+            self._on_target_ranking_failed
+        )
+        self.target_selection_panel.preview_requested.connect(self._on_target_preview)
+        self.target_selection_panel.activate_requested.connect(
+            self._activate_combat_target
+        )
+        self.target_selection_panel.cancel_requested.connect(self._cancel_combat_target)
         self.command_panel.update_onboard_state(self.onboard_service.state)
+        self._on_onboard_state_for_target(self.onboard_service.state)
+
+    def _on_target_ranking_finished(self, result) -> None:
+        self.target_selection_panel.set_results(result)
+        self.ui_log.event(
+            "target_selection.completed",
+            (
+                f"Hedef seçimi tamamlandı: {len(result.candidates)} aday, "
+                f"{result.elapsed_ms:.1f} ms"
+            ),
+            severity="success",
+            details={
+                "considered": result.considered_count,
+                "valid": result.valid_count,
+                "simulated": result.simulated_count,
+                "elapsed_ms": round(float(result.elapsed_ms), 2),
+                "teams": [item.team_number for item in result.candidates],
+            },
+        )
+
+    def _on_target_ranking_failed(self, message: str) -> None:
+        self.target_selection_panel.set_error(message)
+        self.ui_log.event(
+            "target_selection.failed",
+            f"Hedef seçimi çalıştırılamadı: {message}",
+            severity="danger",
+        )
+
+    def _active_combat_team(self) -> int | None:
+        state = self.onboard_service.state
+        if not getattr(state, "combat_target_active", False):
+            return None
+        team = getattr(state, "combat_target_team_number", None)
+        return int(team) if team is not None else None
+
+    def _on_target_preview(self, team_number) -> None:
+        preview_team = int(team_number) if team_number is not None else None
+        self.map_panel.set_target_selection_highlight(
+            preview_team_number=preview_team,
+            active_team_number=self._active_combat_team(),
+        )
+
+    def _activate_combat_target(self, team_number: int) -> None:
+        team_number = int(team_number)
+        self.target_selection_panel.set_operation_busy(True)
+        self.ui_log.event(
+            "target_selection.activate_requested",
+            f"Takım {team_number} av hedefi olarak seçiliyor",
+            severity="info",
+            details={"team_number": team_number},
+        )
+        self.onboard_service.select_combat_target(team_number)
+
+    def _cancel_combat_target(self) -> None:
+        self.target_selection_panel.set_operation_busy(True)
+        self.ui_log.event(
+            "target_selection.cancel_requested",
+            "Aktif av hedefi iptal ediliyor",
+            severity="warning",
+        )
+        self.onboard_service.clear_combat_target()
+
+    def _on_combat_target_operation_finished(
+        self,
+        action: str,
+        success: bool,
+        message: str,
+        _receipt,
+    ) -> None:
+        state = self.onboard_service.state
+        team = (
+            int(state.combat_target_team_number)
+            if getattr(state, "combat_target_active", False)
+            and getattr(state, "combat_target_team_number", None) is not None
+            else None
+        )
+        if success:
+            if action == "select" and team is not None:
+                display = f"Takım {team} aktif av hedefi; telemetrisi Orin'e sürekli aktarılıyor"
+            elif action == "clear":
+                display = "Av hedefi iptal edildi"
+            else:
+                display = message
+        else:
+            display = message or "Av hedefi işlemi başarısız"
+        self.target_selection_panel.set_operation_result(success, display)
+        self._on_onboard_state_for_target(state)
+        self.ui_log.event(
+            f"target_selection.{action}_{'completed' if success else 'failed'}",
+            display,
+            severity="success" if success else "danger",
+            details={"team_number": team, "response": message},
+        )
+
+    def _on_onboard_state_for_target(self, state) -> None:
+        active_team = (
+            int(state.combat_target_team_number)
+            if getattr(state, "combat_target_active", False)
+            and getattr(state, "combat_target_team_number", None) is not None
+            else None
+        )
+        self.target_selection_panel.set_active_team(active_team)
+        self.map_panel.set_target_selection_highlight(
+            preview_team_number=self.target_selection_panel.selected_team,
+            active_team_number=active_team,
+        )
 
     def _request_command(self, code: str, parameters: dict) -> None:
         task = str(parameters.get("task", "")).strip().upper()
@@ -580,6 +724,19 @@ class MainWindow(QMainWindow):
         )
         self.parameters_panel.search_input.setPlaceholderText(t("search.placeholder", self.language))
         self.parameters_panel.set_language(self.language)
+        self.target_selection_panel.set_title(
+            t("panel.target_selection", self.language),
+            t("panel.target_selection.subtitle", self.language),
+        )
+        self.target_selection_panel.set_language(self.language)
+        self.bottom_tools_tabs.setTabText(
+            self.bottom_tools_tabs.indexOf(self.parameters_panel),
+            t("tab.parameters", self.language),
+        )
+        self.bottom_tools_tabs.setTabText(
+            self.bottom_tools_tabs.indexOf(self.target_selection_panel),
+            t("tab.target_selection", self.language),
+        )
         self.link_meters["command"].set_label(t("status.command_link", self.language))
         self.link_meters["bulk"].set_label(t("status.payload_link", self.language))
         self.battery_meter.set_label(t("status.battery", self.language))

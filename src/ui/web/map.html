@@ -1074,6 +1074,8 @@
       layers: new Map(),
       labelLayers: new Map(),
       contacts: new Map(),
+      previewContactId: null,
+      activeTargetContactId: null,
       safeMasks: new Map(),
       overlayBatchDepth: 0,
       overlayRefreshPending: false,
@@ -1738,19 +1740,49 @@
       setHomeReference(telemetryPosition, false);
     }
 
+    function isActiveTargetContact(data) {
+      return String(data.contact_id || '') === String(state.activeTargetContactId || '');
+    }
+
+    function isPreviewTargetContact(data) {
+      return String(data.contact_id || '') === String(state.previewContactId || '');
+    }
+
     function contactColor(data) {
       const id = String(data.contact_id || '').toLowerCase();
       const source = String(data.source || '').toLowerCase();
+      if (isActiveTargetContact(data)) return '#57d68d';
+      if (isPreviewTargetContact(data)) return '#ffd166';
       return id.includes('own') || source === 'ownship' ? '#58a6ff' : '#e05d5d';
     }
 
     function contactIcon(data) {
       const color = contactColor(data);
+      const highlighted = isActiveTargetContact(data) || isPreviewTargetContact(data);
+      const size = highlighted ? 39 : 31;
+      const anchor = Math.floor(size / 2);
+      const emphasis = highlighted
+        ? 'filter:drop-shadow(0 0 5px var(--aircraft-color));'
+        : '';
       return L.divIcon({
         className: 'contact-marker-wrap',
-        html: `<div class="aircraft-icon" style="--aircraft-color:${color};transform:rotate(${data.heading || 0}deg)">${aircraftSvg()}</div>`,
-        iconSize: [31, 31],
-        iconAnchor: [15, 15],
+        html: `<div class="aircraft-icon" style="--aircraft-color:${color};${emphasis}transform:rotate(${data.heading || 0}deg)">${aircraftSvg()}</div>`,
+        iconSize: [size, size],
+        iconAnchor: [anchor, anchor],
+      });
+    }
+
+    function refreshContactSelectionStyles() {
+      state.contacts.forEach((entry) => {
+        if (!entry || !entry.data) return;
+        const color = contactColor(entry.data);
+        entry.color = color;
+        entry.marker.setIcon(contactIcon(entry.data));
+        entry.trail.setStyle({
+          color,
+          weight: isActiveTargetContact(entry.data) ? 4 : (isPreviewTargetContact(entry.data) ? 3 : 2),
+          opacity: isActiveTargetContact(entry.data) ? 0.82 : (isPreviewTargetContact(entry.data) ? 0.62 : 0.35),
+        });
       });
     }
 
@@ -2826,8 +2858,8 @@
         marker.bindTooltip(tooltip, { direction: 'top', opacity: 0.92 });
         const trail = L.polyline(trailPoints, {
           color,
-          weight: 2,
-          opacity: 0.35,
+          weight: isActiveTargetContact(data) ? 4 : (isPreviewTargetContact(data) ? 3 : 2),
+          opacity: isActiveTargetContact(data) ? 0.82 : (isPreviewTargetContact(data) ? 0.62 : 0.35),
           lineCap: 'round',
           lineJoin: 'round',
         });
@@ -2836,6 +2868,7 @@
         entry = {
           marker,
           trail,
+          data: { ...data },
           heading,
           color,
           tooltip,
@@ -2845,6 +2878,7 @@
         };
         state.contacts.set(data.contact_id, entry);
       } else {
+        entry.data = { ...data };
         const now = performance.now();
         const markerPosition = entry.marker.getLatLng();
         if (markerPosition.lat !== Number(data.latitude) || markerPosition.lng !== Number(data.longitude)) {
@@ -2882,8 +2916,12 @@
         if (entry.color !== color) {
           entry.color = color;
           entry.marker.setIcon(contactIcon(data));
-          entry.trail.setStyle({ color });
         }
+        entry.trail.setStyle({
+          color,
+          weight: isActiveTargetContact(data) ? 4 : (isPreviewTargetContact(data) ? 3 : 2),
+          opacity: isActiveTargetContact(data) ? 0.82 : (isPreviewTargetContact(data) ? 0.62 : 0.35),
+        });
         updateContactTrail(entry, trailPoints);
       }
     }
@@ -3660,6 +3698,12 @@
 
       removeContact(contactId) {
         removeContact(contactId);
+      },
+
+      setTargetSelection(previewContactId, activeTargetContactId) {
+        state.previewContactId = previewContactId || null;
+        state.activeTargetContactId = activeTargetContactId || null;
+        refreshContactSelectionStyles();
       },
 
       clearAllLocal() {
