@@ -30,6 +30,7 @@ from src.services.planner import PlannerService
 from src.services.runtime import RuntimeServices
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
+from src.services.kamikaze_approach import KamikazeApproachService
 from src.services.vehicle.dependencies import VehicleStack
 from src.services.video import GStreamerVideoService, MutableVideoService
 
@@ -132,6 +133,18 @@ def _competition(
         planner,
         vehicle,
         logging.child("TEKNOFEST"),
+    )
+
+
+def _kamikaze_approach(
+    competition: CompetitionService,
+    telemetry: TelemetryService,
+    logging: LoggingService,
+) -> KamikazeApproachService:
+    return KamikazeApproachService(
+        competition,
+        telemetry,
+        logging.child("KAMIKAZE_APPROACH"),
     )
 
 
@@ -278,6 +291,16 @@ def register_application_dependencies(
         priority=priority,
     )
     container.singleton(
+        KamikazeApproachService,
+        factory=_kamikaze_approach,
+        dependencies={
+            "competition": CompetitionService,
+            "telemetry": TelemetryService,
+            "logging": LoggingService,
+        },
+        priority=priority,
+    )
+    container.singleton(
         ConnectionControlService,
         factory=_connections,
         dependencies={
@@ -331,6 +354,7 @@ def register_application_dependencies(
             "video_service": VideoService,
             "tile_cache_service": TileCacheServer,
             "competition_service": CompetitionService,
+            "kamikaze_approach_service": KamikazeApproachService,
             "connection_service": ConnectionControlService,
             "archive_service": MissionArchiveService,
             "facade": BackendFacade,
