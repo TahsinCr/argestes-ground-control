@@ -16,13 +16,8 @@ from src.services.logging_service import ServiceLogger
 
 class DispatchCommandService(CommandService):
     _DEFAULT_TASKS = (
-        "TARGET_LOCK",
         "KAMIKAZE",
         "ACTUATOR_TEST",
-        "WAYPOINT_TRACK",
-        "AUTO_TAKEOFF",
-        "AUTO_LAND",
-        "SURVEY_AREA",
     )
     _STANDARD_TASK_MODES = {
         "AUTO_TAKEOFF": "TAKEOFF",

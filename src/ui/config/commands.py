@@ -39,13 +39,8 @@ PROFILE_FIELDS = (
 )
 
 AUTONOMOUS_COMMANDS = (
-    AutonomousCommand("TARGET_LOCK", "command.target_lock"),
     AutonomousCommand("KAMIKAZE", "command.kamikaze"),
     AutonomousCommand("ACTUATOR_TEST", "command.actuator_test"),
-    AutonomousCommand("WAYPOINT_TRACK", "command.waypoint_track"),
-    AutonomousCommand("AUTO_TAKEOFF", "command.auto_takeoff"),
-    AutonomousCommand("AUTO_LAND", "command.auto_land"),
-    AutonomousCommand("SURVEY_AREA", "command.survey"),
 )
 
 # Commands supplied by configuration are not added to the default list. Their

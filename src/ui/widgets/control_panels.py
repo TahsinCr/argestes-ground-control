@@ -324,6 +324,7 @@ class TelemetryPanel(PanelFrame):
 
 class CommandPanel(PanelFrame):
     command_requested = pyqtSignal(str, dict)
+    task_selected = pyqtSignal(str)
 
     def __init__(
         self,
@@ -659,23 +660,27 @@ class CommandPanel(PanelFrame):
         current = self.task_list.currentItem()
         if current is not None:
             selected = str(current.data(Qt.ItemDataRole.UserRole) or "")
+        supported_codes = {command.code for command in AUTONOMOUS_COMMANDS}
         codes = tuple(
             dict.fromkeys(
                 str(code).strip().upper()
                 for code in task_codes
-                if str(code).strip()
+                if str(code).strip().upper() in supported_codes
             )
         )
         self.task_list.clear()
-        selected_row = 0
+        selected_row = -1
         for row, code in enumerate(codes):
             item = QListWidgetItem(code)
             item.setData(Qt.ItemDataRole.UserRole, code)
             self.task_list.addItem(item)
             if code == selected:
                 selected_row = row
-        if self.task_list.count():
+        if selected_row >= 0:
             self.task_list.setCurrentRow(selected_row)
+        else:
+            self.task_list.setCurrentRow(-1)
+            self.task_list.clearSelection()
 
     def update_snapshot(self, snapshot: TelemetrySnapshot) -> None:
         was_connected = self._vehicle_connected
@@ -951,6 +956,11 @@ class CommandPanel(PanelFrame):
 
     def _on_task_selection_changed(self, _row: int) -> None:
         self._sync_command_availability()
+        self.task_selected.emit(self._selected_task_code())
+
+    @property
+    def selected_task_code(self) -> str:
+        return self._selected_task_code()
 
     def _selected_task_code(self) -> str:
         item = self.task_list.currentItem()

@@ -296,6 +296,12 @@ class MainWindow(QMainWindow):
         self.video_service.stats_updated.connect(self._on_video_stats)
         self.video_panel.reconnect_requested.connect(self._reconnect_video_from_panel)
         self.command_panel.command_requested.connect(self._request_command)
+        self.command_panel.task_selected.connect(
+            self.parameters_panel.set_selected_task
+        )
+        self.parameters_panel.set_selected_task(
+            self.command_panel.selected_task_code
+        )
         self.map_panel.command_requested.connect(self.command_service.issue_command)
         self.command_service.command_dispatched.connect(self._on_command_dispatched)
         self.command_service.command_completed.connect(self._on_command_completed)

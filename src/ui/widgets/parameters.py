@@ -6,17 +6,23 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QComboBox,
+    QFrame,
     QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QSizePolicy,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
     QWidget,
 )
 
 from src.ui.i18n import t
 from src.models.parameters import Parameter
+from src.ui.config.commands import TASK_LABEL_KEYS
 from src.ui.widgets.common import PanelFrame, compact_button, horizontal_row
 
 
@@ -31,19 +37,41 @@ class ParametersPanel(PanelFrame):
         self._original_values: dict[str, object] = {}
         self._dirty_values: dict[str, object] = {}
         self._language = "tr"
+        self._selected_task = ""
+        self._task_pages: dict[str, QWidget] = {}
         self.setMinimumWidth(0)
 
-        self.search_input = QLineEdit(self)
+        self.tabs = QTabWidget(self)
+        self.tabs.setObjectName("CommandTabs")
+        self.tabs.tabBar().setExpanding(True)
+        self.tabs.tabBar().setDrawBase(False)
+        self.tabs.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+        self.parameters_tab = QWidget(self.tabs)
+        self.parameters_tab.setObjectName("CommandTabPage")
+        self.mission_commands_tab = QWidget(self.tabs)
+        self.mission_commands_tab.setObjectName("CommandTabPage")
+        self.tabs.addTab(self.parameters_tab, "")
+        self.tabs.addTab(self.mission_commands_tab, "")
+        self.body_layout.addWidget(self.tabs, 1)
+
+        parameters_layout = QVBoxLayout(self.parameters_tab)
+        parameters_layout.setContentsMargins(6, 6, 6, 6)
+        parameters_layout.setSpacing(6)
+
+        self.search_input = QLineEdit(self.parameters_tab)
         self.search_input.setPlaceholderText(search_placeholder)
         self.search_input.textChanged.connect(self._rebuild_table)
 
-        self.category_combo = QComboBox(self)
+        self.category_combo = QComboBox(self.parameters_tab)
         self.category_combo.addItem("", "all")
         self.category_combo.currentIndexChanged.connect(self._rebuild_table)
 
-        self.body_layout.addWidget(horizontal_row(self.search_input, self.category_combo))
+        parameters_layout.addWidget(horizontal_row(self.search_input, self.category_combo))
 
-        self.table = QTableWidget(0, 5, self)
+        self.table = QTableWidget(0, 5, self.parameters_tab)
         self.table.setHorizontalHeaderLabels(["", "", "", "", ""])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -53,13 +81,13 @@ class ParametersPanel(PanelFrame):
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.itemChanged.connect(self._on_item_changed)
-        self.body_layout.addWidget(self.table, 1)
+        parameters_layout.addWidget(self.table, 1)
 
-        footer = QWidget(self)
+        footer = QWidget(self.parameters_tab)
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(0, 0, 0, 0)
         footer_layout.setSpacing(6)
-        self.pending_label = QLabel(self)
+        self.pending_label = QLabel(footer)
         self.pending_label.setProperty("role", "note")
         footer_layout.addWidget(self.pending_label, 1)
         self.reset_button = compact_button("RESET")
@@ -68,11 +96,47 @@ class ParametersPanel(PanelFrame):
         self.apply_button = compact_button("APPLY", "primary")
         self.apply_button.clicked.connect(self.apply_changes)
         footer_layout.addWidget(self.apply_button)
-        self.body_layout.addWidget(footer)
+        parameters_layout.addWidget(footer)
+
+        mission_layout = QVBoxLayout(self.mission_commands_tab)
+        mission_layout.setContentsMargins(8, 8, 8, 8)
+        mission_layout.setSpacing(0)
+        self.mission_command_stack = QStackedWidget(self.mission_commands_tab)
+        self.mission_command_stack.setObjectName("MissionCommandStack")
+        mission_layout.addWidget(self.mission_command_stack, 1)
+
+        self.mission_empty_page = QWidget(self.mission_command_stack)
+        empty_layout = QVBoxLayout(self.mission_empty_page)
+        empty_layout.setContentsMargins(12, 12, 12, 12)
+        empty_layout.addStretch(1)
+        self.mission_empty_card = QFrame(self.mission_empty_page)
+        self.mission_empty_card.setObjectName("MetricCard")
+        card_layout = QVBoxLayout(self.mission_empty_card)
+        card_layout.setContentsMargins(18, 18, 18, 18)
+        card_layout.setSpacing(8)
+        self.mission_empty_marker = QLabel("◇", self.mission_empty_card)
+        self.mission_empty_marker.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.mission_empty_marker.setProperty("role", "section-label")
+        self.mission_empty_title = QLabel(self.mission_empty_card)
+        self.mission_empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.mission_empty_title.setObjectName("MetricTitle")
+        self.mission_empty_description = QLabel(self.mission_empty_card)
+        self.mission_empty_description.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.mission_empty_description.setWordWrap(True)
+        self.mission_empty_description.setProperty("role", "readout-label")
+        card_layout.addWidget(self.mission_empty_marker)
+        card_layout.addWidget(self.mission_empty_title)
+        card_layout.addWidget(self.mission_empty_description)
+        empty_layout.addWidget(self.mission_empty_card)
+        empty_layout.addStretch(1)
+        self.mission_command_stack.addWidget(self.mission_empty_page)
         self._update_footer()
+        self.set_language(self._language)
 
     def set_language(self, language: str) -> None:
         self._language = language
+        self.tabs.setTabText(0, t("tab.parameters", language))
+        self.tabs.setTabText(1, t("tab.mission_commands", language))
         self.apply_button.setText(t("parameters.apply", language).upper())
         self.reset_button.setText(t("parameters.reset", language).upper())
         self.table.setHorizontalHeaderLabels(
@@ -88,7 +152,47 @@ class ParametersPanel(PanelFrame):
             self.category_combo.setItemText(
                 0, t("table.parameters.all", language)
             )
+        self._update_mission_command_placeholder()
         self._update_footer()
+
+    def set_selected_task(self, task_code: str | None) -> None:
+        self._selected_task = str(task_code or "").strip().upper()
+        page = self._task_pages.get(self._selected_task)
+        self.mission_command_stack.setCurrentWidget(page or self.mission_empty_page)
+        self._update_mission_command_placeholder()
+
+    def register_task_page(self, task_code: str, page: QWidget) -> None:
+        """Register a task-specific command page without coupling it to MAVLink."""
+        code = str(task_code).strip().upper()
+        if not code:
+            raise ValueError("Task code cannot be empty")
+        previous = self._task_pages.get(code)
+        if previous is not None:
+            self.mission_command_stack.removeWidget(previous)
+        self._task_pages[code] = page
+        self.mission_command_stack.addWidget(page)
+        if code == self._selected_task:
+            self.mission_command_stack.setCurrentWidget(page)
+
+    def _update_mission_command_placeholder(self) -> None:
+        code = self._selected_task
+        if not code:
+            title = t("mission_commands.empty.title", self._language)
+            description = t("mission_commands.empty.description", self._language)
+            marker = "◇"
+        else:
+            label_key = TASK_LABEL_KEYS.get(code)
+            task = t(label_key, self._language) if label_key else code.replace("_", " ").title()
+            title = task
+            description = t(
+                "mission_commands.pending.description",
+                self._language,
+                task=task,
+            )
+            marker = "◈"
+        self.mission_empty_marker.setText(marker)
+        self.mission_empty_title.setText(title)
+        self.mission_empty_description.setText(description)
 
     def set_parameters(self, parameters: Iterable[Parameter]) -> None:
         incoming = list(parameters)

@@ -393,6 +393,25 @@ class UiContractTests(unittest.TestCase):
         panel.deleteLater()
         self.app.processEvents()
 
+    def test_parameter_panel_tracks_selected_task_on_mission_commands_tab(self) -> None:
+        panel = ParametersPanel("", "", "")
+        self.assertEqual(panel.tabs.count(), 2)
+        self.assertEqual(panel.tabs.tabText(0), "Parametreler")
+        self.assertEqual(panel.tabs.tabText(1), "Görev Komutları")
+
+        panel.set_selected_task(None)
+        self.assertEqual(panel.mission_empty_title.text(), "Bir görev seçin")
+        panel.set_selected_task("KAMIKAZE")
+        self.assertEqual(panel.mission_empty_title.text(), "Kamikaze")
+        self.assertIn("henüz eklenmedi", panel.mission_empty_description.text())
+
+        custom_page = QWidget()
+        panel.register_task_page("KAMIKAZE", custom_page)
+        self.assertIs(panel.mission_command_stack.currentWidget(), custom_page)
+        panel.close()
+        panel.deleteLater()
+        self.app.processEvents()
+
     def test_video_overlay_exposes_stats_and_fit_fill_modes(self) -> None:
         panel = VideoPanel("", "", theme=DARK, language="tr")
         viewport = panel.viewport
@@ -854,24 +873,18 @@ class UiContractTests(unittest.TestCase):
         panel.deleteLater()
         self.app.processEvents()
 
-    def test_configured_orin_task_is_shown_and_emitted_from_action_list(self) -> None:
+    def test_task_action_list_only_shows_ui_supported_onboard_tasks(self) -> None:
         task_codes = tuple(command.code for command in AUTONOMOUS_COMMANDS) + ("PING_TEST",)
         panel = CommandPanel("", "", task_codes=task_codes)
-        ping_row = next(
-            row
+        visible = {
+            str(panel.task_list.item(row).data(Qt.ItemDataRole.UserRole))
             for row in range(panel.task_list.count())
-            if panel.task_list.item(row).data(Qt.ItemDataRole.UserRole) == "PING_TEST"
-        )
-        self.assertIn("PING_TEST", panel.task_list.item(ping_row).text())
-        panel.update_snapshot(
-            TelemetrySnapshot.zero().copy(telemetry_link=True, autopilot_link=True)
-        )
-        requested: list[tuple[str, dict]] = []
-        panel.command_requested.connect(lambda code, params: requested.append((code, params)))
-        panel.task_list.setCurrentRow(ping_row)
-        panel._emit_task_command()
-        self.assertEqual(requested[-1][0], "SET_MISSION_TASK")
-        self.assertEqual(requested[-1][1]["task"], "PING_TEST")
+        }
+        self.assertEqual(visible, {"KAMIKAZE", "ACTUATOR_TEST"})
+        self.assertNotIn("PING_TEST", visible)
+        self.assertEqual(panel.task_list.currentRow(), -1)
+        self.assertEqual(panel.selected_task_code, "")
+        self.assertFalse(panel.task_progress.isVisible())
         panel.close()
         panel.deleteLater()
         self.app.processEvents()
