@@ -24,8 +24,10 @@ vision and similar decision algorithms belong to the onboard system.
 - Flight telemetry, connection health, GPS, battery and radio-link monitoring
 - ARM/DISARM, flight modes, LAND, GOTO, parameters and flight-plan transfer
 - Correlated Onboard task control, mission state, QR recovery and remote logs
+- Shared, typed YKİ–Onboard contracts without a second MAVLink connection
 - Tabbed quick commands and Start/Restart/Cancel controls for onboard tasks
 - Takeoff, waypoint, loiter, RTL, land and local safety-area planning
+- HSS-aware P1/P2 Kamikaze approach planning with derived recovery geometry
 - Live parameter/default and flight-plan synchronization from the controller
 - RTSP, HTTP/MJPEG, RTP/UDP, V4L2, file and custom GStreamer sources
 - Optional persistent video auto-connect with fresh-frame health validation
@@ -38,15 +40,20 @@ vision and similar decision algorithms belong to the onboard system.
 
 ## Supported environments
 
-Arch Linux is the team's primary validated environment.
-Ubuntu and Windows are also supported. Always verify the actual serial device
-and video source on the machine used with flight hardware.
+YKİ is designed for current desktop operating systems that provide Python
+3.11 or newer, Qt 6 and the required media and serial drivers. Arch Linux is
+the team's primary hardware-validated environment; other Linux distributions,
+Windows and macOS can run the application when their platform-specific serial,
+GStreamer and video-capture dependencies are installed. Always validate the
+actual serial device and video source on the machine used with flight hardware.
 
 | Environment | Recommended version | Notes |
 |---|---:|---|
 | Arch Linux | Current | Primary development environment |
 | Ubuntu | 24.04 LTS | Package names below target this release |
 | Windows | Windows 11 x64 | Use the MSVC x86_64 GStreamer build |
+| macOS | Current Intel or Apple Silicon release | Install native-architecture Python and GStreamer packages |
+| Other desktop systems | Current supported release | Requires Python 3.11+, Qt 6, GStreamer and accessible serial/video devices |
 | Python | 3.11+ | Run the application in a virtual environment |
 
 ## GStreamer installation
@@ -247,7 +254,6 @@ ingestion and command acknowledgements remain independent from these display
 limits. Moving contacts use incremental trail updates, and auxiliary network
 waiters share one application-owned asyncio runtime instead of occupying the UI
 thread or creating a polling thread per service.
-limits.
 
 ## Map planning
 
@@ -259,6 +265,9 @@ transfer action.
 The point-list button opens and closes the map dialog. Takeoff, waypoint,
 loiter, RTL and land items can be reordered by their drag handles. Their
 mission phase remains meaningful when the MAVLink item sequence is built.
+Route segments show compact distance labels at useful zoom levels. Editable
+points expose small radius and altitude fields in their context menu; values
+are committed only when that editor closes.
 
 The permanent `H` marker shows the flight controller's home/reference
 position. Dragging it, or selecting **Set home/reference here** from the map
@@ -271,6 +280,11 @@ deletion, dragging, ordering, area edits and Once/Loop changes are restored
 locally and are not transmitted until **Send Mission** is selected again.
 Home changes are the exception: because they are direct vehicle commands,
 their undo and redo steps also require an acknowledged home command.
+
+The transfer group keeps mission upload and vehicle download separate. **Send
+Mission** uploads the local operator plan; **Get Mission** imports the current
+flight-controller mission without deleting local archive files or live
+TEKNOFEST reference layers.
 
 The normal map context menu contains only GOTO, center-on-vehicle and
 set-home/reference actions. Right-clicking an editable route point additionally
@@ -367,6 +381,12 @@ Primary responsibilities:
 the core repository first; YKİ then updates only the pinned submodule commit.
 Do not copy shared core files back into the parent repository.
 
+`src/communication` is the pinned SIHA Communication Contracts submodule. It
+owns transport-neutral packet names, typed payloads, direction rules and
+ground/onboard gateway behavior. It does not own MAVLink, sockets or vehicle
+services. YKİ and SIHA Onboard must pin compatible revisions so task aliases,
+ACK payloads, HSS updates, Kamikaze messages and remote logs stay identical.
+
 Backend service contracts expose the core `EventBus`. Its normal service
 policy isolates a failed observer so telemetry, video or state producers keep
 running. Flows whose acknowledgement depends on local delivery must opt into
@@ -443,6 +463,12 @@ sending the next `task.start` request. YKİ does not automatically select GUIDED
 when a task starts or AUTO when it ends; flight-mode changes remain explicit
 operator actions.
 
+Only tasks implemented on both sides are presented to the operator. Task
+Start/Restart/Cancel controls remain disabled until a fresh Orin application
+heartbeat is available; an open serial port alone is not treated as Onboard
+readiness. Detailed mission ID, phase, progress, actuator step and Kamikaze QR
+feedback is shown in **Vehicle Management > Task Actions**.
+
 QR data is recovered from three sources:
 
 1. live `kamikaze.event` notifications (`QR_DECODED` and
@@ -462,9 +488,11 @@ masked. Qt drains log events in bounded batches so they cannot monopolize the
 UI thread.
 
 Video remains independent from MAVLink. Configure the HDMI capture card as a
-USB or GStreamer pipeline source and request 1920x1080 at 60 FPS. The video
-service retains only the latest bounded frame, reconnects without blocking task
-controls and reports an unhealthy stream when frames stop arriving.
+USB or GStreamer pipeline source. The video service retains only the latest
+bounded frame, reconnects without blocking task controls and reports an
+unhealthy stream when frames stop arriving. Actual negotiated resolution is
+checked on caps changes and every five seconds; measured frame rate is derived
+from received frames and published once per second.
 
 Hardware verification checklist:
 
@@ -628,16 +656,14 @@ correlation details rather than relying only on a visible UI message.
 python run_tests.py
 ```
 
-The runner reports the YKİ and pinned core suites as one result. It currently
-runs **393 tests**: **242 YKİ tests** covering application architecture,
-the pinned core boundary, dependency composition, vehicle/Orin sharing,
-Onboard mission/QR handling, remote logs, parameter defaults, command retries,
-concurrent planning, TEKNOFEST communication, battery estimation and policies,
-localization, GStreamer pipelines, map history, high-rate data coalescing,
-responsive autonomous/map controls, splitters, frameless resizing and offscreen
-Qt startup, plus **151 core tests** for dependency, event, mission and MAVLink
-internals. The suites remain independently owned even though the root runner
-presents one final status.
+The runner reports the YKİ, pinned Communication Contracts and Core suites as
+one result. It currently runs **434 tests** covering architecture boundaries,
+dependency composition, shared contract validation, vehicle/Orin transport
+sharing, Onboard task and cancel flows, P1/P2 Kamikaze approach planning,
+mission transfer/history, QR and remote logs, TEKNOFEST communication,
+GStreamer statistics, high-rate UI coalescing and Core's dependency, event,
+mission and MAVLink internals. The suites remain independently owned even
+though the root runner presents one final status.
 
 For Linux runtime measurements, start YKİ through the performance monitor:
 

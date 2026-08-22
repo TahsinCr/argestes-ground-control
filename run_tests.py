@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the YKI and shared Vehicle Autonomy Core test suites."""
+"""Run the YKI, shared contracts and Vehicle Autonomy Core test suites."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent
 CORE_TEST_RUNNER = PROJECT_ROOT / "src" / "core" / "tests" / "run.py"
 CORE_ROOT = PROJECT_ROOT / "src" / "core"
+COMMUNICATION_ROOT = PROJECT_ROOT / "src" / "communication"
+COMMUNICATION_TESTS = COMMUNICATION_ROOT / "tests"
 
 
 def main() -> int:
@@ -31,6 +33,13 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+    if not COMMUNICATION_TESTS.is_dir():
+        print(
+            "Error: src/communication is missing. Run "
+            "'git submodule update --init --recursive' first.",
+            file=sys.stderr,
+        )
+        return 2
 
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -40,6 +49,13 @@ def main() -> int:
     suite.addTests(loader.discover(start_dir=str(PROJECT_ROOT / "tests")))
     suite.addTests(
         loader.discover(
+            start_dir=str(COMMUNICATION_TESTS),
+            pattern="test*.py",
+            top_level_dir=str(PROJECT_ROOT),
+        )
+    )
+    suite.addTests(
+        loader.discover(
             start_dir=str(CORE_ROOT / "tests"),
             pattern="test*.py",
             top_level_dir=str(CORE_ROOT),
@@ -47,7 +63,8 @@ def main() -> int:
     )
 
     print(
-        f"==> Running {suite.countTestCases()} YKI and Core tests as one suite",
+        "==> Running "
+        f"{suite.countTestCases()} YKI, Communication Contracts and Core tests as one suite",
         flush=True,
     )
     try:

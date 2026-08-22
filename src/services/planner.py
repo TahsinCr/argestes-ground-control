@@ -510,18 +510,31 @@ class PlannerService(Service):
         if state.connected and self._sync_from_vehicle_on_connect:
             self._schedule_vehicle_sync()
 
-    def _schedule_vehicle_sync(self) -> None:
+    def request_vehicle_sync(self) -> bool:
+        """Fetch the flight-controller mission without changing local archives."""
+
+        if self._vehicle is None or not self._vehicle.connected:
+            self._log(
+                "warning",
+                "mission.download_unavailable",
+                "Uçuş cihazına bağlı değilken görev planı çekilemez",
+            )
+            return False
+        return self._schedule_vehicle_sync()
+
+    def _schedule_vehicle_sync(self) -> bool:
         if self._vehicle is None:
-            return
+            return False
         with self._lock:
             if self._sync_thread is not None and self._sync_thread.is_alive():
-                return
+                return False
             self._sync_thread = threading.Thread(
                 target=self._sync_from_vehicle,
                 name="VehicleMissionSync",
                 daemon=True,
             )
             self._sync_thread.start()
+            return True
 
     def _sync_from_vehicle(self) -> None:
         if self._vehicle is None:

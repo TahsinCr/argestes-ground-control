@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -302,6 +303,42 @@ class MissionTests(unittest.TestCase):
         )
         service._sync_from_vehicle()
         self.assertEqual([item.overlay_id for item in service.state.overlays], ["local-wp"])
+
+    def test_manual_vehicle_sync_requires_connection_and_imports_the_plan(self) -> None:
+        downloaded = MapOverlay(
+            "vehicle-waypoint-manual",
+            "waypoint",
+            "WP 1",
+            [[39.91, 32.81, 120]],
+            "#fff",
+            35,
+            {"source": "flight-controller", "route_order": 1},
+        )
+
+        class Vehicle:
+            connected = True
+            state = VehicleConnectionState(True, "test", 1, 1)
+
+            def download_mission(self):
+                return [downloaded]
+
+        service = PlannerService(vehicle=Vehicle())  # type: ignore[arg-type]
+        self.assertTrue(service.request_vehicle_sync())
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not service.state.overlays:
+            time.sleep(0.01)
+        self.assertEqual(
+            [item.overlay_id for item in service.state.overlays],
+            ["vehicle-waypoint-manual"],
+        )
+        service.stop()
+
+        class OfflineVehicle:
+            connected = False
+            state = VehicleConnectionState(False, "test", 1, 1)
+
+        offline = PlannerService(vehicle=OfflineVehicle())  # type: ignore[arg-type]
+        self.assertFalse(offline.request_vehicle_sync())
 
 
 if __name__ == "__main__":

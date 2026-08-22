@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+from src.communication import ContractDecodeError
 from src.core.events import EventBus
 from src.core.mavlink import (
     MavlinkApplicationAssembler,
@@ -744,6 +745,88 @@ class OrinLinkTests(unittest.TestCase):
         self.assertEqual(logs.history[-1].details["task"], "TARGET_LOCK")
         self.assertEqual(logs.history[-1].details["stdout"], "ok")
 
+    def test_orin_requests_use_shared_contract_aliases_and_correlation(self) -> None:
+        vehicle = SimpleNamespace(
+            connected=True,
+            state=VehicleConnectionState(True, "COM3", 1, 1),
+            connection_changed=EventBus(),
+        )
+        client = SimpleNamespace(
+            endpoint=SimpleNamespace(uri="COM3", source_system=255, source_component=0),
+            connection=SimpleNamespace(target_system=1),
+        )
+        service = MavlinkOrinService(client, vehicle)  # type: ignore[arg-type]
+        service._on_packet(
+            MavlinkApplicationPacket(
+                "system.heartbeat",
+                {"role": "orin", "health": "ok"},
+                source_system=1,
+                source_component=191,
+            )
+        )
+
+        class Peer:
+            def __init__(self) -> None:
+                self.calls: list[MavlinkApplicationPacket] = []
+
+            def request(self, packet_type, payload, *, response_types, timeout, on_sent=None):
+                del response_types, timeout
+                request = MavlinkApplicationPacket(packet_type, payload)
+                self.calls.append(request)
+                if on_sent is not None:
+                    on_sent(request)
+                response = MavlinkApplicationPacket(
+                    "system.ack",
+                    {"accepted": True, "message": "Command accepted", "execution": "starting"},
+                    source_system=1,
+                    source_component=191,
+                )
+                return MavlinkApplicationResponse(request, response, 3.5)
+
+        peer = Peer()
+        service._peer = peer  # type: ignore[assignment]
+        service._started = True
+
+        receipt = service.issue("task.start", {"task": "kamikaze.execute", "source": "ui"})
+
+        self.assertEqual(len(peer.calls), 1)
+        self.assertEqual(peer.calls[0].packet_type, "task.start")
+        self.assertEqual(peer.calls[0].payload, {"task": "KAMIKAZE", "source": "ui"})
+        self.assertEqual(receipt.request_id, peer.calls[0].packet_id)
+        self.assertTrue(receipt.accepted)
+        self.assertEqual(receipt.response["execution"], "starting")
+
+    def test_invalid_shared_contract_never_reaches_the_mavlink_peer(self) -> None:
+        vehicle = SimpleNamespace(
+            connected=True,
+            state=VehicleConnectionState(True, "COM3", 1, 1),
+            connection_changed=EventBus(),
+        )
+        client = SimpleNamespace(
+            endpoint=SimpleNamespace(uri="COM3", source_system=255, source_component=0),
+            connection=SimpleNamespace(target_system=1),
+        )
+        service = MavlinkOrinService(client, vehicle)  # type: ignore[arg-type]
+
+        class Peer:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def request(self, *_args, **_kwargs):
+                self.calls += 1
+                raise AssertionError("invalid contract must not reach the MAVLink peer")
+
+        peer = Peer()
+        service._peer = peer  # type: ignore[assignment]
+        service._started = True
+
+        with self.assertRaises(ContractDecodeError):
+            service.issue(
+                "competition.hss.update",
+                {"revision": 0, "active": True, "content_hash": "invalid", "zones": []},
+            )
+        self.assertEqual(peer.calls, 0)
+
     def test_autonomous_processing_task_is_routed_to_orin_not_pixhawk(self) -> None:
         class Vehicle:
             connected = True
@@ -963,7 +1046,7 @@ class OrinLinkTests(unittest.TestCase):
         )
         self.assertTrue(result.accepted)
         self.assertEqual(orin.packet_type, "task.start")
-        self.assertEqual(orin.payload["task"], "PING_TEST")
+        self.assertEqual(orin.payload["task"], "ping_test")
         self.assertEqual(orin.payload["parameters"]["value"], 27)
         self.assertEqual(result.details["orin_execution"], "completed")
         self.assertIn("scripti başarıyla tamamlandı", result.message)

@@ -397,13 +397,13 @@ class UiContractTests(unittest.TestCase):
         panel = ParametersPanel("", "", "")
         self.assertEqual(panel.tabs.count(), 2)
         self.assertEqual(panel.tabs.tabText(0), "Parametreler")
-        self.assertEqual(panel.tabs.tabText(1), "Görev Komutları")
+        self.assertEqual(panel.tabs.tabText(1), "Görev Aksiyonları")
 
         panel.set_selected_task(None)
         self.assertEqual(panel.mission_empty_title.text(), "Bir görev seçin")
         panel.set_selected_task("KAMIKAZE")
         self.assertEqual(panel.mission_empty_title.text(), "Kamikaze")
-        self.assertIn("henüz eklenmedi", panel.mission_empty_description.text())
+        self.assertIn("durum", panel.mission_empty_description.text())
 
         custom_page = QWidget()
         panel.register_task_page("KAMIKAZE", custom_page)
@@ -898,8 +898,16 @@ class UiContractTests(unittest.TestCase):
             == "ACTUATOR_TEST"
         )
         panel.task_list.setCurrentRow(actuator_row)
+        requested: list[tuple[str, dict]] = []
+        panel.command_requested.connect(
+            lambda code, params: requested.append((code, params))
+        )
         panel.update_onboard_state(OnboardMissionState(connected=False))
-        self.assertTrue(panel.task_apply_button.isEnabled())
+        self.assertFalse(panel.task_apply_button.isEnabled())
+        self.assertFalse(panel.task_cancel_button.isEnabled())
+        panel._emit_task_command()
+        self.assertEqual(requested, [])
+        self.assertEqual(panel.onboard_status.property("state"), "danger")
         panel.update_snapshot(
             TelemetrySnapshot.zero().copy(
                 telemetry_link=True,
@@ -914,12 +922,9 @@ class UiContractTests(unittest.TestCase):
                 available_tasks=(ACTUATOR_TEST_TASK,),
             )
         )
+        self.assertEqual(panel.onboard_status.property("state"), "success")
         self.assertFalse(panel.actuator_card.isHidden())
 
-        requested: list[tuple[str, dict]] = []
-        panel.command_requested.connect(
-            lambda code, params: requested.append((code, params))
-        )
         panel.task_list.setCurrentRow(actuator_row)
         panel._emit_task_command()
         self.assertEqual(
@@ -969,7 +974,9 @@ class UiContractTests(unittest.TestCase):
             ("RESTART_MISSION_TASK", {"task": "ACTUATOR_TEST"}),
         )
         self.assertIn("84", panel.actuator_detail.text())
-        self.assertIn("1700", panel.actuator_detail.text())
+        self.assertIn("servo-1-high", panel.actuator_step_detail.text())
+        self.assertNotIn("1700", panel.actuator_detail.text())
+        self.assertNotIn("PWM", panel.actuator_detail.text())
         self.assertGreater(panel.actuator_progress.maximum(), 0)
         self.assertFalse(panel.task_progress.isHidden())
         self.assertEqual(panel.task_progress.maximum(), 100)
@@ -985,8 +992,6 @@ class UiContractTests(unittest.TestCase):
         )
         self.assertTrue(panel.task_cancel_button.isEnabled())
 
-        # A short application-heartbeat flap must not make an in-flight task
-        # impossible to cancel; the backend remains the connection authority.
         panel.update_onboard_state(
             OnboardMissionState(
                 connected=False,
@@ -995,12 +1000,11 @@ class UiContractTests(unittest.TestCase):
                 phase="reconciling",
             )
         )
-        self.assertTrue(panel.task_cancel_button.isEnabled())
+        self.assertFalse(panel.task_cancel_button.isEnabled())
+        previous_requests = list(requested)
         panel.task_cancel_button.click()
-        self.assertEqual(
-            requested[-1],
-            ("ONBOARD_TASK_CANCEL", {"task": ACTUATOR_TEST_TASK}),
-        )
+        panel._emit_active_task_control("ONBOARD_TASK_CANCEL")
+        self.assertEqual(requested, previous_requests)
 
         panel.update_onboard_state(
             OnboardMissionState(
@@ -1350,7 +1354,20 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("const deletable = Boolean(", html)
         self.assertIn("['goto', 'center', 'set_home'].forEach", html)
         self.assertIn("selected && !deletable", html)
-        self.assertIn("removeOverlayById(contextOverlayId, true);", html)
+        self.assertIn("removeOverlayById(actionOverlayId, true);", html)
+        self.assertIn('id="context-point-editor"', html)
+        self.assertIn('id="context-radius-input"', html)
+        self.assertIn('id="context-altitude-input"', html)
+        self.assertIn("function applyContextPointEditor()", html)
+        self.assertIn("let contextEditorDirty = false", html)
+        self.assertIn("box-sizing: border-box", html)
+        self.assertIn("hideContextMenu(action !== 'delete')", html)
+        self.assertNotIn("addEventListener('change', applyContextPointEditor)", html)
+        self.assertIn("scrollWheelZoom: 'center'", html)
+        self.assertIn("touchZoom: 'center'", html)
+        self.assertIn("disableEditing(layer);", html)
+        self.assertIn("classList.add('is-point-dragging')", html)
+        self.assertIn("classList.remove('is-point-dragging')", html)
         self.assertIn("let homeReferenceMarker = null;", html)
         self.assertIn("function createHomeReferenceMarker(latlng)", html)
         self.assertIn("homeReferenceMarker = createHomeReferenceMarker", html)
@@ -1378,6 +1395,11 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("button.className = 'mission-mode-button'", html)
         self.assertIn("window.ykiMap.setMissionLoop(!state.missionLoop)", html)
         self.assertIn("refreshMissionRoute();", html)
+        self.assertIn("function refreshMissionDistanceLabels", html)
+        self.assertIn("function addMissionDistanceLabel", html)
+        self.assertIn("map.distance(start, end)", html)
+        self.assertIn("segment-distance-label", html)
+        self.assertIn("font-size: 12px", html)
         self.assertIn("repeatablePoints.push(...layerPoints)", html)
         self.assertIn("!hasTerminalItem", html)
         self.assertIn("let rtlReturnLine = null;", html)
@@ -1411,13 +1433,15 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("function altitudeForLayer(layer)", html)
         self.assertIn("...(altitude !== null ? [altitude] : [])", html)
         keys = {tool.key for tool in MAP_TOOLS}
-        self.assertTrue({"rtl", "land", "hss", "target", "safe_zone", "no_fly"} <= keys)
+        self.assertTrue({"rtl", "land", "hss", "target", "safe_zone", "no_fly", "download"} <= keys)
         self.assertIn("function isSourceManagedLayer(layer)", html)
         self.assertIn("shouldNotify && isSourceManagedLayer(layer)", html)
         self.assertFalse(next(tool for tool in MAP_TOOLS if tool.key == "hss").creatable)
         self.assertFalse(next(tool for tool in MAP_TOOLS if tool.key == "target").editable)
         self.assertIn('class="tool-button-label"', html)
         self.assertEqual(t("map.tool.send", "tr"), "Görevi Gönder")
+        self.assertEqual(t("map.tool.download", "tr"), "Görevi Çek")
+        self.assertIn("type: 'mission_download_request'", html)
 
     def test_mode_selection_is_not_overwritten_by_old_telemetry(self) -> None:
         panel = CommandPanel("", "")

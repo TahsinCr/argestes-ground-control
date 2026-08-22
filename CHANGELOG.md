@@ -1,6 +1,73 @@
 # **Change Log**
 All notable changes to this project will be documented in this file.
 
+## **[1.5.0-beta] - 22.08.2026**
+The **"Shared Onboard Contracts and Mission Planning Update"** brings the
+Kamikaze approach planner from pull request #1 into the main operator workflow,
+adopts the shared SIHA communication contracts and makes task and map feedback
+more dependable during live operation.
+
+### Added
+* **Kamikaze approach planning**:
+    * Added the P1/P2 approach selector merged through pull request #1, with
+      derived dive and pull-up geometry, HSS-aware alignment checks and a
+      reusable backend service independent from the map UI.
+    * Added operator-facing approach documentation and automated geometry,
+      clearance, fallback and selection tests.
+* **Shared communication contracts**:
+    * Added `siha-communication-contracts` as the pinned `src/communication`
+      submodule and routed Onboard task, mission, Kamikaze, HSS and remote-log
+      messages through its typed models and `ContractGateway`.
+    * Kept MAVLink framing, request correlation and the single transport reader
+      in Vehicle Autonomy Core; the contracts package opens no connection of
+      its own.
+* **Map workflow tools**:
+    * Added readable distance labels between navigation points and a separate
+      toolbar action for downloading the current flight-controller mission.
+    * Added compact point radius/altitude editing from the context menu and
+      complete undo/redo coverage for creation, deletion and archive loading.
+
+### Updated
+* **Task controls and feedback**:
+    * Limited the operator task list to the connected Kamikaze and actuator-test
+      workflows and added task-aware Start, Restart and Cancel behavior.
+    * Moved detailed task feedback into the Vehicle Management task-actions
+      tab, with compact mission ID, phase, step, QR and progress presentation.
+    * Task controls now require a live Orin application heartbeat. Idle tasks
+      no longer appear to have started, and disconnected programmatic actions
+      cannot bypass the disabled controls.
+* **Map interaction**:
+    * Improved point dragging so edit handles cannot remain behind, kept route
+      distance labels synchronized and made trackpad zoom use the stable map
+      center.
+    * Preserved TEKNOFEST/HSS reference layers and local mission archives while
+      applying undo, redo and vehicle-download changes.
+* **Camera telemetry**:
+    * Renamed the panel to Camera and removed fixed resolution metadata from
+      its subtitle.
+    * Negotiated resolution is verified every five seconds and on caps changes;
+      measured FPS is published once per second from received frame timing.
+
+### Fixed
+* Preserved cancellation requests across task start/reconciliation phases and
+  treated an already-inactive Onboard task as a successful terminal cancel.
+* Corrected Kamikaze target synchronization and shared-contract task aliases
+  without opening a second MAVLink connection.
+* Prevented map drag artifacts, incomplete point-history entries and premature
+  context-editor logging.
+* Prevented task status cards and controls from reporting readiness while the
+  Orin application heartbeat is unavailable.
+
+### Testing
+* The combined runner passes **434 tests** across YKİ, Communication
+  Contracts and Vehicle Autonomy Core.
+* Coverage includes the P1/P2 approach planner, shared contract direction and
+  payload rules, Onboard request/cancel flow, mission download and history,
+  compact task UI behavior, negotiated video resolution and one-second FPS
+  publication.
+
+<br>
+
 ## **[1.4.4-beta] - 21.08.2026**
 The **"Async Runtime and Operator Performance Update"** moves auxiliary I/O
 off the interface thread, reduces map traffic under live telemetry and keeps

@@ -21,7 +21,7 @@ from src.ui.adapters.runtime import QtRuntimeServices
 from src.ui.container import UiContainer
 from src.models.commands import CommandRequest, CommandResult
 from src.models.connections import ConnectionStatus
-from src.models.mission import MapOverlay
+from src.models.mission import MapOverlay, MissionState
 from src.models.telemetry import TelemetrySnapshot
 from src.models.video import VideoStreamStats
 from src.ui.i18n import t
@@ -204,6 +204,26 @@ class UiSmokeTests(unittest.TestCase):
                 "     (button) => [button.dataset.action, button.style.display]"
                 "   )"
                 " );"
+                " const editorElement = document.getElementById('context-point-editor');"
+                " const editorVisible = editorElement.style.display;"
+                " const editorRect = editorElement.getBoundingClientRect();"
+                " const altitudeRect = document.getElementById('context-altitude-input').getBoundingClientRect();"
+                " const editorFits = altitudeRect.right <= editorRect.right + 0.5"
+                "   && editorElement.scrollWidth <= editorElement.clientWidth;"
+                " document.getElementById('context-radius-input').value = '52';"
+                " document.getElementById('context-altitude-input').value = '135';"
+                " document.getElementById('context-radius-input').dispatchEvent("
+                "   new Event('input', {bubbles:true})"
+                " );"
+                " document.getElementById('context-altitude-input').dispatchEvent("
+                "   new Event('input', {bubbles:true})"
+                " );"
+                " const draftRadius = state.layers.get('route-waypoint').getRadius();"
+                " const draftAltitude = altitudeForLayer(state.layers.get('route-waypoint'));"
+                " const savedBridge = bridge; bridge = null;"
+                " hideContextMenu(true); bridge = savedBridge;"
+                " const editedRadius = state.layers.get('route-waypoint').getRadius();"
+                " const editedAltitude = altitudeForLayer(state.layers.get('route-waypoint'));"
                 " showContextMenu(cp, wp, null);"
                 " const mapMenu = Object.fromEntries("
                 "   [...document.querySelectorAll('#context-menu button')].map("
@@ -224,7 +244,17 @@ class UiSmokeTests(unittest.TestCase):
                 "     && Math.abs(returned[1].lng - 32.7481) < 0.000001,"
                 "   rtlAtHome: Math.abs(rtl.lat - 39.8672) < 0.000001"
                 "     && Math.abs(rtl.lng - 32.7481) < 0.000001,"
+                "   distanceLabelCount: missionDistanceLabelGroup.getLayers().length,"
+                "   downloadButton: Boolean(document.querySelector('[data-tool=\"download\"]')),"
                 "   pointMenu,"
+                "   editorVisible,"
+                "   editorFits,"
+                "   draftRadius,"
+                "   draftAltitude,"
+                "   editedRadius,"
+                "   editedAltitude,"
+                "   centerWheelZoom: map.options.scrollWheelZoom === 'center',"
+                "   centerTouchZoom: map.options.touchZoom === 'center',"
                 "   mapMenu"
                 " };"
                 "})()",
@@ -243,12 +273,22 @@ class UiSmokeTests(unittest.TestCase):
                     "returnStartsAtWaypoint": True,
                     "returnEndsAtHome": True,
                     "rtlAtHome": True,
+                    "distanceLabelCount": 2,
+                    "downloadButton": True,
                     "pointMenu": {
                         "goto": "none",
                         "center": "none",
                         "set_home": "none",
                         "delete": "flex",
                     },
+                    "editorVisible": "grid",
+                    "editorFits": True,
+                    "draftRadius": 35,
+                    "draftAltitude": 100,
+                    "editedRadius": 52,
+                    "editedAltitude": 135,
+                    "centerWheelZoom": True,
+                    "centerTouchZoom": True,
                     "mapMenu": {
                         "goto": "flex",
                         "center": "flex",
@@ -257,6 +297,22 @@ class UiSmokeTests(unittest.TestCase):
                     },
                 }],
             )
+
+            requested_vehicle_syncs: list[bool] = []
+            original_vehicle_sync = window.map_panel._planner_service.request_vehicle_sync
+            window.map_panel._planner_service.request_vehicle_sync = (  # type: ignore[method-assign]
+                lambda: requested_vehicle_syncs.append(True) or True
+            )
+            window.map_panel._view.page().runJavaScript(
+                "window.ykiMap.setCommandAvailable(true);"
+                "document.querySelector('[data-tool=\"download\"]').click();"
+            )
+            for _attempt in range(20):
+                QTest.qWait(25)
+                if requested_vehicle_syncs:
+                    break
+            window.map_panel._planner_service.request_vehicle_sync = original_vehicle_sync  # type: ignore[method-assign]
+            self.assertEqual(requested_vehicle_syncs, [True])
 
             point_drag_result: list[object] = []
             window.map_panel._view.page().runJavaScript(
@@ -293,9 +349,11 @@ class UiSmokeTests(unittest.TestCase):
                 " const result = {"
                 "   moved: before.distanceTo(after) > 1,"
                 "   finished: state.draggingPoint === null,"
-                "   mapDragRestored: map.dragging.enabled()"
+                "   mapDragRestored: map.dragging.enabled(),"
+                "   draggingClassCleared: !map.getContainer().classList.contains('is-point-dragging')"
                 " };"
                 " window.ykiMap.setOverlays([]);"
+                " result.editHandlesCleared = document.querySelectorAll('.leaflet-editing-icon').length === 0;"
                 " return result;"
                 "})()",
                 point_drag_result.append,
@@ -306,7 +364,13 @@ class UiSmokeTests(unittest.TestCase):
                     break
             self.assertEqual(
                 point_drag_result,
-                [{"moved": True, "finished": True, "mapDragRestored": True}],
+                [{
+                    "moved": True,
+                    "finished": True,
+                    "mapDragRestored": True,
+                    "draggingClassCleared": True,
+                    "editHandlesCleared": True,
+                }],
             )
 
             loop_action_result: list[object] = []
@@ -612,6 +676,86 @@ class UiSmokeTests(unittest.TestCase):
             )
             window.map_panel._history_undo.clear()
             window.map_panel._history_redo.clear()
+
+            # Exercise the real WebChannel path. Point creation first emits a
+            # selection snapshot and then the plan mutation; a delayed older
+            # snapshot must not erase the add/delete undo record.
+            before_web_ids = {
+                item.overlay_id for item in runtime.planner_service.state.overlays
+            }
+            window.map_panel._view.page().runJavaScript(
+                "addPointOverlay('waypoint', L.latLng(39.929, 32.829));"
+            )
+            web_added_id = ""
+            for _attempt in range(40):
+                QTest.qWait(25)
+                added_ids = {
+                    item.overlay_id for item in runtime.planner_service.state.overlays
+                } - before_web_ids
+                if added_ids:
+                    web_added_id = next(iter(added_ids))
+                    break
+            self.assertTrue(web_added_id)
+            self.assertEqual(len(window.map_panel._history_undo), 1)
+
+            window.map_panel._view.page().runJavaScript(
+                "document.dispatchEvent(new KeyboardEvent('keydown', {"
+                "key:'z', ctrlKey:true, bubbles:true, cancelable:true}));"
+            )
+            for _attempt in range(40):
+                QTest.qWait(25)
+                if web_added_id not in {
+                    item.overlay_id for item in runtime.planner_service.state.overlays
+                }:
+                    break
+            self.assertNotIn(
+                web_added_id,
+                {item.overlay_id for item in runtime.planner_service.state.overlays},
+            )
+
+            window.map_panel._view.page().runJavaScript(
+                "document.dispatchEvent(new KeyboardEvent('keydown', {"
+                "key:'z', ctrlKey:true, shiftKey:true, bubbles:true, cancelable:true}));"
+            )
+            for _attempt in range(40):
+                QTest.qWait(25)
+                if web_added_id in {
+                    item.overlay_id for item in runtime.planner_service.state.overlays
+                }:
+                    break
+            self.assertIn(
+                web_added_id,
+                {item.overlay_id for item in runtime.planner_service.state.overlays},
+            )
+
+            window.map_panel._view.page().runJavaScript(
+                f"window.ykiMap.removeOverlayById({json.dumps(web_added_id)}, true);"
+            )
+            for _attempt in range(40):
+                QTest.qWait(25)
+                if web_added_id not in {
+                    item.overlay_id for item in runtime.planner_service.state.overlays
+                }:
+                    break
+            self.assertNotIn(
+                web_added_id,
+                {item.overlay_id for item in runtime.planner_service.state.overlays},
+            )
+            window.map_panel._navigate_history("undo")
+            QTest.qWait(100)
+            self.assertIn(
+                web_added_id,
+                {item.overlay_id for item in runtime.planner_service.state.overlays},
+            )
+            window.map_panel._navigate_history("redo")
+            QTest.qWait(100)
+            self.assertNotIn(
+                web_added_id,
+                {item.overlay_id for item in runtime.planner_service.state.overlays},
+            )
+
+            window.map_panel._history_undo.clear()
+            window.map_panel._history_redo.clear()
             history_overlay = MapOverlay(
                 "history-waypoint",
                 "waypoint",
@@ -674,6 +818,57 @@ class UiSmokeTests(unittest.TestCase):
             )
             self.assertEqual(history_commands, [])
 
+            window.map_panel._remove_overlay(history_overlay.overlay_id)
+            QTest.qWait(50)
+            self.assertFalse(
+                any(
+                    item.overlay_id == history_overlay.overlay_id
+                    for item in runtime.planner_service.state.overlays
+                )
+            )
+            window.map_panel._navigate_history("undo")
+            QTest.qWait(50)
+            self.assertTrue(
+                any(
+                    item.overlay_id == history_overlay.overlay_id
+                    for item in runtime.planner_service.state.overlays
+                )
+            )
+
+            archived_overlay = MapOverlay(
+                "archive-waypoint",
+                "waypoint",
+                "ARCHIVE WP",
+                [[39.94, 32.84, 140]],
+                "#74d99f",
+                35,
+                {"route_order": 1},
+            )
+            window.map_panel.load_archived_plan(
+                MissionState(overlays=[archived_overlay])
+            )
+            QTest.qWait(50)
+            self.assertEqual(
+                [item.overlay_id for item in runtime.planner_service.state.overlays
+                 if not item.is_source_managed],
+                [archived_overlay.overlay_id],
+            )
+            window.map_panel._navigate_history("undo")
+            QTest.qWait(50)
+            self.assertTrue(
+                any(
+                    item.overlay_id == history_overlay.overlay_id
+                    for item in runtime.planner_service.state.overlays
+                )
+            )
+            window.map_panel._navigate_history("redo")
+            QTest.qWait(50)
+            self.assertEqual(
+                [item.overlay_id for item in runtime.planner_service.state.overlays
+                 if not item.is_source_managed],
+                [archived_overlay.overlay_id],
+            )
+
             force_requests: list[tuple[str, dict]] = []
             window._last_snapshot = TelemetrySnapshot.zero().copy(
                 telemetry_link=True,
@@ -706,7 +901,90 @@ class UiSmokeTests(unittest.TestCase):
             QTest.qWait(50)
             self.assertEqual(window.language, "en")
             self.assertEqual(window.telemetry_panel.title_label.text(), "Flight Telemetry")
-            self.assertEqual(window.parameters_panel.title_label.text(), "Parameters")
+            self.assertEqual(window.video_panel.title_label.text(), "Camera")
+            self.assertEqual(
+                window.video_panel.subtitle_label.text(),
+                "Live stream panel",
+            )
+            self.assertEqual(window.parameters_panel.title_label.text(), "Vehicle Management")
+            self.assertEqual(
+                window.parameters_panel.tabs.tabText(1),
+                "Task Actions",
+            )
+            self.assertFalse(window.command_panel.onboard_status.isHidden())
+            self.assertTrue(
+                window.command_panel.task_tab.isAncestorOf(
+                    window.command_panel.onboard_status
+                )
+            )
+            self.assertIs(
+                window.command_panel.task_progress.parentWidget(),
+                window.parameters_panel.task_feedback_strip,
+            )
+            self.assertIs(
+                window.command_panel.kamikaze_card.parentWidget(),
+                window.parameters_panel.task_feedback_strip,
+            )
+            self.assertIs(
+                window.command_panel.actuator_card.parentWidget(),
+                window.parameters_panel.task_feedback_strip,
+            )
+            self.assertFalse(
+                window.command_panel.task_tab.isAncestorOf(
+                    window.command_panel.kamikaze_card
+                )
+            )
+            window.parameters_panel.tabs.setCurrentIndex(1)
+            for row in range(window.command_panel.task_list.count()):
+                item = window.command_panel.task_list.item(row)
+                if item.data(Qt.ItemDataRole.UserRole) == "KAMIKAZE":
+                    window.command_panel.task_list.setCurrentRow(row)
+                    break
+            QTest.qWait(50)
+            self.assertLessEqual(
+                abs(
+                    window.parameters_panel.task_feedback_strip.width()
+                    - window.parameters_panel.mission_commands_tab.width()
+                ),
+                2,
+            )
+            self.assertEqual(
+                window.command_panel.kamikaze_card.width(),
+                window.parameters_panel.task_feedback_strip.width(),
+            )
+            self.assertGreater(
+                window.command_panel.kamikaze_status.width(),
+                window.command_panel.kamikaze_title.width(),
+            )
+            self.assertLessEqual(
+                abs(
+                    window.command_panel.kamikaze_phase.width()
+                    - window.command_panel.kamikaze_qr.width()
+                ),
+                6,
+            )
+            self.assertEqual(window.command_panel.kamikaze_card.height(), 48)
+            self.assertTrue(
+                window.command_panel.kamikaze_title.alignment()
+                & Qt.AlignmentFlag.AlignLeft
+            )
+            self.assertTrue(window.command_panel.kamikaze_detail.isHidden())
+            self.assertTrue(
+                window.command_panel.kamikaze_phase.alignment()
+                & Qt.AlignmentFlag.AlignLeft
+            )
+            self.assertTrue(
+                window.command_panel.kamikaze_qr.alignment()
+                & Qt.AlignmentFlag.AlignRight
+            )
+            self.assertEqual(
+                window.command_panel.task_progress.width(),
+                window.parameters_panel.task_feedback_strip.width(),
+            )
+            self.assertLessEqual(
+                window.parameters_panel.task_feedback_strip.height(),
+                57,
+            )
             self.assertEqual(
                 window.connection_popup.settings_button.text(),
                 "All Settings",
