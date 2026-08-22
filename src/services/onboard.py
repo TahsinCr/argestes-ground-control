@@ -10,6 +10,23 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
+from src.communication import (
+    ChainStart,
+    ContractModel,
+    HssUpdate as ContractHssUpdate,
+    HssZone as ContractHssZone,
+    KamikazeTargetUpdate,
+    MissionEventsQuery,
+    MissionList,
+    MissionQuery,
+    PacketType,
+    TaskCancel,
+    TaskPause,
+    TaskResume,
+    TaskStart,
+    TaskStop,
+    canonical_task as contract_canonical_task,
+)
 from src.core.events import EventBus, Subscription
 from src.models.competition import HssZone, KamikazeEvent, QrCoordinate
 from src.models.onboard import (
@@ -31,13 +48,6 @@ from src.services.abstracts.onboard import OnboardMissionServiceContract
 from src.services.abstracts.orin import OrinService
 from src.services.async_runtime import AsyncRuntime
 from src.services.logging_service import ServiceLogger
-
-
-TASK_ALIASES = {
-    "KAMIKAZE": "kamikaze.execute",
-    "ACTUATOR_TEST": ACTUATOR_TEST_TASK,
-}
-
 
 class OnboardCommandRejectedError(RuntimeError):
     def __init__(self, message: str, response: dict[str, Any]) -> None:
@@ -118,12 +128,12 @@ class OnboardMissionService(OnboardMissionServiceContract):
         self._subscriptions.extend(
             [
                 self._orin.changed.subscribe(self._on_orin_changed),
-                self._orin.register_handler("mission.transition", self._handle_transition),
-                self._orin.register_handler("mission.result", self._handle_result),
-                self._orin.register_handler("mission.event", self._handle_mission_event),
-                self._orin.register_handler("mission.chain", self._handle_chain),
-                self._orin.register_handler("kamikaze.event", self._handle_kamikaze_event),
-                self._orin.register_handler("kamikaze.qr.report", self._handle_qr_report),
+                self._orin.register_handler(PacketType.MISSION_TRANSITION, self._handle_transition),
+                self._orin.register_handler(PacketType.MISSION_RESULT, self._handle_result),
+                self._orin.register_handler(PacketType.MISSION_EVENT, self._handle_mission_event),
+                self._orin.register_handler(PacketType.MISSION_CHAIN, self._handle_chain),
+                self._orin.register_handler(PacketType.KAMIKAZE_EVENT, self._handle_kamikaze_event),
+                self._orin.register_handler(PacketType.KAMIKAZE_QR_REPORT, self._handle_qr_report),
                 self._competition.hss_updated.subscribe(self._on_hss_updated),
                 self._competition.qr_updated.subscribe(self._on_qr_updated),
             ]
@@ -161,11 +171,9 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 raise RuntimeError(f"Onboard görevi zaten çalışıyor: {canonical}")
         if canonical == "kamikaze.execute":
             self._sync_kamikaze_target()
-        wire_task = self._wire_task(canonical)
         wire_source = "ui" if source in {"ui", "qt-ui", "operator-ui"} else source
         return self._issue(
-            "task.start",
-            {"task": wire_task, "source": wire_source},
+            TaskStart(canonical, wire_source),
             pending="start",
             task=canonical,
         )
@@ -204,20 +212,24 @@ class OnboardMissionService(OnboardMissionServiceContract):
                     and self._state.target_ready
                 ):
                     return None
-            payload = {
-                **canonical,
-                "source": "teknofest",
-                "source_revision": source_revision,
-                "content_hash": content_hash,
-                "fetched_at_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-            }
+            command = KamikazeTargetUpdate(
+                latitude_deg=canonical["latitude_deg"],
+                longitude_deg=canonical["longitude_deg"],
+                plate_height_m=canonical["plate_height_m"],
+                target_id=canonical["target_id"],
+                source="teknofest",
+                source_revision=source_revision,
+                content_hash=content_hash,
+                fetched_at_utc=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            )
+            payload = command.to_payload()
             self._log(
                 "kamikaze.target_tx",
                 "TEKNOFEST QR hedefi Orin'e gönderiliyor",
                 "info",
                 dict(payload),
             )
-            receipt = self._orin.issue("kamikaze.target.update", payload)
+            receipt = self._send_request(command)
             execution = str(receipt.response.get("execution", "")).strip().lower()
             if not receipt.accepted:
                 raise OnboardCommandRejectedError(
@@ -410,13 +422,22 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 if content_hash == self._hss_acknowledged_hash:
                     return None
             active = bool(zones)
-            payload = {
-                "revision": revision,
-                "active": active,
-                "content_hash": content_hash,
-                "zones": self._hss_payload(zones),
-                "reason": "source-active" if active else "source-ended",
-            }
+            command = ContractHssUpdate(
+                revision=revision,
+                active=active,
+                content_hash=content_hash,
+                zones=tuple(
+                    ContractHssZone(
+                        int(zone.identifier),
+                        float(zone.latitude),
+                        float(zone.longitude),
+                        float(zone.radius_m),
+                    )
+                    for zone in zones
+                ),
+                reason="source-active" if active else "source-ended",
+            )
+            payload = command.to_payload()
             self._log(
                 "competition.hss_sync_tx",
                 "TEKNOFEST HSS durumu Orin'e gönderiliyor",
@@ -428,7 +449,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
                     "content_hash": content_hash,
                 },
             )
-            receipt = self._orin.issue("competition.hss.update", payload)
+            receipt = self._send_request(command)
             execution = str(receipt.response.get("execution", "")).strip().lower()
             accepted_executions = {"updated", "unchanged"}
             if not active:
@@ -501,18 +522,18 @@ class OnboardMissionService(OnboardMissionServiceContract):
         return max(int(current) + 1, epoch_milliseconds)
 
     def pause_task(self, task: str = "kamikaze.execute") -> OrinCommandReceipt:
-        return self._task_control("task.pause", task, "pause")
+        return self._task_control(TaskPause(task), task, "pause")
 
     def resume_task(self, task: str = "kamikaze.execute") -> OrinCommandReceipt:
-        return self._task_control("task.resume", task, "resume")
+        return self._task_control(TaskResume(task), task, "resume")
 
     def stop_task(self, task: str = "kamikaze.execute") -> OrinCommandReceipt:
-        return self._task_control("task.stop", task, "stop")
+        return self._task_control(TaskStop(task), task, "stop")
 
     def cancel_task(self, task: str = "kamikaze.execute") -> OrinCommandReceipt:
         canonical = self._canonical_task(task)
         try:
-            return self._task_control("task.cancel", canonical, "cancel")
+            return self._task_control(TaskCancel(canonical), canonical, "cancel")
         except OnboardCommandRejectedError as exc:
             # Cancellation is idempotent for the operator. A lost start ACK
             # may leave YKİ uncertain even though onboard never instantiated
@@ -556,7 +577,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
             )
 
     def refresh(self) -> OrinCommandReceipt:
-        receipt = self._issue("mission.list", {}, pending="refresh")
+        receipt = self._issue(MissionList(), pending="refresh")
         self._apply_mission_list(receipt.response)
         return receipt
 
@@ -568,12 +589,11 @@ class OnboardMissionService(OnboardMissionServiceContract):
     ) -> OrinCommandReceipt:
         if mission_id is None and not task:
             raise ValueError("Mission ID veya görev adı gerekli")
-        payload = (
-            {"mission": int(mission_id)}
-            if mission_id is not None
-            else {"task": self._canonical_task(str(task))}
+        command = MissionQuery(
+            mission_id=int(mission_id) if mission_id is not None else None,
+            task=self._canonical_task(str(task)) if task else "",
         )
-        receipt = self._issue("mission.status", payload, pending="status")
+        receipt = self._issue(command, pending="status")
         return receipt
 
     def mission_events(
@@ -589,13 +609,12 @@ class OnboardMissionService(OnboardMissionServiceContract):
         if after_sequence is not None:
             cursor = max(0, int(after_sequence))
         receipt = self._issue(
-            "mission.events",
-            {
-                "mission": int(mission_id),
-                "minimum_level": "DEBUG",
-                "after_sequence": cursor,
-                "limit": int(limit),
-            },
+            MissionEventsQuery(
+                mission_ids=(int(mission_id),),
+                minimum_level="DEBUG",
+                after_sequence=cursor,
+                limit=int(limit),
+            ),
             pending="events",
         )
         self._apply_recovered_events(int(mission_id), receipt.response.get("events", []))
@@ -605,25 +624,35 @@ class OnboardMissionService(OnboardMissionServiceContract):
         chain_id = str(chain).strip()
         if not chain_id:
             raise ValueError("Chain kimliği boş olamaz")
-        return self._issue("chain.start", {"chain": chain_id}, pending="chain")
+        return self._issue(ChainStart(chain_id), pending="chain")
 
-    def _task_control(self, packet_type: str, task: str, pending: str) -> OrinCommandReceipt:
+    def _task_control(
+        self,
+        command: ContractModel,
+        task: str,
+        pending: str,
+    ) -> OrinCommandReceipt:
         canonical = self._canonical_task(task)
         return self._issue(
-            packet_type,
-            {"task": self._wire_task(canonical)},
+            command,
             pending=pending,
             task=canonical,
         )
 
+    def _send_request(self, command: ContractModel) -> OrinCommandReceipt:
+        """Send a validated shared contract through the host MAVLink adapter."""
+
+        return self._orin.issue(command.packet_type, command.to_payload())
+
     def _issue(
         self,
-        packet_type: str,
-        payload: dict[str, Any],
+        command: ContractModel,
         *,
         pending: str,
         task: str = "",
     ) -> OrinCommandReceipt:
+        packet_type = command.packet_type
+        payload = command.to_payload()
         with self._lock:
             if self._state.pending_command:
                 raise RuntimeError(f"Onboard komutu zaten bekleniyor: {self._state.pending_command}")
@@ -683,7 +712,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
                     "pending": pending,
                 },
             )
-            receipt = self._orin.issue(packet_type, payload)
+            receipt = self._send_request(command)
             if not receipt.accepted:
                 raise OnboardCommandRejectedError(
                     receipt.message,
@@ -1321,7 +1350,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
     def _recover(self) -> None:
         reconciled = False
         try:
-            receipt = self._orin.issue("mission.list", {})
+            receipt = self._send_request(MissionList())
             if receipt.accepted:
                 self._apply_mission_list(receipt.response)
                 reconciled = True
@@ -1330,15 +1359,14 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 mission_ids.add(self.state.mission_id)
             for mission_id in mission_ids:
                 after_sequence = self._event_cursors.get(mission_id, 0)
-                response = self._orin.issue(
-                    "mission.events",
-                    {
-                        "mission": mission_id,
-                        "event_types": ["log", "transition", "error"],
-                        "minimum_level": "DEBUG",
-                        "after_sequence": after_sequence,
-                        "limit": 200,
-                    },
+                response = self._send_request(
+                    MissionEventsQuery(
+                        mission_ids=(mission_id,),
+                        event_types=("log", "transition", "error"),
+                        minimum_level="DEBUG",
+                        after_sequence=after_sequence,
+                        limit=200,
+                    )
                 )
                 if response.accepted:
                     self._apply_recovered_events(mission_id, response.response.get("events", []))
@@ -1507,18 +1535,10 @@ class OnboardMissionService(OnboardMissionServiceContract):
 
     @staticmethod
     def _canonical_task(task: str) -> str:
-        normalized = str(task).strip()
-        if not normalized:
-            raise ValueError("Görev adı boş olamaz")
-        return TASK_ALIASES.get(normalized.upper(), normalized.lower())
-
-    @staticmethod
-    def _wire_task(task: str) -> str:
-        canonical = OnboardMissionService._canonical_task(task)
-        return {
-            "kamikaze.execute": "KAMIKAZE",
-            ACTUATOR_TEST_TASK: "ACTUATOR_TEST",
-        }.get(canonical, canonical)
+        try:
+            return contract_canonical_task(task)
+        except ValueError as exc:
+            raise ValueError("Görev adı boş olamaz") from exc
 
     def _matches_current_mission(self, task: str, mission_id: int | None) -> bool:
         current = self.state
@@ -1598,4 +1618,4 @@ class OnboardMissionService(OnboardMissionServiceContract):
         return None
 
 
-__all__ = ["OnboardMissionService", "TASK_ALIASES"]
+__all__ = ["OnboardMissionService"]

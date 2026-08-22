@@ -3,10 +3,22 @@ from __future__ import annotations
 import json
 import threading
 from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from src.communication import (
+    CallableTransport,
+    ContractGateway,
+    ExchangeKind,
+    GroundLinkService,
+    LinkSide,
+    PacketType,
+    RawResponse,
+    RemoteLogBatch,
+)
 
 from src.core.events import ErrorPolicy, EventBus, Subscription
 from src.core.mavlink import (
@@ -18,8 +30,6 @@ from src.core.mavlink import (
     MavlinkApplicationPeerState,
     MavlinkApplicationResult,
     MavlinkClient,
-    MavlinkRemoteLogBatch,
-    REMOTE_LOG_PACKET_TYPE,
 )
 from src.models.orin import (
     OrinCommandReceipt,
@@ -145,7 +155,9 @@ class NullOrinService(OrinService):
 class MavlinkOrinService(OrinService):
     """Manage the onboard Orin application channel over the RFD/Pixhawk route."""
 
-    RESPONSE_TYPES = frozenset({"system.ack", "system.error"})
+    RESPONSE_TYPES = frozenset(
+        {PacketType.SYSTEM_ACK.value, PacketType.SYSTEM_ERROR.value}
+    )
 
     def __init__(
         self,
@@ -172,15 +184,27 @@ class MavlinkOrinService(OrinService):
         self._channel: MavlinkApplicationChannel | None = None
         self._peer: MavlinkApplicationPeer | None = None
         self._handlers = MavlinkApplicationHandlerRegistry()
+        self._contract_gateway = ContractGateway(side=LinkSide.GROUND)
         self._remote_log_sessions: OrderedDict[str, int] = OrderedDict()
         self._remote_log_handler = self._handlers.register(
-            REMOTE_LOG_PACKET_TYPE,
-            self._handle_remote_logs,
+            PacketType.LOGS_PUSH.value,
+            self._contract_gateway.request_handler(
+                PacketType.LOGS_PUSH.value,
+                self._handle_remote_logs,
+            ),
         )
         self._dispatcher: MavlinkApplicationDispatcher | None = None
         self._subscriptions: list[Subscription] = []
         self._lock = threading.RLock()
         self._started = False
+        self._contract_link = GroundLinkService(
+            CallableTransport(
+                connected=lambda: self.connected,
+                notify=self._send_contract_notification,
+                request=self._request_contract,
+                register_handler=self._register_contract_handler,
+            )
+        )
 
     @property
     def connected(self) -> bool:
@@ -319,15 +343,12 @@ class MavlinkOrinService(OrinService):
     ) -> OrinMessage:
         """Send an unacknowledged event through the shared vehicle transport."""
 
-        if not self._vehicle.connected:
-            raise ConnectionError("Telemetri hattı bağlı değil; Orin'e veri gönderilemez")
-        if not self.connected:
-            raise ConnectionError("Orin heartbeat alınmıyor; veri gönderilmedi")
-        with self._lock:
-            peer = self._peer
-        if peer is None:
-            raise ConnectionError("Orin uygulama kanalı çalışmıyor")
-        return self._message(peer.send(packet_type, payload))
+        message = self._decode_contract(
+            packet_type,
+            payload,
+            exchange=ExchangeKind.NOTIFICATION,
+        )
+        return self._message(self._contract_link.notify(message))
 
     def issue(
         self,
@@ -336,41 +357,31 @@ class MavlinkOrinService(OrinService):
         *,
         timeout: float | None = None,
     ) -> OrinCommandReceipt:
-        if not self._vehicle.connected:
-            raise ConnectionError("Telemetri hattı bağlı değil; Orin'e komut gönderilemez")
-        if not self.connected:
-            raise ConnectionError("Orin heartbeat alınmıyor; komut gönderilmedi")
         wait_timeout = float(timeout or self._config.command_timeout_s)
         if wait_timeout <= 0:
             raise ValueError("Orin komut zaman aşımı pozitif olmalı")
-        with self._lock:
-            peer = self._peer
-            if not self._started or peer is None:
-                raise ConnectionError("Orin uygulama kanalı çalışmıyor")
-        exchange = peer.request(
+        request = self._decode_contract(
             packet_type,
             payload,
-            response_types=self.RESPONSE_TYPES,
-            timeout=wait_timeout,
-            on_sent=self._log_command_sent,
+            exchange=ExchangeKind.REQUEST,
         )
-        packet = exchange.request
-        response = exchange.response
-        accepted = bool(response.payload.get("accepted", response.packet_type != "system.error"))
-        message = str(response.payload.get("message", "Orin komutu kabul edildi"))
-        round_trip_ms = exchange.round_trip_ms
+        operation = self._contract_link.request(request, timeout=wait_timeout)
+        response_payload = operation.to_payload()
+        accepted = operation.accepted
+        message = operation.message
+        round_trip_ms = float(operation.round_trip_ms or 0.0)
         with self._lock:
             self._state = replace(self._state, round_trip_ms=round_trip_ms)
         receipt = OrinCommandReceipt(
-            packet.packet_id,
+            operation.request_id,
             accepted,
             message,
-            dict(response.payload),
+            response_payload,
             round_trip_ms,
         )
-        execution = str(response.payload.get("execution", "acknowledged"))
+        execution = str(response_payload.get("execution", "acknowledged"))
         if (
-            packet.packet_type == "kamikaze.target.update"
+            request.packet_type == "kamikaze.target.update"
             and accepted
             and execution.strip().lower() in {"updated", "unchanged"}
         ):
@@ -379,16 +390,16 @@ class MavlinkOrinService(OrinService):
                     self._state,
                     kamikaze_target_ready=True,
                     kamikaze_target_revision=self._int_value(
-                        response.payload.get("target_revision"),
+                        response_payload.get("target_revision"),
                         self._state.kamikaze_target_revision,
                     ),
                 )
                 target_state = replace(self._state)
             self._changed.publish(target_state)
         task = str(
-            response.payload.get("task")
-            or response.payload.get("active_task")
-            or (payload or {}).get("task", "")
+            response_payload.get("task")
+            or response_payload.get("active_task")
+            or request.to_payload().get("task", "")
         ).strip().upper()
         event_action = (
             "orin.script_completed"
@@ -401,26 +412,119 @@ class MavlinkOrinService(OrinService):
         )
         event_message = message
         if event_action == "orin.script_completed":
-            event_message = f"Orin scripti başarıyla tamamlandı: {task or packet.packet_type}"
+            event_message = f"Orin scripti başarıyla tamamlandı: {task or request.packet_type}"
         elif event_action == "orin.script_failed":
-            event_message = f"Orin scripti başarısız: {task or packet.packet_type} · {message}"
+            event_message = f"Orin scripti başarısız: {task or request.packet_type} · {message}"
         self._event(
             event_action,
             event_message,
             severity="success" if accepted else "danger",
             details={
-                "packet_id": packet.packet_id,
-                "packet_type": packet.packet_type,
+                "packet_id": operation.request_id,
+                "packet_type": request.packet_type,
                 "round_trip_ms": round_trip_ms,
                 "task": task,
                 "execution": execution,
-                "exit_code": response.payload.get("exit_code"),
-                "stdout": response.payload.get("stdout", ""),
-                "stderr": response.payload.get("stderr", ""),
+                "exit_code": response_payload.get("exit_code"),
+                "stdout": response_payload.get("stdout", ""),
+                "stderr": response_payload.get("stderr", ""),
             },
-            correlation_id=str(packet.packet_id),
+            correlation_id=str(operation.request_id),
         )
         return receipt
+
+    def _decode_contract(
+        self,
+        packet_type: str,
+        payload: Mapping[str, Any] | None,
+        *,
+        exchange: ExchangeKind,
+    ):
+        """Build a shared wire contract before data reaches the MAVLink peer."""
+
+        return self._contract_gateway.outbound(
+            packet_type,
+            dict(payload or {}),
+            exchange,
+        )
+
+    def _send_contract_notification(
+        self,
+        packet_type: str,
+        payload: Mapping[str, Any],
+    ) -> MavlinkApplicationPacket:
+        if not self._vehicle.connected:
+            raise ConnectionError("Telemetri hattı bağlı değil; Orin'e veri gönderilemez")
+        if not self.connected:
+            raise ConnectionError("Orin heartbeat alınmıyor; veri gönderilmedi")
+        with self._lock:
+            peer = self._peer
+            started = self._started
+        if not started or peer is None:
+            raise ConnectionError("Orin uygulama kanalı çalışmıyor")
+        return peer.send(packet_type, dict(payload))
+
+    def _request_contract(
+        self,
+        packet_type: str,
+        payload: Mapping[str, Any],
+        timeout: float | None,
+    ) -> RawResponse:
+        if not self._vehicle.connected:
+            raise ConnectionError("Telemetri hattı bağlı değil; Orin'e komut gönderilemez")
+        with self._lock:
+            peer = self._peer
+            started = self._started
+        if not started or peer is None:
+            raise ConnectionError("Orin uygulama kanalı çalışmıyor")
+        exchange = peer.request(
+            packet_type,
+            dict(payload),
+            response_types=self.RESPONSE_TYPES,
+            timeout=float(timeout or self._config.command_timeout_s),
+            on_sent=self._log_command_sent,
+        )
+        response_payload = dict(exchange.response.payload)
+        response_payload.setdefault("request_id", exchange.request.packet_id)
+        response_payload.setdefault(
+            "message",
+            "Orin komutu kabul edildi"
+            if exchange.response.packet_type == PacketType.SYSTEM_ACK.value
+            else "Orin komutu reddedildi",
+        )
+        return RawResponse(
+            exchange.response.packet_type,
+            response_payload,
+            exchange.round_trip_ms,
+        )
+
+    def _register_contract_handler(self, packet_type: str, handler):
+        """Adapt one shared request handler to the existing core dispatcher."""
+
+        def adapted(packet: MavlinkApplicationPacket):
+            from src.communication import HandlerResult, InboundPacket
+
+            result = handler(
+                InboundPacket(
+                    packet.packet_type,
+                    dict(packet.payload),
+                    packet.packet_id,
+                    int(packet.source_system or 0),
+                    int(packet.source_component or 0),
+                )
+            )
+            if isinstance(result, HandlerResult):
+                return MavlinkApplicationResult(
+                    accepted=result.accepted,
+                    message=result.message,
+                    payload=result.to_payload(),
+                )
+            return result
+
+        return self._handlers.register(
+            packet_type,
+            self._contract_gateway.request_handler(packet_type, adapted),
+        )
 
     def register_handler(
         self,
@@ -451,11 +555,11 @@ class MavlinkOrinService(OrinService):
             # Core keeps application payloads deeply immutable. The remote-log
             # decoder validates the serialized wire shape, where records are a
             # JSON list, so decode from the packet's detached representation.
-            batch = MavlinkRemoteLogBatch.from_payload(packet.to_dict()["payload"])
+            batch = RemoteLogBatch.from_payload(packet.to_dict()["payload"])
         except (TypeError, ValueError) as exc:
             raise LogValidationError("Invalid remote log batch") from exc
         with self._lock:
-            last_sequence = self._remote_log_sessions.get(batch.session_id, 0)
+            last_sequence = self._remote_log_sessions.get(batch.session, 0)
         accepted_records: list[OrinLogRecord] = []
         duplicates = 0
         for record in batch.records:
@@ -468,12 +572,12 @@ class MavlinkOrinService(OrinService):
                     source=record.source,
                     action=record.action,
                     message=record.message,
-                    level=record.level.value,
+                    level=record.level,
                     emitted_at=record.emitted_at,
                     details=dict(record.details),
                     device_id=record.device_id,
                     correlation_id=record.correlation_id,
-                    session_id=batch.session_id,
+                    session_id=batch.session,
                 )
             )
         if accepted_records:
@@ -482,15 +586,15 @@ class MavlinkOrinService(OrinService):
             self._remote_log_batches.publish(tuple(accepted_records))
             last_sequence = accepted_records[-1].sequence
             with self._lock:
-                self._remote_log_sessions[batch.session_id] = last_sequence
-                self._remote_log_sessions.move_to_end(batch.session_id)
+                self._remote_log_sessions[batch.session] = last_sequence
+                self._remote_log_sessions.move_to_end(batch.session)
                 while len(self._remote_log_sessions) > 8:
                     self._remote_log_sessions.popitem(last=False)
             for record in accepted_records:
                 self._remote_logs.publish(record)
         return MavlinkApplicationResult.success(
             {
-                "session": batch.session_id,
+                "session": batch.session,
                 "received": len(accepted_records),
                 "duplicates": duplicates,
                 "last_sequence": last_sequence,

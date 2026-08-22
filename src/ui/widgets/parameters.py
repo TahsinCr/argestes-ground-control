@@ -98,12 +98,14 @@ class ParametersPanel(PanelFrame):
         footer_layout.addWidget(self.apply_button)
         parameters_layout.addWidget(footer)
 
-        mission_layout = QVBoxLayout(self.mission_commands_tab)
-        mission_layout.setContentsMargins(8, 8, 8, 8)
-        mission_layout.setSpacing(0)
+        self.mission_layout = QVBoxLayout(self.mission_commands_tab)
+        # The task-specific page may use the full tab surface. Its persistent
+        # feedback strip intentionally reaches both panel edges.
+        self.mission_layout.setContentsMargins(0, 8, 0, 0)
+        self.mission_layout.setSpacing(6)
         self.mission_command_stack = QStackedWidget(self.mission_commands_tab)
         self.mission_command_stack.setObjectName("MissionCommandStack")
-        mission_layout.addWidget(self.mission_command_stack, 1)
+        self.mission_layout.addWidget(self.mission_command_stack, 1)
 
         self.mission_empty_page = QWidget(self.mission_command_stack)
         empty_layout = QVBoxLayout(self.mission_empty_page)
@@ -132,6 +134,37 @@ class ParametersPanel(PanelFrame):
         self.mission_command_stack.addWidget(self.mission_empty_page)
         self._update_footer()
         self.set_language(self._language)
+
+    def attach_task_feedback(
+        self,
+        progress: QWidget,
+        status: QWidget,
+        task_cards: Iterable[QWidget],
+    ) -> None:
+        """Host compact task-specific feedback at the bottom of this tab."""
+
+        del status  # The compact operation message remains in Autonomous Control.
+        self.task_feedback_strip = QWidget(self.mission_commands_tab)
+        self.task_feedback_strip.setObjectName("TaskFeedbackStrip")
+        self.task_feedback_strip.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.task_feedback_strip.setMaximumHeight(57)
+        feedback_layout = QVBoxLayout(self.task_feedback_strip)
+        feedback_layout.setContentsMargins(0, 0, 0, 0)
+        feedback_layout.setSpacing(3)
+        for card in task_cards:
+            card.setParent(self.task_feedback_strip)
+            feedback_layout.addWidget(card)
+        progress.setParent(self.task_feedback_strip)
+        progress.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        progress.setFixedHeight(6)
+        feedback_layout.addWidget(progress)
+        self.mission_layout.addWidget(self.task_feedback_strip)
 
     def set_language(self, language: str) -> None:
         self._language = language

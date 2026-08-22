@@ -388,6 +388,7 @@ class QtPlannerService(_QtAdapter):
     def clear_all(self) -> None: self.backend.clear_all()
     def select_overlay(self, overlay_id: str | None) -> None: self.backend.select_overlay(overlay_id)
     def load_state(self, state: MissionState) -> None: self.backend.load_state(state)
+    def request_vehicle_sync(self) -> bool: return self.backend.request_vehicle_sync()
     def replace_local_plan(self, overlays, *, mission_loop: bool) -> None:
         self.backend.replace_local_plan(overlays, mission_loop=mission_loop)
     def upsert_contact(self, contact: MapContact) -> None: self.backend.upsert_contact(contact)

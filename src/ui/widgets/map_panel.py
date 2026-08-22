@@ -189,7 +189,11 @@ class MapPanel(PanelFrame):
         )
         self._pending_home_record: dict[str, Any] | None = None
         self._pending_home_navigation: dict[str, Any] | None = None
-        self._history_known_plan = self._capture_local_plan()
+        initial_planner_state = getattr(self._planner_service, "state", MissionState())
+        self._history_known_plan = self._capture_local_plan(initial_planner_state)
+        self._history_known_revision = int(
+            getattr(initial_planner_state, "revision", 0)
+        )
         self._last_vehicle_point: Point | None = None
         self._last_vehicle_timestamp = None
         self._last_telemetry_payload: dict[str, Any] | None = None
@@ -683,6 +687,14 @@ class MapPanel(PanelFrame):
         }
 
     def _sync_mission_state(self, state: MissionState) -> None:
+        incoming_revision = int(getattr(state, "revision", 0))
+        if incoming_revision < self._history_known_revision:
+            # Qt delivers planner snapshots asynchronously. A selection signal
+            # emitted just before an add/delete can arrive after the newer plan
+            # mutation; rendering it would erase both the map change and its
+            # undo record.
+            return
+        self._history_known_revision = incoming_revision
         incoming_local_plan = self._capture_local_plan(state)
         expected_local_sync = (
             bool(self._pending_local_plan_syncs)
@@ -963,6 +975,18 @@ class MapPanel(PanelFrame):
                     "loop": self._mission_loop,
                 },
             )
+        elif action == "mission_download_request":
+            request_sync = getattr(self._planner_service, "request_vehicle_sync", None)
+            if not callable(request_sync) or not request_sync():
+                self.info_generated.emit(
+                    "warning",
+                    t("map.transfer.download_unavailable", self._language),
+                )
+            else:
+                self.info_generated.emit(
+                    "info",
+                    t("map.transfer.downloading", self._language),
+                )
         elif action == "mission_loop_changed":
             self._mission_loop = bool(payload.get("loop", False))
             if hasattr(self._planner_service, "set_mission_loop"):
@@ -1056,6 +1080,9 @@ class MapPanel(PanelFrame):
         finally:
             self._history_mutation_in_progress = False
         after = self._capture_local_plan()
+        self._history_known_revision = int(
+            getattr(self._planner_service.state, "revision", self._history_known_revision)
+        )
         self._history_known_plan = after
         self._expect_local_plan_sync(after)
         if self._history_batch_before is None:
@@ -1104,7 +1131,11 @@ class MapPanel(PanelFrame):
         self._history_batch_before = None
         self._history_batch_label = ""
         after = self._capture_local_plan()
+        self._history_known_revision = int(
+            getattr(self._planner_service.state, "revision", self._history_known_revision)
+        )
         self._history_known_plan = after
+        self._expect_local_plan_sync(after)
         self._record_plan_history(before, after, label=label)
 
     def _discard_plan_history(self) -> None:
@@ -1142,7 +1173,27 @@ class MapPanel(PanelFrame):
         finally:
             self._history_mutation_in_progress = False
         self._history_known_plan = self._capture_local_plan()
+        self._history_known_revision = int(
+            getattr(self._planner_service.state, "revision", self._history_known_revision)
+        )
         self._expect_local_plan_sync(self._history_known_plan)
+
+    def load_archived_plan(self, state: MissionState) -> None:
+        """Load an archive as one reversible map edit without touching the archive."""
+
+        before = self._capture_local_plan()
+        self._history_mutation_in_progress = True
+        try:
+            self._planner_service.load_state(state)
+        finally:
+            self._history_mutation_in_progress = False
+        after = self._capture_local_plan()
+        self._history_known_revision = int(
+            getattr(self._planner_service.state, "revision", self._history_known_revision)
+        )
+        self._history_known_plan = after
+        self._expect_local_plan_sync(after)
+        self._record_plan_history(before, after, label="archive-load")
 
     def _navigate_history(self, direction: str) -> None:
         if self._pending_home_navigation is not None or self._pending_home_record is not None:

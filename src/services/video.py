@@ -115,6 +115,8 @@ class GStreamerVideoService(MutableVideoService):
     """Convert GStreamer appsink frames into the shared VideoFrame model."""
 
     _RESOLUTION_VERIFY_INTERVAL_S = 5.0
+    _STATS_PUBLISH_INTERVAL_S = 1.0
+    _FPS_WINDOW_S = 2.0
 
     def __init__(
         self,
@@ -445,7 +447,7 @@ class GStreamerVideoService(MutableVideoService):
     ) -> None:
         with self._measurement_lock:
             self._frame_times.append(now)
-            cutoff = now - 2.0
+            cutoff = now - self._FPS_WINDOW_S
             while self._frame_times and self._frame_times[0] < cutoff:
                 self._frame_times.popleft()
             while self._transport_samples and self._transport_samples[0][0] < cutoff:
@@ -453,7 +455,7 @@ class GStreamerVideoService(MutableVideoService):
             resolution_changed = self._resolution_publish_pending
             if (
                 not resolution_changed
-                and now - self._last_stats_at < 0.45
+                and now - self._last_stats_at < self._STATS_PUBLISH_INTERVAL_S
                 and self._frame_count > 1
             ):
                 return

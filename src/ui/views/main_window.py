@@ -248,6 +248,14 @@ class MainWindow(QMainWindow):
         self.bottom_splitter.addWidget(self.log_panel)
 
         self.parameters_panel = ParametersPanel("", "", "", self)
+        self.parameters_panel.attach_task_feedback(
+            self.command_panel.task_progress,
+            self.command_panel.onboard_status,
+            (
+                self.command_panel.actuator_card,
+                self.command_panel.kamikaze_card,
+            ),
+        )
         self.parameters_panel.setMinimumWidth(320)
         self.bottom_splitter.addWidget(self.parameters_panel)
         self.bottom_splitter.setStretchFactor(0, 64)
@@ -559,10 +567,9 @@ class MainWindow(QMainWindow):
             t("panel.map", self.language),
             t("panel.map.subtitle", self.language),
         )
-        video_subtitle = f"{t('panel.video.subtitle', self.language)} | {t('panel.video.meta', self.language)}"
         self.video_panel.set_title(
             t("panel.video", self.language),
-            video_subtitle,
+            t("panel.video.subtitle", self.language),
         )
         self.video_panel.set_language(self.language)
         self.flight_panel.set_title(
@@ -1177,8 +1184,7 @@ class MainWindow(QMainWindow):
                 details={"error": str(exc)},
             )
             return
-        if hasattr(self.planner_service, "load_state"):
-            self.planner_service.load_state(state)
+        self.map_panel.load_archived_plan(state)
         if self.settings_service.current.map_layer != state.base_layer:
             self.settings_service.patch(map_layer=state.base_layer)
         self.ui_log.event(

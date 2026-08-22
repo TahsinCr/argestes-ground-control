@@ -19,8 +19,10 @@ YKİ otonom görevi yürütmez. Haritada uçuş planı hazırlanır, araç veya 
 - Uçuş telemetrisi, bağlantı sağlığı, GPS, batarya ve radyo bağlantı bilgileri
 - ARM/DISARM, uçuş modu, LAND, GOTO, parametre ve uçuş planı aktarımı
 - İstek kimliğiyle eşleştirilen Onboard görevleri, görev durumu, QR kurtarma ve uzak loglar
+- İkinci MAVLink bağlantısı açmadan ortak ve tipli YKİ–Onboard sözleşmeleri
 - Sekmeli hızlı komutlar ve araç üstü görevler için Başlat/Yeniden Başlat/İptal kontrolleri
 - Takeoff, waypoint, loiter, RTL, land ve yerel güvenlik alanlarının harita üzerinde hazırlanması
+- HSS kontrollü ve recovery geometrisi türetilen P1/P2 Kamikaze yaklaşım planlama
 - Araçtan canlı parametre/varsayılan değer ve uçuş planı alma
 - RTSP, HTTP/MJPEG, RTP/UDP, V4L2, dosya ve özel GStreamer pipeline kaynakları
 - Taze kare ile doğrulanan, isteğe bağlı kalıcı video otomatik bağlantısı
@@ -33,13 +35,21 @@ YKİ otonom görevi yürütmez. Haritada uçuş planı hazırlanır, araç veya 
 
 ## Desteklenen ortamlar
 
-Ekip için doğrulanan ana ortam Arch’tır. Ubuntu ve Windows kurulumları da desteklenir; gerçek donanım testi yapılırken kullanılan seri port ve video kaynağı ayrıca doğrulanmalıdır.
+YKİ; Python 3.11 veya daha yeni bir sürümü, Qt 6'yı ve gerekli medya
+ve seri port sürücülerini sağlayan güncel masaüstü işletim sistemlerinde
+çalışacak şekilde tasarlanmıştır. Ekip tarafından donanımla doğrulanan ana
+ortam Arch Linux'tur; diğer Linux dağıtımları, Windows ve macOS da platforma
+uygun seri port, GStreamer ve video yakalama bağımlılıkları kurulduğunda
+kullanılabilir. Gerçek uçuş donanımında seri cihaz ve video kaynağı ayrıca
+doğrulanmalıdır.
 
 | Ortam | Önerilen sürüm | Not |
 |---|---:|---|
 | Arch Linux | Güncel | Ana geliştirme ortamı |
 | Ubuntu | 24.04 LTS | Paket adları bu sürüme göredir |
 | Windows | Windows 11 x64 | MSVC x86_64 GStreamer kurulumu kullanılır |
+| macOS | Güncel Intel veya Apple Silicon sürümü | Python ve GStreamer yerel mimariye uygun paketlerle kurulmalıdır |
+| Diğer masaüstü sistemleri | Desteklenen güncel sürüm | Python 3.11+, Qt 6, GStreamer ve erişilebilir seri/video cihazları gerekir |
 | Python | 3.11+ | Proje sanal ortamda çalıştırılır |
 
 ## GStreamer kurulumu
@@ -237,6 +247,9 @@ uçuş modu ve plan aktarımından bağımsızdır.
 
 Nokta listesi aynı araç çubuğu düğmesiyle açılıp kapatılır. Takeoff, waypoint,
 loiter, RTL ve land öğeleri tutma noktasından sürüklenerek sıralanabilir.
+Rota parçaları uygun zoom seviyelerinde kısa mesafe etiketleri gösterir.
+Düzenlenebilir noktaların sağ tık menüsünde küçük yarıçap ve irtifa alanları
+bulunur; değerler editör kapanmadan kaydedilmez.
 
 Haritadaki kalıcı `H` işaretçisi uçuş cihazının home/merkez referansını
 gösterir. İşaretçi sürüklenerek veya sağ tık menüsündeki
@@ -253,6 +266,10 @@ düzenleme ve Tek Sefer/Döngü değişiklikleri yerel olarak geri yüklenir;
 **Görevi Gönder** seçilmeden araca aktarılmaz. Home değişiklikleri doğrudan araç
 komutu olduğu için istisnadır: geri alma ve ileri alma işlemi de onaylı bir
 home komutu gerektirir.
+
+Aktarım grubunda görev yükleme ile araçtan çekme ayrıdır. **Görevi Gönder**
+yerel operatör planını yükler; **Görevi Çek** uçuş cihazındaki mevcut
+görevi, yerel arşivleri veya canlı TEKNOFEST katmanlarını silmeden içe aktarır.
 
 Haritanın normal sağ tık menüsünde yalnızca GOTO, araca göre ortalama ve
 home/merkez ayarlama işlemleri bulunur. Düzenlenebilir bir rota noktasına sağ
@@ -339,6 +356,13 @@ Temel sorumluluklar:
 test edilip commit edilmelidir; YKİ tarafında yalnızca sabitlenen submodule
 commit’i güncellenir. Ortak core dosyalarını ana repoya kopyalamayın.
 
+`src/communication`, sabitlenen SIHA Communication Contracts submodule'üdür.
+Transporttan bağımsız paket adları, tipli payload modelleri, yön kuralları ve
+ground/onboard gateway davranışı burada tutulur. Bu modül MAVLink, socket veya
+araç servisi sahibi değildir. YKİ ve SIHA Onboard; görev alias'ları, ACK
+payload'ları, HSS, Kamikaze ve uzak log yapılarını aynı tutan uyumlu
+revizyonları sabitlemelidir.
+
 Backend servis sözleşmeleri core `EventBus` yapısını kullanır. Normal servis
 politikası, hatalı bir dinleyiciyi izole ederek telemetri, video ve durum
 üreticilerinin çalışmasını sürdürür. Onayı yerel teslimata bağlı olan akışlar
@@ -405,6 +429,12 @@ başarılı iptal ACK'ini bekler.
 YKİ, görev başlarken otomatik GUIDED veya görev biterken otomatik AUTO seçmez;
 uçuş modu değişiklikleri operatörün açık kararı olarak kalır.
 
+Operatöre yalnızca iki tarafta da uygulanmış görevler sunulur. Başlat/Yeniden
+Başlat/İptal kontrolleri güncel Orin uygulama heartbeat'i gelmeden açılmaz;
+seri portun açık olması tek başına Onboard hazır kabul edilmez. Görev ID'si,
+aşama, ilerleme, aktüatör adımı ve Kamikaze QR geri bildirimi **Araç
+Yönetimi > Görev Aksiyonları** altında gösterilir.
+
 QR sonucu üç kaynaktan kurtarılır:
 
 1. canlı `kamikaze.event` bildirimleri (`QR_DECODED` ve
@@ -425,9 +455,11 @@ belirten detail alanları maskelenir. Qt olayları sınırlı batch'lerle işley
 akışının UI thread'ini meşgul etmesini engeller.
 
 Video MAVLink'ten bağımsızdır. HDMI capture kartı USB veya GStreamer pipeline
-kaynağı olarak seçilip 1920x1080/60 FPS istenmelidir. Video servisi yalnızca son
-kareyi sınırlı yapıda tutar, görev kontrollerini bloklamadan yeniden bağlanır ve
-kare gelmediğinde akışı sağlıksız gösterir.
+kaynağı olarak seçilebilir. Video servisi yalnızca son kareyi sınırlı yapıda
+tutar, görev kontrollerini bloklamadan yeniden bağlanır ve kare gelmediğinde
+akışı sağlıksız gösterir. Gerçek negotiated çözünürlük caps değişiminde ve
+beş saniyede bir kontrol edilir; kare hızı alınan karelerden hesaplanıp
+saniyede bir yayınlanır.
 
 Gerçek donanım kontrol listesi:
 
@@ -584,15 +616,14 @@ testlerde hata üretir.
 python run_tests.py
 ```
 
-Bu komut YKİ ve sabitlenmiş core testlerini tek sonuç altında çalıştırır.
-Toplam **393 testin** **242 tanesi** uygulama mimarisi, sabitlenmiş core sınırı, DI bileşimi, ortak
-araç/Orin istemcisi, Onboard görev/QR akışı, uzak loglar, parametre
-varsayılanları, komut tekrarları, eşzamanlı planlama, TEKNOFEST haberleşmesi,
-batarya voltaj tahmini ve politikaları, dil paketleri, GStreamer, harita geçmişi,
-yüksek hızlı veri birleştirme, ayırıcılar, çerçevesiz pencere ve offscreen Qt
-açılışı gibi YKİ davranışlarını kapsar. Kalan **151 test**, core'un dependency,
-event, mission ve MAVLink iç yapılarını doğrular. Paketlerin test sahipliği ayrı
-kalır; kök çalıştırıcı yalnızca tek bir nihai durum sunar.
+Bu komut YKİ, sabitlenmiş Communication Contracts ve Core testlerini tek
+sonuç altında çalıştırır. Toplam **434 test**; mimari sınırları, dependency
+composition, ortak sözleşme doğrulaması, vehicle/Orin transport paylaşımı,
+Onboard görev ve iptal akışları, P1/P2 Kamikaze yaklaşımı, görev
+aktarım/geçmişi, QR ve uzak loglar, TEKNOFEST iletişimi, GStreamer
+istatistikleri, yüksek hızlı UI birleştirme ile Core dependency, event, mission
+ve MAVLink yapılarını kapsar. Paketlerin test sahipliği ayrı kalır; kök
+çalıştırıcı yalnızca tek bir nihai durum sunar.
 
 Linux üzerinde çalışma zamanı ölçümü için YKİ'yi performans izleyicisiyle
 başlatabilirsiniz:

@@ -32,6 +32,7 @@ MAP_TOOLS = (
     MapToolSpec("clear", "map.tool.clear"),
     MapToolSpec("archive", "map.tool.archive", group="transfer"),
     MapToolSpec("send", "map.tool.send", group="transfer"),
+    MapToolSpec("download", "map.tool.download", group="transfer"),
 )
 
 TOOL_LABEL_KEYS = {tool.key: tool.label_key for tool in MAP_TOOLS}

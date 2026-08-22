@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Iterable
 
+from src.communication import TaskStart
 from src.core.events import EventBus
 from src.models.commands import CommandRequest, CommandResult
 from src.models.mission import MapOverlay
@@ -284,14 +285,15 @@ class DispatchCommandService(CommandService):
             for key, value in request.parameters.items()
             if key != "task"
         }
+        command = TaskStart(
+            task,
+            request.source,
+            parameters,
+            request.timestamp.isoformat(),
+        )
         receipt = self._orin.issue(
-            "task.start",
-            {
-                "task": task,
-                "parameters": parameters,
-                "source": request.source,
-                "requested_at": request.timestamp.isoformat(),
-            },
+            command.packet_type,
+            command.to_payload(),
         )
         if not receipt.accepted:
             raise RuntimeError(receipt.message)

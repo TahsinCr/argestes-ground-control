@@ -346,14 +346,23 @@
       border-color: rgba(244, 71, 71, 0.45);
     }
 
-    .tool-button.is-send {
+    .tool-button.is-send,
+    .tool-button.is-download {
       width: auto;
-      min-width: 118px;
+      min-width: 104px;
       padding: 0 11px;
       gap: 7px;
       color: var(--success);
       background: rgba(106, 153, 85, 0.14);
       border-color: rgba(106, 153, 85, 0.62);
+    }
+
+    .tool-button.is-download {
+      min-width: 40px;
+      padding: 0 9px;
+      color: var(--accent);
+      background: rgba(97, 168, 255, 0.10);
+      border-color: rgba(97, 168, 255, 0.52);
     }
 
     .tool-button:hover,
@@ -365,7 +374,8 @@
       border-color: var(--border-strong);
     }
 
-    .tool-button.is-send:hover {
+    .tool-button.is-send:hover,
+    .tool-button.is-download:hover {
       color: #f4fff2;
       background: rgba(106, 153, 85, 0.28);
       border-color: var(--success);
@@ -477,6 +487,51 @@
       text-align: left;
     }
 
+    .context-point-editor {
+      display: none;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 5px;
+      padding: 2px 2px 6px;
+      margin-bottom: 4px;
+      border-bottom: 1px solid var(--border);
+      overflow: hidden;
+    }
+
+    .context-point-editor label {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 2px;
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 800;
+    }
+
+    .context-point-editor input {
+      box-sizing: border-box;
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      height: 24px;
+      padding: 2px 5px;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      background: var(--surface-alt);
+      color: var(--text);
+      font-size: 10px;
+    }
+
+    .context-point-editor input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    #map.is-point-dragging,
+    #map.is-point-dragging * {
+      cursor: grabbing !important;
+    }
+
     .marker-icon {
       width: 24px;
       height: 24px;
@@ -573,6 +628,19 @@
     .overlay-label.selected {
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(97, 168, 255, 0.12);
+    }
+
+    .segment-distance-label {
+      width: 94px;
+      color: rgba(232, 255, 225, 0.96);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.25px;
+      line-height: 18px;
+      text-align: center;
+      white-space: nowrap;
+      pointer-events: none;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.98), 0 0 4px rgba(0, 0, 0, 0.9);
     }
 
     .hud-footer {
@@ -934,6 +1002,14 @@
         <button data-action="goto"></button>
         <button data-action="center"></button>
         <button data-action="set_home"></button>
+        <div id="context-point-editor" class="context-point-editor">
+          <label>R
+            <input id="context-radius-input" aria-label="Radius (m)" title="Radius (m)" type="number" min="5" max="1000" step="1">
+          </label>
+          <label>ALT
+            <input id="context-altitude-input" aria-label="Altitude (m)" title="Altitude (m)" type="number" min="0" max="10000" step="1">
+          </label>
+        </div>
         <button data-action="delete"></button>
       </div>
       <div id="point-dialog" class="map-dialog small">
@@ -984,7 +1060,7 @@
   <script>
     const BLANK_TILE = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="%230d1116"/></svg>';
     const PRIMARY_TOOLS = ['pan', 'takeoff', 'waypoint', 'loiter', 'rtl', 'no_fly', 'safe_zone', 'land', 'mission_list', 'clear'];
-    const TRANSFER_TOOLS = ['archive', 'send'];
+    const TRANSFER_TOOLS = ['archive', 'send', 'download'];
     const TOOL_ORDER = [...PRIMARY_TOOLS, ...TRANSFER_TOOLS];
     const TOOL_DEFAULTS = {
       pan: 'Select',
@@ -999,6 +1075,7 @@
       mission_list: 'Point List',
       archive: 'Archive',
       send: 'Send',
+      download: 'Get Mission',
       clear: 'Clear',
     };
     const CONTEXT_DEFAULTS = {
@@ -1038,6 +1115,7 @@
     let overlayGroup;
     let safeMaskGroup;
     let labelGroup;
+    let missionDistanceLabelGroup;
     let contactGroup;
     let vehicleMarker = null;
     let homeReferenceMarker = null;
@@ -1046,6 +1124,7 @@
     let rtlReturnLine = null;
     let contextPoint = null;
     let contextOverlayId = null;
+    let contextEditorDirty = false;
     let toolDockResizeObserver = null;
     let toolDockSpacingFrame = 0;
     let pendingBridgeTelemetry = null;
@@ -1135,6 +1214,7 @@
         mission_list: '<svg viewBox="0 0 24 24"><path d="M8 6h12"/><path d="M8 12h12"/><path d="M8 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg>',
         archive: '<svg viewBox="0 0 24 24"><path d="M4 7h6l2 2h8v10H4z"/><path d="M8 14h8"/><path d="M12 10v8"/></svg>',
         send: '<svg viewBox="0 0 24 24"><path d="M4 12l16-8-5 16-3-6z"/><path d="M12 14l-3 5"/></svg>',
+        download: '<svg viewBox="0 0 24 24"><path d="M12 4v11"/><path d="M8 11l4 4 4-4"/><path d="M5 20h14"/></svg>',
         clear: '<svg viewBox="0 0 24 24"><path d="M4 8h16"/><path d="M8 8V5h8v3"/><path d="M6 8l1 11h10l1-11"/></svg>',
         contact: '<svg viewBox="0 0 24 24"><path d="M4 15l8-9 8 9"/><path d="M12 6v12"/><path d="M8 17h8"/></svg>',
         once: '<svg viewBox="0 0 24 24"><path d="M4 12h13"/><path d="M13 8l4 4-4 4"/><path d="M20 7v10"/></svg>',
@@ -1283,8 +1363,8 @@
         if (tool === 'archive') {
           button.classList.add('is-utility');
         }
-        if (tool === 'send') {
-          button.classList.add('is-send');
+        if (tool === 'send' || tool === 'download') {
+          button.classList.add(tool === 'send' ? 'is-send' : 'is-download');
           button.disabled = !state.commandAvailable;
         }
         if (tool === 'clear') {
@@ -1306,6 +1386,10 @@
           if (tool === 'send') {
             window.ykiMap.setMissionTransferState('pending', 'Görev planı uçuş cihazına gönderiliyor…');
             emitAction({ type: 'mission_send_request', loop: state.missionLoop });
+            return;
+          }
+          if (tool === 'download') {
+            emitAction({ type: 'mission_download_request' });
             return;
           }
           if (tool === 'clear') {
@@ -2119,6 +2203,60 @@
             : [],
         );
       }
+      refreshMissionDistanceLabels(routePoints, rtlOrigin, rtlDestination);
+    }
+
+    function formatDistance(distanceMeters) {
+      if (!Number.isFinite(distanceMeters) || distanceMeters < 0) {
+        return '';
+      }
+      return distanceMeters >= 1000
+        ? `${(distanceMeters / 1000).toFixed(distanceMeters >= 10_000 ? 0 : 1)} km`
+        : `${Math.round(distanceMeters)} m`;
+    }
+
+    function segmentMidpoint(start, end) {
+      return L.latLng(
+        (Number(start.lat) + Number(end.lat)) / 2,
+        (Number(start.lng) + Number(end.lng)) / 2,
+      );
+    }
+
+    function addMissionDistanceLabel(start, end) {
+      if (!missionDistanceLabelGroup || !start || !end) {
+        return;
+      }
+      const text = formatDistance(map.distance(start, end));
+      if (!text) {
+        return;
+      }
+      missionDistanceLabelGroup.addLayer(L.marker(segmentMidpoint(start, end), {
+        interactive: false,
+        keyboard: false,
+        icon: L.divIcon({
+          className: 'segment-distance-label-wrap',
+          html: `<div class="segment-distance-label">${text}</div>`,
+          iconSize: [94, 18],
+          iconAnchor: [47, 9],
+        }),
+      }));
+    }
+
+    function refreshMissionDistanceLabels(routePoints, rtlOrigin, rtlDestination) {
+      if (!missionDistanceLabelGroup) {
+        return;
+      }
+      missionDistanceLabelGroup.clearLayers();
+      if (map.getZoom() < 12) {
+        return;
+      }
+      for (let index = 1; index < routePoints.length; index += 1) {
+        addMissionDistanceLabel(
+          L.latLng(routePoints[index - 1][0], routePoints[index - 1][1]),
+          L.latLng(routePoints[index][0], routePoints[index][1]),
+        );
+      }
+      addMissionDistanceLabel(rtlOrigin, rtlDestination);
     }
 
     function routeOrderFor(layer) {
@@ -2218,8 +2356,12 @@
       }
       selectOverlay(layer.overlayData.overlay_id);
       hideDialogs();
+      // Move the whole point with one drag target. The edit handles are
+      // rebuilt at the final position instead of trailing behind the layer.
+      disableEditing(layer);
       state.draggingPoint = layer.overlayData.overlay_id;
       state.dragMoved = false;
+      map.getContainer().classList.add('is-point-dragging');
       const containerRect = map.getContainer().getBoundingClientRect();
       const eventContainerPoint = event?.containerPoint;
       const startClientX = Number.isFinite(Number(originalEvent?.clientX))
@@ -2228,7 +2370,7 @@
       const startClientY = Number.isFinite(Number(originalEvent?.clientY))
         ? Number(originalEvent.clientY)
         : containerRect.top + Number(eventContainerPoint?.y || 0);
-      const movementThresholdSquared = 9;
+      const movementThresholdSquared = 4;
       let pendingLatLng = null;
       let dragFrame = 0;
       if (map.dragging) {
@@ -2293,8 +2435,12 @@
           }, 180);
         }
         state.dragMoved = false;
+        map.getContainer().classList.remove('is-point-dragging');
         if (map.dragging) {
           map.dragging.enable();
+        }
+        if (current && state.selectedId === draggedOverlayId) {
+          enableEditing(current);
         }
       };
       document.addEventListener('mousemove', move, true);
@@ -2383,6 +2529,9 @@
       if (shouldNotify && isSourceManagedLayer(layer)) {
         return false;
       }
+      // Editable vertex markers live outside the feature group. Stop the
+      // editor before replacing/removing its layer so handles cannot linger.
+      disableEditing(layer);
       overlayGroup.removeLayer(layer);
       state.layers.delete(id);
       state.overlayOrder = state.overlayOrder.filter((overlayId) => overlayId !== id);
@@ -2493,13 +2642,21 @@
       }
     }
 
-    function hideContextMenu() {
+    function hideContextMenu(commitChanges = true) {
+      if (commitChanges && contextEditorDirty) {
+        applyContextPointEditor();
+      }
+      contextEditorDirty = false;
       document.getElementById('context-menu').style.display = 'none';
     }
 
     function showContextMenu(containerPoint, latlng, overlayId = null) {
+      if (document.getElementById('context-menu').style.display === 'block') {
+        hideContextMenu(true);
+      }
       contextPoint = latlng;
       contextOverlayId = overlayId;
+      contextEditorDirty = false;
       const menu = document.getElementById('context-menu');
       const selected = overlayId ? state.layers.get(overlayId) : null;
       const deletable = Boolean(
@@ -2519,11 +2676,57 @@
       menu.querySelector('[data-action="delete"]').style.display = deletable
         ? 'flex'
         : 'none';
+      const editor = document.getElementById('context-point-editor');
+      editor.style.display = deletable ? 'grid' : 'none';
+      if (deletable) {
+        const radiusInput = document.getElementById('context-radius-input');
+        const altitudeInput = document.getElementById('context-altitude-input');
+        radiusInput.value = Math.round(
+          selected instanceof L.Circle
+            ? selected.getRadius()
+            : radiusFor(selected.overlayData.overlay_type),
+        );
+        const altitude = altitudeForLayer(selected);
+        altitudeInput.value = altitude === null
+          ? defaultAltitudeFor(selected.overlayData.overlay_type)
+          : altitude;
+        altitudeInput.disabled = !ALTITUDE_TYPES.has(selected.overlayData.overlay_type);
+      }
       menu.style.display = 'block';
       const maxLeft = Math.max(0, map.getContainer().clientWidth - menu.offsetWidth - 6);
       const maxTop = Math.max(0, map.getContainer().clientHeight - menu.offsetHeight - 6);
       menu.style.left = `${Math.max(6, Math.min(containerPoint.x, maxLeft))}px`;
       menu.style.top = `${Math.max(6, Math.min(containerPoint.y, maxTop))}px`;
+    }
+
+    function applyContextPointEditor() {
+      const layer = contextOverlayId ? state.layers.get(contextOverlayId) : null;
+      if (!layer || !isEditableLayer(layer) || !POINT_TYPES.has(layer.overlayData.overlay_type)) {
+        return;
+      }
+      const radius = Number(document.getElementById('context-radius-input').value);
+      const altitude = Number(document.getElementById('context-altitude-input').value);
+      let changed = false;
+      if (layer instanceof L.Circle && Number.isFinite(radius)) {
+        const nextRadius = Math.max(5, Math.min(1000, radius));
+        if (Math.abs(layer.getRadius() - nextRadius) > 0.01) {
+          layer.setRadius(nextRadius);
+          changed = true;
+        }
+      }
+      if (ALTITUDE_TYPES.has(layer.overlayData.overlay_type) && Number.isFinite(altitude)) {
+        const nextAltitude = Math.max(0, Math.min(10000, altitude));
+        if (altitudeForLayer(layer) !== nextAltitude) {
+          layer.overlayData.altitude_m = nextAltitude;
+          changed = true;
+        }
+      }
+      if (!changed) {
+        return;
+      }
+      setLayerVisual(layer, state.selectedId === layer.overlayData.overlay_id);
+      refreshMissionRoute();
+      emitOverlay(layer);
     }
 
     function emitBounds() {
@@ -3372,6 +3575,10 @@
         fadeAnimation: false,
         markerZoomAnimation: false,
         inertia: false,
+        // Trackpad/wheel gestures scale around the stable map center rather
+        // than pulling whichever cursor position received the event inward.
+        scrollWheelZoom: 'center',
+        touchZoom: 'center',
       }).setView([39.8672, 32.7481], 15);
       installMiddleButtonMapPan();
 
@@ -3402,6 +3609,7 @@
         interactive: false,
       }).addTo(map);
       labelGroup = L.layerGroup().addTo(map);
+      missionDistanceLabelGroup = L.layerGroup().addTo(map);
       contactGroup = L.layerGroup().addTo(map);
       trailLine = L.polyline([], {
         color: '#61a8ff',
@@ -3421,7 +3629,10 @@
 
       map.on('mousemove', (event) => queueCursorUpdate(event.latlng));
       map.on('moveend', emitBounds);
-      map.on('zoomend', emitBounds);
+      map.on('zoomend', () => {
+        emitBounds();
+        refreshMissionRoute();
+      });
       map.on('resize', updateScaleReadout);
 
       map.on('click', (event) => {
@@ -3462,9 +3673,11 @@
           hideContextMenu();
           return;
         }
-        hideContextMenu();
+        const actionPoint = contextPoint;
+        const actionOverlayId = contextOverlayId;
+        hideContextMenu(action !== 'delete');
         if (action === 'goto') {
-          addGotoCommand(contextPoint);
+          addGotoCommand(actionPoint);
         } else if (action === 'center') {
           const ownLatLng = ownVehicleLatLng();
           if (ownLatLng) {
@@ -3473,10 +3686,27 @@
             emitAction({ type: 'center_vehicle' });
           }
         } else if (action === 'set_home') {
-          setHomeReference(contextPoint, true);
-        } else if (action === 'delete' && contextOverlayId) {
-          removeOverlayById(contextOverlayId, true);
+          setHomeReference(actionPoint, true);
+        } else if (action === 'delete' && actionOverlayId) {
+          removeOverlayById(actionOverlayId, true);
         }
+      });
+
+      ['context-radius-input', 'context-altitude-input'].forEach((inputId) => {
+        const input = document.getElementById(inputId);
+        input.addEventListener('click', (event) => event.stopPropagation());
+        input.addEventListener('input', () => {
+          contextEditorDirty = true;
+        });
+        input.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            hideContextMenu(true);
+          } else if (event.key === 'Escape') {
+            event.preventDefault();
+            hideContextMenu(false);
+          }
+        });
       });
 
       emitBounds();
@@ -3633,15 +3863,16 @@
 
       setCommandAvailable(available) {
         state.commandAvailable = Boolean(available);
-        const button = document.querySelector('#tool-dock .tool-button[data-tool="send"]');
-        if (button) {
-          const transferPending = document.getElementById('transfer-chip').dataset.state === 'pending';
-          button.disabled = !state.commandAvailable || transferPending;
-          const title = state.ui.tools.send || TOOL_DEFAULTS.send;
+        const transferPending = document.getElementById('transfer-chip').dataset.state === 'pending';
+        ['send', 'download'].forEach((tool) => {
+          const button = document.querySelector(`#tool-dock .tool-button[data-tool="${tool}"]`);
+          if (!button) return;
+          button.disabled = !state.commandAvailable || (tool === 'send' && transferPending);
+          const title = state.ui.tools[tool] || TOOL_DEFAULTS[tool];
           button.title = state.commandAvailable
             ? title
             : `${title} — uçuş cihazı bağlı değil`;
-        }
+        });
       },
 
       setMissionTransferState(status, message) {

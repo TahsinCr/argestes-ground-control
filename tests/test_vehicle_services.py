@@ -1650,6 +1650,20 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(sink_pad.calls, 2)
         self.assertEqual(service._active_resolution, (640, 480))
 
+    def test_video_fps_statistics_are_published_once_per_second(self) -> None:
+        service = GStreamerVideoService("usb", "/dev/video0")
+        published = []
+        service.stats_changed.subscribe(published.append)
+        service._active_resolution = (1920, 1080)
+
+        for index, timestamp in enumerate((10.0, 10.25, 10.5, 10.75, 11.0), 1):
+            service._frame_count = index
+            service._record_frame_stats(1920, 1080, timestamp)
+
+        self.assertEqual(len(published), 2)
+        self.assertEqual((published[-1].width, published[-1].height), (1920, 1080))
+        self.assertAlmostEqual(published[-1].fps, 4.0)
+
     def test_video_frame_age_advances_when_capture_stalls(self) -> None:
         service = GStreamerVideoService(
             "usb",
