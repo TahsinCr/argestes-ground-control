@@ -27,6 +27,7 @@ from src.services.planner import PlannerService
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
 from src.services.kamikaze_approach import KamikazeApproachService
+from src.services.target_selection import TargetSelectionService
 
 
 @dataclass(slots=True)
@@ -46,6 +47,7 @@ class RuntimeServices:
     tile_cache_service: TileCacheServer
     competition_service: CompetitionService
     kamikaze_approach_service: KamikazeApproachService
+    target_selection_service: TargetSelectionService
     connection_service: ConnectionControlService
     archive_service: MissionArchiveService
     facade: BackendFacade
@@ -225,6 +227,8 @@ class RuntimeServices:
             ("planner", self.planner_service),
             ("telemetry", self.telemetry_service),
             ("competition", self.competition_service),
+            ("kamikaze_approach", self.kamikaze_approach_service),
+            ("target_selection", self.target_selection_service),
             ("parameters", self.parameter_service),
             ("onboard", self.onboard_service),
             ("orin", self.orin_service),
@@ -234,6 +238,8 @@ class RuntimeServices:
     def _service_stop_order(self):
         return (
             ("connections", self.connection_service),
+            ("target_selection", self.target_selection_service),
+            ("kamikaze_approach", self.kamikaze_approach_service),
             ("competition", self.competition_service),
             ("parameters", self.parameter_service),
             ("onboard", self.onboard_service),

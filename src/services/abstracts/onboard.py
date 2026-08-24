@@ -4,6 +4,7 @@ from abc import abstractmethod
 
 from src.core.abstracts import Service
 from src.core.events import EventBus
+from src.models.kamikaze_approach import KamikazeApproachPlan
 from src.models.onboard import OnboardMissionEvent, OnboardMissionState
 from src.models.orin import OrinCommandReceipt
 
@@ -25,6 +26,14 @@ class OnboardMissionServiceContract(Service):
 
     @abstractmethod
     def start_task(self, task: str, *, source: str = "ui") -> OrinCommandReceipt: ...
+
+    @abstractmethod
+    def start_kamikaze_transit(
+        self,
+        plan: KamikazeApproachPlan,
+        *,
+        source: str = "ui",
+    ) -> OrinCommandReceipt: ...
 
     @abstractmethod
     def pause_task(self, task: str = "kamikaze.execute") -> OrinCommandReceipt: ...

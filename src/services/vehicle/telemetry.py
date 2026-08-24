@@ -294,6 +294,7 @@ class TelemetryDecoder:
             updates.update(
                 wind_heading=float(getattr(message, "direction", 0.0)) % 360.0,
                 wind_speed=float(getattr(message, "speed", 0.0)),
+                wind_received_at=datetime.now(UTC),
             )
         elif message_type == "MISSION_CURRENT":
             sequence = max(0, int(getattr(message, "seq", 0)))

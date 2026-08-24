@@ -1,69 +1,115 @@
-# Kamikaze Approach — P2 → P1 alignment handoff
+# Kamikaze Approach — GCS P2 → P1 → QR corridor selector
 
-Bu modül yalnız GCS tarafında yaklaşma geometrisi üretir; MAVLink/GOTO komutu göndermez.
-Navigasyon entegrasyonu `navigation_handoff()` çıktısını kullanır.
+This module is backend-only. It computes and locks approach corridors for the GCS; it does not modify UI widgets and it does not directly command the aircraft.
 
-## Tek config kaynağı
+## Geometry
 
-Varsayılan görev değerleri `src/models/kamikaze_approach.py` içindeki
-`KamikazeApproachConfig` sınıfında tek yerde tutulur:
+All geometry is derived from `KamikazeApproachConfig` in `src/models/kamikaze_approach.py`.
 
-- `start_altitude_m = 110.0`
-- `pullup_altitude_m = 70.0`
+Current defaults:
+
+- `start_altitude_m = 130.0`
+- `pullup_altitude_m = 90.0`
 - `target_altitude_m = 0.0`
-- `dive_angle_deg = 50.0`
-- `corridor_width_m = 0.50`
-- `alignment_nominal_m = 50.0`
-- `alignment_min_m = 40.0`
-- `alignment_max_m = 100.0`
-- `alignment_search_step_m = 1.0`
-- `invalidate_if_no_alignment_point = True`
+- `dive_angle_deg = 45.0`
+- `alignment_nominal_m = 150.0`
+- `corridor_width_m = 1.0`
+- `hss_margin_m = 5.0`
+- `angle_step_deg = 1`
+- `max_candidates = 5`
 
-Sabit 92.3 m / 58.7 m / 33.6 m değerleri koda gömülmez. Her plan oluşturulurken:
+P1 is not a hard-coded distance:
 
-- `P1 radius = (start_altitude - target_altitude) / tan(dive_angle)`
-- `pull-up radius = (pullup_altitude - target_altitude) / tan(dive_angle)`
-- `P1 → pull-up horizontal = P1 radius - pull-up radius`
+`P1_radius = (start_altitude - target_altitude) / tan(dive_angle)`
 
-110 m / 70 m / 50° varsayılanında yaklaşık:
+The pull-up projection is:
 
-- QR → P1: `92.301 m`
-- QR → pull-up: `58.737 m`
-- P1 → pull-up yatay: `33.564 m`
+`pullup_radius = (pullup_altitude - target_altitude) / tan(dive_angle)`
 
-Başlangıç irtifası, pull-up irtifası veya dalış açısı değiştirilirse bütün bu noktalar ve
-QR → P1 koridor poligonu otomatik yeniden hesaplanır.
+P2 is always on the same radial, exactly `alignment_nominal_m` behind P1. It is never moved to work around an HSS zone. If P2 or any part of the P2 → P1 → QR corridor is unsafe, that angular candidate is rejected.
 
-## P2 hizalama noktası
+Changing altitude, dive angle, P2-P1 distance, corridor width or HSS margin re-derives the complete geometry on the next unlocked plan build.
 
-P2, P1'in QR'dan dışarı doğru aynı radyal üzerindeki hizalama noktasıdır. Normal mesafe
-P2 → P1 = 50 m'dir.
+## 360° candidate generation
 
-Nominal P2 HSS içinde/sınırında ise aynı doğru üzerinde şu sıra denenir:
+The planner evaluates the full QR perimeter in `angle_step_deg` increments. With the current `1°` setting this produces 360 candidates.
 
-`50, 51, 52, ... 100, 49, 48, ... 40 m`
+For each angle it creates:
 
-Yani önce daha fazla hizalama mesafesi korunur; sonra zorunluysa P1'e yaklaşılır.
-HSS güvenliği mevcut HSS yarıçapı + `hss_margin_m` ile kontrol edilir.
+1. P1 at the derived QR-to-P1 radius.
+2. P2 another `alignment_nominal_m` behind P1.
+3. The P2 → P1 alignment segment.
+4. The P1 → QR dive segment.
+5. The complete corridor polygon for backend/map consumers.
 
-P2 → P1 segmentinin ortasında HSS bulunması koridoru yeniden yönlendirmez ve elemez.
-Bu bölümde amaç P2'den sonra fixed-wing yönünü bozmadan P1'e düz girmektir.
+## HSS hard filter
 
-40–100 m aralığında güvenli P2 bulunamazsa varsayılan davranış koridoru geçersiz
-saymaktır. `invalidate_if_no_alignment_point=False` yapılırsa nominal P2 risk bilgisiyle
-çıktıda kalır ve `alignment_point_valid=False` olur.
+HSS is never scored. An HSS conflict invalidates the candidate.
 
-## Handoff
+The following must all be clear:
 
-Seçilen koridor için `plan.navigation_handoff()` iki navigasyon noktası döndürür:
+- P2 point,
+- P1 point,
+- P2 → P1 segment,
+- P1 → QR segment.
 
-1. `alignment_point` / `alignment_goto_parameters` = P2
-2. `dive_entry_point` / `dive_entry_goto_parameters` = P1
+The effective segment exclusion radius is:
 
-Ayrıca `waypoints` alanı aynı sırayı açıkça taşır. P1 ve P2 aynı QR radyalındadır;
-uçak önce P2'ye, sonra P1'e gittiğinde P1'e koridor yönünde ulaşır.
+`HSS radius + hss_margin_m + corridor_width_m / 2`
 
-`pullup_point` 50° dalış doğrusu üzerindeki 70 m AGL geometrik noktadır. Planner bu
-noktada pull-up komutu vermez; yalnız geometriyi handoff/telemetri/UI için sağlar.
+With the current defaults, this adds 5.5 m beyond the published HSS radius for the corridor centreline check.
 
-Auto seçim ve operatör manuel seçimi aynı önceden hesaplanmış P1/P2 geometrisini kullanır.
+## Wind ranking
+
+Wind is read from ArduPilot `WIND` telemetry. `direction` is treated as wind-from direction. Among HSS-safe candidates, the preferred corridor is the one whose inbound P2 → P1 → QR course most directly faces the incoming wind.
+
+- headwind is best,
+- crosswind is worse,
+- tailwind is worst.
+
+Wind never overrides HSS safety.
+
+If no valid `WIND` message has been received, the service logs a warning and falls back to HSS-only ordering. If wind speed is below `wind_min_speed_mps` (currently 1.0 m/s), wind ranking is disabled because the direction is not operationally important.
+
+## Top-5 diversification
+
+Candidates are generated every 1°, but the Top-5 should represent distinct alternatives rather than adjacent angles.
+
+The selector first tries an 8° minimum separation. If five candidates cannot be produced, it relaxes through:
+
+`8° → 6° → 4° → 3° → 2° → 1°`
+
+Within nearby alternatives, wind alignment is the primary ordering criterion. Therefore, if 180°, 181° and 182° are all valid and 180° faces the wind most directly, 180° represents that local alternative.
+
+## Selection and wind refresh state
+
+The backend states are:
+
+`idle → selecting → corridor_selected → mission_active`
+
+While `selecting`, the latest ArduPilot wind may trigger a Top-5 recomputation at most every `wind_refresh_interval_s` (currently 120 s).
+
+Once the operator selects a corridor:
+
+- the plan is locked,
+- P1/P2 do not move,
+- new wind telemetry does not recompute the corridor set.
+
+The same lock remains active during the mission. A new selection session or completed/aborted mission explicitly resets this state.
+
+## Onboard mission handoff
+
+After operator selection, `navigation_handoff()` still exposes the locked geometry for backend/map consumers. Actual flight execution is started only through `KamikazeApproachService.start_selected_mission()`.
+
+The GCS backend then performs this immutable handoff sequence:
+
+1. Refresh and synchronize the current QR target. A locked corridor is rejected if the QR moved by more than 1 m; it is never silently rebuilt.
+2. Synchronize the current HSS snapshot, including an explicit empty-zone update.
+3. Publish one `kamikaze.approach.update` containing the locked QR, P2, P1, inbound course, dive profile, HSS revision, safety margin and corridor width.
+4. Require the onboard ACK for that exact plan/hash.
+5. Start the onboard task `kamikaze.transit` with the accepted plan id/revision.
+6. Mark the GCS plan `mission_active` only after the onboard start request is accepted.
+
+The GCS does **not** steer P2 -> P1 in real time. Onboard owns execution: unchanged HSS logic routes the aircraft to P2, then GUIDED/L1 is given an internal P_SAFE continuation target beyond P1. P1 is monitored as the pre-dive gate; the existing ArduPilot mission list is never cleared/replaced and AUTO is not forced. If the gate fails, onboard calls the unchanged HSS controller again to return safely to the same locked P2. If the gate passes, onboard locally hands control to the existing kamikaze dive controller without waiting for a second GCS `DAL` command.
+
+UI widgets/layout are intentionally outside this integration.

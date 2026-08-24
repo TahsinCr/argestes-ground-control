@@ -293,6 +293,18 @@ class CompetitionTests(unittest.TestCase):
             self.server.state.received_kamikaze_events[0]["qrMetni"],
             "teknofest2026",
         )
+        with self.assertRaisesRegex(
+            CompetitionProtocolError,
+            "güvenli gönderim bütçesinde değil",
+        ):
+            self.service.submit_kamikaze_event(
+                KamikazeEvent(
+                    ended_at - timedelta(seconds=5),
+                    ended_at - timedelta(seconds=3),
+                    "late-qr",
+                    "jetson-qr-reader",
+                )
+            )
         actions = {entry.action for entry in self.logs.history}
         self.assertTrue(
             {
@@ -424,7 +436,7 @@ class CompetitionTests(unittest.TestCase):
         ]
         self.assertEqual(len(failures), 3)
 
-    def test_missing_hss_response_expires_only_hss_map_lease(self) -> None:
+    def test_missing_hss_response_retains_last_verified_zones(self) -> None:
         self.service._replace_hss_zones(
             (HssZone(1, 39.868, 32.7485, 75.0),)
         )
@@ -440,8 +452,11 @@ class CompetitionTests(unittest.TestCase):
         self.service._poll_hss_zones()
         self.service._poll_hss_zones()
 
-        self.assertEqual(self.service.hss_zones, ())
-        self.assertFalse(
+        self.assertEqual(
+            self.service.hss_zones,
+            (HssZone(1, 39.868, 32.7485, 75.0),),
+        )
+        self.assertTrue(
             any(
                 item.overlay_id.startswith("teknofest-hss-")
                 for item in self.planner.state.overlays

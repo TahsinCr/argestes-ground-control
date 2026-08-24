@@ -9,45 +9,47 @@ from src.models.competition import QrCoordinate
 from src.models.geometry import Point
 
 
-# 1: Top-5'in birincisi yeni plan oluşturulunca otomatik seçilir.
-# 0: Hiçbir koridor seçilmez; birinci yalnızca "recommended" olur.
-AUTO_SELECT_MODE = 1
+AUTO_SELECT_MODE = 0
 
 
 @dataclass(frozen=True, slots=True)
 class KamikazeApproachConfig(Model):
-    """Tek noktadan değiştirilen kamikaze yaklaşma geometrisi.
+    """Single source of truth for GCS kamikaze approach geometry.
 
-    P1 (dive entry) sabit bir yarıçap değildir. Kamera/uçuş ekseninin QR
-    merkezini göstermesi için START_ALTITUDE ve DIVE_ANGLE'dan türetilir.
-    P2 (alignment) P1'in aynı radyal üzerinde arkasındadır ve HSS'ye denk
-    gelirse tanımlı min/max aralığında otomatik kaydırılır.
+    P1 is derived from start altitude and dive angle so the nominal dive axis
+    intersects the QR target. P2 is a fixed, configurable distance behind P1 on
+    the same radial. No distance is baked into the planner: changing these
+    fields re-derives the whole geometry on the next unlocked plan build.
     """
 
-    # Dalış geometrisi -- bunlar değişince bütün türetilmiş noktalar değişir.
-    start_altitude_m: float = 110.0
-    pullup_altitude_m: float = 70.0
+    start_altitude_m: float = 130.0
+    pullup_altitude_m: float = 90.0
     target_altitude_m: float = 0.0
-    dive_angle_deg: float = 50.0
+    dive_angle_deg: float = 45.0
+    qr_plate_height_m: float = 2.0
 
-    # Yalnız metadata/UI için; geometri hedef merkezi target_altitude_m'dedir.
-    qr_plate_height_m: float = 2.5
+    # Desired navigation corridor around P2 -> P1 -> QR centreline.
+    corridor_width_m: float = 1.0
 
-    # QR -> P1 yaklaşma koridorunun fiziksel genişliği.
-    corridor_width_m: float = 0.50
+    # P2 is always this far behind P1. It is not shifted around HSS zones.
+    alignment_nominal_m: float = 150.0
 
-    # P2 -> P1 düz hizalama mesafesi.
-    alignment_nominal_m: float = 50.0
-    alignment_min_m: float = 40.0
-    alignment_max_m: float = 100.0
-    alignment_search_step_m: float = 1.0
-    invalidate_if_no_alignment_point: bool = True
+    # HSS hard-filter inflation beyond the published HSS radius. The corridor
+    # half-width is added separately by the segment-clearance calculation.
+    hss_margin_m: float = 5.0
 
-    # HSS ve aday seçimi.
-    hss_margin_m: float = 0.0
+    # Candidate generation and Top-5 diversification.
     angle_step_deg: int = 1
     max_candidates: int = 5
     preferred_spacing_deg: float = 8.0
+    spacing_sequence_deg: tuple[float, ...] = (8.0, 6.0, 4.0, 3.0, 2.0, 1.0)
+
+    # WIND telemetry policy while the operator is still choosing a corridor.
+    wind_min_speed_mps: float = 1.0
+    wind_max_age_s: float = 5.0
+    wind_refresh_interval_s: float = 120.0
+
+    # Top-5 is recommendation-only. Operator selection locks the plan.
     auto_select_mode: int = AUTO_SELECT_MODE
 
     def __post_init__(self) -> None:
@@ -61,12 +63,8 @@ class KamikazeApproachConfig(Model):
             raise ValueError("QR plaka yüksekliği pozitif olmalı")
         if self.corridor_width_m <= 0.0:
             raise ValueError("Koridor genişliği pozitif olmalı")
-        if self.alignment_min_m <= 0.0:
-            raise ValueError("Minimum P2-P1 mesafesi pozitif olmalı")
-        if not self.alignment_min_m <= self.alignment_nominal_m <= self.alignment_max_m:
-            raise ValueError("P2 nominal mesafesi min/max aralığında olmalı")
-        if self.alignment_search_step_m <= 0.0:
-            raise ValueError("P2 arama adımı pozitif olmalı")
+        if self.alignment_nominal_m <= 0.0:
+            raise ValueError("P2-P1 mesafesi pozitif olmalı")
         if self.hss_margin_m < 0.0:
             raise ValueError("HSS marjı negatif olamaz")
         if self.angle_step_deg <= 0 or 360 % self.angle_step_deg != 0:
@@ -75,37 +73,38 @@ class KamikazeApproachConfig(Model):
             raise ValueError("Top-N koridor sayısı pozitif olmalı")
         if self.preferred_spacing_deg < 0.0:
             raise ValueError("Koridor açı aralığı negatif olamaz")
+        if not self.spacing_sequence_deg:
+            raise ValueError("Koridor spacing dizisi boş olamaz")
+        if any(value <= 0.0 for value in self.spacing_sequence_deg):
+            raise ValueError("Koridor spacing değerleri pozitif olmalı")
+        if self.wind_min_speed_mps < 0.0:
+            raise ValueError("Minimum anlamlı rüzgar hızı negatif olamaz")
+        if self.wind_max_age_s <= 0.0:
+            raise ValueError("Rüzgar telemetri yaş sınırı pozitif olmalı")
+        if self.wind_refresh_interval_s <= 0.0:
+            raise ValueError("Rüzgar yenileme aralığı pozitif olmalı")
         if int(self.auto_select_mode) not in (0, 1):
             raise ValueError("auto_select_mode yalnızca 0 veya 1 olabilir")
 
     @property
     def dive_start_radius_m(self) -> float:
-        """QR merkezinden P1'e yatay mesafe.
-
-        P1'deki uçuş/kamera ekseni dive_angle_deg ile QR merkezine bakar.
-        110 m ve 50 derece için yaklaşık 92.3 m'dir.
-        """
         height_m = self.start_altitude_m - self.target_altitude_m
         return height_m / math.tan(math.radians(self.dive_angle_deg))
 
     @property
     def pullup_radius_m(self) -> float:
-        """QR merkezinden 70 m pull-up noktasına kalan yatay mesafe."""
         height_m = self.pullup_altitude_m - self.target_altitude_m
         return height_m / math.tan(math.radians(self.dive_angle_deg))
 
     @property
     def descent_horizontal_distance_m(self) -> float:
-        """P1'den pull-up noktasına 50 derece dalışta alınan yatay yol."""
         return self.dive_start_radius_m - self.pullup_radius_m
 
     @property
     def nominal_alignment_radius_m(self) -> float:
-        """QR merkezinden nominal P2'ye yatay mesafe."""
         return self.dive_start_radius_m + self.alignment_nominal_m
 
-    # Eski entegrasyon isimlerini okuma tarafında koruyoruz. Değerler artık
-    # sabit değil, yukarıdaki tek geometri kaynağından türetiliyor.
+    # Compatibility names retained for existing backend consumers.
     @property
     def decision_altitude_m(self) -> float:
         return self.pullup_altitude_m
@@ -116,7 +115,7 @@ class KamikazeApproachConfig(Model):
 
     @property
     def corridor_length_m(self) -> float:
-        return self.dive_start_radius_m
+        return self.nominal_alignment_radius_m
 
     @property
     def lineup_extension_m(self) -> float:
@@ -131,13 +130,17 @@ class KamikazeApproachConfig(Model):
 class ApproachCorridor(Model):
     angle_deg: int
     inbound_heading_deg: float
-    wind_error_deg: float
+    wind_error_deg: float | None
+    wind_rank_applied: bool
+
+    # Clearances already include HSS margin and relevant corridor half-width.
     corridor_clearance_m: float | None
+    alignment_segment_clearance_m: float | None
+    dive_segment_clearance_m: float | None
     alignment_point_clearance_m: float | None
     entry_point_clearance_m: float | None
+
     alignment_distance_m: float
-    alignment_point_valid: bool
-    alignment_fallback_used: bool
     entry: Point
     lineup: Point
     dive_start: Point
@@ -147,22 +150,32 @@ class ApproachCorridor(Model):
     recommended: bool = False
 
     @property
+    def alignment_point_valid(self) -> bool:
+        return self.alignment_point_clearance_m is None or self.alignment_point_clearance_m > 0.0
+
+    @property
+    def alignment_fallback_used(self) -> bool:
+        return False
+
+    @property
     def lineup_clearance_m(self) -> float | None:
-        """Eski isimle uyumluluk: artık segment değil yalnız P2 noktasıdır."""
         return self.alignment_point_clearance_m
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "angle_deg": self.angle_deg,
             "inbound_heading_deg": round(self.inbound_heading_deg, 6),
-            "wind_error_deg": round(self.wind_error_deg, 6),
+            "wind_error_deg": _round_or_none(self.wind_error_deg),
+            "wind_rank_applied": self.wind_rank_applied,
             "corridor_clearance_m": _round_or_none(self.corridor_clearance_m),
+            "alignment_segment_clearance_m": _round_or_none(self.alignment_segment_clearance_m),
+            "dive_segment_clearance_m": _round_or_none(self.dive_segment_clearance_m),
             "alignment_point_clearance_m": _round_or_none(self.alignment_point_clearance_m),
             "lineup_clearance_m": _round_or_none(self.alignment_point_clearance_m),
             "entry_point_clearance_m": _round_or_none(self.entry_point_clearance_m),
             "alignment_distance_m": round(self.alignment_distance_m, 3),
             "alignment_point_valid": self.alignment_point_valid,
-            "alignment_fallback_used": self.alignment_fallback_used,
+            "alignment_fallback_used": False,
             "entry": self.entry.to_dict(),
             "lineup": self.lineup.to_dict(),
             "dive_start": self.dive_start.to_dict(),
@@ -182,12 +195,18 @@ class KamikazeApproachPlan(Model):
     recommended_angle_deg: int
     selected_angle_deg: int | None
     selection_source: str
-    wind_from_deg: float
+    selection_state: str
+
+    wind_from_deg: float | None
     wind_speed_mps: float | None
+    wind_status: str
+    wind_rank_applied: bool
+
     hss_count: int
     hss_entry_point_rejected_count: int
     hss_corridor_rejected_count: int
     hss_alignment_point_rejected_count: int
+    hss_alignment_segment_rejected_count: int
     safe_corridor_count: int
     headwind_candidate_count: int
     wind_pool_count: int
@@ -196,8 +215,11 @@ class KamikazeApproachPlan(Model):
 
     @property
     def hss_lineup_rejected_count(self) -> int:
-        """Eski isimle uyumluluk."""
         return self.hss_alignment_point_rejected_count
+
+    @property
+    def locked(self) -> bool:
+        return self.selection_state in {"corridor_selected", "mission_active"}
 
     @property
     def recommended_corridor(self) -> ApproachCorridor:
@@ -219,11 +241,6 @@ class KamikazeApproachPlan(Model):
         return None if corridor is None else corridor.entry
 
     def navigation_handoff(self) -> dict[str, Any]:
-        """Seçilen koridorun iki-noktalı fixed-wing handoff'u.
-
-        Navigasyon önce P2/alignment'a, sonra P1/dive_entry'ye gider. Planner
-        MAVLink göndermez; arrival/state-machine kaptanın entegrasyonunda kalır.
-        """
         selected = self.selected_corridor
         if selected is None:
             return {
@@ -240,10 +257,10 @@ class KamikazeApproachPlan(Model):
             "plan_revision": self.revision,
             "selected_angle_deg": selected.angle_deg,
             "selection_source": self.selection_source,
+            "selection_state": self.selection_state,
             "inbound_heading_deg": round(selected.inbound_heading_deg, 6),
             "alignment_distance_m": round(selected.alignment_distance_m, 3),
             "alignment_point_valid": selected.alignment_point_valid,
-            # Yeni açık isimler.
             "alignment_point": alignment,
             "dive_entry_point": dive_entry,
             "pullup_point": pullup,
@@ -253,7 +270,7 @@ class KamikazeApproachPlan(Model):
             ],
             "alignment_goto_parameters": alignment,
             "dive_entry_goto_parameters": dive_entry,
-            # Eski entegrasyon isimleri.
+            # compatibility aliases
             "lineup": alignment,
             "entry": dive_entry,
             "dive_start": dive_entry,
@@ -270,8 +287,10 @@ class KamikazeApproachPlan(Model):
             "execution": "planned",
             "plan_revision": self.revision,
             "auto_select_mode": cfg.auto_select_mode,
-            "selection_locked_until_operator_change": True,
+            "selection_state": self.selection_state,
+            "selection_locked": self.locked,
             "auto_replan_on_hss_update": False,
+            "wind_refresh_interval_s": cfg.wind_refresh_interval_s,
             "qr": {
                 "latitude": self.qr.latitude,
                 "longitude": self.qr.longitude,
@@ -285,27 +304,28 @@ class KamikazeApproachPlan(Model):
                 "target_altitude_m": cfg.target_altitude_m,
                 "dive_angle_deg": cfg.dive_angle_deg,
                 "dive_start_radius_m": round(cfg.dive_start_radius_m, 3),
-                "dive_horizontal_radius_m": round(cfg.dive_start_radius_m, 3),
                 "pullup_radius_m": round(cfg.pullup_radius_m, 3),
                 "descent_horizontal_distance_m": round(cfg.descent_horizontal_distance_m, 3),
                 "corridor_length_m": round(cfg.corridor_length_m, 3),
                 "corridor_width_m": cfg.corridor_width_m,
                 "alignment_nominal_m": cfg.alignment_nominal_m,
-                "alignment_min_m": cfg.alignment_min_m,
-                "alignment_max_m": cfg.alignment_max_m,
-                "alignment_search_step_m": cfg.alignment_search_step_m,
-                "invalidate_if_no_alignment_point": cfg.invalidate_if_no_alignment_point,
                 "nominal_alignment_radius_m": round(cfg.nominal_alignment_radius_m, 3),
+                "hss_margin_m": cfg.hss_margin_m,
+                "angle_step_deg": cfg.angle_step_deg,
             },
             "wind": {
-                "direction_deg": round(self.wind_from_deg, 3),
+                "direction_deg": None if self.wind_from_deg is None else round(self.wind_from_deg, 3),
                 "speed_mps": None if self.wind_speed_mps is None else round(self.wind_speed_mps, 3),
+                "status": self.wind_status,
+                "ranking_applied": self.wind_rank_applied,
+                "minimum_meaningful_speed_mps": cfg.wind_min_speed_mps,
             },
             "ownship": dict(self.ownship),
             "hss_count": self.hss_count,
             "hss_entry_point_rejected_count": self.hss_entry_point_rejected_count,
             "hss_corridor_rejected_count": self.hss_corridor_rejected_count,
             "hss_alignment_point_rejected_count": self.hss_alignment_point_rejected_count,
+            "hss_alignment_segment_rejected_count": self.hss_alignment_segment_rejected_count,
             "hss_lineup_rejected_count": self.hss_alignment_point_rejected_count,
             "safe_corridor_count": self.safe_corridor_count,
             "headwind_candidate_count": self.headwind_candidate_count,

@@ -32,6 +32,7 @@ from src.services.runtime import RuntimeServices
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
 from src.services.kamikaze_approach import KamikazeApproachService
+from src.services.target_selection import TargetSelectionService
 from src.services.vehicle.dependencies import VehicleStack
 from src.services.video import GStreamerVideoService, MutableVideoService
 
@@ -149,13 +150,29 @@ def _kamikaze_approach(
     competition: CompetitionService,
     telemetry: TelemetryService,
     logging: LoggingService,
+    onboard: OnboardMissionServiceContract,
 ) -> KamikazeApproachService:
     return KamikazeApproachService(
         competition,
         telemetry,
         logging.child("KAMIKAZE_APPROACH"),
+        onboard=onboard,
     )
 
+
+
+def _target_selection(
+    competition: CompetitionService,
+    telemetry: TelemetryService,
+    orin: OrinService,
+    logging: LoggingService,
+) -> TargetSelectionService:
+    return TargetSelectionService(
+        competition,
+        telemetry,
+        logging.child("TARGET_SELECTOR"),
+        orin=orin,
+    )
 
 def _connections(
     settings: SettingsRepository,
@@ -313,6 +330,18 @@ def register_application_dependencies(
             "competition": CompetitionService,
             "telemetry": TelemetryService,
             "logging": LoggingService,
+            "onboard": OnboardMissionServiceContract,
+        },
+        priority=priority,
+    )
+    container.singleton(
+        TargetSelectionService,
+        factory=_target_selection,
+        dependencies={
+            "competition": CompetitionService,
+            "telemetry": TelemetryService,
+            "orin": OrinService,
+            "logging": LoggingService,
         },
         priority=priority,
     )
@@ -373,6 +402,7 @@ def register_application_dependencies(
             "tile_cache_service": TileCacheServer,
             "competition_service": CompetitionService,
             "kamikaze_approach_service": KamikazeApproachService,
+            "target_selection_service": TargetSelectionService,
             "connection_service": ConnectionControlService,
             "archive_service": MissionArchiveService,
             "facade": BackendFacade,
