@@ -6,8 +6,9 @@ import hashlib
 import json
 import threading
 from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from src.communication import (
@@ -15,6 +16,9 @@ from src.communication import (
     ContractModel,
     HssUpdate as ContractHssUpdate,
     HssZone as ContractHssZone,
+    HssWaypoint,
+    KamikazeApproachPlanUpdate,
+    KamikazeServerTime,
     KamikazeTargetUpdate,
     MissionEventsQuery,
     MissionList,
@@ -29,6 +33,8 @@ from src.communication import (
 )
 from src.core.events import EventBus, Subscription
 from src.models.competition import HssZone, KamikazeEvent, QrCoordinate
+from src.models.geometry import Point
+from src.models.kamikaze_approach import KamikazeApproachPlan
 from src.models.onboard import (
     ACTUATOR_TEST_EVENTS,
     ACTUATOR_TEST_TASK,
@@ -163,6 +169,11 @@ class OnboardMissionService(OnboardMissionServiceContract):
 
     def start_task(self, task: str, *, source: str = "ui") -> OrinCommandReceipt:
         canonical = self._canonical_task(task)
+        if canonical == "kamikaze.transit":
+            raise RuntimeError(
+                "kamikaze.transit seçili P1/P2 planı olmadan başlatılamaz; "
+                "KamikazeApproachService.start_selected_mission() kullanın"
+            )
         with self._lock:
             if (
                 self._state.active_task == canonical
@@ -176,6 +187,129 @@ class OnboardMissionService(OnboardMissionServiceContract):
             TaskStart(canonical, wire_source),
             pending="start",
             task=canonical,
+        )
+
+    def start_kamikaze_transit(
+        self,
+        plan: KamikazeApproachPlan,
+        *,
+        source: str = "ui",
+    ) -> OrinCommandReceipt:
+        """Atomically publish the locked approach plan, then launch onboard transit.
+
+        Target and HSS references are synchronized first so the approach contract
+        carries the exact revisions that onboard will validate.  The selected GCS
+        geometry is never silently rebuilt here.
+        """
+        selected = plan.selected_corridor
+        if selected is None or not plan.locked:
+            raise RuntimeError("Kamikaze transit için önce Top-5 içinden koridor kilitlenmeli")
+        with self._lock:
+            if self._state.active_task == "kamikaze.transit" and not self._state.terminal:
+                raise RuntimeError("Onboard kamikaze.transit görevi zaten çalışıyor")
+
+        # Refresh target, but never move a locked corridor silently.
+        self._competition.refresh_qr_coordinate()
+        target = self._competition.qr_coordinate
+        if target is None:
+            raise RuntimeError("TEKNOFEST QR hedef koordinatı alınamadı")
+        locked_qr = Point(float(plan.qr.latitude), float(plan.qr.longitude), 0.0)
+        current_qr = Point(float(target.latitude), float(target.longitude), 0.0)
+        if locked_qr.distance_to(current_qr) > 1.0:
+            raise RuntimeError(
+                "QR koordinatı koridor seçiminden sonra değişti; koridorlar yeniden hesaplanmalı"
+            )
+        self._send_target_update(target)
+
+        # Force an explicit current HSS snapshot, including the zero-zone case.
+        self._on_hss_updated(tuple(self._competition.hss_zones))
+        self._send_hss_update()
+        with self._lock:
+            target_revision = self._target_source_revision
+            hss_revision = self._hss_revision
+
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        plan_id = f"gcs-kamikaze:{plan.revision}:{selected.angle_deg}"
+        draft = KamikazeApproachPlanUpdate(
+            plan_id=plan_id,
+            plan_revision=int(plan.revision),
+            target_revision=int(target_revision),
+            qr_target=HssWaypoint(
+                float(plan.qr.latitude),
+                float(plan.qr.longitude),
+                float(plan.config.target_altitude_m),
+            ),
+            p2=HssWaypoint(
+                float(selected.lineup.latitude),
+                float(selected.lineup.longitude),
+                float(selected.lineup.altitude),
+            ),
+            p1=HssWaypoint(
+                float(selected.dive_start.latitude),
+                float(selected.dive_start.longitude),
+                float(selected.dive_start.altitude),
+            ),
+            approach_heading_deg=float(selected.inbound_heading_deg),
+            dive_start_altitude_m=float(plan.config.start_altitude_m),
+            pullup_altitude_m=float(plan.config.pullup_altitude_m),
+            dive_pitch_deg=-abs(float(plan.config.dive_angle_deg)),
+            safety_margin_m=float(plan.config.hss_margin_m),
+            corridor_width_m=float(plan.config.corridor_width_m),
+            hss_revision=int(hss_revision),
+            created_at_utc=created_at,
+            content_hash="pending",
+        )
+        encoded = json.dumps(
+            draft.canonical_payload(),
+            ensure_ascii=True,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        approach = replace(draft, content_hash=hashlib.sha256(encoded).hexdigest())
+        self._log(
+            "kamikaze.approach_tx",
+            "Kilitli P2/P1 yaklaşma planı Orin'e gönderiliyor",
+            "info",
+            {
+                "plan_id": approach.plan_id,
+                "plan_revision": approach.plan_revision,
+                "target_revision": approach.target_revision,
+                "hss_revision": approach.hss_revision,
+                "angle_deg": selected.angle_deg,
+            },
+        )
+        plan_receipt = self._send_request(approach)
+        plan_execution = str(plan_receipt.response.get("execution", "")).strip().lower()
+        if not plan_receipt.accepted or plan_execution not in {"updated", "unchanged"}:
+            raise OnboardCommandRejectedError(
+                plan_receipt.message or "Orin yaklaşma planını reddetti",
+                plan_receipt.response,
+            )
+        self._log(
+            "kamikaze.approach_ack",
+            "P2/P1 yaklaşma planı Orin tarafından kabul edildi",
+            "success",
+            {
+                "request_id": plan_receipt.request_id,
+                "execution": plan_execution,
+                "plan_id": approach.plan_id,
+            },
+        )
+
+        wire_source = "ui" if source in {"ui", "qt-ui", "operator-ui"} else source
+        return self._issue(
+            TaskStart(
+                "kamikaze.transit",
+                wire_source,
+                parameters={
+                    "plan_id": approach.plan_id,
+                    "plan_revision": approach.plan_revision,
+                },
+                requested_at=created_at,
+            ),
+            pending="start",
+            task="kamikaze.transit",
         )
 
     def _sync_kamikaze_target(self) -> OrinCommandReceipt | None:
@@ -657,7 +791,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
             if self._state.pending_command:
                 raise RuntimeError(f"Onboard komutu zaten bekleniyor: {self._state.pending_command}")
             starting = packet_type == "task.start"
-            starting_kamikaze = starting and task == "kamikaze.execute"
+            starting_kamikaze = starting and task in {"kamikaze.execute", "kamikaze.transit"}
             starting_actuator_test = starting and task == ACTUATOR_TEST_TASK
             self._state = replace(
                 self._state,
@@ -950,15 +1084,15 @@ class OnboardMissionService(OnboardMissionServiceContract):
             raise ValueError("QR raporu boş qr_text içeremez")
         if len(qr_text) > 4096:
             raise ValueError("QR raporu 4096 karakteri aşamaz")
-        ended_at = self._payload_datetime(
+        ended_at = self._kamikaze_report_datetime(
             payload,
-            "ended_at_utc",
-            "observed_at_utc",
-            "time_utc",
+            iso_keys=("ended_at_utc", "observed_at_utc", "time_utc"),
+            server_keys=("kamikazeBitisZamani", "ended_at_server"),
         )
-        started_at = self._payload_datetime(
+        started_at = self._kamikaze_report_datetime(
             payload,
-            "started_at_utc",
+            iso_keys=("started_at_utc",),
+            server_keys=("kamikazeBaslangicZamani", "started_at_server"),
             required=False,
         ) or ended_at
         mission_id = self._optional_int(payload.get("mission_id"))
@@ -1039,6 +1173,46 @@ class OnboardMissionService(OnboardMissionServiceContract):
         if required:
             raise ValueError(f"QR zaman alanı zorunlu: {'/'.join(keys)}")
         return None
+
+    def _kamikaze_report_datetime(
+        self,
+        payload: dict[str, Any],
+        *,
+        iso_keys: tuple[str, ...],
+        server_keys: tuple[str, ...],
+        required: bool = True,
+    ) -> datetime | None:
+        resolved = self._payload_datetime(payload, *iso_keys, required=False)
+        if resolved is not None:
+            return resolved
+
+        raw: Mapping[str, Any] | None = None
+        for key in server_keys:
+            value = payload.get(key)
+            if isinstance(value, Mapping):
+                raw = value
+                break
+        if raw is None:
+            if required:
+                raise ValueError(
+                    "QR zaman alanı zorunlu: " + "/".join((*iso_keys, *server_keys))
+                )
+            return None
+
+        stamp = KamikazeServerTime.from_payload(raw)
+        estimate = getattr(self._competition, "estimated_server_time", None)
+        reference = estimate() if callable(estimate) else None
+        if not isinstance(reference, datetime) or reference.tzinfo is None:
+            reference = datetime.now(UTC)
+        reference = reference.astimezone(UTC)
+        base = reference.replace(
+            hour=stamp.hour,
+            minute=stamp.minute,
+            second=stamp.second,
+            microsecond=stamp.millisecond * 1_000,
+        )
+        candidates = (base - timedelta(days=1), base, base + timedelta(days=1))
+        return min(candidates, key=lambda value: abs((value - reference).total_seconds()))
 
     def _process_event_payload(
         self,
