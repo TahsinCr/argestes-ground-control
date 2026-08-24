@@ -469,6 +469,19 @@ heartbeat is available; an open serial port alone is not treated as Onboard
 readiness. Detailed mission ID, phase, progress, actuator step and Kamikaze QR
 feedback is shown in **Vehicle Management > Task Actions**.
 
+Selecting `TARGET_LOCK` starts the canonical `target.lock` mission through the
+shared contract. Immediately before launch, GCS sends its current estimated
+TEKNOFEST server time to onboard; the mission is not launched if no valid server
+clock is available. This keeps the lock completion timestamp independent of the
+vehicle's local system clock. The 5 Hz onboard `target.lock.status` atomically feeds the
+official `iha_kilitlenme`, target centre, width and height fields into periodic
+competition telemetry; if status stops for one second, the stale target box is
+cleared before another server submission. The reliable `target.lock.report` is
+accepted only from the onboard link and its `kilitlenmeBitisZamani` and
+`otonom_kilitlenme` fields are posted unchanged to `/api/kilitlenme_bilgisi`.
+Onboard receives no ACK before the HTTP POST succeeds, and a repeated
+`report_id` never produces a second POST.
+
 QR data is recovered from three sources:
 
 1. live `kamikaze.event` notifications (`QR_DECODED` and
@@ -503,11 +516,13 @@ Hardware verification checklist:
    without a second MAVLink endpoint.
 4. Start Kamikaze, verify ACK only indicates acceptance, select GUIDED and watch
    `starting → running`.
-5. Inject both QR variants, reconnect once, and verify live, result and history
+5. Start `TARGET_LOCK`, verify target fields enter ordinary telemetry and one
+   lock-result POST is produced after the four-second lock.
+6. Inject both QR variants, reconnect once, and verify live, result and history
    recovery in the UI and log panel.
-6. Retry an identical `logs.push` batch and verify it is ACKed without another
+7. Retry an identical `logs.push` batch and verify it is ACKed without another
    log row.
-7. Connect the HDMI capture card at 1080p/60, interrupt the signal and verify
+8. Connect the HDMI capture card at 1080p/60, interrupt the signal and verify
    video reconnect while MAVLink controls remain responsive.
 
 ## Using the backend without Qt

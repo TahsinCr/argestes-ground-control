@@ -1408,6 +1408,7 @@ class CommandPanel(PanelFrame):
         normalized = str(task).strip().upper()
         return {
             "KAMIKAZE": "kamikaze.execute",
+            "TARGET_LOCK": "target.lock",
             "ACTUATOR_TEST": ACTUATOR_TEST_TASK,
         }.get(normalized, normalized.lower())
 

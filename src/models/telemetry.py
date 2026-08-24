@@ -87,6 +87,7 @@ class TelemetrySnapshot(Model):
     global_position_received_at: datetime | None = None
     hud_received_at: datetime | None = None
     gps_received_at: datetime | None = None
+    wind_received_at: datetime | None = None
     home_latitude: float | None = None
     home_longitude: float | None = None
     radio_local_rssi: int | None = None
@@ -251,6 +252,8 @@ class TelemetrySnapshot(Model):
             payload["hud_received_at"] = self.hud_received_at.isoformat()
         if self.gps_received_at is not None:
             payload["gps_received_at"] = self.gps_received_at.isoformat()
+        if self.wind_received_at is not None:
+            payload["wind_received_at"] = self.wind_received_at.isoformat()
         return payload
 
     @classmethod

@@ -435,6 +435,19 @@ seri portun açık olması tek başına Onboard hazır kabul edilmez. Görev ID'
 aşama, ilerleme, aktüatör adımı ve Kamikaze QR geri bildirimi **Araç
 Yönetimi > Görev Aksiyonları** altında gösterilir.
 
+`TARGET_LOCK` seçimi ortak sözleşme üzerinden `target.lock` görevini başlatır.
+Görev başlamadan hemen önce GCS'nin TEKNOFEST'ten tahmin ettiği sunucu saati
+Orin'e gönderilir; geçerli sunucu saati yoksa görev başlatılmaz. Böylece kilit
+bitiş zamanı yerel sistem saatinden değil yarışma sunucu saatinden üretilir.
+Orin'den 5 Hz gelen `target.lock.status`, hedef takibi sürerken şartnamedeki
+`iha_kilitlenme`, `hedef_merkez_X`, `hedef_merkez_Y`, `hedef_genislik` ve
+`hedef_yukseklik` alanlarına atomik olarak eklenir; status bir saniye kesilirse
+bayat kutu sunucuya gönderilmeden sıfırlanır. Başarılı kilit sonundaki güvenilir
+`target.lock.report`, yalnızca Orin kaynağından kabul edilir ve
+`kilitlenmeBitisZamani` ile `otonom_kilitlenme` alanları değiştirilmeden
+`/api/kilitlenme_bilgisi` endpoint'ine gönderilir. Sunucu POST'u başarılı olmadan
+Orin'e ACK verilmez; aynı `report_id` tekrar gelirse ikinci POST üretilmez.
+
 QR sonucu üç kaynaktan kurtarılır:
 
 1. canlı `kamikaze.event` bildirimleri (`QR_DECODED` ve
@@ -470,11 +483,13 @@ Gerçek donanım kontrol listesi:
    MAVLink endpoint'i açılmadan doğrulayın.
 4. Kamikaze'yi başlatın, ACK'in yalnızca kabulü gösterdiğini kontrol edin,
    GUIDED seçip `starting → running` geçişini izleyin.
-5. İki QR türünü gönderin, bir kez yeniden bağlanın ve canlı, sonuç ve
+5. `TARGET_LOCK` görevini başlatın; hedef telemetrisinin normal telemetri POST'una
+   girdiğini ve dört saniye sonunda tek kilitlenme POST'u oluştuğunu doğrulayın.
+6. İki QR türünü gönderin, bir kez yeniden bağlanın ve canlı, sonuç ve
    geçmiş kurtarma yollarını UI/log panelinde doğrulayın.
-6. Aynı `logs.push` batch'ini tekrar gönderip ikinci log satırı olmadan ACK
+7. Aynı `logs.push` batch'ini tekrar gönderip ikinci log satırı olmadan ACK
    verildiğini kontrol edin.
-7. HDMI capture kartını 1080p/60 bağlayın, sinyali kesin ve MAVLink kontrolleri
+8. HDMI capture kartını 1080p/60 bağlayın, sinyali kesin ve MAVLink kontrolleri
    akıcı kalırken video reconnect davranışını doğrulayın.
 
 ## Backend’i UI olmadan kullanma

@@ -3,11 +3,13 @@ from __future__ import annotations
 import unittest
 import time
 from dataclasses import replace
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from src.core.events import EventBus, Subscription
-from src.models.competition import HssZone, KamikazeEvent, QrCoordinate
+from src.models.competition import HssZone, KamikazeEvent, LockEvent, QrCoordinate
 from src.models.onboard import ACTUATOR_TEST_TASK
+from src.services.kamikaze_approach import KamikazeApproachService
 from src.models.orin import (
     OrinCommandReceipt,
     OrinConnectionState,
@@ -16,6 +18,7 @@ from src.models.orin import (
 )
 from src.services.logging_service import LoggingService
 from src.services.onboard import OnboardMissionService
+from src.services.vehicle.telemetry import MutableTelemetryService
 
 
 class FakeOrinService:
@@ -38,6 +41,17 @@ class FakeOrinService:
     def issue(self, packet_type, payload=None, *, timeout=None):
         del timeout
         self.requests.append((packet_type, dict(payload or {})))
+        if packet_type == "competition.clock.update":
+            clock_payload = dict(payload or {})
+            return OrinCommandReceipt(
+                len(self.requests),
+                True,
+                "Clock updated",
+                {
+                    "execution": "updated",
+                    "clock_revision": clock_payload["source_revision"],
+                },
+            )
         if packet_type == "kamikaze.target.update":
             target_payload = dict(payload or {})
             return OrinCommandReceipt(
@@ -68,6 +82,13 @@ class FakeOrinService:
                     "content_hash": hss_payload.get("content_hash"),
                 },
             )
+        if packet_type == "kamikaze.approach.update":
+            return OrinCommandReceipt(
+                len(self.requests),
+                True,
+                "Approach updated",
+                {"execution": "updated"},
+            )
         if not self.responses:
             return OrinCommandReceipt(len(self.requests), True, "ok", {})
         response = self.responses.pop(0)
@@ -88,6 +109,7 @@ class FakeCompetitionService:
         self.hss_updated = EventBus[tuple[HssZone, ...]]()
         self.qr_updated = EventBus[QrCoordinate | None]()
         self.submitted_kamikaze: list[KamikazeEvent] = []
+        self.submitted_locks: list[LockEvent] = []
         self.refresh_count = 0
 
     def refresh_qr_coordinate(self) -> None:
@@ -96,21 +118,32 @@ class FakeCompetitionService:
     def submit_kamikaze_event(self, event: KamikazeEvent) -> None:
         self.submitted_kamikaze.append(event)
 
+    def submit_lock_event(self, event: LockEvent) -> None:
+        self.submitted_locks.append(event)
+
+    @staticmethod
+    def estimated_server_time() -> datetime:
+        return datetime.now(UTC)
+
 
 class OnboardMissionProtocolTests(unittest.TestCase):
     def setUp(self) -> None:
         self.orin = FakeOrinService()
         self.competition = FakeCompetitionService()
+        self.telemetry = MutableTelemetryService()
+        self.telemetry.start()
         self.logs = LoggingService()
         self.service = OnboardMissionService(
             self.orin,  # type: ignore[arg-type]
             self.competition,  # type: ignore[arg-type]
             self.logs.child("ONBOARD"),
+            telemetry=self.telemetry,
         )
         self.service.start()
 
     def tearDown(self) -> None:
         self.service.stop()
+        self.telemetry.stop()
 
     def test_kamikaze_start_uses_contract_payload_and_waits_for_guided(self) -> None:
         self.orin.responses.append(
@@ -150,6 +183,98 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertEqual(self.service.state.mission_id, 42)
         self.assertTrue(self.service.state.target_ready)
         self.assertGreater(self.service.state.target_revision, 0)
+
+    def test_target_lock_alias_starts_the_canonical_onboard_mission(self) -> None:
+        self.orin.responses.append(
+            OrinCommandReceipt(
+                102,
+                True,
+                "Command accepted",
+                {
+                    "request_id": 102,
+                    "task": "target.lock",
+                    "mission_id": 52,
+                    "execution": "starting",
+                },
+            )
+        )
+
+        receipt = self.service.start_task("TARGET_LOCK", source="ui")
+
+        self.assertTrue(receipt.accepted)
+        self.assertEqual(self.orin.requests[-2][0], "competition.clock.update")
+        clock_payload = self.orin.requests[-2][1]
+        self.assertGreater(clock_payload["source_revision"], 0)
+        self.assertEqual(
+            set(clock_payload["sunucusaati"]),
+            {"gun", "saat", "dakika", "saniye", "milisaniye"},
+        )
+        self.assertEqual(
+            self.orin.requests[-1],
+            ("task.start", {"task": "TARGET_LOCK", "source": "ui"}),
+        )
+        self.assertEqual(self.service.state.active_task, "target.lock")
+        self.assertEqual(self.service.state.mission_id, 52)
+
+    def test_kamikaze_transit_sends_target_hss_plan_then_task_start(self) -> None:
+        selector = KamikazeApproachService(
+            self.competition,  # type: ignore[arg-type]
+            SimpleNamespace(current=None, updated=EventBus()),  # type: ignore[arg-type]
+        )
+        plan = selector.build_plan_from_values(
+            qr=self.competition.qr_coordinate,
+            zones=(),
+            wind_from_deg=0.0,
+            wind_speed_mps=5.0,
+        )
+        locked = selector.select(plan.corridors[0].angle_deg, plan_revision=plan.revision)
+        self.orin.responses.append(
+            OrinCommandReceipt(
+                404,
+                True,
+                "Transit accepted",
+                {
+                    "task": "kamikaze.transit",
+                    "mission_id": 91,
+                    "execution": "starting",
+                    "waiting_for_mode": False,
+                    "vehicle_mode": "GUIDED",
+                },
+            )
+        )
+
+        receipt = self.service.start_kamikaze_transit(locked)
+
+        self.assertEqual(receipt.request_id, 404)
+        packet_types = [packet_type for packet_type, _payload in self.orin.requests]
+        self.assertEqual(
+            packet_types[-4:],
+            [
+                "kamikaze.target.update",
+                "competition.hss.update",
+                "kamikaze.approach.update",
+                "task.start",
+            ],
+        )
+        approach_payload = self.orin.requests[-2][1]
+        self.assertEqual(approach_payload["plan_revision"], locked.revision)
+        self.assertEqual(approach_payload["p2"]["altitude_m"], 130.0)
+        self.assertEqual(approach_payload["p1"]["altitude_m"], 130.0)
+        self.assertEqual(approach_payload["dive_start_altitude_m"], 130.0)
+        self.assertEqual(approach_payload["pullup_altitude_m"], 90.0)
+        self.assertEqual(approach_payload["dive_pitch_deg"], -45.0)
+        self.assertEqual(approach_payload["corridor_width_m"], 1.0)
+        self.assertEqual(approach_payload["safety_margin_m"], 5.0)
+        self.assertEqual(len(approach_payload["content_hash"]), 64)
+        task_payload = self.orin.requests[-1][1]
+        self.assertEqual(task_payload["task"], "kamikaze.transit")
+        self.assertEqual(task_payload["parameters"]["plan_revision"], locked.revision)
+        self.assertEqual(self.service.state.active_task, "kamikaze.transit")
+
+    def test_generic_kamikaze_transit_start_is_blocked_without_locked_plan(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "P1/P2 planı"):
+            self.service.start_task("kamikaze.transit")
+        self.assertFalse(any(kind == "task.start" for kind, _ in self.orin.requests))
 
     def test_target_rejection_blocks_kamikaze_start(self) -> None:
         original_issue = self.orin.issue
@@ -443,6 +568,131 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertTrue(state.result_received)
         self.assertIn("vehicle is armed", state.last_error)
 
+    def test_target_lock_status_updates_official_telemetry_and_expires(self) -> None:
+        self.service._TARGET_LOCK_STATUS_TIMEOUT_S = 0.05
+        handler = self.orin.handlers["target.lock.status"]
+        handler(
+            OrinMessage(
+                "target.lock.status",
+                {
+                    "state": "track",
+                    "frame_sequence": 120,
+                    "target_id": 7,
+                    "confidence": 0.91,
+                    "hedef_merkez_X": 480,
+                    "hedef_merkez_Y": 270,
+                    "hedef_genislik": 192,
+                    "hedef_yukseklik": 100,
+                    "error_x": 0.0,
+                    "error_y": -0.01,
+                    "lock_progress": 0.75,
+                    "in_zone": True,
+                    "locked": False,
+                    "autonomous": True,
+                    "time_utc": datetime.now(UTC).isoformat(),
+                },
+                800,
+                1,
+                191,
+            )
+        )
+
+        track = self.telemetry.current.target_track
+        self.assertTrue(track.locked)
+        self.assertEqual(
+            (track.center_x, track.center_y, track.width, track.height),
+            (480, 270, 192, 100),
+        )
+        self.assertEqual(track.vehicle_source, "orin-target-lock")
+
+        deadline = time.monotonic() + 0.5
+        while self.telemetry.current.target_track.locked and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(self.telemetry.current.target_track.locked)
+        self.assertEqual(self.telemetry.current.target_track.width, 0)
+
+    def test_target_lock_report_is_submitted_once_and_duplicate_is_acknowledged(
+        self,
+    ) -> None:
+        now = self.competition.estimated_server_time()
+        clock = {
+            "saat": now.hour,
+            "dakika": now.minute,
+            "saniye": now.second,
+            "milisaniye": now.microsecond // 1000,
+        }
+        handler = self.orin.handlers["target.lock.report"]
+        message = OrinMessage(
+            "target.lock.report",
+            {
+                "report_id": "session:42:120:lock",
+                "mission_id": 42,
+                "target_id": 7,
+                "kilitlenmeBitisZamani": clock,
+                "otonom_kilitlenme": 1,
+            },
+            801,
+            1,
+            191,
+        )
+
+        first = handler(message)
+        duplicate = handler(message)
+
+        self.assertIsInstance(first, OrinHandlerResponse)
+        self.assertEqual(dict(first.payload), dict(duplicate.payload))
+        self.assertEqual(first.payload["execution"], "submitted")
+        self.assertEqual(len(self.competition.submitted_locks), 1)
+        self.assertEqual(
+            self.competition.submitted_locks[0].to_payload(),
+            {
+                "kilitlenmeBitisZamani": clock,
+                "otonom_kilitlenme": 1,
+            },
+        )
+        self.assertTrue(
+            any(
+                entry.action == "target_lock.report_submitted"
+                for entry in self.logs.history
+            )
+        )
+
+    def test_failed_target_lock_submission_is_retried(self) -> None:
+        attempts = 0
+
+        def submit(event: LockEvent) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise ConnectionError("competition server unavailable")
+            self.competition.submitted_locks.append(event)
+
+        self.competition.submit_lock_event = submit
+        now = self.competition.estimated_server_time()
+        payload = {
+            "report_id": "retryable-lock-report",
+            "mission_id": 43,
+            "target_id": 8,
+            "kilitlenmeBitisZamani": {
+                "saat": now.hour,
+                "dakika": now.minute,
+                "saniye": now.second,
+                "milisaniye": now.microsecond // 1000,
+            },
+            "otonom_kilitlenme": 0,
+        }
+        handler = self.orin.handlers["target.lock.report"]
+
+        with self.assertRaisesRegex(ConnectionError, "unavailable"):
+            handler(OrinMessage("target.lock.report", payload, 802, 1, 191))
+        response = handler(
+            OrinMessage("target.lock.report", payload, 803, 1, 191)
+        )
+
+        self.assertEqual(response.payload["execution"], "submitted")
+        self.assertEqual(attempts, 2)
+        self.assertEqual(len(self.competition.submitted_locks), 1)
+
     def test_qr_report_is_submitted_once_and_duplicate_is_acknowledged(self) -> None:
         handler = self.orin.handlers["kamikaze.qr.report"]
         message = OrinMessage(
@@ -512,6 +762,37 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertEqual(response.payload["execution"], "submitted")
         self.assertEqual(attempts, 2)
         self.assertEqual(len(self.competition.submitted_kamikaze), 1)
+
+    def test_qr_report_accepts_the_exact_shared_wire_timestamp_shape(self) -> None:
+        now = datetime.now(UTC)
+        clock = {
+            "saat": now.hour,
+            "dakika": now.minute,
+            "saniye": now.second,
+            "milisaniye": now.microsecond // 1000,
+        }
+        handler = self.orin.handlers["kamikaze.qr.report"]
+
+        response = handler(
+            OrinMessage(
+                "kamikaze.qr.report",
+                {
+                    "report_id": "wire-shape-report",
+                    "mission_id": 44,
+                    "event": "QR_DECODED",
+                    "qr_text": "WIRE-QR",
+                    "kamikazeBaslangicZamani": clock,
+                    "kamikazeBitisZamani": clock,
+                    "altitude_m": 90.0,
+                },
+                705,
+                1,
+                191,
+            )
+        )
+
+        self.assertEqual(response.payload["execution"], "submitted")
+        self.assertEqual(self.competition.submitted_kamikaze[-1].qr_text, "WIRE-QR")
 
     def test_qr_report_id_uses_the_same_192_character_contract(self) -> None:
         handler = self.orin.handlers["kamikaze.qr.report"]

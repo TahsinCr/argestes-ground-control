@@ -1221,6 +1221,49 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertIn("TARGET_LOCK", result.message)
         self.assertEqual(logs.history[-1].action, "command.rejected")
 
+    def test_target_lock_ui_command_uses_onboard_mission_service(self) -> None:
+        class Vehicle:
+            connected = True
+            state = VehicleConnectionState(True, "test", 1, 1)
+
+        class Onboard:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, str]] = []
+
+            def start_task(self, task: str, *, source: str = "ui"):
+                self.calls.append((task, source))
+                return SimpleNamespace(
+                    accepted=True,
+                    message="accepted",
+                    request_id=77,
+                    round_trip_ms=12.0,
+                    response={
+                        "execution": "starting",
+                        "mission_id": 52,
+                    },
+                )
+
+        onboard = Onboard()
+        commands = DispatchCommandService(
+            Vehicle(),  # type: ignore[arg-type]
+            MutableParameterService(),
+            orin=SimpleNamespace(),  # type: ignore[arg-type]
+            onboard=onboard,  # type: ignore[arg-type]
+        )
+
+        result = commands.dispatch(
+            CommandRequest(
+                "SET_MISSION_TASK",
+                {"task": "TARGET_LOCK"},
+                "operator-ui",
+            )
+        )
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(onboard.calls, [("TARGET_LOCK", "operator-ui")])
+        self.assertEqual(result.details["mission_id"], 52)
+        self.assertEqual(result.details["orin_execution"], "starting")
+
     def test_auto_land_task_uses_fixed_wing_autoland_mode(self) -> None:
         class Vehicle:
             connected = True
