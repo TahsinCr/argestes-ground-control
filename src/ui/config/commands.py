@@ -39,6 +39,7 @@ PROFILE_FIELDS = (
 )
 
 AUTONOMOUS_COMMANDS = (
+    AutonomousCommand("TARGET_LOCK", "command.target_lock"),
     AutonomousCommand("KAMIKAZE", "command.kamikaze"),
     AutonomousCommand("ACTUATOR_TEST", "command.actuator_test"),
 )

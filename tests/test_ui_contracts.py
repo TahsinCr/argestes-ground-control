@@ -880,8 +880,9 @@ class UiContractTests(unittest.TestCase):
             str(panel.task_list.item(row).data(Qt.ItemDataRole.UserRole))
             for row in range(panel.task_list.count())
         }
-        self.assertEqual(visible, {"KAMIKAZE", "ACTUATOR_TEST"})
+        self.assertEqual(visible, {"TARGET_LOCK", "KAMIKAZE", "ACTUATOR_TEST"})
         self.assertNotIn("PING_TEST", visible)
+        self.assertEqual(panel._canonical_ui_task("TARGET_LOCK"), "target.lock")
         self.assertEqual(panel.task_list.currentRow(), -1)
         self.assertEqual(panel.selected_task_code, "")
         self.assertFalse(panel.task_progress.isVisible())

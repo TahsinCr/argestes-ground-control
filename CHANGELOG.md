@@ -1,6 +1,13 @@
 # **Change Log**
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- Connected onboard `target.lock.status` to the official target fields in the
+  periodic TEKNOFEST telemetry packet, with automatic stale-target clearing.
+- Connected reliable `target.lock.report` requests to one deduplicated
+  `/api/kilitlenme_bilgisi` POST using the onboard server-time result.
+
 ## **[1.5.0-beta] - 22.08.2026**
 The **"Shared Onboard Contracts and Mission Planning Update"** brings the
 Kamikaze approach planner from pull request #1 into the main operator workflow,

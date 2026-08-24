@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from datetime import datetime
 
 from src.core.abstracts import Service
 from src.core.events import EventBus
@@ -64,6 +65,9 @@ class CompetitionService(Service):
 
     @abstractmethod
     def refresh_qr_coordinate(self) -> None: ...
+
+    @abstractmethod
+    def estimated_server_time(self) -> datetime | None: ...
 
     @abstractmethod
     def submit_lock_event(self, event: LockEvent) -> None: ...

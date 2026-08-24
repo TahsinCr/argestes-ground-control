@@ -17,6 +17,7 @@ from src.services.logging_service import ServiceLogger
 
 class DispatchCommandService(CommandService):
     _DEFAULT_TASKS = (
+        "TARGET_LOCK",
         "KAMIKAZE",
         "ACTUATOR_TEST",
     )
@@ -263,7 +264,11 @@ class DispatchCommandService(CommandService):
         request: CommandRequest,
     ) -> tuple[bool, dict[str, object]]:
         assert self._orin is not None
-        if self._onboard is not None and task in {"KAMIKAZE", "ACTUATOR_TEST"}:
+        if self._onboard is not None and task in {
+            "KAMIKAZE",
+            "TARGET_LOCK",
+            "ACTUATOR_TEST",
+        }:
             source = "operator-ui" if task == "ACTUATOR_TEST" else request.source
             receipt = self._onboard.start_task(task, source=source)
             if not receipt.accepted:

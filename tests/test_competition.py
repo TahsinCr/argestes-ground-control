@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import unittest
 
 from fake_teknofest_server import create_server
+from src.core.events import EventBus, Subscription
 from src.models.competition import (
     CompetitionServerTime,
     CompetitionServerConfig,
@@ -17,14 +18,29 @@ from src.models.competition import (
 from src.models.geometry import Point
 from src.models.mission import MissionState
 from src.models.telemetry import TargetTrack, TelemetrySnapshot
+from src.models.orin import OrinConnectionState, OrinMessage
 from src.services.competition import (
     CompetitionHttpError,
     CompetitionProtocolError,
     TeknofestCompetitionService,
 )
 from src.services.logging_service import LoggingService
+from src.services.onboard import OnboardMissionService
 from src.services.planner import PlannerService
 from src.services.vehicle.telemetry import MutableTelemetryService
+
+
+class _TargetLockOrin:
+    def __init__(self) -> None:
+        self.changed = EventBus[OrinConnectionState]()
+        self.state = OrinConnectionState(alive=False, version="test")
+        self.connected = False
+        self.handlers: dict[str, object] = {}
+
+    def register_handler(self, packet_type, handler):
+        key = str(packet_type).lower()
+        self.handlers[key] = handler
+        return Subscription(1, lambda: self.handlers.pop(key, None))
 
 
 class CompetitionTests(unittest.TestCase):
@@ -293,6 +309,18 @@ class CompetitionTests(unittest.TestCase):
             self.server.state.received_kamikaze_events[0]["qrMetni"],
             "teknofest2026",
         )
+        with self.assertRaisesRegex(
+            CompetitionProtocolError,
+            "güvenli gönderim bütçesinde değil",
+        ):
+            self.service.submit_kamikaze_event(
+                KamikazeEvent(
+                    ended_at - timedelta(seconds=5),
+                    ended_at - timedelta(seconds=3),
+                    "late-qr",
+                    "jetson-qr-reader",
+                )
+            )
         actions = {entry.action for entry in self.logs.history}
         self.assertTrue(
             {
@@ -307,6 +335,120 @@ class CompetitionTests(unittest.TestCase):
             LockEvent(ended_at, True, "ui")
         with self.assertRaises(ValueError):
             KamikazeEvent(ended_at, ended_at, "invented", "yki")
+
+    def test_orin_target_lock_reaches_periodic_telemetry_and_result_endpoint(
+        self,
+    ) -> None:
+        received_at = datetime.now(UTC)
+        self.telemetry.push(
+            TelemetrySnapshot.zero().copy(
+                team_id=1,
+                latitude=39.868,
+                longitude=32.7485,
+                altitude_agl=137.0,
+                altitude_msl=1100.0,
+                ground_speed=31.0,
+                battery_percent=87,
+                heading=92.0,
+                flight_mode="AUTO",
+                position_valid=True,
+                telemetry_link=True,
+                autopilot_link=True,
+                timestamp=received_at,
+                uav_time=received_at,
+                position_received_at=received_at,
+                uav_time_received_at=received_at,
+            )
+        )
+        self.service.start()
+        self.assertTrue(self._wait_until(lambda: self.service.state.connected))
+        orin = _TargetLockOrin()
+        onboard = OnboardMissionService(
+            orin,  # type: ignore[arg-type]
+            self.service,
+            self.logs.child("ONBOARD"),
+            telemetry=self.telemetry,
+        )
+        onboard._TARGET_LOCK_STATUS_TIMEOUT_S = 3.0
+        onboard.start()
+        try:
+            now = self.service.estimated_server_time()
+            self.assertIsNotNone(now)
+            assert now is not None
+            clock = {
+                "saat": now.hour,
+                "dakika": now.minute,
+                "saniye": now.second,
+                "milisaniye": now.microsecond // 1000,
+            }
+            status_handler = orin.handlers["target.lock.status"]
+            status_handler(
+                OrinMessage(
+                    "target.lock.status",
+                    {
+                        "state": "locked",
+                        "frame_sequence": 120,
+                        "target_id": 7,
+                        "confidence": 0.91,
+                        "hedef_merkez_X": 480,
+                        "hedef_merkez_Y": 270,
+                        "hedef_genislik": 192,
+                        "hedef_yukseklik": 100,
+                        "error_x": 0.0,
+                        "error_y": -0.01,
+                        "lock_progress": 1.0,
+                        "in_zone": True,
+                        "locked": True,
+                        "autonomous": True,
+                        "time_utc": datetime.now(UTC).isoformat(),
+                    },
+                    900,
+                    1,
+                    191,
+                )
+            )
+            self.assertTrue(
+                self._wait_until(
+                    lambda: any(
+                        item.get("iha_kilitlenme") == 1
+                        and item.get("hedef_merkez_X") == 480
+                        and item.get("hedef_merkez_Y") == 270
+                        and item.get("hedef_genislik") == 192
+                        and item.get("hedef_yukseklik") == 100
+                        for item in self.server.state.telemetry_history
+                    ),
+                    timeout=1.5,
+                )
+            )
+
+            report_payload = {
+                "report_id": "e2e-session:42:120:lock",
+                "mission_id": 42,
+                "target_id": 7,
+                "kilitlenmeBitisZamani": clock,
+                "otonom_kilitlenme": 1,
+            }
+            report_handler = orin.handlers["target.lock.report"]
+            first = report_handler(
+                OrinMessage("target.lock.report", report_payload, 901, 1, 191)
+            )
+            duplicate = report_handler(
+                OrinMessage("target.lock.report", report_payload, 902, 1, 191)
+            )
+
+            self.assertEqual(first.payload["execution"], "submitted")
+            self.assertEqual(dict(first.payload), dict(duplicate.payload))
+            self.assertEqual(
+                self.server.state.received_lock_events,
+                [
+                    {
+                        "kilitlenmeBitisZamani": clock,
+                        "otonom_kilitlenme": 1,
+                    }
+                ],
+            )
+        finally:
+            onboard.stop()
 
     def test_telemetry_waits_for_direct_vehicle_gps_time(self) -> None:
         self.telemetry.push(
@@ -424,7 +566,7 @@ class CompetitionTests(unittest.TestCase):
         ]
         self.assertEqual(len(failures), 3)
 
-    def test_missing_hss_response_expires_only_hss_map_lease(self) -> None:
+    def test_missing_hss_response_retains_last_verified_zones(self) -> None:
         self.service._replace_hss_zones(
             (HssZone(1, 39.868, 32.7485, 75.0),)
         )
@@ -440,8 +582,11 @@ class CompetitionTests(unittest.TestCase):
         self.service._poll_hss_zones()
         self.service._poll_hss_zones()
 
-        self.assertEqual(self.service.hss_zones, ())
-        self.assertFalse(
+        self.assertEqual(
+            self.service.hss_zones,
+            (HssZone(1, 39.868, 32.7485, 75.0),),
+        )
+        self.assertTrue(
             any(
                 item.overlay_id.startswith("teknofest-hss-")
                 for item in self.planner.state.overlays

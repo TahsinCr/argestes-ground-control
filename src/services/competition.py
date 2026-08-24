@@ -50,6 +50,10 @@ class TeknofestCompetitionService(CompetitionService):
     HSS_REFRESH_PERIOD_S = 1.0
     QR_REFRESH_PERIOD_S = 5.0
     MAX_JSON_RESPONSE_BYTES = 2 * 1024 * 1024
+    LOCK_SUBMISSION_BUDGET_S = 1.5
+    LOCK_FUTURE_TOLERANCE_S = 0.25
+    KAMIKAZE_SUBMISSION_BUDGET_S = 1.5
+    KAMIKAZE_FUTURE_TOLERANCE_S = 0.25
 
     def __init__(
         self,
@@ -396,7 +400,8 @@ class TeknofestCompetitionService(CompetitionService):
                 raise
             except Exception as exc:
                 message = str(exc) or exc.__class__.__name__
-                self._replace_hss_zones(())
+                with self._lock:
+                    self._hss_response_available = False
                 self._replace_qr_coordinate(None)
                 self._telemetry.patch(server_link=False, server_time=None)
                 self._publish_state(
@@ -408,6 +413,7 @@ class TeknofestCompetitionService(CompetitionService):
                     session_health="offline",
                     telemetry_health="unavailable",
                     clock_health="unavailable",
+                    hss_health="degraded",
                 )
                 self._log_connection_failure(message)
                 self._opener = self._new_opener()
@@ -438,6 +444,21 @@ class TeknofestCompetitionService(CompetitionService):
 
     def submit_lock_event(self, event: LockEvent) -> None:
         self._require_connected()
+        server_now = self.estimated_server_time()
+        if server_now is None:
+            raise CompetitionProtocolError(
+                "Kilitlenme paketi sunucu saati olmadan gönderilemez"
+            )
+        report_age_s = (server_now - event.ended_at.astimezone(UTC)).total_seconds()
+        if report_age_s < -self.LOCK_FUTURE_TOLERANCE_S:
+            raise CompetitionProtocolError(
+                "Kilitlenme bitiş zamanı sunucu saatinin ilerisinde"
+            )
+        if report_age_s > self.LOCK_SUBMISSION_BUDGET_S:
+            raise CompetitionProtocolError(
+                "Kilitlenme paketi 2 saniyelik yarışma sınırı için artık "
+                "güvenli gönderim bütçesinde değil"
+            )
         payload = event.to_payload()
         self._log_protocol(
             "competition.lock_tx",
@@ -454,6 +475,18 @@ class TeknofestCompetitionService(CompetitionService):
 
     def submit_kamikaze_event(self, event: KamikazeEvent) -> None:
         self._require_connected()
+        server_now = self.estimated_server_time()
+        if server_now is None:
+            raise CompetitionProtocolError(
+                "Kamikaze paketi sunucu saati olmadan gönderilemez"
+            )
+        report_age_s = (server_now - event.ended_at.astimezone(UTC)).total_seconds()
+        if report_age_s < -self.KAMIKAZE_FUTURE_TOLERANCE_S:
+            raise CompetitionProtocolError("Kamikaze bitiş zamanı sunucu saatinin ilerisinde")
+        if report_age_s > self.KAMIKAZE_SUBMISSION_BUDGET_S:
+            raise CompetitionProtocolError(
+                "Kamikaze paketi 2 saniyelik yarışma sınırı için artık güvenli gönderim bütçesinde değil"
+            )
         payload = event.to_payload()
         self._log_protocol(
             "competition.kamikaze_tx",
@@ -721,12 +754,11 @@ class TeknofestCompetitionService(CompetitionService):
             with self._lock:
                 was_available = self._hss_response_available
                 self._hss_response_available = False
-            self._replace_hss_zones(())
             self._publish_state(hss_health="degraded")
             if was_available:
                 self._log_protocol(
                     "competition.hss_unavailable",
-                    "TEKNOFEST HSS yanıtı kesildi; eski HSS alanları kaldırıldı",
+                    "TEKNOFEST HSS yanıtı kesildi; son doğrulanmış HSS alanları korunuyor",
                     {"error": str(exc), "error_type": type(exc).__name__},
                     severity="warning",
                 )
