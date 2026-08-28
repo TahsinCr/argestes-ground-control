@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import hashlib
 import json
 import threading
@@ -18,15 +17,21 @@ from src.communication import (
     CompetitionServerTime as ContractCompetitionServerTime,
     ContractModel,
     HssUpdate as ContractHssUpdate,
+    HssRoutePlan,
+    HssTransitRequest,
     HssZone as ContractHssZone,
     HssWaypoint,
     KamikazeApproachPlanUpdate,
+    KamikazeQrReport,
     KamikazeServerTime,
     KamikazeTargetUpdate,
     MissionEventsQuery,
     MissionList,
     MissionQuery,
+    MissionResult,
+    MissionTransition,
     PacketType,
+    RecordingControl,
     TaskCancel,
     TaskPause,
     TaskResume,
@@ -43,8 +48,10 @@ from src.models.kamikaze_approach import KamikazeApproachPlan
 from src.models.onboard import (
     ACTUATOR_TEST_EVENTS,
     ACTUATOR_TEST_TASK,
+    KAMIKAZE_CHECK_TASK,
     CRITICAL_KAMIKAZE_EVENTS,
     QR_EVENT_TYPES,
+    TERMINAL_MISSION_PHASES,
     OnboardMissionEvent,
     OnboardMissionState,
 )
@@ -75,6 +82,28 @@ class OnboardMissionService(OnboardMissionServiceContract):
     _QR_REPORT_HISTORY_LIMIT = 256
     _TARGET_LOCK_REPORT_HISTORY_LIMIT = 256
     _TARGET_LOCK_STATUS_TIMEOUT_S = 1.0
+    _HSS_TASKS = frozenset({"hss.escape", "hss.predict", "hss.transit"})
+    _TERMINAL_PHASES = frozenset(TERMINAL_MISSION_PHASES)
+    _CLOCK_REFRESH_TASKS = frozenset({"kamikaze.execute", "kamikaze.transit"})
+    _CLOCK_REFRESH_INTERVAL_S = 10.0
+    _REASON_DIAGNOSES = {
+        "completed": "Görev Onboard tarafından başarıyla tamamlandı.",
+        "operator.cancelled": "Görev operatör tarafından iptal edildi.",
+        "operator.stopped": "Görev operatör tarafından durduruldu.",
+        "operator.stop_requested": "Görev için durdurma isteği işlendi.",
+        "operator.mode_released": "Gerekli uçuş modu bırakıldı veya değiştirildi.",
+        "vehicle.disarmed": "Araç DISARMED olduğu için görev devam edemedi.",
+        "vehicle.disconnected": "Araç/telemetri bağlantısı kesildiği için görev sonlandı.",
+        "telemetry.unavailable": "Görevin ihtiyaç duyduğu telemetri veya konum verisi yok.",
+        "vision.camera_unavailable": "Kamera akışı alınamadığı için görüntü görevi sonlandı.",
+        "vision.unavailable": "Görüntü işleme bileşeni kullanılamıyor.",
+        "runtime.timeout": "Görev tanımlı çalışma süresini aştı.",
+        "navigation.hss_rejected": "HSS güvenlik/navigasyon kontrolü görevi reddetti.",
+        "input.rejected": "Onboard görev girdilerinden birini reddetti; hedef, plan, mod ve kaynak doğrulamasını kontrol edin.",
+        "safety.aborted": "Görev güvenlik kontrolü tarafından durduruldu.",
+        "execution.failed": "Onboard görev yürütmesi başarısız oldu.",
+        "execution.updated": "Onboard görev durumu güncellendi.",
+    }
 
     def __init__(
         self,
@@ -102,16 +131,17 @@ class OnboardMissionService(OnboardMissionServiceContract):
         self._remote_active_observed = False
         self._async_runtime = async_runtime or AsyncRuntime()
         self._owns_async_runtime = async_runtime is None
-        self._reference_sync_future: concurrent.futures.Future[Any] | None = None
-        self._reference_sync_generation = 0
-        self._reference_sync_processed = 0
         self._hss_observed = False
         self._hss_revision = 0
         self._hss_content_hash = ""
         self._hss_acknowledged_hash = ""
         self._hss_snapshot: tuple[HssZone, ...] = ()
+        self._hss_transit_revision = 0
         self._target_source_revision = 0
         self._clock_source_revision = 0
+        self._competition_clock_timer: threading.Timer | None = None
+        self._competition_clock_generation = 0
+        self._competition_clock_task = ""
         self._target_content_hash = ""
         self._target_acknowledged_hash = ""
         self._last_orin_session = ""
@@ -133,6 +163,11 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 self._state,
                 result=dict(self._state.result),
                 target=dict(self._state.target),
+                mission_contexts={
+                    key: dict(value)
+                    for key, value in self._state.mission_contexts.items()
+                },
+                hss_route=dict(self._state.hss_route),
                 timeline=tuple(self._state.timeline),
             )
 
@@ -166,14 +201,12 @@ class OnboardMissionService(OnboardMissionServiceContract):
                     PacketType.TARGET_LOCK_REPORT,
                     self._handle_target_lock_report,
                 ),
-                self._competition.hss_updated.subscribe(self._on_hss_updated),
-                self._competition.qr_updated.subscribe(self._on_qr_updated),
+                self._orin.register_handler(
+                    PacketType.HSS_ROUTE_PLAN,
+                    self._handle_hss_route_plan,
+                ),
             ]
         )
-        if self._competition.hss_zones:
-            self._on_hss_updated(self._competition.hss_zones)
-        if self._competition.qr_coordinate is not None:
-            self._on_qr_updated(self._competition.qr_coordinate)
         self._on_orin_changed(self._orin.state)
 
     def stop(self) -> None:
@@ -183,11 +216,8 @@ class OnboardMissionService(OnboardMissionServiceContract):
             self._recovery_timer = None
         if recovery_timer is not None:
             recovery_timer.cancel()
+        self._cancel_competition_clock_refresh()
         self._clear_target_lock_status()
-        future = self._reference_sync_future
-        self._reference_sync_future = None
-        if future is not None and not future.done():
-            future.cancel()
         for subscription in self._subscriptions:
             subscription.cancel()
         self._subscriptions.clear()
@@ -202,21 +232,40 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 "KamikazeApproachService.start_selected_mission() kullanın"
             )
         with self._lock:
-            if (
-                self._state.active_task == canonical
-                and not self._state.terminal
-            ):
+            active_task = self._state.active_task
+            if active_task == canonical and not self._state.terminal:
                 raise RuntimeError(f"Onboard görevi zaten çalışıyor: {canonical}")
-        if canonical == "target.lock":
-            self._sync_competition_clock()
         if canonical == "kamikaze.execute":
-            self._sync_kamikaze_target()
+            # Target data is an Onboard precondition, not a connection-health
+            # gate.  A cached target may be used while the competition service
+            # reconnects, but task.start must follow its accepted update.
+            self._try_sync_competition_clock()
+            target_receipt = self._sync_kamikaze_target()
+            with self._lock:
+                target_ready = self._state.target_ready
+            if target_receipt is None and not target_ready:
+                raise RuntimeError(
+                    "Kamikaze hedefi Onboard tarafından doğrulanmadan görev başlatılamaz"
+                )
+        elif canonical in {"target.lock", KAMIKAZE_CHECK_TASK}:
+            self._try_sync_competition_clock()
+        if canonical in self._HSS_TASKS:
+            self._on_hss_updated(tuple(self._competition.hss_zones))
+            self._send_hss_update()
         wire_source = "ui" if source in {"ui", "qt-ui", "operator-ui"} else source
-        return self._issue(
-            TaskStart(canonical, wire_source),
+        requested_at = (
+            datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            if canonical == KAMIKAZE_CHECK_TASK
+            else ""
+        )
+        receipt = self._issue(
+            TaskStart(canonical, wire_source, requested_at=requested_at),
             pending="start",
             task=canonical,
         )
+        if canonical in self._CLOCK_REFRESH_TASKS:
+            self._schedule_competition_clock_refresh(canonical)
+        return receipt
 
     def start_kamikaze_transit(
         self,
@@ -226,9 +275,8 @@ class OnboardMissionService(OnboardMissionServiceContract):
     ) -> OrinCommandReceipt:
         """Atomically publish the locked approach plan, then launch onboard transit.
 
-        Target and HSS references are synchronized first so the approach contract
-        carries the exact revisions that onboard will validate.  The selected GCS
-        geometry is never silently rebuilt here.
+        The QR target and selected approach geometry are sent without coupling
+        this Kamikaze task to the independent HSS task family.
         """
         selected = plan.selected_corridor
         if selected is None or not plan.locked:
@@ -249,13 +297,10 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 "QR koordinatı koridor seçiminden sonra değişti; koridorlar yeniden hesaplanmalı"
             )
         self._send_target_update(target)
+        self._sync_competition_clock()
 
-        # Force an explicit current HSS snapshot, including the zero-zone case.
-        self._on_hss_updated(tuple(self._competition.hss_zones))
-        self._send_hss_update()
         with self._lock:
             target_revision = self._target_source_revision
-            hss_revision = self._hss_revision
 
         created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         plan_id = f"gcs-kamikaze:{plan.revision}:{selected.angle_deg}"
@@ -284,7 +329,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
             dive_pitch_deg=-abs(float(plan.config.dive_angle_deg)),
             safety_margin_m=float(plan.config.hss_margin_m),
             corridor_width_m=float(plan.config.corridor_width_m),
-            hss_revision=int(hss_revision),
+            hss_revision=0,
             created_at_utc=created_at,
             content_hash="pending",
         )
@@ -327,7 +372,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
         )
 
         wire_source = "ui" if source in {"ui", "qt-ui", "operator-ui"} else source
-        return self._issue(
+        receipt = self._issue(
             TaskStart(
                 "kamikaze.transit",
                 wire_source,
@@ -340,6 +385,66 @@ class OnboardMissionService(OnboardMissionServiceContract):
             pending="start",
             task="kamikaze.transit",
         )
+        self._schedule_competition_clock_refresh("kamikaze.transit")
+        return receipt
+
+    def start_hss_transit(
+        self,
+        destination: Point,
+        *,
+        source: str = "ui",
+    ) -> OrinCommandReceipt:
+        """Replace the current HSS transit with one ground-selected target."""
+
+        target = Point(
+            float(destination.latitude),
+            float(destination.longitude),
+            float(destination.altitude),
+        )
+        state = self.state
+        if (
+            (state.active_task == "hss.transit" and not state.terminal)
+            or bool(state.hss_route)
+        ):
+            self.cancel_task("hss.transit")
+
+        self._on_hss_updated(tuple(self._competition.hss_zones))
+        self._send_hss_update()
+        with self._lock:
+            revision = self._next_revision(self._hss_transit_revision)
+            self._hss_transit_revision = revision
+            self._state = replace(
+                self._state,
+                hss_route={
+                    "route_id": f"pending:{revision}",
+                    "phase": "transit",
+                    "destination": {
+                        "latitude_deg": target.latitude,
+                        "longitude_deg": target.longitude,
+                        "altitude_m": target.altitude,
+                    },
+                    "steps": [],
+                },
+            )
+        self._publish()
+        command = HssTransitRequest(
+            HssWaypoint(target.latitude, target.longitude, target.altitude),
+            revision,
+            "ui" if source in {"ui", "qt-ui", "operator-ui"} else source,
+        )
+        try:
+            receipt = self._send_request(command)
+        except Exception:
+            with self._lock:
+                self._state = replace(self._state, hss_route={})
+            self._publish()
+            raise
+        if not receipt.accepted:
+            with self._lock:
+                self._state = replace(self._state, hss_route={})
+            self._publish()
+            raise OnboardCommandRejectedError(receipt.message, receipt.response)
+        return receipt
 
     def _sync_competition_clock(self) -> OrinCommandReceipt:
         """Anchor onboard result timestamps to the latest TEKNOFEST clock."""
@@ -396,14 +501,87 @@ class OnboardMissionService(OnboardMissionServiceContract):
         )
         return receipt
 
-    def _sync_kamikaze_target(self) -> OrinCommandReceipt | None:
-        """Forward the latest TEKNOFEST QR target before a kamikaze launch."""
-
+    def _try_sync_competition_clock(self) -> OrinCommandReceipt | None:
+        """Send a clock sample when available without gating an Onboard task."""
         try:
-            self._competition.refresh_qr_coordinate()
-            target = self._competition.qr_coordinate
-            if target is None:
-                raise RuntimeError("TEKNOFEST sunucusundan QR hedef koordinatı alınamadı")
+            return self._sync_competition_clock()
+        except Exception as exc:
+            self._log(
+                "competition.clock_sync_skipped",
+                "TEKNOFEST saati kullanılamadı; Onboard görevi yine de başlatılıyor",
+                "warning",
+                {"error": str(exc), "error_type": type(exc).__name__},
+            )
+            return None
+
+    def _schedule_competition_clock_refresh(self, task: str) -> None:
+        """Refresh the accepted TEKNOFEST clock only while a long mission runs."""
+        canonical = self._canonical_task(task)
+        if canonical not in self._CLOCK_REFRESH_TASKS:
+            return
+        with self._lock:
+            self._competition_clock_generation += 1
+            generation = self._competition_clock_generation
+            previous = self._competition_clock_timer
+            self._competition_clock_task = canonical
+
+            def refresh() -> None:
+                with self._lock:
+                    if generation != self._competition_clock_generation:
+                        return
+                    self._competition_clock_timer = None
+                    active = (
+                        self._started
+                        and self._state.active_task == canonical
+                        and not self._state.terminal
+                    )
+                if not active:
+                    return
+                try:
+                    self._sync_competition_clock()
+                except Exception as exc:
+                    self._log(
+                        "competition.clock_refresh_failed",
+                        "Aktif kamikaze görevi için TEKNOFEST saat yenilemesi yapılamadı",
+                        "warning",
+                        {"task": canonical, "error": str(exc), "error_type": type(exc).__name__},
+                    )
+                self._schedule_competition_clock_refresh(canonical)
+
+            timer = threading.Timer(self._CLOCK_REFRESH_INTERVAL_S, refresh)
+            timer.daemon = True
+            self._competition_clock_timer = timer
+        if previous is not None:
+            previous.cancel()
+        timer.start()
+
+    def _cancel_competition_clock_refresh(self, task: str | None = None) -> None:
+        with self._lock:
+            if task is not None and self._competition_clock_task != task:
+                return
+            self._competition_clock_generation += 1
+            timer = self._competition_clock_timer
+            self._competition_clock_timer = None
+            self._competition_clock_task = ""
+        if timer is not None:
+            timer.cancel()
+
+    def _sync_kamikaze_target(self) -> OrinCommandReceipt | None:
+        """Forward an already-known QR target without contacting TEKNOFEST.
+
+        Competition polling belongs to its own service.  Starting an Onboard
+        task must never synchronously depend on that service or its network.
+        """
+        target = self._competition.qr_coordinate
+        if target is None:
+            self._log(
+                "kamikaze.target_sync_skipped",
+                "Kamikaze hedefi yok; görev Onboard'a mevcut hedef durumuyla gönderiliyor",
+                "warning",
+                {},
+            )
+            return None
+        try:
             return self._send_target_update(target)
         except Exception as exc:
             self._record_target_failure(exc)
@@ -549,87 +727,6 @@ class OnboardMissionService(OnboardMissionServiceContract):
             if content_hash != self._hss_content_hash:
                 self._hss_revision = self._next_revision(self._hss_revision)
                 self._hss_content_hash = content_hash
-        self._schedule_reference_sync()
-
-    def _on_qr_updated(self, target: QrCoordinate | None) -> None:
-        if target is not None:
-            self._schedule_reference_sync()
-
-    def _schedule_reference_sync(self) -> None:
-        with self._lock:
-            if not self._started:
-                return
-            self._reference_sync_generation += 1
-            future = self._reference_sync_future
-            if future is not None and not future.done():
-                return
-            future = self._async_runtime.submit(self._reference_sync_loop())
-            self._reference_sync_future = future
-        future.add_done_callback(self._reference_sync_done)
-
-    def _reference_sync_done(self, future: concurrent.futures.Future[Any]) -> None:
-        failed = False
-        if not future.cancelled():
-            try:
-                future.result()
-            except Exception as exc:
-                failed = True
-                self._log(
-                    "competition.reference_sync_failed",
-                    "Onboard referans senkronizasyonu beklenmedik şekilde durdu",
-                    "warning",
-                    {"error": str(exc), "error_type": type(exc).__name__},
-                )
-        with self._lock:
-            if self._reference_sync_future is not future:
-                return
-            self._reference_sync_future = None
-            reschedule = (
-                not failed
-                and self._started
-                and self._reference_sync_processed < self._reference_sync_generation
-            )
-        if reschedule:
-            with self._lock:
-                if not self._started or self._reference_sync_future is not None:
-                    return
-                next_future = self._async_runtime.submit(
-                    self._reference_sync_loop()
-                )
-                self._reference_sync_future = next_future
-            next_future.add_done_callback(self._reference_sync_done)
-
-    async def _reference_sync_loop(self) -> None:
-        while True:
-            with self._lock:
-                generation = self._reference_sync_generation
-            await asyncio.to_thread(self._sync_reference_once)
-            with self._lock:
-                self._reference_sync_processed = generation
-                if generation == self._reference_sync_generation:
-                    return
-
-    def _sync_reference_once(self) -> None:
-        if not self.state.connected:
-            return
-        with self._lock:
-            hss_observed = self._hss_observed
-        if hss_observed:
-            try:
-                self._send_hss_update()
-            except Exception as exc:
-                self._log(
-                    "competition.hss_sync_failed",
-                    "HSS durumu Orin'e aktarılamadı",
-                    "warning",
-                    {"error": str(exc), "error_type": type(exc).__name__},
-                )
-        target = self._competition.qr_coordinate
-        if target is not None:
-            try:
-                self._send_target_update(target)
-            except Exception as exc:
-                self._record_target_failure(exc)
 
     def _send_hss_update(self) -> OrinCommandReceipt | None:
         with self._hss_sync_lock:
@@ -751,7 +848,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
     def cancel_task(self, task: str = "kamikaze.execute") -> OrinCommandReceipt:
         canonical = self._canonical_task(task)
         try:
-            return self._task_control(TaskCancel(canonical), canonical, "cancel")
+            receipt = self._task_control(TaskCancel(canonical), canonical, "cancel")
         except OnboardCommandRejectedError as exc:
             # Cancellation is idempotent for the operator. A lost start ACK
             # may leave YKİ uncertain even though onboard never instantiated
@@ -787,12 +884,17 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 },
             )
             self._publish()
-            return OrinCommandReceipt(
+            receipt = OrinCommandReceipt(
                 request_id,
                 True,
                 message,
                 response,
             )
+        if canonical == "hss.transit":
+            with self._lock:
+                self._state = replace(self._state, hss_route={})
+            self._publish()
+        return receipt
 
     def refresh(self) -> OrinCommandReceipt:
         receipt = self._issue(MissionList(), pending="refresh")
@@ -844,6 +946,49 @@ class OnboardMissionService(OnboardMissionServiceContract):
             raise ValueError("Chain kimliği boş olamaz")
         return self._issue(ChainStart(chain_id), pending="chain")
 
+    def set_video_recording(self, enabled: bool) -> OrinCommandReceipt:
+        """Control only Onboard's video recording through the shared contract.
+
+        Telemetry and session logging deliberately have no coupling to this
+        control; their lifecycle is owned by the Onboard runtime.
+        """
+
+        command = RecordingControl("video", bool(enabled))
+        desired = bool(enabled)
+        self._log(
+            "onboard.recording_control_dispatch",
+            f"Onboard video kaydı {'başlatılıyor' if desired else 'durduruluyor'}",
+            "info",
+            {"stream": command.stream, "enabled": desired},
+        )
+        try:
+            receipt = self._send_request(command)
+            if not receipt.accepted:
+                raise OnboardCommandRejectedError(receipt.message, receipt.response)
+        except Exception as exc:
+            self._log(
+                "onboard.recording_control_failed",
+                f"Onboard video kayıt komutu uygulanamadı: {exc}",
+                "danger",
+                {"stream": command.stream, "enabled": desired},
+            )
+            raise
+
+        video_enabled = bool(receipt.response.get("video", desired))
+        telemetry_enabled = bool(receipt.response.get("telemetry", True))
+        self._log(
+            "onboard.recording_control_acknowledged",
+            f"Onboard video kaydı {'açık' if video_enabled else 'kapalı'}",
+            "success",
+            {
+                "stream": command.stream,
+                "video": video_enabled,
+                "telemetry": telemetry_enabled,
+                "request_id": receipt.request_id,
+            },
+        )
+        return receipt
+
     def _task_control(
         self,
         command: ContractModel,
@@ -875,7 +1020,11 @@ class OnboardMissionService(OnboardMissionServiceContract):
             if self._state.pending_command:
                 raise RuntimeError(f"Onboard komutu zaten bekleniyor: {self._state.pending_command}")
             starting = packet_type == "task.start"
-            starting_kamikaze = starting and task in {"kamikaze.execute", "kamikaze.transit"}
+            starting_kamikaze = starting and task in {
+                "kamikaze.execute",
+                "kamikaze.transit",
+                KAMIKAZE_CHECK_TASK,
+            }
             starting_actuator_test = starting and task == ACTUATOR_TEST_TASK
             self._state = replace(
                 self._state,
@@ -884,6 +1033,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 active_task=task or self._state.active_task,
                 mission_id=(None if starting else self._state.mission_id),
                 phase=("requesting" if starting else self._state.phase),
+                reason_code=("" if starting else self._state.reason_code),
                 qr_status=("pending" if starting_kamikaze else self._state.qr_status),
                 qr_text=(None if starting_kamikaze else self._state.qr_text),
                 qr_event=("" if starting_kamikaze else self._state.qr_event),
@@ -976,6 +1126,35 @@ class OnboardMissionService(OnboardMissionServiceContract):
             )
             raise
         except TimeoutError as exc:
+            if packet_type == "task.start" and self._task_start_was_observed(task):
+                observed = self.state
+                message = (
+                    "task.start ACK'i zamanında gelmedi; ancak Onboard görev "
+                    f"geçişini doğruladı ({observed.phase})."
+                )
+                self._log(
+                    "onboard.command_ack_missing_mission_observed",
+                    message,
+                    "warning",
+                    {
+                        "type": packet_type,
+                        "task": task,
+                        "mission_id": observed.mission_id,
+                        "phase": observed.phase,
+                    },
+                )
+                self._schedule_recovery(2.0)
+                return OrinCommandReceipt(
+                    0,
+                    True,
+                    message,
+                    {
+                        "task": task,
+                        "mission_id": observed.mission_id,
+                        "execution": observed.phase,
+                        "observed_lifecycle": True,
+                    },
+                )
             # A lost ACK does not prove that task.start was rejected. Never retry it.
             message = (
                 "Komut yanıtı zaman aşımına uğradı; aynı görev otomatik "
@@ -1002,6 +1181,15 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 self._state = replace(self._state, pending_command="")
             self._publish()
 
+    def _task_start_was_observed(self, task: str) -> bool:
+        state = self.state
+        return bool(
+            task
+            and state.active_task == task
+            and state.mission_id is not None
+            and state.phase in {"starting", "running", "pausing", "paused", "stopping"}
+        )
+
     def _apply_ack(self, payload: dict[str, Any], *, task: str = "") -> None:
         snapshot = payload.get("snapshot")
         snapshot_payload = dict(snapshot) if isinstance(snapshot, dict) else {}
@@ -1022,14 +1210,31 @@ class OnboardMissionService(OnboardMissionServiceContract):
             acknowledged_task = str(
                 payload.get("task") or task or self._state.active_task
             ).strip()
+            canonical_task = (
+                self._canonical_task(acknowledged_task)
+                if acknowledged_task
+                else self._state.active_task
+            )
+            contexts = self._updated_mission_contexts(
+                canonical_task,
+                mission_id,
+                "cancelled" if already_inactive else phase,
+            )
             self._state = replace(
                 self._state,
-                active_task=(
-                    self._canonical_task(acknowledged_task)
-                    if acknowledged_task
-                    else self._state.active_task
-                ),
+                active_task=canonical_task,
                 mission_id=(None if already_inactive else mission_id or self._state.mission_id),
+                mission_contexts=contexts,
+                target_lock_mission_id=(
+                    mission_id
+                    if canonical_task == "target.lock" and not already_inactive
+                    else self._state.target_lock_mission_id
+                ),
+                target_lock_phase=(
+                    ("cancelled" if already_inactive else phase)
+                    if canonical_task == "target.lock"
+                    else self._state.target_lock_phase
+                ),
                 phase=("cancelled" if already_inactive else phase or self._state.phase),
                 waiting_for_guided=(False if already_inactive else waiting),
                 vehicle_mode=vehicle_mode,
@@ -1054,24 +1259,122 @@ class OnboardMissionService(OnboardMissionServiceContract):
         )
         self._publish()
 
+    def _updated_mission_contexts(
+        self,
+        task: str,
+        mission_id: int | None,
+        phase: str,
+        reason_code: str = "",
+    ) -> dict[str, dict[str, Any]]:
+        contexts = {
+            key: dict(value) for key, value in self._state.mission_contexts.items()
+        }
+        if task and mission_id is not None:
+            current = contexts.get(f"{task}:{mission_id}", {})
+            contexts[f"{task}:{mission_id}"] = {
+                **current,
+                "task": task,
+                "mission_id": mission_id,
+                "phase": str(phase).strip().lower() or "unknown",
+                "reason_code": str(reason_code).strip().lower(),
+            }
+        return contexts
+
+    def _is_stale_mission_update(
+        self,
+        task: str,
+        mission_id: int | None,
+        phase: str,
+    ) -> bool:
+        """Keep a terminal mission outcome immutable against late packets."""
+        if not task or mission_id is None:
+            return False
+        context = self._state.mission_contexts.get(f"{task}:{mission_id}")
+        if context is None:
+            return False
+        previous = str(context.get("phase", "")).strip().lower()
+        return previous in self._TERMINAL_PHASES and phase != previous
+
+    def _handle_hss_route_plan(self, message: OrinMessage) -> dict[str, Any]:
+        try:
+            route = HssRoutePlan.from_payload(message.payload)
+        except (TypeError, ValueError) as exc:
+            self._log(
+                "hss.route_decode_failed",
+                "Onboard HSS rotası sözleşmeye uygun değil",
+                "warning",
+                {"error": str(exc)},
+            )
+            return {}
+        payload = route.to_payload()
+        with self._lock:
+            self._state = replace(self._state, hss_route=dict(payload))
+        self._log(
+            "hss.route_received",
+            "HSS'den kaçınan rota Onboard'dan alındı",
+            "success",
+            {
+                "route_id": route.route_id,
+                "phase": route.phase,
+                "step_count": len(route.steps),
+            },
+        )
+        self._publish()
+        return {"accepted": True, "route_id": route.route_id}
+
     def _handle_transition(self, message: OrinMessage) -> dict[str, Any]:
-        payload = message.payload
-        current = str(payload.get("current", "unknown")).strip().lower()
-        mission_id = self._optional_int(payload.get("mission_id"))
-        task_value = str(payload.get("task") or self.state.active_task).strip()
-        task = self._canonical_task(task_value) if task_value else ""
-        reason = str(payload.get("reason", "")).strip()
-        if not self._matches_current_mission(task, mission_id):
+        try:
+            transition = MissionTransition.from_payload(message.payload)
+        except (TypeError, ValueError) as exc:
+            self._log(
+                "mission.contract_decode_failed",
+                "Onboard görev geçişi sözleşmeye uygun değil",
+                "warning",
+                {"packet_type": PacketType.MISSION_TRANSITION.value, "error": str(exc)},
+            )
+            return {}
+        payload = transition.to_payload()
+        current = transition.current
+        mission_id = transition.mission_id
+        task = transition.task
+        reason = transition.reason
+        reason_code = transition.reason_code
+        if not self._valid_mission_identity(task, mission_id):
             self._log_ignored_mission_packet("mission.transition", task, mission_id)
             return {}
         with self._lock:
+            if self._is_stale_mission_update(task, mission_id, current):
+                self._log_ignored_mission_packet("mission.transition", task, mission_id)
+                return {}
+            contexts = self._updated_mission_contexts(
+                task, mission_id, current, reason_code
+            )
+            updates_foreground = not self._state.active_task or task == self._state.active_task
             self._state = replace(
                 self._state,
-                active_task=task or self._state.active_task,
-                mission_id=mission_id or self._state.mission_id,
-                phase=current,
-                waiting_for_guided=(current == "starting" and self._state.waiting_for_guided),
-                last_error=reason if current == "failed" else self._state.last_error,
+                active_task=(task if updates_foreground else self._state.active_task),
+                mission_id=(mission_id if updates_foreground else self._state.mission_id),
+                mission_contexts=contexts,
+                target_lock_mission_id=(
+                    mission_id if task == "target.lock" else self._state.target_lock_mission_id
+                ),
+                target_lock_phase=(
+                    current if task == "target.lock" else self._state.target_lock_phase
+                ),
+                phase=(current if updates_foreground else self._state.phase),
+                reason_code=(
+                    reason_code if updates_foreground else self._state.reason_code
+                ),
+                waiting_for_guided=(
+                    current == "starting" and self._state.waiting_for_guided
+                    if updates_foreground
+                    else self._state.waiting_for_guided
+                ),
+                last_error=(
+                    self._reason_diagnosis(reason_code, reason)
+                    if updates_foreground and current == "failed"
+                    else self._state.last_error
+                ),
             )
         self._log(
             "mission.transition",
@@ -1079,13 +1382,101 @@ class OnboardMissionService(OnboardMissionServiceContract):
             "danger" if current == "failed" else "success" if current == "succeeded" else "info",
             dict(payload),
         )
+        if current in self._TERMINAL_PHASES:
+            self._cancel_competition_clock_refresh(task)
+            self._log_terminal_diagnosis(task, mission_id, current, reason_code, reason)
+            if task == "hss.transit":
+                with self._lock:
+                    self._state = replace(self._state, hss_route={})
         self._publish()
         return {}
 
     def _handle_result(self, message: OrinMessage) -> dict[str, Any]:
-        payload = message.payload
-        snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else {}
-        result = snapshot.get("result") if isinstance(snapshot.get("result"), dict) else {}
+        try:
+            contract_result = MissionResult.from_payload(message.payload)
+        except (TypeError, ValueError) as exc:
+            # Older onboard builds did not include mission identity in compact
+            # results. Keep that migration path local; current packets always
+            # take the typed shared-contract path above.
+            if "task" in message.payload or "mission_id" in message.payload:
+                self._log(
+                    "mission.contract_decode_failed",
+                    "Onboard görev sonucu sözleşmeye uygun değil",
+                    "warning",
+                    {"packet_type": PacketType.MISSION_RESULT.value, "error": str(exc)},
+                )
+                return {}
+            return self._handle_legacy_result(message)
+        payload: dict[str, Any] = dict(contract_result.to_payload())
+        snapshot: dict[str, Any] = dict(payload["snapshot"])
+        result: dict[str, Any] = (
+            dict(snapshot["result"])
+            if isinstance(snapshot.get("result"), dict)
+            else {}
+        )
+        execution = contract_result.execution
+        mission_id = contract_result.mission_id
+        task = contract_result.task
+        reason = contract_result.reason
+        reason_code = contract_result.reason_code
+        if not self._valid_mission_identity(task, mission_id):
+            self._log_ignored_mission_packet("mission.result", task, mission_id)
+            return {}
+        with self._lock:
+            if self._is_stale_mission_update(task, mission_id, execution):
+                self._log_ignored_mission_packet("mission.result", task, mission_id)
+                return {}
+            contexts = self._updated_mission_contexts(
+                task, mission_id, execution, reason_code
+            )
+            updates_foreground = not self._state.active_task or task == self._state.active_task
+            self._state = replace(
+                self._state,
+                active_task=(task if updates_foreground else self._state.active_task),
+                mission_id=(mission_id if updates_foreground else self._state.mission_id),
+                mission_contexts=contexts,
+                target_lock_mission_id=(
+                    mission_id if task == "target.lock" else self._state.target_lock_mission_id
+                ),
+                target_lock_phase=(
+                    execution if task == "target.lock" else self._state.target_lock_phase
+                ),
+                phase=(execution if updates_foreground else self._state.phase),
+                reason_code=(
+                    reason_code if updates_foreground else self._state.reason_code
+                ),
+                waiting_for_guided=(False if updates_foreground else self._state.waiting_for_guided),
+                result=(
+                    dict(snapshot) if updates_foreground else dict(self._state.result)
+                ),
+                result_received=(True if updates_foreground else self._state.result_received),
+                last_error=(
+                    self._reason_diagnosis(reason_code, reason)
+                    if updates_foreground and execution == "failed"
+                    else self._state.last_error
+                ),
+            )
+        self._accept_result_qr(result, mission_id)
+        self._log_mission_result(execution, task, mission_id, snapshot, reason, reason_code)
+        if execution in self._TERMINAL_PHASES:
+            self._cancel_competition_clock_refresh(task)
+            self._log_terminal_diagnosis(task, mission_id, execution, reason_code, reason)
+        self._publish()
+        return {}
+
+    def _handle_legacy_result(self, message: OrinMessage) -> dict[str, Any]:
+        """Compatibility for result packets emitted before mission identities."""
+        payload: dict[str, Any] = dict(message.payload)
+        snapshot: dict[str, Any] = (
+            dict(payload["snapshot"])
+            if isinstance(payload.get("snapshot"), dict)
+            else {}
+        )
+        result: dict[str, Any] = (
+            dict(snapshot["result"])
+            if isinstance(snapshot.get("result"), dict)
+            else {}
+        )
         if not result and isinstance(payload.get("result"), dict):
             result = dict(payload["result"])
         execution = str(payload.get("execution") or snapshot.get("phase") or "failed").lower()
@@ -1094,24 +1485,45 @@ class OnboardMissionService(OnboardMissionServiceContract):
             payload.get("task") or snapshot.get("task") or self.state.active_task
         ).strip()
         task = self._canonical_task(task_value) if task_value else ""
-        if not self._matches_current_mission(task, mission_id):
+        if (task or mission_id is not None) and not self._valid_mission_identity(
+            task, mission_id
+        ):
             self._log_ignored_mission_packet("mission.result", task, mission_id)
             return {}
         with self._lock:
+            contexts = self._updated_mission_contexts(task, mission_id, execution)
+            updates_foreground = not self._state.active_task or task == self._state.active_task
             self._state = replace(
                 self._state,
-                active_task=task or self._state.active_task,
-                mission_id=mission_id or self._state.mission_id,
-                phase=execution,
-                waiting_for_guided=False,
-                result=(dict(snapshot) if snapshot else dict(payload)),
-                result_received=True,
+                active_task=(task if updates_foreground else self._state.active_task),
+                mission_id=(mission_id if updates_foreground else self._state.mission_id),
+                mission_contexts=contexts,
+                target_lock_mission_id=(
+                    mission_id if task == "target.lock" else self._state.target_lock_mission_id
+                ),
+                target_lock_phase=(
+                    execution if task == "target.lock" else self._state.target_lock_phase
+                ),
+                phase=(execution if updates_foreground else self._state.phase),
+                waiting_for_guided=(False if updates_foreground else self._state.waiting_for_guided),
+                result=(
+                    (dict(snapshot) if snapshot else dict(payload))
+                    if updates_foreground
+                    else dict(self._state.result)
+                ),
+                result_received=(True if updates_foreground else self._state.result_received),
                 last_error=(
                     str(snapshot.get("reason") or payload.get("reason") or "")
-                    if execution == "failed"
+                    if updates_foreground and execution == "failed"
                     else self._state.last_error
                 ),
             )
+        self._accept_result_qr(result, mission_id)
+        self._log_mission_result(execution, task, mission_id, snapshot, "", "")
+        self._publish()
+        return {}
+
+    def _accept_result_qr(self, result: Mapping[str, Any], mission_id: int | None) -> None:
         qr_text = result.get("qr_text")
         if qr_text is not None and str(qr_text):
             self._accept_qr(
@@ -1124,14 +1536,67 @@ class OnboardMissionService(OnboardMissionServiceContract):
                     fields=dict(result),
                 )
             )
+    def _log_mission_result(
+        self,
+        execution: str,
+        task: str,
+        mission_id: int | None,
+        snapshot: Mapping[str, Any],
+        reason: str,
+        reason_code: str,
+    ) -> None:
         self._log(
             "mission.result",
             f"Onboard görev sonucu: {execution}",
             "success" if execution == "succeeded" else "warning" if execution == "cancelled" else "danger",
-            {"mission_id": mission_id, "task": self.state.active_task, "snapshot": dict(snapshot)},
+            {
+                "mission_id": mission_id,
+                "task": task,
+                "snapshot": dict(snapshot),
+                "reason": reason,
+                "reason_code": reason_code,
+            },
         )
-        self._publish()
-        return {}
+
+    @classmethod
+    def _reason_diagnosis(cls, reason_code: str, reason: str) -> str:
+        code = str(reason_code).strip().lower()
+        detail = str(reason).strip()
+        summary = cls._REASON_DIAGNOSES.get(
+            code,
+            f"Onboard bilinmeyen görev durum kodu bildirdi: {code or 'belirtilmedi'}.",
+        )
+        return f"{summary} Onboard ayrıntısı: {detail}" if detail and detail != code else summary
+
+    def _log_terminal_diagnosis(
+        self,
+        task: str,
+        mission_id: int | None,
+        phase: str,
+        reason_code: str,
+        reason: str,
+    ) -> None:
+        state = self.state
+        diagnosis = self._reason_diagnosis(reason_code, reason)
+        self._log(
+            "mission.terminal_diagnosis",
+            f"Onboard görev tanısı ({task or '-'}): {diagnosis}",
+            "success" if phase == "succeeded" else "warning" if phase in {"cancelled", "stopped"} else "danger",
+            {
+                "task": task,
+                "mission_id": mission_id,
+                "phase": phase,
+                "reason_code": reason_code,
+                "onboard_reason": reason,
+                "diagnosis": diagnosis,
+                "vehicle_mode": state.vehicle_mode,
+                "waiting_for_guided": state.waiting_for_guided,
+                "target_ready": state.target_ready,
+                "target_revision": state.target_revision,
+                "hss_ready": state.hss_ready,
+                "connected": state.connected,
+            },
+        )
 
     def _handle_chain(self, message: OrinMessage) -> dict[str, Any]:
         self._log("mission.chain", "Onboard görev zinciri güncellendi", "info", dict(message.payload))
@@ -1207,26 +1672,16 @@ class OnboardMissionService(OnboardMissionServiceContract):
 
     def _submit_target_lock_report(self, message: OrinMessage) -> dict[str, Any]:
         report = TargetLockReport.from_payload(dict(message.payload))
-        with self._lock:
+        with self._target_lock_report_lock:
             previous = self._submitted_target_lock_reports.get(report.report_id)
             if previous is not None:
                 return dict(previous)
-
-        ended_at = self._competition_event_datetime(report.ended_at_server)
-        self._competition.submit_lock_event(
-            LockEvent(
-                ended_at=ended_at,
-                autonomous=report.autonomous,
-                vehicle_source="orin",
-            )
-        )
-        response = {
-            "execution": "submitted",
-            "report_id": report.report_id,
-            "mission_id": report.mission_id,
-            "target_id": report.target_id,
-        }
-        with self._lock:
+            response = {
+                "execution": "queued",
+                "report_id": report.report_id,
+                "mission_id": report.mission_id,
+                "target_id": report.target_id,
+            }
             self._submitted_target_lock_reports[report.report_id] = dict(response)
             self._submitted_target_lock_reports.move_to_end(report.report_id)
             while (
@@ -1234,6 +1689,61 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 > self._TARGET_LOCK_REPORT_HISTORY_LIMIT
             ):
                 self._submitted_target_lock_reports.popitem(last=False)
+        self._async_runtime.submit(self._deliver_target_lock_report(report))
+        self._log(
+            "target_lock.report_accepted",
+            "Orin kilitlenme raporu alındı; sunucu gönderimi kuyruğa alındı",
+            "success",
+            {
+                "report_id": report.report_id,
+                "mission_id": report.mission_id,
+                "target_id": report.target_id,
+                "autonomous": report.autonomous,
+            },
+        )
+        return response
+
+    async def _deliver_target_lock_report(self, report: TargetLockReport) -> None:
+        try:
+            ended_at = self._competition_event_datetime(report.ended_at_server)
+            await asyncio.to_thread(
+                self._competition.submit_lock_event,
+                LockEvent(
+                    ended_at=ended_at,
+                    autonomous=report.autonomous,
+                    vehicle_source="orin",
+                ),
+            )
+        except Exception as exc:
+            with self._target_lock_report_lock:
+                current = self._submitted_target_lock_reports.get(report.report_id)
+                if current is not None:
+                    current = {
+                        **current,
+                        "execution": "accepted",
+                        "delivery": "failed",
+                    }
+                    self._submitted_target_lock_reports[report.report_id] = current
+            self._log(
+                "target_lock.report_delivery_failed",
+                "Kilitlenme raporu alındı ancak TEKNOFEST POST işlemi başarısız",
+                "danger",
+                {
+                    "report_id": report.report_id,
+                    "mission_id": report.mission_id,
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return
+        with self._target_lock_report_lock:
+            current = self._submitted_target_lock_reports.get(report.report_id)
+            if current is not None:
+                self._submitted_target_lock_reports[report.report_id] = {
+                    **current,
+                    "execution": "submitted",
+                    "delivery": "succeeded",
+                }
         self._log(
             "target_lock.report_submitted",
             "Orin kilitlenme raporu TEKNOFEST sunucusuna gönderildi",
@@ -1246,7 +1756,6 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 "teknofest_payload": report.teknofest_payload(),
             },
         )
-        return response
 
     def _expire_target_lock_status(self, generation: int) -> None:
         with self._lock:
@@ -1267,63 +1776,44 @@ class OnboardMissionService(OnboardMissionServiceContract):
             self._telemetry.patch(target_track=TargetTrack())
 
     def _submit_qr_report(self, message: OrinMessage) -> dict[str, Any]:
-        payload = dict(message.payload)
-        report_id = str(payload.get("report_id", "")).strip()
-        if not report_id:
-            raise ValueError("QR report_id alanı zorunlu")
-        if len(report_id) > 192:
-            raise ValueError("QR report_id alanı 192 karakteri aşamaz")
+        report = KamikazeQrReport.from_payload(dict(message.payload))
+        report_id = report.report_id
         with self._lock:
             previous = self._submitted_qr_reports.get(report_id)
             if previous is not None:
-                return dict(previous)
+                return {**previous, "execution": "duplicate"}
 
-        qr_text = str(payload.get("qr_text", "")).strip()
-        if not qr_text:
-            raise ValueError("QR raporu boş qr_text içeremez")
-        if len(qr_text) > 4096:
-            raise ValueError("QR raporu 4096 karakteri aşamaz")
-        ended_at = self._kamikaze_report_datetime(
-            payload,
-            iso_keys=("ended_at_utc", "observed_at_utc", "time_utc"),
-            server_keys=("kamikazeBitisZamani", "ended_at_server"),
-        )
-        started_at = self._kamikaze_report_datetime(
-            payload,
-            iso_keys=("started_at_utc",),
-            server_keys=("kamikazeBaslangicZamani", "started_at_server"),
-            required=False,
-        ) or ended_at
-        mission_id = self._optional_int(payload.get("mission_id"))
-        if mission_id is None or mission_id <= 0:
-            raise ValueError("QR mission_id alanı pozitif olmalı")
-        altitude = payload.get("altitude_m")
+        started_at = self._competition_event_datetime(report.started_at_server)
+        ended_at = self._competition_event_datetime(report.ended_at_server)
+        payload = report.to_payload()
         event = OnboardMissionEvent(
-            event=str(payload.get("event") or "QR_DECODED"),
+            event=report.event,
             time_utc=ended_at.isoformat().replace("+00:00", "Z"),
-            mission_id=mission_id,
+            mission_id=report.mission_id,
             source="report",
-            qr_text=qr_text,
-            altitude_m=(float(altitude) if altitude is not None else None),
-            fields={**payload, "report_id": report_id},
+            qr_text=report.qr_text,
+            altitude_m=report.altitude_m,
+            fields=payload,
         )
         self._process_event_payload(
             event.to_dict(),
             source="report",
             mission_id=event.mission_id,
         )
-        self._competition.submit_kamikaze_event(
-            KamikazeEvent(
-                started_at=started_at,
-                ended_at=ended_at,
-                qr_text=qr_text,
-                vehicle_source="orin",
+        if not report.test_only:
+            self._competition.submit_kamikaze_event(
+                KamikazeEvent(
+                    started_at=started_at,
+                    ended_at=ended_at,
+                    qr_text=report.qr_text,
+                    vehicle_source="orin",
+                )
             )
-        )
         response = {
-            "execution": "submitted",
+            "execution": "accepted" if report.test_only else "submitted",
             "report_id": report_id,
             "mission_id": event.mission_id,
+            "test_only": report.test_only,
         }
         with self._lock:
             self._submitted_qr_reports[report_id] = dict(response)
@@ -1331,13 +1821,18 @@ class OnboardMissionService(OnboardMissionServiceContract):
             while len(self._submitted_qr_reports) > self._QR_REPORT_HISTORY_LIMIT:
                 self._submitted_qr_reports.popitem(last=False)
         self._log(
-            "kamikaze.qr_submitted",
-            "Orin QR raporu TEKNOFEST sunucusuna gönderildi",
+            "kamikaze.qr_test_accepted" if report.test_only else "kamikaze.qr_submitted",
+            (
+                "QR yer kontrol sonucu kabul edildi; yarışma sunucusuna gönderilmedi"
+                if report.test_only
+                else "Orin QR raporu TEKNOFEST sunucusuna gönderildi"
+            ),
             "success",
             {
                 "report_id": report_id,
                 "mission_id": event.mission_id,
-                "qr_text_length": len(qr_text),
+                "qr_text_length": len(report.qr_text),
+                "test_only": report.test_only,
             },
         )
         return response
@@ -1442,7 +1937,9 @@ class OnboardMissionService(OnboardMissionServiceContract):
         event_task = ""
         if event_task_value:
             event_task = self._canonical_task(str(event_task_value))
-        if not self._matches_current_mission(event_task, resolved_mission_id):
+        if event_task and not self._matches_current_mission(
+            event_task, resolved_mission_id
+        ):
             self._log_ignored_mission_packet(
                 "mission.event",
                 event_task,
@@ -1633,10 +2130,25 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 dict.fromkeys((*self._state.available_tasks, *advertised_tasks))
             )
             remote_active_tasks = self._normalized_tasks(state.active_tasks)
-            active_task = (
+            advertised_active_task = (
                 self._canonical_task(state.active_task)
                 if state.active_task
-                else self._state.active_task
+                else ""
+            )
+            preserve_foreground = bool(
+                self._state.active_task
+                and not self._state.terminal
+                and (
+                    self._state.active_task in remote_active_tasks
+                    or self._state.mission_id in state.active_missions
+                    or self._state.active_task == "target.lock"
+                    and self._state.target_lock_phase not in TERMINAL_MISSION_PHASES
+                )
+            )
+            active_task = (
+                self._state.active_task
+                if preserve_foreground
+                else advertised_active_task or self._state.active_task
             )
             mission_id = (
                 state.active_missions[0]
@@ -1658,7 +2170,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
                     or self._state.active_task in remote_active_tasks
                     or (
                         bool(state.active_task)
-                        and self._state.active_task == active_task
+                        and self._state.active_task == advertised_active_task
                     )
                 )
             ):
@@ -1697,8 +2209,6 @@ class OnboardMissionService(OnboardMissionServiceContract):
         self._publish()
         if recover_finished_mission:
             self._schedule_recovery(0.1)
-        if state.alive and (not was_connected or session_changed):
-            self._schedule_reference_sync()
         if state.alive and (not was_connected or session_changed):
             self._start_recovery()
 
@@ -1784,24 +2294,33 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 *listed_tasks,
             )
         )
+        current = self.state
+        active_items = [
+            item for item in missions
+            if isinstance(item, dict)
+            and str(item.get("task", "")).strip()
+            and str(item.get("phase", "")).strip().lower()
+            in {"queued", "starting", "running", "pausing", "paused", "stopping"}
+        ]
         active = next(
             (
-                item for item in missions
-                if isinstance(item, dict)
-                and str(item.get("task", "")).strip()
-                and str(item.get("phase", "")).strip().lower()
-                in {
-                    "queued",
-                    "starting",
-                    "running",
-                    "pausing",
-                    "paused",
-                    "stopping",
-                }
+                item for item in active_items
+                if self._canonical_task(str(item.get("task", ""))) == current.active_task
+                and (
+                    current.mission_id is None
+                    or self._optional_int(item.get("mission_id")) == current.mission_id
+                )
             ),
             None,
         )
-        current = self.state
+        if active is None:
+            active = next(
+                (
+                    item for item in active_items
+                    if self._canonical_task(str(item.get("task", ""))) not in self._HSS_TASKS
+                ),
+                active_items[0] if active_items else None,
+            )
         terminal = None
         if active is None and (current.active_task or current.mission_id is not None):
             candidates = [
@@ -1823,6 +2342,27 @@ class OnboardMissionService(OnboardMissionServiceContract):
                     key=lambda item: float(item.get("updated_at") or 0.0),
                 )
         with self._lock:
+            last_error = self._state.last_error
+            contexts = {
+                key: dict(value) for key, value in self._state.mission_contexts.items()
+            }
+            target_lock_mission_id = self._state.target_lock_mission_id
+            target_lock_phase = self._state.target_lock_phase
+            for item in missions:
+                if not isinstance(item, dict) or not str(item.get("task", "")).strip():
+                    continue
+                item_task = self._canonical_task(str(item.get("task", "")))
+                item_mission_id = self._optional_int(item.get("mission_id"))
+                item_phase = str(item.get("phase", "unknown")).strip().lower()
+                if item_mission_id is not None:
+                    contexts[f"{item_task}:{item_mission_id}"] = {
+                        "task": item_task,
+                        "mission_id": item_mission_id,
+                        "phase": item_phase,
+                    }
+                    if item_task == "target.lock":
+                        target_lock_mission_id = item_mission_id
+                        target_lock_phase = item_phase
             if active is not None:
                 active_task = self._canonical_task(str(active.get("task", "")))
                 mission_id = self._optional_int(active.get("mission_id"))
@@ -1853,13 +2393,12 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 result = self._state.result
                 result_received = self._state.result_received
                 last_error = self._state.last_error
-            if active is not None:
-                last_error = self._state.last_error
-            elif terminal is None and not self._state.terminal:
-                last_error = self._state.last_error
             self._state = replace(
                 self._state,
                 available_tasks=available_tasks,
+                mission_contexts=contexts,
+                target_lock_mission_id=target_lock_mission_id,
+                target_lock_phase=target_lock_phase,
                 active_task=active_task,
                 mission_id=mission_id,
                 phase=phase,
@@ -1880,7 +2419,11 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 continue
             sequence = self._optional_int(raw.get("sequence")) or 0
             self._event_cursors[mission_id] = max(self._event_cursors.get(mission_id, 0), sequence)
-            fields = raw.get("fields") if isinstance(raw.get("fields"), dict) else {}
+            fields: dict[str, Any] = (
+                dict(raw["fields"])
+                if isinstance(raw.get("fields"), dict)
+                else {}
+            )
             event_name = str(fields.get("event", "")).upper()
             if event_name in QR_EVENT_TYPES or event_name in ACTUATOR_TEST_EVENTS:
                 self._process_event_payload(
@@ -1915,24 +2458,37 @@ class OnboardMissionService(OnboardMissionServiceContract):
     @staticmethod
     def _canonical_task(task: str) -> str:
         try:
+            normalized = str(task).strip().upper()
+            if normalized == "KAMIKAZE_CHECK":
+                return KAMIKAZE_CHECK_TASK
             return contract_canonical_task(task)
         except ValueError as exc:
             raise ValueError("Görev adı boş olamaz") from exc
 
     def _matches_current_mission(self, task: str, mission_id: int | None) -> bool:
         current = self.state
-        if (
-            current.mission_id is not None
-            and mission_id is not None
-            and current.mission_id != mission_id
-        ):
-            return False
-        if current.active_task and task:
-            try:
-                return current.active_task == self._canonical_task(task)
-            except ValueError:
+        if mission_id is None:
+            if current.mission_id is not None:
                 return False
-        return True
+            if not task or not current.active_task:
+                return True
+            return current.active_task == self._canonical_task(task)
+        if not self._valid_mission_identity(task, mission_id):
+            return False
+        canonical = self._canonical_task(task)
+        if current.active_task == canonical and (
+            current.mission_id is None or current.mission_id == mission_id
+        ):
+            return True
+        return False
+
+    def _valid_mission_identity(self, task: str, mission_id: int | None) -> bool:
+        if not task or mission_id is None or mission_id <= 0:
+            return False
+        try:
+            return bool(self._canonical_task(task))
+        except ValueError:
+            return False
 
     def _log_ignored_mission_packet(
         self,

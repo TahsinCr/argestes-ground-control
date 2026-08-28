@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import threading
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -103,7 +104,11 @@ class FakeOrinService:
 
 class FakeCompetitionService:
     def __init__(self) -> None:
-        self.state = SimpleNamespace(connected=True, authenticated=True)
+        self.state = SimpleNamespace(
+            connected=True,
+            authenticated=True,
+            endpoint="http://10.0.0.10:10001",
+        )
         self.qr_coordinate: QrCoordinate | None = QrCoordinate(39.925533, 32.866287)
         self.hss_zones: tuple[HssZone, ...] = ()
         self.hss_updated = EventBus[tuple[HssZone, ...]]()
@@ -165,7 +170,13 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         receipt = self.service.start_task("KAMIKAZE", source="ui")
 
         self.assertEqual(receipt.request_id, 101)
-        self.assertEqual(self.competition.refresh_count, 1)
+        self.assertEqual(self.competition.refresh_count, 0)
+        self.assertFalse(
+            any(
+                packet_type == "competition.hss.update"
+                for packet_type, _payload in self.orin.requests
+            )
+        )
         self.assertEqual(self.orin.requests[-2][0], "kamikaze.target.update")
         target_payload = self.orin.requests[-2][1]
         self.assertEqual(target_payload["latitude_deg"], 39.925533)
@@ -174,6 +185,8 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertEqual(target_payload["plate_height_m"], 3.0)
         self.assertEqual(target_payload["target_id"], "teknofest-qr-target")
         self.assertTrue(target_payload["fetched_at_utc"].endswith("Z"))
+        self.assertEqual(self.orin.requests[-3][0], "competition.clock.update")
+        self.assertGreater(self.orin.requests[-3][1]["source_revision"], 0)
         self.assertEqual(
             self.orin.requests[-1],
             ("task.start", {"task": "KAMIKAZE", "source": "ui"}),
@@ -183,6 +196,32 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertEqual(self.service.state.mission_id, 42)
         self.assertTrue(self.service.state.target_ready)
         self.assertGreater(self.service.state.target_revision, 0)
+
+    def test_video_recording_control_uses_shared_contract_without_touching_telemetry(self) -> None:
+        self.orin.responses.append(
+            OrinCommandReceipt(
+                17,
+                True,
+                "Recording stopped",
+                {"stream": "video", "enabled": False, "video": False, "telemetry": True},
+            )
+        )
+
+        receipt = self.service.set_video_recording(False)
+
+        self.assertTrue(receipt.accepted)
+        self.assertEqual(
+            self.orin.requests[-1],
+            ("recording.control", {"stream": "video", "enabled": False}),
+        )
+        self.assertTrue(
+            any(
+                entry.action == "onboard.recording_control_acknowledged"
+                and entry.details["video"] is False
+                and entry.details["telemetry"] is True
+                for entry in self.logs.history
+            )
+        )
 
     def test_target_lock_alias_starts_the_canonical_onboard_mission(self) -> None:
         self.orin.responses.append(
@@ -216,7 +255,98 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertEqual(self.service.state.active_task, "target.lock")
         self.assertEqual(self.service.state.mission_id, 52)
 
-    def test_kamikaze_transit_sends_target_hss_plan_then_task_start(self) -> None:
+    def test_kamikaze_check_syncs_clock_and_uses_canonical_wire_task(self) -> None:
+        receipt = self.service.start_task("KAMIKAZE_CHECK", source="ui")
+
+        self.assertTrue(receipt.accepted)
+        self.assertEqual(self.orin.requests[-2][0], "competition.clock.update")
+        packet_type, payload = self.orin.requests[-1]
+        self.assertEqual(packet_type, "task.start")
+        self.assertEqual(payload["task"], "kamikaze.check")
+        self.assertEqual(payload["source"], "ui")
+        self.assertTrue(str(payload["requested_at"]).endswith("Z"))
+        self.assertEqual(self.service.state.phase, "acknowledged")
+        self.assertNotEqual(self.service.state.phase, "running")
+        self.assertEqual(self.service.state.active_task, "kamikaze.check")
+
+    def test_kamikaze_clock_is_acked_before_start_and_refreshed_only_while_active(self) -> None:
+        self.service._CLOCK_REFRESH_INTERVAL_S = 0.02
+
+        self.service.start_task("KAMIKAZE", source="ui")
+        initial_clock_count = sum(
+            packet_type == "competition.clock.update"
+            for packet_type, _payload in self.orin.requests
+        )
+        self.assertEqual(initial_clock_count, 1)
+
+        deadline = time.monotonic() + 0.3
+        while time.monotonic() < deadline:
+            clock_count = sum(
+                packet_type == "competition.clock.update"
+                for packet_type, _payload in self.orin.requests
+            )
+            if clock_count > initial_clock_count:
+                break
+            time.sleep(0.005)
+        self.assertGreater(clock_count, initial_clock_count)
+
+        self.orin.emit(
+            "mission.result",
+            {
+                "task": "kamikaze.execute",
+                "mission_id": self.service.state.mission_id or 1,
+                "execution": "failed",
+                "reason_code": "input.rejected",
+                "snapshot": {},
+            },
+        )
+        stopped_count = sum(
+            packet_type == "competition.clock.update"
+            for packet_type, _payload in self.orin.requests
+        )
+        time.sleep(0.06)
+        self.assertEqual(
+            sum(
+                packet_type == "competition.clock.update"
+                for packet_type, _payload in self.orin.requests
+            ),
+            stopped_count,
+        )
+
+    def test_observed_task_start_is_not_reported_as_a_failed_command_when_ack_times_out(self) -> None:
+        original_issue = self.orin.issue
+
+        def delayed_start(packet_type, payload=None, *, timeout=None):
+            if packet_type == "task.start":
+                self.orin.emit(
+                    "mission.transition",
+                    {
+                        "task": "kamikaze.execute",
+                        "mission_id": 42,
+                        "previous": "registered",
+                        "current": "running",
+                    },
+                )
+                raise TimeoutError("late task.start ACK")
+            return original_issue(packet_type, payload, timeout=timeout)
+
+        self.orin.issue = delayed_start
+        receipt = self.service.start_task("KAMIKAZE", source="ui")
+
+        self.assertTrue(receipt.accepted)
+        self.assertTrue(receipt.response["observed_lifecycle"])
+        self.assertEqual(self.service.state.phase, "running")
+        self.assertFalse(
+            any(entry.action == "onboard.command_failed" for entry in self.logs.history)
+        )
+        self.assertTrue(
+            any(
+                entry.action == "onboard.command_ack_missing_mission_observed"
+                for entry in self.logs.history
+            )
+        )
+
+    def test_kamikaze_transit_does_not_send_hss_then_starts_its_own_task(self) -> None:
         selector = KamikazeApproachService(
             self.competition,  # type: ignore[arg-type]
             SimpleNamespace(current=None, updated=EventBus()),  # type: ignore[arg-type]
@@ -251,11 +381,12 @@ class OnboardMissionProtocolTests(unittest.TestCase):
             packet_types[-4:],
             [
                 "kamikaze.target.update",
-                "competition.hss.update",
+                "competition.clock.update",
                 "kamikaze.approach.update",
                 "task.start",
             ],
         )
+        self.assertNotIn("competition.hss.update", packet_types)
         approach_payload = self.orin.requests[-2][1]
         self.assertEqual(approach_payload["plan_revision"], locked.revision)
         self.assertEqual(approach_payload["p2"]["altitude_m"], 130.0)
@@ -265,16 +396,98 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertEqual(approach_payload["dive_pitch_deg"], -45.0)
         self.assertEqual(approach_payload["corridor_width_m"], 1.0)
         self.assertEqual(approach_payload["safety_margin_m"], 5.0)
+        self.assertEqual(approach_payload["hss_revision"], 0)
         self.assertEqual(len(approach_payload["content_hash"]), 64)
         task_payload = self.orin.requests[-1][1]
         self.assertEqual(task_payload["task"], "kamikaze.transit")
         self.assertEqual(task_payload["parameters"]["plan_revision"], locked.revision)
         self.assertEqual(self.service.state.active_task, "kamikaze.transit")
 
+    def test_only_hss_task_sends_hss_snapshot_before_its_task_start(self) -> None:
+        receipt = self.service.start_task("HSS_ESCAPE", source="ui")
+
+        self.assertTrue(receipt.accepted)
+        packet_types = [packet_type for packet_type, _payload in self.orin.requests]
+        self.assertEqual(
+            packet_types[-2:],
+            ["competition.hss.update", "task.start"],
+        )
+        self.assertEqual(self.orin.requests[-1][1]["task"], "HSS_ESCAPE")
+
     def test_generic_kamikaze_transit_start_is_blocked_without_locked_plan(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "P1/P2 planı"):
             self.service.start_task("kamikaze.transit")
         self.assertFalse(any(kind == "task.start" for kind, _ in self.orin.requests))
+
+    def test_foreground_target_lock_can_start_while_hss_task_is_active(self) -> None:
+        self.service._state = replace(
+            self.service.state,
+            active_task="hss.predict",
+            phase="running",
+            mission_id=88,
+            mission_contexts={
+                "hss.predict:88": {
+                    "task": "hss.predict",
+                    "mission_id": 88,
+                    "phase": "running",
+                }
+            },
+        )
+        self.orin.responses.append(
+            OrinCommandReceipt(
+                99,
+                True,
+                "Command accepted",
+                {
+                    "task": "target.lock",
+                    "mission_id": 99,
+                    "execution": "starting",
+                    "vehicle_mode": "GUIDED",
+                },
+            )
+        )
+
+        receipt = self.service.start_task("TARGET_LOCK")
+
+        self.assertTrue(receipt.accepted)
+        state = self.service.state
+        self.assertEqual(state.active_task, "target.lock")
+        self.assertEqual(state.target_lock_mission_id, 99)
+        self.assertEqual(state.mission_contexts["hss.predict:88"]["phase"], "running")
+        self.assertEqual(state.mission_contexts["target.lock:99"]["phase"], "starting")
+
+    def test_target_lock_transition_is_tracked_separately_from_background_hss(self) -> None:
+        self.service._state = replace(
+            self.service.state,
+            active_task="hss.predict",
+            mission_id=88,
+            phase="running",
+            mission_contexts={
+                "hss.predict:88": {
+                    "task": "hss.predict",
+                    "mission_id": 88,
+                    "phase": "running",
+                }
+            },
+        )
+
+        self.orin.emit(
+            "mission.transition",
+            {
+                "task": "target.lock",
+                "mission_id": 99,
+                "previous": "starting",
+                "current": "running",
+            },
+        )
+
+        state = self.service.state
+        self.assertEqual(state.active_task, "hss.predict")
+        self.assertEqual(state.mission_id, 88)
+        self.assertEqual(state.phase, "running")
+        self.assertEqual(state.target_lock_mission_id, 99)
+        self.assertEqual(state.target_lock_phase, "running")
+        self.assertEqual(state.mission_contexts["target.lock:99"]["phase"], "running")
 
     def test_target_rejection_blocks_kamikaze_start(self) -> None:
         original_issue = self.orin.issue
@@ -297,7 +510,7 @@ class OnboardMissionProtocolTests(unittest.TestCase):
 
         self.assertEqual(
             [packet_type for packet_type, _payload in self.orin.requests],
-            ["kamikaze.target.update"],
+            ["competition.clock.update", "kamikaze.target.update"],
         )
         self.assertFalse(self.service.state.target_ready)
         self.assertTrue(
@@ -365,13 +578,22 @@ class OnboardMissionProtocolTests(unittest.TestCase):
             any(packet_type == "task.start" for packet_type, _ in self.orin.requests)
         )
 
-    def test_missing_teknofest_target_blocks_kamikaze_start(self) -> None:
+    def test_missing_target_blocks_kamikaze_start_before_task_request(self) -> None:
         self.competition.qr_coordinate = None
 
-        with self.assertRaisesRegex(RuntimeError, "QR hedef koordinatı"):
+        with self.assertRaisesRegex(RuntimeError, "hedefi Onboard"):
             self.service.start_task("KAMIKAZE")
 
-        self.assertEqual(self.orin.requests, [])
+        self.assertEqual(
+            [packet_type for packet_type, _payload in self.orin.requests],
+            ["competition.clock.update"],
+        )
+        self.assertTrue(
+            any(
+                entry.action == "kamikaze.target_sync_skipped"
+                for entry in self.logs.history
+            )
+        )
 
     def test_hss_sync_only_sends_changes_and_clears_expired_zones(self) -> None:
         zones = (
@@ -403,7 +625,7 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertFalse(self.service.state.hss_active)
         self.assertEqual(self.service.state.hss_count, 0)
 
-    def test_new_orin_session_invalidates_reference_acknowledgements(self) -> None:
+    def test_new_orin_session_does_not_push_kamikaze_target_without_launch(self) -> None:
         target = self.competition.qr_coordinate
         assert target is not None
         self.service._send_target_update(target)
@@ -416,18 +638,26 @@ class OnboardMissionProtocolTests(unittest.TestCase):
             kamikaze_target_ready=False,
         )
         self.service._on_orin_changed(self.orin.state)
-        deadline = time.monotonic() + 0.5
-        target_requests = []
-        while time.monotonic() < deadline:
-            target_requests = [
-                request for request in self.orin.requests
-                if request[0] == "kamikaze.target.update"
-            ]
-            if len(target_requests) >= 2:
-                break
-            time.sleep(0.005)
+        time.sleep(0.05)
+        target_requests = [
+            request for request in self.orin.requests
+            if request[0] == "kamikaze.target.update"
+        ]
+        self.assertEqual(len(target_requests), 1)
 
-        self.assertEqual(len(target_requests), 2)
+    def test_qr_update_does_not_trigger_hss_or_target_sync(self) -> None:
+        before = len(self.orin.requests)
+        self.competition.qr_updated.publish(QrCoordinate(40.0, 29.0))
+        time.sleep(0.05)
+        self.assertEqual(len(self.orin.requests), before)
+
+    def test_hss_update_does_not_trigger_automatic_onboard_sync(self) -> None:
+        before = len(self.orin.requests)
+        self.competition.hss_updated.publish(
+            (HssZone(1, 39.0, 32.0, 100.0),)
+        )
+        time.sleep(0.05)
+        self.assertEqual(len(self.orin.requests), before)
 
     def test_new_orin_session_clears_a_stale_requesting_task(self) -> None:
         self.service._state = replace(
@@ -614,6 +844,12 @@ class OnboardMissionProtocolTests(unittest.TestCase):
     def test_target_lock_report_is_submitted_once_and_duplicate_is_acknowledged(
         self,
     ) -> None:
+        self.service._state = replace(
+            self.service.state,
+            active_task="hss.predict",
+            mission_id=88,
+            phase="running",
+        )
         now = self.competition.estimated_server_time()
         clock = {
             "saat": now.hour,
@@ -641,7 +877,10 @@ class OnboardMissionProtocolTests(unittest.TestCase):
 
         self.assertIsInstance(first, OrinHandlerResponse)
         self.assertEqual(dict(first.payload), dict(duplicate.payload))
-        self.assertEqual(first.payload["execution"], "submitted")
+        self.assertEqual(first.payload["execution"], "queued")
+        deadline = time.monotonic() + 1.0
+        while not self.competition.submitted_locks and time.monotonic() < deadline:
+            time.sleep(0.01)
         self.assertEqual(len(self.competition.submitted_locks), 1)
         self.assertEqual(
             self.competition.submitted_locks[0].to_payload(),
@@ -657,15 +896,13 @@ class OnboardMissionProtocolTests(unittest.TestCase):
             )
         )
 
-    def test_failed_target_lock_submission_is_retried(self) -> None:
+    def test_failed_target_lock_submission_is_acked_and_not_duplicated(self) -> None:
         attempts = 0
 
         def submit(event: LockEvent) -> None:
             nonlocal attempts
             attempts += 1
-            if attempts == 1:
-                raise ConnectionError("competition server unavailable")
-            self.competition.submitted_locks.append(event)
+            raise ConnectionError("competition server unavailable")
 
         self.competition.submit_lock_event = submit
         now = self.competition.estimated_server_time()
@@ -683,15 +920,59 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         }
         handler = self.orin.handlers["target.lock.report"]
 
-        with self.assertRaisesRegex(ConnectionError, "unavailable"):
-            handler(OrinMessage("target.lock.report", payload, 802, 1, 191))
-        response = handler(
+        first = handler(OrinMessage("target.lock.report", payload, 802, 1, 191))
+        duplicate = handler(
             OrinMessage("target.lock.report", payload, 803, 1, 191)
         )
 
-        self.assertEqual(response.payload["execution"], "submitted")
-        self.assertEqual(attempts, 2)
-        self.assertEqual(len(self.competition.submitted_locks), 1)
+        self.assertEqual(first.payload["execution"], "queued")
+        self.assertEqual(duplicate.payload["execution"], "queued")
+        deadline = time.monotonic() + 1.0
+        while attempts == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(attempts, 1)
+        self.assertEqual(len(self.competition.submitted_locks), 0)
+        self.assertTrue(
+            any(
+                entry.action == "target_lock.report_delivery_failed"
+                for entry in self.logs.history
+            )
+        )
+
+    def test_target_lock_report_ack_does_not_wait_for_http_post(self) -> None:
+        release = threading.Event()
+
+        def submit(_event: LockEvent) -> None:
+            release.wait(1.0)
+
+        self.competition.submit_lock_event = submit
+        now = self.competition.estimated_server_time()
+        started = time.monotonic()
+        response = self.orin.handlers["target.lock.report"](
+            OrinMessage(
+                "target.lock.report",
+                {
+                    "report_id": "fast-ack-lock-report",
+                    "mission_id": 44,
+                    "target_id": 9,
+                    "kilitlenmeBitisZamani": {
+                        "saat": now.hour,
+                        "dakika": now.minute,
+                        "saniye": now.second,
+                        "milisaniye": now.microsecond // 1000,
+                    },
+                    "otonom_kilitlenme": 1,
+                },
+                804,
+                1,
+                191,
+            )
+        )
+        elapsed = time.monotonic() - started
+        release.set()
+
+        self.assertEqual(response.payload["execution"], "queued")
+        self.assertLess(elapsed, 0.25)
 
     def test_qr_report_is_submitted_once_and_duplicate_is_acknowledged(self) -> None:
         handler = self.orin.handlers["kamikaze.qr.report"]
@@ -702,8 +983,8 @@ class OnboardMissionProtocolTests(unittest.TestCase):
                 "mission_id": 42,
                 "event": "QR_DECODED_DURING_PULL_UP",
                 "qr_text": "KIRLANGIC-QR",
-                "started_at_utc": "2026-08-14T12:00:00Z",
-                "ended_at_utc": "2026-08-14T12:00:04Z",
+                "started_at_server": {"saat": 12, "dakika": 0, "saniye": 0, "milisaniye": 0},
+                "ended_at_server": {"saat": 12, "dakika": 0, "saniye": 4, "milisaniye": 0},
                 "altitude_m": 48.2,
             },
             701,
@@ -716,8 +997,8 @@ class OnboardMissionProtocolTests(unittest.TestCase):
 
         self.assertIsInstance(first, OrinHandlerResponse)
         self.assertIsInstance(duplicate, OrinHandlerResponse)
-        self.assertEqual(dict(first.payload), dict(duplicate.payload))
         self.assertEqual(first.payload["execution"], "submitted")
+        self.assertEqual(duplicate.payload["execution"], "duplicate")
         self.assertEqual(first.message, "QR report accepted")
         self.assertEqual(len(self.competition.submitted_kamikaze), 1)
         self.assertEqual(
@@ -746,8 +1027,11 @@ class OnboardMissionProtocolTests(unittest.TestCase):
             {
                 "report_id": "retryable-report",
                 "mission_id": 43,
+                "event": "QR_DECODED",
                 "qr_text": "RETRY-QR",
-                "time_utc": "2026-08-14T12:00:04Z",
+                "started_at_server": {"saat": 12, "dakika": 0, "saniye": 0, "milisaniye": 0},
+                "ended_at_server": {"saat": 12, "dakika": 0, "saniye": 4, "milisaniye": 0},
+                "altitude_m": 0.0,
             },
             702,
             1,
@@ -800,8 +1084,11 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         payload = {
             "report_id": report_id,
             "mission_id": 45,
+            "event": "QR_DECODED",
             "qr_text": "BOUNDARY-QR",
-            "time_utc": "2026-08-14T12:00:04Z",
+            "started_at_server": {"saat": 12, "dakika": 0, "saniye": 0, "milisaniye": 0},
+            "ended_at_server": {"saat": 12, "dakika": 0, "saniye": 4, "milisaniye": 0},
+            "altitude_m": 0.0,
         }
 
         response = handler(
@@ -820,6 +1107,28 @@ class OnboardMissionProtocolTests(unittest.TestCase):
                     191,
                 )
             )
+
+    def test_ground_check_report_is_accepted_without_competition_post(self) -> None:
+        handler = self.orin.handlers["kamikaze.qr.report"]
+        payload = {
+            "report_id": "ground-check:46",
+            "mission_id": 46,
+            "event": "QR_DECODED",
+            "qr_text": "GROUND-CHECK-QR",
+            "started_at_server": {"saat": 13, "dakika": 1, "saniye": 2, "milisaniye": 3},
+            "ended_at_server": {"saat": 13, "dakika": 1, "saniye": 5, "milisaniye": 6},
+            "altitude_m": 0.0,
+            "test_only": True,
+        }
+
+        first = handler(OrinMessage("kamikaze.qr.report", payload, 706, 1, 191))
+        duplicate = handler(OrinMessage("kamikaze.qr.report", payload, 707, 1, 191))
+
+        self.assertEqual(first.payload["execution"], "accepted")
+        self.assertTrue(first.payload["test_only"])
+        self.assertEqual(duplicate.payload["execution"], "duplicate")
+        self.assertEqual(self.competition.submitted_kamikaze, [])
+        self.assertEqual(self.service.state.qr_text, "GROUND-CHECK-QR")
 
     def test_source_revisions_remain_monotonic_above_wall_clock_value(self) -> None:
         high_revision = 9_000_000_000_000_000
@@ -859,6 +1168,63 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertEqual(self.service.state.phase, "succeeded")
         self.assertTrue(self.service.state.result_received)
         self.assertEqual(self.service.state.qr_text, "QR-42")
+
+    def test_terminal_reason_code_is_kept_and_late_transition_is_ignored(self) -> None:
+        self.orin.emit(
+            "mission.result",
+            {
+                "task": "kamikaze.execute",
+                "mission_id": 42,
+                "execution": "failed",
+                "reason": "Camera stream ended",
+                "reason_code": "vision.camera_unavailable",
+                "snapshot": {},
+            },
+        )
+        self.orin.emit(
+            "mission.transition",
+            {
+                "task": "kamikaze.execute",
+                "mission_id": 42,
+                "previous": "running",
+                "current": "running",
+                "reason_code": "execution.updated",
+            },
+        )
+
+        state = self.service.state
+        self.assertEqual(state.phase, "failed")
+        self.assertEqual(state.reason_code, "vision.camera_unavailable")
+        self.assertEqual(
+            state.mission_contexts["kamikaze.execute:42"]["reason_code"],
+            "vision.camera_unavailable",
+        )
+        self.assertIn("kamera", state.last_error.lower())
+        diagnosis = next(
+            entry for entry in self.logs.history
+            if entry.action == "mission.terminal_diagnosis"
+        )
+        self.assertEqual(diagnosis.details["reason_code"], "vision.camera_unavailable")
+        self.assertEqual(diagnosis.details["task"], "kamikaze.execute")
+        self.assertTrue(
+            any(entry.action == "mission.packet_ignored" for entry in self.logs.history)
+        )
+
+    def test_unknown_terminal_reason_code_is_forward_compatible(self) -> None:
+        self.orin.emit(
+            "mission.result",
+            {
+                "task": "kamikaze.execute",
+                "mission_id": 42,
+                "execution": "cancelled",
+                "reason": "Future onboard implementation detail",
+                "reason_code": "future.detail",
+                "snapshot": {},
+            },
+        )
+
+        self.assertEqual(self.service.state.reason_code, "future.detail")
+        self.assertEqual(self.service.state.phase, "cancelled")
 
     def test_late_packets_from_another_mission_do_not_replace_active_state(self) -> None:
         self.service._state = replace(
