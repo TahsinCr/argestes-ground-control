@@ -41,6 +41,7 @@ PROFILE_FIELDS = (
 AUTONOMOUS_COMMANDS = (
     AutonomousCommand("KAMIKAZE", "command.kamikaze"),
     AutonomousCommand("ACTUATOR_TEST", "command.actuator_test"),
+    AutonomousCommand("APN2", "command.apn2"),
 )
 
 # Commands supplied by configuration are not added to the default list. Their
