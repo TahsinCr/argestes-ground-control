@@ -1002,6 +1002,7 @@
         <button data-action="goto"></button>
         <button data-action="center"></button>
         <button data-action="set_home"></button>
+        <button data-action="set_target" style="display: none;">Hedef Seç</button>
         <div id="context-point-editor" class="context-point-editor">
           <label>R
             <input id="context-radius-input" aria-label="Radius (m)" title="Radius (m)" type="number" min="5" max="1000" step="1">
@@ -2650,47 +2651,60 @@
       document.getElementById('context-menu').style.display = 'none';
     }
 
-    function showContextMenu(containerPoint, latlng, overlayId = null) {
+    function showContextMenu(containerPoint, latlng, overlayId = null, contactId = null) {
       if (document.getElementById('context-menu').style.display === 'block') {
         hideContextMenu(true);
       }
       contextPoint = latlng;
       contextOverlayId = overlayId;
+      contextContactId = contactId;
       contextEditorDirty = false;
       const menu = document.getElementById('context-menu');
-      const selected = overlayId ? state.layers.get(overlayId) : null;
-      const deletable = Boolean(
-        selected
-        && POINT_TYPES.has(selected.overlayData.overlay_type)
-        && isEditableLayer(selected)
-      );
-      if (selected && !deletable) {
-        hideContextMenu();
-        return;
-      }
-      ['goto', 'center', 'set_home'].forEach((action) => {
-        menu.querySelector(`[data-action="${action}"]`).style.display = deletable
-          ? 'none'
-          : 'flex';
+      
+      // Reset all buttons
+      ['goto', 'center', 'set_home', 'set_target', 'delete'].forEach((action) => {
+        const btn = menu.querySelector(`[data-action="${action}"]`);
+        if (btn) btn.style.display = 'none';
       });
-      menu.querySelector('[data-action="delete"]').style.display = deletable
-        ? 'flex'
-        : 'none';
-      const editor = document.getElementById('context-point-editor');
-      editor.style.display = deletable ? 'grid' : 'none';
-      if (deletable) {
-        const radiusInput = document.getElementById('context-radius-input');
-        const altitudeInput = document.getElementById('context-altitude-input');
-        radiusInput.value = Math.round(
-          selected instanceof L.Circle
-            ? selected.getRadius()
-            : radiusFor(selected.overlayData.overlay_type),
+      document.getElementById('context-point-editor').style.display = 'none';
+      
+      if (contactId) {
+        menu.querySelector('[data-action="set_target"]').style.display = 'flex';
+      } else {
+        const selected = overlayId ? state.layers.get(overlayId) : null;
+        const deletable = Boolean(
+          selected
+          && POINT_TYPES.has(selected.overlayData.overlay_type)
+          && isEditableLayer(selected)
         );
-        const altitude = altitudeForLayer(selected);
-        altitudeInput.value = altitude === null
-          ? defaultAltitudeFor(selected.overlayData.overlay_type)
-          : altitude;
-        altitudeInput.disabled = !ALTITUDE_TYPES.has(selected.overlayData.overlay_type);
+        if (selected && !deletable) {
+          hideContextMenu();
+          return;
+        }
+        ['goto', 'center', 'set_home'].forEach((action) => {
+          menu.querySelector(`[data-action="${action}"]`).style.display = deletable
+            ? 'none'
+            : 'flex';
+        });
+        menu.querySelector('[data-action="delete"]').style.display = deletable
+          ? 'flex'
+          : 'none';
+        const editor = document.getElementById('context-point-editor');
+        editor.style.display = deletable ? 'grid' : 'none';
+        if (deletable) {
+          const radiusInput = document.getElementById('context-radius-input');
+          const altitudeInput = document.getElementById('context-altitude-input');
+          radiusInput.value = Math.round(
+            selected instanceof L.Circle
+              ? selected.getRadius()
+              : radiusFor(selected.overlayData.overlay_type),
+          );
+          const altitude = altitudeForLayer(selected);
+          altitudeInput.value = altitude === null
+            ? defaultAltitudeFor(selected.overlayData.overlay_type)
+            : altitude;
+          altitudeInput.disabled = !ALTITUDE_TYPES.has(selected.overlayData.overlay_type);
+        }
       }
       menu.style.display = 'block';
       const maxLeft = Math.max(0, map.getContainer().clientWidth - menu.offsetWidth - 6);
@@ -3040,6 +3054,10 @@
         const marker = L.marker(latlng, {
           interactive: true,
           icon: contactIcon(data),
+        });
+        marker.on('contextmenu', (event) => {
+          L.DomEvent.stop(event.originalEvent || event);
+          showContextMenu(event.containerPoint, event.latlng, null, data.contact_id);
         });
         marker.bindTooltip(tooltip, { direction: 'top', opacity: 0.92 });
         const trail = L.polyline(trailPoints, {
@@ -3675,6 +3693,7 @@
         }
         const actionPoint = contextPoint;
         const actionOverlayId = contextOverlayId;
+        const actionContactId = contextContactId;
         hideContextMenu(action !== 'delete');
         if (action === 'goto') {
           addGotoCommand(actionPoint);
@@ -3689,6 +3708,8 @@
           setHomeReference(actionPoint, true);
         } else if (action === 'delete' && actionOverlayId) {
           removeOverlayById(actionOverlayId, true);
+        } else if (action === 'set_target' && actionContactId) {
+          emitAction({ type: 'set_target', contact_id: actionContactId });
         }
       });
 

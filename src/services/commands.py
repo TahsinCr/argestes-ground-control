@@ -188,6 +188,15 @@ class DispatchCommandService(CommandService):
                 "orin_execution": receipt.response.get("execution", "acknowledged"),
                 "restarted": request.code == "RESTART_MISSION_TASK",
             }
+        if request.code == "SET_TARGET":
+            if self._onboard is None:
+                raise ConnectionError("Onboard görev servisi kullanılamıyor")
+            contact_id = str(request.parameters.get("contact_id", ""))
+            team_number_str = contact_id.replace("teknofest-", "")
+            if not team_number_str.isdigit():
+                raise ValueError(f"Geçersiz hedef kimliği: {contact_id}")
+            self._onboard.set_apn2_target(int(team_number_str))
+            return True, {"target_team": int(team_number_str)}
         if request.code == "APPLY_MODE":
             mode = str(request.parameters.get("mode", "")).strip().upper()
             if not mode:
@@ -320,6 +329,8 @@ class DispatchCommandService(CommandService):
             )
         if request.code == "SET_TARGET_PROFILE":
             return f"{int(details.get('profile_field_count', 0))} uçuş profili değeri doğrulandı"
+        if request.code == "SET_TARGET":
+            return f"Hedef takım {details.get('target_team')} olarak seçildi"
         if request.code == "SET_MISSION_TASK":
             target = "Orin" if details.get("target") == "orin" else "uçuş cihazı"
             if details.get("orin_execution") == "state_only":
@@ -397,6 +408,8 @@ class DispatchCommandService(CommandService):
                 for key in ("latitude", "longitude", "altitude")
                 if key in request.parameters
             }
+        if request.code == "SET_TARGET":
+            return {"contact_id": request.parameters.get("contact_id")}
         if request.code == "PARAM_APPLY":
             return {"parameter_count": len(request.parameters)}
         return {}

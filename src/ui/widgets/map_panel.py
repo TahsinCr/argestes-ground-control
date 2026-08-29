@@ -963,6 +963,10 @@ class MapPanel(PanelFrame):
             request = payload.get("action")
             if request in {"archive", "save", "load"}:
                 self.storage_requested.emit(request)
+        elif action == "set_target":
+            contact_id = payload.get("contact_id")
+            if contact_id:
+                self.command_requested.emit("SET_TARGET", {"contact_id": contact_id})
         elif action == "mission_send_request":
             self._mission_loop = bool(payload.get("loop", self._mission_loop))
             state = getattr(self._planner_service, "state", MissionState())
