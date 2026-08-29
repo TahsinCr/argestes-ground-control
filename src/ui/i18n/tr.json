@@ -44,6 +44,7 @@
   "command.force_arm.title": "Normal ARM Başarısız",
   "command.force_arm.warning": "Zorla ARM, uçuş öncesi güvenlik kontrollerini atlayabilir. Pervane ve motorlar anında çalışabilir. Araç çevresinin tamamen güvenli olduğundan emin misiniz?",
   "command.kamikaze": "Kamikaze",
+  "command.apn2": "APN2 Hedef Önleme",
   "command.loiter": "Loiter Yarıçapı",
   "command.mode": "Mod",
   "command.mode_apply.tooltip": "Yalnızca seçilen uçuş modunu uygular. Görev planı haritadaki Görevi Gönder butonundan ayrıca aktarılır.",

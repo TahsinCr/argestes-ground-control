@@ -44,6 +44,7 @@
   "command.force_arm.title": "Normal ARM Failed",
   "command.force_arm.warning": "Force ARM may bypass preflight safety checks. Propellers and motors may start immediately. Are you certain the vehicle area is completely safe?",
   "command.kamikaze": "Kamikaze",
+  "command.apn2": "APN2 Target Interception",
   "command.loiter": "Loiter Radius",
   "command.mode": "Mode",
   "command.mode_apply.tooltip": "Only applies the selected flight mode. Upload the mission separately with Send Mission on the map.",
