@@ -134,6 +134,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 self._orin.register_handler(PacketType.MISSION_CHAIN, self._handle_chain),
                 self._orin.register_handler(PacketType.KAMIKAZE_EVENT, self._handle_kamikaze_event),
                 self._orin.register_handler(PacketType.KAMIKAZE_QR_REPORT, self._handle_qr_report),
+                self._orin.register_handler("competition.kill_shot", self._handle_kill_shot),
                 self._competition.hss_updated.subscribe(self._on_hss_updated),
                 self._competition.qr_updated.subscribe(self._on_qr_updated),
             ]
@@ -923,6 +924,36 @@ class OnboardMissionService(OnboardMissionServiceContract):
         payload = dict(message.payload)
         payload.setdefault("task", "kamikaze.execute")
         self._process_event_payload(payload, source="live")
+        return {}
+
+    def _handle_kill_shot(self, message: OrinMessage) -> dict[str, Any]:
+        payload = message.payload
+        try:
+            from src.models.competition import CompetitionServerTime, LockEvent
+            from datetime import UTC, datetime
+            
+            server_time = CompetitionServerTime.from_payload(payload.get("kilitlenmeBitisZamani", {}))
+            ended_at = server_time.resolve_near(datetime.now(UTC))
+            autonomous = bool(payload.get("otonom_kilitlenme", 1))
+            
+            self._competition.submit_lock_event(LockEvent(
+                ended_at=ended_at,
+                autonomous=autonomous,
+                vehicle_source="orin"
+            ))
+            self._log(
+                "apn2.kill_shot_received",
+                "APN2 hedef kilitlenme mesajı alındı, sunucuya iletiliyor",
+                "success",
+                {"ended_at": ended_at.isoformat(), "autonomous": autonomous}
+            )
+        except Exception as exc:
+            self._log(
+                "apn2.kill_shot_error",
+                "APN2 kilitlenme mesajı işlenemedi",
+                "danger",
+                {"error": str(exc), "payload": dict(payload)}
+            )
         return {}
 
     def _handle_qr_report(self, message: OrinMessage) -> OrinHandlerResponse:
