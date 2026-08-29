@@ -28,7 +28,7 @@ from src.communication import (
     canonical_task as contract_canonical_task,
 )
 from src.core.events import EventBus, Subscription
-from src.models.competition import HssZone, KamikazeEvent, QrCoordinate
+from src.models.competition import CompetitorTelemetry, HssZone, KamikazeEvent, QrCoordinate
 from src.models.onboard import (
     ACTUATOR_TEST_EVENTS,
     ACTUATOR_TEST_TASK,
@@ -98,6 +98,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
         self._target_acknowledged_hash = ""
         self._last_orin_session = ""
         self._submitted_qr_reports: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._apn2_target_team_number: int | None = None
         self._target_sync_lock = threading.RLock()
         self._hss_sync_lock = threading.RLock()
         self._qr_report_lock = threading.RLock()
@@ -137,6 +138,7 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 self._orin.register_handler("competition.kill_shot", self._handle_kill_shot),
                 self._competition.hss_updated.subscribe(self._on_hss_updated),
                 self._competition.qr_updated.subscribe(self._on_qr_updated),
+                self._competition.competitors_updated.subscribe(self._on_competitors_updated),
             ]
         )
         if self._competition.hss_zones:
@@ -304,6 +306,43 @@ class OnboardMissionService(OnboardMissionServiceContract):
             )
             self._publish()
             return receipt
+
+    def set_apn2_target(self, team_number: int) -> None:
+        with self._lock:
+            self._apn2_target_team_number = team_number
+        self._log(
+            "apn2.target_selected",
+            f"APN2 için hedef takım seçildi: Takım {team_number}",
+            "info",
+            {"team_number": team_number},
+        )
+
+    def _on_competitors_updated(self, competitors: tuple[CompetitorTelemetry, ...]) -> None:
+        with self._lock:
+            team_number = self._apn2_target_team_number
+            active_task = self._state.active_task
+        if team_number is None or active_task not in {"command.apn2", "apn2.intercept"}:
+            return
+        
+        target = next((c for c in competitors if c.team_number == team_number), None)
+        if target is None:
+            return
+            
+        payload = {
+            "team_number": target.team_number,
+            "position": {
+                "latitude": target.latitude,
+                "longitude": target.longitude,
+                "altitude": target.altitude_m,
+            },
+            "altitude_m": target.altitude_m,
+            "pitch_deg": target.pitch,
+            "heading_deg": target.heading,
+        }
+        try:
+            self._orin.send("apn2.target.telemetry", payload)
+        except Exception:
+            pass
 
     def _record_target_failure(self, exc: Exception) -> None:
         with self._lock:
