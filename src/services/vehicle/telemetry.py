@@ -327,12 +327,11 @@ class TelemetryDecoder:
                 updates["battery_consumed_mah"] = consumed_mah
             return updates
 
-        # BATT_MONITOR=3 has no trustworthy current integration. Explicitly
-        # clear any previous current/mAh values and derive only the display
-        # percentage from the filtered voltage.
-        updates = {
-            "battery_current_amps": None,
-            "battery_consumed_mah": None,
+        # Voltage estimation only replaces the percentage. Current and consumed
+        # capacity remain direct Pixhawk measurements for the battery display.
+        updates: dict[str, Any] = {
+            "battery_current_amps": current_amps,
+            "battery_consumed_mah": consumed_mah,
         }
         if voltage is None:
             return updates
@@ -672,11 +671,6 @@ class VehicleTelemetryService(MutableTelemetryService):
         battery = settings.backend.battery_telemetry
         if not self._decoder.configure_battery(battery):
             return
-        if battery.mode == "voltage":
-            self.patch(
-                battery_current_amps=None,
-                battery_consumed_mah=None,
-            )
         self._log_battery_profile()
 
     def _log_battery_profile(self) -> None:

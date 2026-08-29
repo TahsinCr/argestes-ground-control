@@ -17,6 +17,7 @@ from typing import Any
 from src.core.events import EventBus, Subscription
 from src.models.competition import CompetitionServerConfig
 from src.models.connections import ConnectionStatus
+from src.models.settings import MavlinkConnectionConfig, SettingsModel
 from src.models.vehicle import VehicleConnectionConfig, VehicleConnectionState
 from src.services.abstracts.competition import CompetitionService
 from src.services.abstracts.connections import ConnectionControlService
@@ -105,12 +106,12 @@ class BackendConnectionControlService(ConnectionControlService):
         key = self._normalize(channel)
         settings = self._settings.current
         if key == "server":
-            competition = settings.backend.competition
+            competition = getattr(self._competition, "config", settings.backend.competition)
             state = self._competition.state
             success_age = self._age_seconds(state.last_success_at)
             freshness_limit = max(
                 competition.timeout_s * 2.0,
-                competition.telemetry_period_ms / 1000.0 + competition.timeout_s + 1.0,
+                CompetitionServerConfig.TELEMETRY_PERIOD_S + competition.timeout_s + 1.0,
             )
             connected = bool(
                 state.connected
@@ -143,9 +144,10 @@ class BackendConnectionControlService(ConnectionControlService):
                 competition.base_url,
                 competition.timeout_s,
                 {
+                    "server_id": competition.identifier,
+                    "server_name": competition.name,
                     "username": competition.username,
                     "team_number": competition.team_number,
-                    "telemetry_period_ms": competition.telemetry_period_ms,
                     "auto_connect": competition.auto_connect,
                     "running": state.running,
                     "authenticated": state.authenticated,
@@ -528,10 +530,21 @@ class BackendConnectionControlService(ConnectionControlService):
             if key == "server":
                 self._competition.disconnect()
                 current = self._settings.current
-                if current.backend.competition.auto_connect:
-                    self._settings.save(
-                        current.with_value("backend.competition.auto_connect", False)
+                active_server = getattr(
+                    self._competition, "config", current.backend.competition
+                )
+                if active_server.auto_connect:
+                    disabled = CompetitionServerConfig(
+                        **{**active_server.to_dict(), "auto_connect": False}
                     )
+                    profiles = [
+                        disabled if item.identifier == disabled.identifier else item
+                        for item in current.backend.competition_servers
+                    ]
+                    payload = current.to_dict()
+                    payload["backend"]["competition"] = disabled.to_dict()
+                    payload["backend"]["competition_servers"] = [item.to_dict() for item in profiles]
+                    self._settings.save(type(current).from_dict(payload))
             elif key == "video":
                 self._video.stop()
                 current = self._settings.current
@@ -587,10 +600,30 @@ class BackendConnectionControlService(ConnectionControlService):
         baud = int(options.get("baud", mavlink.baud))
         auto_connect = bool(options.get("auto_connect", mavlink.auto_connect))
         config = VehicleConnectionConfig(endpoint, timeout, baud)
-        updated = current.with_value("backend.mavlink.endpoint", endpoint)
-        updated = updated.with_value("backend.mavlink.heartbeat_timeout", int(timeout))
-        updated = updated.with_value("backend.mavlink.baud", baud)
-        updated = updated.with_value("backend.mavlink.auto_connect", auto_connect)
+        profile_id = str(options.get("profile_id", current.backend.active_mavlink_connection_id)).strip()
+        profile_name = str(options.get("profile_name", "")).strip()
+        existing = next(
+            (item for item in current.backend.mavlink_connections if item.identifier == profile_id),
+            None,
+        )
+        profile = MavlinkConnectionConfig(
+            identifier=profile_id or (existing.identifier if existing is not None else MavlinkConnectionConfig().identifier),
+            name=profile_name or (existing.name if existing is not None else "Telemetri"),
+            endpoint=endpoint,
+            baud=baud,
+            heartbeat_timeout=int(timeout),
+            auto_connect=auto_connect,
+        )
+        profiles = [
+            profile if item.identifier == profile.identifier else item
+            for item in current.backend.mavlink_connections
+        ]
+        if existing is None:
+            profiles.append(profile)
+        payload = current.to_dict()
+        payload["backend"]["mavlink_connections"] = [item.to_dict() for item in profiles]
+        payload["backend"]["active_mavlink_connection_id"] = profile.identifier
+        updated = SettingsModel.from_dict(payload)
         self._settings.save(updated)
         self._vehicle.reconnect(config)
 
@@ -627,19 +660,48 @@ class BackendConnectionControlService(ConnectionControlService):
 
     def _reconnect_server(self, options: dict[str, Any]) -> None:
         current = self._settings.current
-        server = current.backend.competition
+        previous = getattr(
+            self._competition, "config", current.backend.competition
+        )
+        server_id = str(options.get("server_id", "")).strip()
+        existing_server = next(
+            (
+                item
+                for item in current.backend.competition_servers
+                if item.identifier == server_id
+            ),
+            None,
+        )
+        server = existing_server or current.backend.competition
         config = CompetitionServerConfig(
+            identifier=server_id or server.identifier,
+            name=str(options.get("server_name", server.name)).strip() or server.name,
             base_url=str(options.get("endpoint", server.base_url)).strip(),
             username=str(options.get("username", server.username)).strip(),
             password=str(options.get("password", "")) or server.password,
             team_number=int(options.get("team_number", server.team_number)),
             timeout_s=float(options.get("timeout_s", server.timeout_s)),
-            telemetry_period_ms=int(
-                options.get("telemetry_period_ms", server.telemetry_period_ms)
-            ),
             auto_connect=bool(options.get("auto_connect", server.auto_connect)),
         )
-        self._settings.save(current.with_value("backend.competition", config.to_dict()))
+        profiles = [
+            config if existing_server is not None and item.identifier == server.identifier else item
+            for item in current.backend.competition_servers
+        ]
+        if existing_server is None:
+            profiles.append(config)
+        updated = current.to_dict()
+        updated["backend"]["competition"] = config.to_dict()
+        updated["backend"]["competition_servers"] = [item.to_dict() for item in profiles]
+        self._settings.save(type(current).from_dict(updated))
+        if previous.identifier != config.identifier and self._competition.state.running:
+            self._event(
+                "competition.profile_switch",
+                f"TEKNOFEST profili değiştiriliyor: {previous.name} → {config.name}",
+                details={
+                    "previous_server_id": previous.identifier,
+                    "next_server_id": config.identifier,
+                },
+            )
         self._competition.reconnect(config)
         deadline = time.monotonic() + config.timeout_s + 0.5
         while time.monotonic() < deadline:
@@ -654,7 +716,19 @@ class BackendConnectionControlService(ConnectionControlService):
     @staticmethod
     def _vehicle_options(settings) -> dict[str, Any]:
         mavlink = settings.backend.mavlink
-        return {"baud": mavlink.baud, "auto_connect": mavlink.auto_connect}
+        return {
+            "baud": mavlink.baud,
+            "auto_connect": mavlink.auto_connect,
+            "profile_id": settings.backend.active_mavlink_connection_id,
+            "profile_name": next(
+                (
+                    item.name
+                    for item in settings.backend.mavlink_connections
+                    if item.identifier == settings.backend.active_mavlink_connection_id
+                ),
+                "Telemetri",
+            ),
+        }
 
     @classmethod
     def _serial_access_options(cls, endpoint: str) -> dict[str, Any]:

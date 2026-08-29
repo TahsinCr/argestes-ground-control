@@ -5,6 +5,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from fake_teknofest_server import create_server
 from src.core.events import EventBus, Subscription
@@ -53,7 +54,6 @@ class CompetitionTests(unittest.TestCase):
         self.planner = PlannerService(initial_state=MissionState())
         self.vehicle = SimpleNamespace(connected=True)
         self.logs = LoggingService()
-        self.freshness_timeout_s = 0.8
         self.service = TeknofestCompetitionService(
             CompetitionServerConfig(
                 base_url=f"http://{host}:{port}",
@@ -61,14 +61,12 @@ class CompetitionTests(unittest.TestCase):
                 password="kirlangic-demo",
                 team_number=1,
                 timeout_s=1,
-                telemetry_period_ms=500,
                 auto_connect=True,
             ),
             self.telemetry,
             self.planner,
             self.vehicle,  # type: ignore[arg-type]
             self.logs.child("TEKNOFEST"),
-            telemetry_freshness_timeout_s=self.freshness_timeout_s,
         )
         self.telemetry.start()
         self.planner.start()
@@ -80,6 +78,25 @@ class CompetitionTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.server_thread.join(timeout=1)
+
+    def test_auto_server_profiles_are_selected_in_configured_order(self) -> None:
+        first = CompetitionServerConfig(
+            name="İlk", base_url="http://127.0.0.1:19001", auto_connect=True
+        )
+        second = CompetitionServerConfig(
+            name="İkinci", base_url="http://127.0.0.1:19002", auto_connect=True
+        )
+        skipped = CompetitionServerConfig(
+            name="Kapalı", base_url="http://127.0.0.1:19003", auto_connect=False
+        )
+        self.service.configure_servers((first, second, skipped))
+
+        self.assertTrue(self.service._select_first_auto_server())
+        self.assertEqual(self.service.config.identifier, first.identifier)
+        self.assertTrue(self.service._advance_auto_server())
+        self.assertEqual(self.service.config.identifier, second.identifier)
+        self.assertTrue(self.service._advance_auto_server())
+        self.assertEqual(self.service.config.identifier, first.identifier)
 
     def test_client_receives_27_nearby_competitors_and_publishes_map_contacts(self) -> None:
         received_at = datetime.now(UTC)
@@ -173,6 +190,14 @@ class CompetitionTests(unittest.TestCase):
         self.assertEqual(sent["hedef_genislik"], 30)
         self.assertEqual(sent["hedef_yukseklik"], 43)
         self.assertEqual(sent["gps_saati"]["saat"], own.uav_time.hour)
+        self.assertTrue(
+            self._wait_until(
+                lambda: any(
+                    entry.action == "competition.qr_rx"
+                    for entry in self.logs.history
+                )
+            )
+        )
         actions = {entry.action for entry in self.logs.history}
         self.assertIn("competition.telemetry_tx", actions)
         self.assertIn("competition.telemetry_rx", actions)
@@ -206,7 +231,12 @@ class CompetitionTests(unittest.TestCase):
             uav_time_received_at=received_at,
         )
 
-        payload = self.service._telemetry_payload(snapshot, received_at)
+        with patch.object(
+            self.service,
+            "estimated_server_time",
+            return_value=received_at,
+        ):
+            payload = self.service._telemetry_payload(snapshot, received_at)
 
         self.assertEqual(payload["iha_irtifa"], 0.0)
         self.assertEqual(payload["iha_hiz"], 0.0)
@@ -309,18 +339,15 @@ class CompetitionTests(unittest.TestCase):
             self.server.state.received_kamikaze_events[0]["qrMetni"],
             "teknofest2026",
         )
-        with self.assertRaisesRegex(
-            CompetitionProtocolError,
-            "güvenli gönderim bütçesinde değil",
-        ):
-            self.service.submit_kamikaze_event(
-                KamikazeEvent(
-                    ended_at - timedelta(seconds=5),
-                    ended_at - timedelta(seconds=3),
-                    "late-qr",
-                    "jetson-qr-reader",
-                )
+        self.service.submit_kamikaze_event(
+            KamikazeEvent(
+                ended_at - timedelta(seconds=5),
+                ended_at - timedelta(seconds=3),
+                "late-qr",
+                "jetson-qr-reader",
             )
+        )
+        self.assertEqual(len(self.server.state.received_kamikaze_events), 2)
         actions = {entry.action for entry in self.logs.history}
         self.assertTrue(
             {
@@ -436,16 +463,33 @@ class CompetitionTests(unittest.TestCase):
                 OrinMessage("target.lock.report", report_payload, 902, 1, 191)
             )
 
-            self.assertEqual(first.payload["execution"], "submitted")
+            self.assertEqual(first.payload["execution"], "queued")
             self.assertEqual(dict(first.payload), dict(duplicate.payload))
-            self.assertEqual(
-                self.server.state.received_lock_events,
-                [
+            orin.handlers["mission.result"](
+                OrinMessage(
+                    "mission.result",
                     {
-                        "kilitlenmeBitisZamani": clock,
-                        "otonom_kilitlenme": 1,
-                    }
-                ],
+                        "task": "target.lock",
+                        "mission_id": 42,
+                        "execution": "succeeded",
+                    },
+                    903,
+                    1,
+                    191,
+                )
+            )
+            self.assertTrue(
+                self._wait_until(
+                    lambda: len(self.server.state.received_lock_events) == 1,
+                    timeout=1.5,
+                )
+            )
+            self.assertEqual(len(self.server.state.received_lock_events), 1)
+            received = self.server.state.received_lock_events[0]
+            self.assertEqual(received["otonom_kilitlenme"], 1)
+            self.assertEqual(
+                set(received["kilitlenmeBitisZamani"]),
+                {"saat", "dakika", "saniye", "milisaniye"},
             )
         finally:
             onboard.stop()
@@ -466,7 +510,7 @@ class CompetitionTests(unittest.TestCase):
         time.sleep(0.7)
         self.assertEqual(len(self.server.state.telemetry_history), 0)
 
-    def test_telemetry_is_never_sent_while_vehicle_connection_is_down(self) -> None:
+    def test_cached_telemetry_is_sent_while_vehicle_connection_is_down(self) -> None:
         received_at = datetime.now(UTC)
         self.vehicle.connected = False
         self.telemetry.push(
@@ -487,16 +531,10 @@ class CompetitionTests(unittest.TestCase):
         self.assertTrue(self._wait_until(lambda: self.service.state.connected))
         time.sleep(0.7)
 
-        self.assertEqual(len(self.server.state.telemetry_history), 0)
-        self.assertFalse(self.service.state.telemetry_tx_active)
-        blocked = [
-            entry for entry in self.logs.history
-            if entry.action == "competition.telemetry_blocked"
-        ]
-        self.assertTrue(blocked)
-        self.assertEqual(blocked[-1].details["reason"], "vehicle_connection_down")
+        self.assertEqual(len(self.server.state.telemetry_history), 1)
+        self.assertTrue(self.service.state.telemetry_tx_active)
 
-    def test_telemetry_transmission_stops_when_vehicle_feed_becomes_stale(self) -> None:
+    def test_telemetry_reuses_last_snapshot_at_one_hz_when_feed_becomes_stale(self) -> None:
         received_at = datetime.now(UTC)
         self.telemetry.push(
             TelemetrySnapshot.zero().copy(
@@ -519,24 +557,54 @@ class CompetitionTests(unittest.TestCase):
             self._wait_until(lambda: self.service.state.telemetry_tx_active)
         )
 
+        sent_count = len(self.server.state.telemetry_history)
         self.assertTrue(
             self._wait_until(
-                lambda: not self.service.state.telemetry_tx_active,
-                timeout=self.freshness_timeout_s + 1.5,
+                lambda: len(self.server.state.telemetry_history) > sent_count,
+                timeout=1.5,
             )
         )
-        sent_count = len(self.server.state.telemetry_history)
-        time.sleep(0.65)
-        self.assertEqual(len(self.server.state.telemetry_history), sent_count)
-        blocked = [
-            entry for entry in self.logs.history
-            if entry.action == "competition.telemetry_blocked"
-        ]
-        self.assertTrue(blocked)
-        self.assertIn(
-            blocked[-1].details["reason"],
-            {"position_stale", "vehicle_gps_time_stale"},
+        self.assertTrue(self.service.state.telemetry_tx_active)
+        latest = self.server.state.telemetry_history[-1]
+        self.assertEqual(latest["iha_enlem"], 39.868)
+        self.assertEqual(latest["iha_irtifa"], 100.0)
+
+    def test_telemetry_sender_uses_newest_cached_vehicle_snapshot(self) -> None:
+        received_at = datetime.now(UTC)
+        base = TelemetrySnapshot.zero().copy(
+            latitude=39.868,
+            longitude=32.7485,
+            altitude_agl=100.0,
+            position_valid=True,
+            telemetry_link=True,
+            autopilot_link=True,
+            uav_time=received_at,
+            position_received_at=received_at,
+            uav_time_received_at=received_at,
         )
+        self.telemetry.push(base)
+        self.service.start()
+        self.assertTrue(
+            self._wait_until(lambda: len(self.server.state.telemetry_history) >= 1)
+        )
+        sent_count = len(self.server.state.telemetry_history)
+
+        self.telemetry.push(
+            base.copy(
+                latitude=40.1234567,
+                altitude_agl=123.45,
+                timestamp=datetime.now(UTC),
+            )
+        )
+        self.assertTrue(
+            self._wait_until(
+                lambda: len(self.server.state.telemetry_history) > sent_count,
+                timeout=1.5,
+            )
+        )
+        latest = self.server.state.telemetry_history[-1]
+        self.assertEqual(latest["iha_enlem"], 40.1234567)
+        self.assertEqual(latest["iha_irtifa"], 123.45)
 
     def test_repeated_connection_failures_are_rate_limited(self) -> None:
         self.service._log_connection_failure("connection refused")

@@ -80,6 +80,8 @@ class OnboardMissionService(OnboardMissionServiceContract):
 
     _TIMELINE_LIMIT = 200
     _QR_REPORT_HISTORY_LIMIT = 256
+    _QR_REPORT_DELIVERY_ATTEMPTS = 3
+    _QR_REPORT_RETRY_DELAYS_S = (0.25, 0.75)
     _TARGET_LOCK_REPORT_HISTORY_LIMIT = 256
     _TARGET_LOCK_STATUS_TIMEOUT_S = 1.0
     _HSS_TASKS = frozenset({"hss.escape", "hss.predict", "hss.transit"})
@@ -236,18 +238,11 @@ class OnboardMissionService(OnboardMissionServiceContract):
             if active_task == canonical and not self._state.terminal:
                 raise RuntimeError(f"Onboard görevi zaten çalışıyor: {canonical}")
         if canonical == "kamikaze.execute":
-            # Target data is an Onboard precondition, not a connection-health
-            # gate.  A cached target may be used while the competition service
-            # reconnects, but task.start must follow its accepted update.
-            self._try_sync_competition_clock()
-            target_receipt = self._sync_kamikaze_target()
-            with self._lock:
-                target_ready = self._state.target_ready
-            if target_receipt is None and not target_ready:
-                raise RuntimeError(
-                    "Kamikaze hedefi Onboard tarafından doğrulanmadan görev başlatılamaz"
-                )
-        elif canonical in {"target.lock", KAMIKAZE_CHECK_TASK}:
+            self._sync_competition_clock(refresh=True)
+            self._sync_kamikaze_target()
+        elif canonical == KAMIKAZE_CHECK_TASK:
+            self._sync_competition_clock(refresh=True)
+        elif canonical == "target.lock":
             self._try_sync_competition_clock()
         if canonical in self._HSS_TASKS:
             self._on_hss_updated(tuple(self._competition.hss_zones))
@@ -285,7 +280,9 @@ class OnboardMissionService(OnboardMissionServiceContract):
             if self._state.active_task == "kamikaze.transit" and not self._state.terminal:
                 raise RuntimeError("Onboard kamikaze.transit görevi zaten çalışıyor")
 
-        # Refresh target, but never move a locked corridor silently.
+        # Anchor Onboard first, then refresh the target without silently moving
+        # the operator's locked corridor.
+        self._sync_competition_clock(refresh=True)
         self._competition.refresh_qr_coordinate()
         target = self._competition.qr_coordinate
         if target is None:
@@ -297,7 +294,6 @@ class OnboardMissionService(OnboardMissionServiceContract):
                 "QR koordinatı koridor seçiminden sonra değişti; koridorlar yeniden hesaplanmalı"
             )
         self._send_target_update(target)
-        self._sync_competition_clock()
 
         with self._lock:
             target_revision = self._target_source_revision
@@ -446,10 +442,14 @@ class OnboardMissionService(OnboardMissionServiceContract):
             raise OnboardCommandRejectedError(receipt.message, receipt.response)
         return receipt
 
-    def _sync_competition_clock(self) -> OrinCommandReceipt:
+    def _sync_competition_clock(self, *, refresh: bool = False) -> OrinCommandReceipt:
         """Anchor onboard result timestamps to the latest TEKNOFEST clock."""
 
-        server_now = self._competition.estimated_server_time()
+        server_now = (
+            self._competition.refresh_server_time()
+            if refresh
+            else self._competition.estimated_server_time()
+        )
         if not isinstance(server_now, datetime) or server_now.tzinfo is None:
             raise RuntimeError("TEKNOFEST sunucu saati henüz alınmadı")
         server_now = server_now.astimezone(UTC)
@@ -1778,17 +1778,15 @@ class OnboardMissionService(OnboardMissionServiceContract):
     def _submit_qr_report(self, message: OrinMessage) -> dict[str, Any]:
         report = KamikazeQrReport.from_payload(dict(message.payload))
         report_id = report.report_id
-        with self._lock:
+        with self._qr_report_lock:
             previous = self._submitted_qr_reports.get(report_id)
             if previous is not None:
-                return {**previous, "execution": "duplicate"}
+                return dict(previous)
 
-        started_at = self._competition_event_datetime(report.started_at_server)
-        ended_at = self._competition_event_datetime(report.ended_at_server)
         payload = report.to_payload()
         event = OnboardMissionEvent(
             event=report.event,
-            time_utc=ended_at.isoformat().replace("+00:00", "Z"),
+            time_utc="",
             mission_id=report.mission_id,
             source="report",
             qr_text=report.qr_text,
@@ -1800,42 +1798,93 @@ class OnboardMissionService(OnboardMissionServiceContract):
             source="report",
             mission_id=event.mission_id,
         )
-        if not report.test_only:
-            self._competition.submit_kamikaze_event(
-                KamikazeEvent(
-                    started_at=started_at,
-                    ended_at=ended_at,
-                    qr_text=report.qr_text,
-                    vehicle_source="orin",
-                )
-            )
         response = {
-            "execution": "accepted" if report.test_only else "submitted",
+            "accepted": True,
+            "execution": "submitted",
             "report_id": report_id,
             "mission_id": event.mission_id,
-            "test_only": report.test_only,
         }
-        with self._lock:
+        with self._qr_report_lock:
             self._submitted_qr_reports[report_id] = dict(response)
             self._submitted_qr_reports.move_to_end(report_id)
             while len(self._submitted_qr_reports) > self._QR_REPORT_HISTORY_LIMIT:
                 self._submitted_qr_reports.popitem(last=False)
+        self._async_runtime.submit(self._deliver_qr_report(report))
         self._log(
-            "kamikaze.qr_test_accepted" if report.test_only else "kamikaze.qr_submitted",
-            (
-                "QR yer kontrol sonucu kabul edildi; yarışma sunucusuna gönderilmedi"
-                if report.test_only
-                else "Orin QR raporu TEKNOFEST sunucusuna gönderildi"
-            ),
+            "kamikaze.qr_accepted",
+            "Orin QR raporu alındı; Onboard zamanlarıyla gönderim kuyruğa alındı",
             "success",
             {
                 "report_id": report_id,
                 "mission_id": event.mission_id,
                 "qr_text_length": len(report.qr_text),
-                "test_only": report.test_only,
             },
         )
         return response
+
+    async def _deliver_qr_report(self, report: KamikazeQrReport) -> None:
+        last_error: Exception | None = None
+        for attempt in range(1, self._QR_REPORT_DELIVERY_ATTEMPTS + 1):
+            try:
+                started_at = self._competition_event_datetime(
+                    report.started_at_server
+                )
+                ended_at = self._competition_event_datetime(
+                    report.ended_at_server
+                )
+                event = KamikazeEvent(
+                    started_at=started_at,
+                    ended_at=ended_at,
+                    qr_text=report.qr_text,
+                    vehicle_source="orin",
+                )
+                await asyncio.to_thread(
+                    self._competition.submit_kamikaze_event,
+                    event,
+                )
+            except Exception as exc:
+                last_error = exc
+                if attempt >= self._QR_REPORT_DELIVERY_ATTEMPTS:
+                    break
+                self._log(
+                    "kamikaze.qr_delivery_retry",
+                    "QR raporu TEKNOFEST gönderimi yeniden denenecek",
+                    "warning",
+                    {
+                        "report_id": report.report_id,
+                        "mission_id": report.mission_id,
+                        "attempt": attempt,
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                await asyncio.sleep(self._QR_REPORT_RETRY_DELAYS_S[attempt - 1])
+                continue
+            self._log(
+                "kamikaze.qr_submitted",
+                "Orin QR raporu Onboard başlangıç ve bitiş zamanlarıyla TEKNOFEST sunucusuna gönderildi",
+                "success",
+                {
+                    "report_id": report.report_id,
+                    "mission_id": report.mission_id,
+                    "attempt": attempt,
+                    "teknofest_payload": event.to_payload(),
+                },
+            )
+            return
+        assert last_error is not None
+        self._log(
+            "kamikaze.qr_delivery_failed",
+            "QR raporu alındı ancak TEKNOFEST POST işlemi başarısız",
+            "danger",
+            {
+                "report_id": report.report_id,
+                "mission_id": report.mission_id,
+                "attempts": self._QR_REPORT_DELIVERY_ATTEMPTS,
+                "error": str(last_error),
+                "error_type": type(last_error).__name__,
+            },
+        )
 
     def _handle_mission_event(self, message: OrinMessage) -> dict[str, Any]:
         self._process_event_payload(message.payload, source="live")

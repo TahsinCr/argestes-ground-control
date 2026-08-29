@@ -21,6 +21,7 @@ from src.ui.widgets.common import PanelFrame
 class VideoViewport(QWidget):
     view_mode_changed = pyqtSignal(str)
     reconnect_requested = pyqtSignal()
+    recording_requested = pyqtSignal(bool)
 
     def __init__(
         self,
@@ -77,6 +78,18 @@ class VideoViewport(QWidget):
             lambda _checked=False: self.set_display_mode("stretch")
         )
         self.reconnect_button.clicked.connect(self.reconnect_requested.emit)
+
+        self.recording_toolbar = QFrame(self)
+        self.recording_toolbar.setObjectName("VideoModeToolbar")
+        recording_layout = QHBoxLayout(self.recording_toolbar)
+        recording_layout.setContentsMargins(6, 6, 6, 6)
+        recording_layout.setSpacing(4)
+        self.recording_button = self._action_button("●", "recording")
+        self.recording_button.setProperty("recordingAction", "true")
+        self.recording_button.setCheckable(True)
+        self.recording_button.clicked.connect(self._request_recording_toggle)
+        recording_layout.addWidget(self.recording_button)
+        self._recording_enabled: bool | None = None
 
         self.set_theme(theme)
         self.set_language(language)
@@ -144,6 +157,10 @@ class VideoViewport(QWidget):
                 color: {theme.text};
                 border-color: {theme.accent};
             }}
+            QToolButton#VideoModeButton[recordingAction="true"]:checked {{
+                background: #6b2525;
+                border-color: #e05a5a;
+            }}
             """
         )
 
@@ -157,6 +174,7 @@ class VideoViewport(QWidget):
         self.stretch_button.setAccessibleName(t("video.view.stretch", language))
         self.reconnect_button.setToolTip(t("video.reconnect", language))
         self.reconnect_button.setAccessibleName(t("video.reconnect", language))
+        self._sync_recording_button()
         if self.stats_label.property("offline"):
             self.stats_label.setText(t("video.stats.waiting", language).upper())
             self._position_overlays()
@@ -179,6 +197,26 @@ class VideoViewport(QWidget):
 
     def set_reconnect_busy(self, busy: bool) -> None:
         self.reconnect_button.setEnabled(not busy)
+
+    def set_recording_busy(self, busy: bool) -> None:
+        self.recording_button.setEnabled(not busy)
+
+    def set_recording_enabled(self, enabled: bool | None) -> None:
+        self._recording_enabled = enabled
+        self._sync_recording_button()
+
+    def _request_recording_toggle(self) -> None:
+        target = not bool(self._recording_enabled)
+        self.recording_button.setChecked(bool(self._recording_enabled))
+        self.recording_requested.emit(target)
+
+    def _sync_recording_button(self) -> None:
+        enabled = self._recording_enabled is True
+        self.recording_button.setChecked(enabled)
+        key = "video.recording.stop" if enabled else "video.recording.start"
+        text = t(key, self._language)
+        self.recording_button.setToolTip(text)
+        self.recording_button.setAccessibleName(text)
 
     def set_stats(self, stats: VideoStreamStats) -> None:
         offline = not stats.connected
@@ -240,6 +278,12 @@ class VideoViewport(QWidget):
             max(margin, self.height() - self.mode_toolbar.height() - margin),
         )
         self.mode_toolbar.raise_()
+        self.recording_toolbar.adjustSize()
+        self.recording_toolbar.move(
+            margin,
+            max(margin, self.height() - self.recording_toolbar.height() - margin),
+        )
+        self.recording_toolbar.raise_()
 
     def paintEvent(self, event) -> None:
         del event
@@ -256,6 +300,7 @@ class VideoViewport(QWidget):
 
 class VideoPanel(PanelFrame):
     reconnect_requested = pyqtSignal()
+    recording_requested = pyqtSignal(bool)
 
     def __init__(
         self,
@@ -271,6 +316,7 @@ class VideoPanel(PanelFrame):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.viewport = VideoViewport(theme, language, self)
         self.viewport.reconnect_requested.connect(self.reconnect_requested.emit)
+        self.viewport.recording_requested.connect(self.recording_requested.emit)
         self.body_layout.addWidget(self.viewport, 1)
 
     def set_frame(self, image: QImage) -> None:
@@ -287,3 +333,9 @@ class VideoPanel(PanelFrame):
 
     def set_reconnect_busy(self, busy: bool) -> None:
         self.viewport.set_reconnect_busy(busy)
+
+    def set_recording_busy(self, busy: bool) -> None:
+        self.viewport.set_recording_busy(busy)
+
+    def set_recording_enabled(self, enabled: bool | None) -> None:
+        self.viewport.set_recording_enabled(enabled)

@@ -11,9 +11,23 @@ from src.models.mission import MapOverlay
 from src.services.planner import PlannerService
 from src.services.runtime import create_runtime_services
 from src.services.tile_cache import TileCacheServer
+from src.services.teknofest_archive import TeknofestSessionArchiveService
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_teknofest_archive_is_owned_by_application_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = create_runtime_services(Path(directory))
+            self.assertIsInstance(
+                runtime.teknofest_archive_service,
+                TeknofestSessionArchiveService,
+            )
+            runtime.start()
+            session_dir = runtime.teknofest_archive_service.session_dir
+            self.assertIsNotNone(session_dir)
+            self.assertTrue((session_dir / "teknofest.jsonl").is_file())
+            runtime.stop()
+
     def test_backend_io_services_share_one_async_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             runtime = create_runtime_services(Path(directory))

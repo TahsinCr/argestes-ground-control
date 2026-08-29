@@ -9,9 +9,12 @@ from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFrame,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -32,6 +35,7 @@ class SettingsDialog(QDialog):
     def __init__(self, settings: SettingsModel, language: str, theme: ThemePalette, parent=None) -> None:
         super().__init__(parent)
         self._ui_language = language
+        self._theme = theme
         self._settings = settings
         self._widgets: dict[str, QWidget] = {}
         self.setObjectName("FramelessDialog")
@@ -81,6 +85,8 @@ class SettingsDialog(QDialog):
         layout.addWidget(shell, 1)
 
     def _build_section(self, section: SectionSpec, settings: SettingsModel) -> QWidget:
+        if section.title_key == "dialog.settings.section.safe_area":
+            return self._build_safe_area_section(section, settings)
         box = QGroupBox(t(section.title_key, self._ui_language), self)
         form_layout = QFormLayout(box)
         form_layout.setContentsMargins(10, 10, 10, 10)
@@ -90,6 +96,61 @@ class SettingsDialog(QDialog):
             widget = self._create_widget(field, settings)
             self._widgets[field.path] = widget
             form_layout.addRow(t(field.label_key, self._ui_language), widget)
+        return box
+
+    def _build_safe_area_section(self, section: SectionSpec, settings: SettingsModel) -> QWidget:
+        """Render corners as compact cards that fit the settings popup."""
+
+        box = QGroupBox(t(section.title_key, self._ui_language), self)
+        grid = QGridLayout(box)
+        grid.setContentsMargins(10, 10, 10, 10)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(6)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        fields = {field.path: field for field in section.fields}
+
+        for point_number in range(1, 5):
+            card = QFrame(box)
+            card.setObjectName("SettingsSafeAreaCorner")
+            card.setFrameShape(QFrame.Shape.StyledPanel)
+            card.setStyleSheet(
+                "QFrame {"
+                f"background: {self._theme.surface}; "
+                f"border: 1px solid {self._theme.border}; "
+                "border-radius: 5px;"
+                "} QLabel[role='section-heading'] {"
+                f"color: {self._theme.text}; font-size: 11px; font-weight: 700;"
+                "}"
+            )
+            card_layout = QGridLayout(card)
+            card_layout.setContentsMargins(7, 6, 7, 7)
+            card_layout.setHorizontalSpacing(4)
+            card_layout.setVerticalSpacing(3)
+
+            title = QLabel(
+                t("dialog.settings.safe_area_corner", self._ui_language, point=point_number),
+                card,
+            )
+            title.setProperty("role", "section-heading")
+            card_layout.addWidget(title, 0, 0, 1, 2)
+
+            for row, (coordinate, label_key) in enumerate(
+                (
+                    ("latitude", "dialog.settings.coordinate_lat"),
+                    ("longitude", "dialog.settings.coordinate_lon"),
+                ),
+                start=1,
+            ):
+                path = f"backend.mission.safe_area.point_{point_number}.{coordinate}"
+                widget = self._create_widget(fields[path], settings)
+                self._widgets[path] = widget
+                label = QLabel(t(label_key, self._ui_language), card)
+                label.setProperty("role", "muted")
+                card_layout.addWidget(label, row, 0)
+                card_layout.addWidget(widget, row, 1)
+            index = point_number - 1
+            grid.addWidget(card, index // 2, index % 2)
         return box
 
     def _create_widget(self, field: FieldSpec, settings: SettingsModel) -> QWidget:

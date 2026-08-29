@@ -29,6 +29,8 @@ class ConnectionPopup(QDialog):
     reconnect_requested = pyqtSignal(str, dict)
     disconnect_requested = pyqtSignal(str)
     settings_requested = pyqtSignal()
+    back_requested = pyqtSignal()
+    delete_requested = pyqtSignal()
 
     def __init__(
         self,
@@ -46,6 +48,9 @@ class ConnectionPopup(QDialog):
         self._status: ConnectionStatus | None = None
         self._busy = False
         self._can_disconnect = False
+        self._back_navigation = False
+        self._server_profile_editor = False
+        self._telemetry_profile_editor = False
         self._build_ui()
         self.set_theme(theme)
         self._retranslate_static()
@@ -66,6 +71,11 @@ class ConnectionPopup(QDialog):
         is_orin = status.channel == "orin"
         is_video = status.channel == "video"
         is_server = status.channel == "server"
+        self.settings_button.setVisible(not is_server)
+        profile_editor = (is_server and self._server_profile_editor) or (status.channel == "telemetry" and self._telemetry_profile_editor)
+        self.profile_name_label.setVisible(profile_editor)
+        self.profile_name_input.setVisible(profile_editor)
+        self.profile_name_input.setText(str(status.options.get("server_name", status.options.get("profile_name", ""))))
         self.endpoint_input.setReadOnly(is_orin)
         self.endpoint_label.setText(
             t(
@@ -119,8 +129,6 @@ class ConnectionPopup(QDialog):
             self.password_input,
             self.team_number_label,
             self.team_number_input,
-            self.telemetry_period_label,
-            self.telemetry_period_input,
         ):
             widget.setVisible(is_server)
         self.username_input.setText(str(status.options.get("username", "")))
@@ -129,9 +137,6 @@ class ConnectionPopup(QDialog):
             t("connection.password.keep", self._language)
         )
         self.team_number_input.setValue(int(status.options.get("team_number", 1)))
-        self.telemetry_period_input.setValue(
-            int(status.options.get("telemetry_period_ms", 1000))
-        )
 
         self.source_type_label.setVisible(is_video)
         self.source_type_input.setVisible(is_video)
@@ -154,6 +159,31 @@ class ConnectionPopup(QDialog):
         self._retranslate_channel()
         if self._status is not None:
             self._apply_status(self._status)
+            self._sync_reconnect_label(self._status)
+
+    def set_back_navigation(self, enabled: bool) -> None:
+        self._back_navigation = bool(enabled)
+        self.back_button.setVisible(self._back_navigation)
+
+    def set_server_profile_editor(self, enabled: bool) -> None:
+        self._server_profile_editor = bool(enabled)
+        if enabled:
+            self._telemetry_profile_editor = False
+        is_server = self._channel == "server"
+        self.profile_name_label.setVisible(is_server and self._server_profile_editor)
+        self.profile_name_input.setVisible(is_server and self._server_profile_editor)
+        self._retranslate_static()
+        if self._status is not None:
+            self._sync_reconnect_label(self._status)
+
+    def set_telemetry_profile_editor(self, enabled: bool) -> None:
+        self._telemetry_profile_editor = bool(enabled)
+        if enabled:
+            self._server_profile_editor = False
+        is_telemetry = self._channel == "telemetry"
+        self.profile_name_label.setVisible(is_telemetry and self._telemetry_profile_editor)
+        self.profile_name_input.setVisible(is_telemetry and self._telemetry_profile_editor)
+        if self._status is not None:
             self._sync_reconnect_label(self._status)
 
     def refresh_status(self, status: ConnectionStatus) -> None:
@@ -239,6 +269,12 @@ class ConnectionPopup(QDialog):
         self.endpoint_input = QLineEdit(self)
         form.addRow(self.endpoint_label, self.endpoint_input)
 
+        self.profile_name_label = QLabel(self)
+        self.profile_name_input = QLineEdit(self)
+        self.profile_name_label.setVisible(False)
+        self.profile_name_input.setVisible(False)
+        form.addRow(self.profile_name_label, self.profile_name_input)
+
         self.timeout_label = QLabel(self)
         self.timeout_input = QDoubleSpinBox(self)
         self.timeout_input.setRange(1.0, 120.0)
@@ -260,13 +296,6 @@ class ConnectionPopup(QDialog):
         self.team_number_input = QSpinBox(self)
         self.team_number_input.setRange(1, 9999)
         form.addRow(self.team_number_label, self.team_number_input)
-
-        self.telemetry_period_label = QLabel(self)
-        self.telemetry_period_input = QSpinBox(self)
-        self.telemetry_period_input.setRange(500, 60_000)
-        self.telemetry_period_input.setSingleStep(100)
-        self.telemetry_period_input.setSuffix(" ms")
-        form.addRow(self.telemetry_period_label, self.telemetry_period_input)
 
         self.baud_label = QLabel(self)
         self.baud_input = QSpinBox(self)
@@ -303,10 +332,13 @@ class ConnectionPopup(QDialog):
         buttons = QHBoxLayout()
         buttons.setSpacing(6)
         self.settings_button = QPushButton(self)
+        self.back_button = QPushButton(t("common.action.back", self._language), self)
+        self.back_button.setVisible(False)
         self.disconnect_button = QPushButton(self)
         self.disconnect_button.setProperty("role", "danger")
         self.reconnect_button = QPushButton(self)
         self.reconnect_button.setProperty("role", "primary")
+        buttons.addWidget(self.back_button)
         buttons.addWidget(self.settings_button)
         buttons.addStretch(1)
         buttons.addWidget(self.disconnect_button)
@@ -314,9 +346,8 @@ class ConnectionPopup(QDialog):
         root.addLayout(buttons)
 
         self.settings_button.clicked.connect(self.settings_requested.emit)
-        self.disconnect_button.clicked.connect(
-            lambda: self.disconnect_requested.emit(self._channel)
-        )
+        self.back_button.clicked.connect(self.back_requested.emit)
+        self.disconnect_button.clicked.connect(self._request_disconnect_or_delete)
         self.reconnect_button.clicked.connect(self._request_reconnect)
 
     def _request_reconnect(self) -> None:
@@ -329,6 +360,8 @@ class ConnectionPopup(QDialog):
                 baud=self.baud_input.value(),
                 auto_connect=self.auto_connect.isChecked(),
             )
+            if self._channel == "telemetry" and self._telemetry_profile_editor:
+                options["profile_name"] = self.profile_name_input.text().strip()
         elif self._channel == "video":
             options.update(
                 source_type=self.source_type_input.currentText(),
@@ -342,10 +375,17 @@ class ConnectionPopup(QDialog):
                 username=self.username_input.text().strip(),
                 password=self.password_input.text(),
                 team_number=self.team_number_input.value(),
-                telemetry_period_ms=self.telemetry_period_input.value(),
                 auto_connect=self.auto_connect.isChecked(),
             )
+            if self._server_profile_editor:
+                options["server_name"] = self.profile_name_input.text().strip()
         self.reconnect_requested.emit(self._channel, options)
+
+    def _request_disconnect_or_delete(self) -> None:
+        if self._server_profile_editor or self._telemetry_profile_editor:
+            self.delete_requested.emit()
+            return
+        self.disconnect_requested.emit(self._channel)
 
     def _apply_status(self, status: ConnectionStatus) -> None:
         marker = "●"
@@ -356,6 +396,11 @@ class ConnectionPopup(QDialog):
         self.detail_label.setText(detail)
 
     def _sync_reconnect_label(self, status: ConnectionStatus) -> None:
+        if self._server_profile_editor or self._telemetry_profile_editor:
+            self.reconnect_button.setText(
+                t("competition.server_profile.save", self._language)
+            )
+            return
         self.reconnect_button.setText(
             t(
                 "connection.action.reconnect"
@@ -366,14 +411,15 @@ class ConnectionPopup(QDialog):
         )
 
     def _retranslate_static(self) -> None:
+        self.back_button.setText(t("common.action.back", self._language))
         self.endpoint_label.setText(t("connection.label.address", self._language))
+        self.profile_name_label.setText(
+            t("competition.server_profile.name", self._language)
+        )
         self.timeout_label.setText(t("connection.label.timeout", self._language))
         self.username_label.setText(t("connection.label.username", self._language))
         self.password_label.setText(t("connection.label.password", self._language))
         self.team_number_label.setText(t("connection.label.team_number", self._language))
-        self.telemetry_period_label.setText(
-            t("connection.label.telemetry_period", self._language)
-        )
         self.baud_label.setText(t("connection.label.baud", self._language))
         self.source_type_label.setText(t("connection.label.source_type", self._language))
         self.codec_label.setText(t("connection.label.codec", self._language))
@@ -386,7 +432,12 @@ class ConnectionPopup(QDialog):
         self.auto_connect.setText(t("connection.auto.default", self._language))
         self.settings_button.setText(t("connection.action.settings", self._language))
         self.disconnect_button.setText(
-            t("connection.action.disconnect", self._language)
+            t(
+                "competition.server_profile.delete"
+                if self._server_profile_editor or self._telemetry_profile_editor
+                else "connection.action.disconnect",
+                self._language,
+            )
         )
         if self._status is None:
             self.reconnect_button.setText(t("connection.action.retry", self._language))

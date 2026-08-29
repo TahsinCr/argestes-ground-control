@@ -28,6 +28,7 @@ from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
 from src.services.kamikaze_approach import KamikazeApproachService
 from src.services.target_selection import TargetSelectionService
+from src.services.teknofest_archive import TeknofestSessionArchiveService
 
 
 @dataclass(slots=True)
@@ -46,6 +47,7 @@ class RuntimeServices:
     video_service: VideoService
     tile_cache_service: TileCacheServer
     competition_service: CompetitionService
+    teknofest_archive_service: TeknofestSessionArchiveService
     kamikaze_approach_service: KamikazeApproachService
     target_selection_service: TargetSelectionService
     connection_service: ConnectionControlService
@@ -69,6 +71,13 @@ class RuntimeServices:
     )
 
     def __post_init__(self) -> None:
+        self.video_service.set_server_time_provider(
+            self.competition_service.estimated_server_time
+        )
+        self.video_service.configure_shares(tuple(self.settings_service.current.backend.video_shares))
+        configure_servers = getattr(self.competition_service, "configure_servers", None)
+        if callable(configure_servers):
+            configure_servers(tuple(self.settings_service.current.backend.competition_servers))
         self._subscriptions.append(
             self.settings_service.changed.subscribe(self._apply_settings)
         )
@@ -127,7 +136,11 @@ class RuntimeServices:
             limit_mb=updated.backend.cache.limit_mb,
         )
         self.competition_service.configure(updated.backend.competition)
+        configure_servers = getattr(self.competition_service, "configure_servers", None)
+        if callable(configure_servers):
+            configure_servers(tuple(updated.backend.competition_servers))
         self.orin_service.configure(updated.backend.orin)
+        self.video_service.configure_shares(tuple(updated.backend.video_shares))
 
     def start(self) -> None:
         with self._lifecycle_lock:
@@ -226,6 +239,7 @@ class RuntimeServices:
             ("tile_cache", self.tile_cache_service),
             ("planner", self.planner_service),
             ("telemetry", self.telemetry_service),
+            ("teknofest_archive", self.teknofest_archive_service),
             ("competition", self.competition_service),
             ("kamikaze_approach", self.kamikaze_approach_service),
             ("target_selection", self.target_selection_service),
@@ -241,6 +255,7 @@ class RuntimeServices:
             ("target_selection", self.target_selection_service),
             ("kamikaze_approach", self.kamikaze_approach_service),
             ("competition", self.competition_service),
+            ("teknofest_archive", self.teknofest_archive_service),
             ("parameters", self.parameter_service),
             ("onboard", self.onboard_service),
             ("orin", self.orin_service),

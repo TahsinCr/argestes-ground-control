@@ -8,9 +8,13 @@ from urllib.parse import urlparse
 from typing import Any
 
 from src.core.events import EventBus
-from src.models.video import VideoFrame, VideoStreamStats
+from collections.abc import Callable
+from datetime import datetime
+
+from src.models.video import VideoFrame, VideoShareConfig, VideoShareState, VideoStreamStats
 from src.services.abstracts.video import VideoService
 from src.services.logging_service import ServiceLogger
+from src.services.video_share import VideoSharePublisher
 
 
 class MutableVideoService(VideoService):
@@ -23,6 +27,7 @@ class MutableVideoService(VideoService):
         self._connection_lock = threading.RLock()
         self._stats = VideoStreamStats()
         self._stats_lock = threading.RLock()
+        self._share_publisher = VideoSharePublisher(self._frames, logger)
 
     @property
     def connected(self) -> bool:
@@ -46,10 +51,25 @@ class MutableVideoService(VideoService):
     def stats_changed(self) -> EventBus[VideoStreamStats]:
         return self._stats_changed
 
+    @property
+    def share_states_changed(self) -> EventBus[tuple[VideoShareState, ...]]:
+        return self._share_publisher.states_changed
+
+    @property
+    def share_states(self) -> tuple[VideoShareState, ...]:
+        return self._share_publisher.states
+
+    def configure_shares(self, configs: tuple[VideoShareConfig, ...]) -> None:
+        self._share_publisher.configure(configs)
+
+    def set_server_time_provider(self, provider: Callable[[], datetime | None]) -> None:
+        self._share_publisher.set_server_time_provider(provider)
+
     def start(self) -> None:
         self._set_connected(True)
 
     def stop(self) -> None:
+        self._share_publisher.stop()
         self._set_connected(False)
 
     def configure(
@@ -261,8 +281,10 @@ class GStreamerVideoService(MutableVideoService):
 
     def stop(self) -> None:
         if not self._started:
+            self._share_publisher.stop()
             return
         self._stop_event.set()
+        self._share_publisher.stop()
         pipeline = self._pipeline
         self._pipeline = None
         self._sink_pad = None

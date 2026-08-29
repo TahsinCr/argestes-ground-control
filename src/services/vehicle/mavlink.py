@@ -108,6 +108,7 @@ class MavlinkVehicleService(VehicleService):
     GCS_HEARTBEAT_INTERVAL_S = 1.0
     LINK_PING_INTERVAL_S = 1.0
     LINK_PING_STALE_S = 5.0
+    HOME_HEARTBEAT_MAX_AGE_S = 3.0
     TRANSPORT_STATUS_TYPES = frozenset({"RADIO", "RADIO_STATUS"})
     DEFAULT_STREAM_RATES_HZ = {
         "ATTITUDE": 20.0,
@@ -719,13 +720,30 @@ class MavlinkVehicleService(VehicleService):
     def _goto(self, parameters: dict[str, Any]) -> bool:
         system, component = self._target
         mavlink = self._client.mavlink
-        latitude = int(float(parameters["latitude"]) * 1e7)
-        longitude = int(float(parameters["longitude"]) * 1e7)
+        requested_latitude = float(parameters["latitude"])
+        requested_longitude = float(parameters["longitude"])
+        if (
+            not math.isfinite(requested_latitude)
+            or not math.isfinite(requested_longitude)
+            or not -90.0 <= requested_latitude <= 90.0
+            or not -180.0 <= requested_longitude <= 180.0
+        ):
+            raise ValueError("GOTO koordinatları geçerli enlem/boylam olmalı")
+        latitude = int(requested_latitude * 1e7)
+        longitude = int(requested_longitude * 1e7)
         altitude_value = parameters.get("altitude", parameters.get("target_altitude"))
-        altitude = float(altitude_value or 0.0)
-        type_mask = 0b0000111111111000
+        altitude_source = "operator"
         if altitude_value is None:
-            type_mask |= 1 << 2
+            altitude = self._guided_hold_altitude()
+            altitude_source = "current_relative_altitude"
+        else:
+            altitude = float(altitude_value)
+        if not math.isfinite(altitude):
+            raise ValueError("GOTO irtifası geçerli olmalı")
+        # Do not mask Z. ArduPlane's GUIDED handler requires a complete global
+        # position target; map clicks therefore hold the current relative
+        # altitude rather than sending only latitude/longitude.
+        type_mask = 0b0000111111111000
         self._client.call_mav(
             "set_position_target_global_int_send",
             0,
@@ -741,12 +759,35 @@ class MavlinkVehicleService(VehicleService):
         self._event(
             "info",
             "vehicle.goto_sent",
-            "Konum hedefi uçuş cihazına iletildi",
-            details={"latitude": latitude / 1e7, "longitude": longitude / 1e7, "altitude": altitude_value},
+            "GUIDED konum hedefi uçuş cihazına iletildi",
+            details={
+                "latitude": latitude / 1e7,
+                "longitude": longitude / 1e7,
+                "altitude": altitude,
+                "altitude_source": altitude_source,
+                "frame": "GLOBAL_RELATIVE_ALT_INT",
+            },
         )
         return False
 
+    def _guided_hold_altitude(self) -> float:
+        """Return current relative altitude for a map-click GOTO.
+
+        The global-position stream is requested at 10 Hz.  A safe configured
+        default remains available while the first position message is pending.
+        """
+
+        latest = getattr(self._client, "latest", None)
+        position = latest("GLOBAL_POSITION_INT") if callable(latest) else None
+        relative_altitude_mm = getattr(position, "relative_alt", None)
+        if relative_altitude_mm is not None:
+            altitude = float(relative_altitude_mm) / 1000.0
+            if math.isfinite(altitude):
+                return altitude
+        return self._default_mission_altitude
+
     def _set_home(self, parameters: dict[str, Any]) -> bool:
+        self._require_disarmed_for_home()
         latitude = float(parameters["latitude"])
         longitude = float(parameters["longitude"])
         if (
@@ -789,6 +830,42 @@ class MavlinkVehicleService(VehicleService):
             },
         )
         return True
+
+    def _require_disarmed_for_home(self) -> None:
+        """Refuse home-reference changes unless the vehicle is safely on ground.
+
+        ``GLOBAL_POSITION_INT.relative_alt`` is referenced to the flight
+        controller's home altitude.  Changing home in flight can therefore
+        make an otherwise healthy altitude indication jump to zero (and become
+        negative during descent).  This operation is deliberately stricter
+        than ordinary commands: a recent, explicit disarmed heartbeat is
+        required before sending ``MAV_CMD_DO_SET_HOME``.
+        """
+
+        now = time.monotonic()
+        with self._state_lock:
+            heartbeat_age = now - self._last_heartbeat
+        if self._last_heartbeat <= 0.0 or heartbeat_age > self.HOME_HEARTBEAT_MAX_AGE_S:
+            raise RuntimeError(
+                "Home güncellemesi reddedildi: uçuş durumu doğrulanamıyor; "
+                "önce güncel Pixhawk heartbeat'i bekleyin"
+            )
+
+        latest = getattr(self._client, "latest", None)
+        heartbeat = latest("HEARTBEAT") if callable(latest) else None
+        if heartbeat is None:
+            heartbeat = getattr(self._client.connection, "message_state", {}).get("HEARTBEAT")
+        if heartbeat is None:
+            raise RuntimeError(
+                "Home güncellemesi reddedildi: Pixhawk arm durumu alınamadı"
+            )
+        armed_flag = int(
+            getattr(self._client.mavlink, "MAV_MODE_FLAG_SAFETY_ARMED", 128)
+        )
+        if int(getattr(heartbeat, "base_mode", 0)) & armed_flag:
+            raise RuntimeError(
+                "Home güncellemesi reddedildi: araç armed durumdayken Home değiştirilemez"
+            )
 
     def _land(self, parameters: dict[str, Any]) -> bool:
         latitude = float(parameters.get("latitude", 0.0))
@@ -953,6 +1030,15 @@ class MavlinkVehicleService(VehicleService):
                     overlay.metadata.get("altitude", fallback_altitude)
                 )
                 radius = float(overlay.radius_m or 0.0)
+                takeoff_pitch = 0.0
+                if overlay_type == "takeoff":
+                    takeoff_pitch = max(
+                        0.0,
+                        min(
+                            90.0,
+                            float(overlay.metadata.get("takeoff_pitch_deg") or 0.0),
+                        ),
+                    )
                 acceptance_radius = radius if overlay_type in {"waypoint", "route"} else 0.0
                 loiter_radius = radius if overlay_type == "loiter" else 0.0
                 result.append(
@@ -961,7 +1047,7 @@ class MavlinkVehicleService(VehicleService):
                         command,
                         0,
                         1,
-                        0.0,
+                        takeoff_pitch,
                         acceptance_radius,
                         loiter_radius,
                         float("nan"),

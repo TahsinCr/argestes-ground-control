@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, fields
+import math
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from src.core.abstracts import Model
 from src.models.competition import CompetitionServerConfig
 from src.models.orin import OrinLinkConfig
+from src.models.video import VideoShareConfig
 
 
 DEFAULT_RADII = {
@@ -17,6 +20,7 @@ DEFAULT_RADII = {
     "land": 35,
     "hss": 100,
 }
+SAFE_AREA_POINT_KEYS = ("point_1", "point_2", "point_3", "point_4")
 
 
 @dataclass(slots=True)
@@ -67,10 +71,122 @@ class MavlinkSettings:
             raise ValueError("MAVLink işlem zaman aşımı pozitif olmalı")
 
 
+@dataclass(frozen=True, slots=True)
+class MavlinkConnectionConfig(Model):
+    """A named, selectable MAVLink transport profile.
+
+    Only one profile is applied to ``BackendSettings.mavlink`` at a time, so
+    the existing single-client MAVLink ownership model remains intact.
+    """
+
+    identifier: str = field(default_factory=lambda: uuid4().hex)
+    name: str = "Telemetri"
+    endpoint: str = "udp:127.0.0.1:14550"
+    baud: int = 115200
+    heartbeat_timeout: int = 10
+    auto_connect: bool = False
+
+    def __post_init__(self) -> None:
+        identifier, name, endpoint = self.identifier.strip(), self.name.strip(), self.endpoint.strip()
+        if not identifier or not name or not endpoint:
+            raise ValueError("Telemetri profil kimliği, adı ve adresi boş olamaz")
+        if int(self.baud) <= 0 or int(self.heartbeat_timeout) <= 0:
+            raise ValueError("Telemetri profil baud ve zaman aşımı pozitif olmalı")
+        object.__setattr__(self, "identifier", identifier)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "endpoint", endpoint)
+        object.__setattr__(self, "baud", int(self.baud))
+        object.__setattr__(self, "heartbeat_timeout", int(self.heartbeat_timeout))
+        object.__setattr__(self, "auto_connect", bool(self.auto_connect))
+
+    @classmethod
+    def from_mavlink(cls, mavlink: MavlinkSettings) -> "MavlinkConnectionConfig":
+        return cls(
+            name="Telemetri",
+            endpoint=mavlink.endpoint,
+            baud=mavlink.baud,
+            heartbeat_timeout=mavlink.heartbeat_timeout,
+            auto_connect=mavlink.auto_connect,
+        )
+
+    def to_mavlink(self, current: MavlinkSettings) -> MavlinkSettings:
+        return MavlinkSettings(
+            endpoint=self.endpoint,
+            baud=self.baud,
+            heartbeat_timeout=self.heartbeat_timeout,
+            auto_connect=self.auto_connect,
+            dialect=current.dialect,
+            source_system=current.source_system,
+            source_component=current.source_component,
+            autoreconnect=current.autoreconnect,
+            operation_timeout=current.operation_timeout,
+            sync_parameters_on_connect=current.sync_parameters_on_connect,
+            sync_mission_on_connect=current.sync_mission_on_connect,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class SafeAreaPoint:
+    """One two-dimensional safe-area corner; altitude is intentionally absent."""
+
+    latitude: float = 0.0
+    longitude: float = 0.0
+
+    def __post_init__(self) -> None:
+        self.latitude = float(self.latitude)
+        self.longitude = float(self.longitude)
+        if not -90.0 <= self.latitude <= 90.0:
+            raise ValueError("Güvenli alan enlemi -90..90 aralığında olmalı")
+        if not -180.0 <= self.longitude <= 180.0:
+            raise ValueError("Güvenli alan boylamı -180..180 aralığında olmalı")
+
+
+@dataclass(slots=True)
+class SafeAreaSettings:
+    point_1: SafeAreaPoint = field(default_factory=SafeAreaPoint)
+    point_2: SafeAreaPoint = field(default_factory=SafeAreaPoint)
+    point_3: SafeAreaPoint = field(default_factory=SafeAreaPoint)
+    point_4: SafeAreaPoint = field(default_factory=SafeAreaPoint)
+
+    @property
+    def corners(self) -> tuple[SafeAreaPoint, ...]:
+        return tuple(getattr(self, key) for key in SAFE_AREA_POINT_KEYS)
+
+    def ordered_corners(self) -> tuple[SafeAreaPoint, ...]:
+        """Return the four corners in perimeter order without changing their labels.
+
+        Settings intentionally keep the operator's Point 1..4 inputs intact.
+        The map receives a centroid-angle ordering instead, so a rectangle is
+        rendered as a simple polygon even when its corners were entered in an
+        arbitrary order.
+        """
+
+        corners = self.corners
+        coordinates = {(corner.latitude, corner.longitude) for corner in corners}
+        if len(coordinates) != len(corners):
+            return ()
+        center_latitude = sum(corner.latitude for corner in corners) / len(corners)
+        center_longitude = sum(corner.longitude for corner in corners) / len(corners)
+        longitude_scale = math.cos(math.radians(center_latitude))
+        return tuple(
+            sorted(
+                corners,
+                key=lambda corner: math.atan2(
+                    corner.latitude - center_latitude,
+                    (corner.longitude - center_longitude) * longitude_scale,
+                ),
+            )
+        )
+
+
 @dataclass(slots=True)
 class MissionDefaults:
     radii: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_RADII))
     default_altitude_m: int = 100
+    safe_area: SafeAreaSettings = field(default_factory=SafeAreaSettings)
 
     def __post_init__(self) -> None:
         self.radii = {key: int(value) for key, value in self.radii.items()}
@@ -130,6 +246,7 @@ class BatteryAlarmSettings:
 class BatteryTelemetrySettings:
     """Battery display source and 4S voltage-estimation calibration."""
 
+    use_pixhawk_percent: bool | None = None
     mode: str = "voltage"
     cell_count: int = 4
     full_voltage: float = 16.8
@@ -150,6 +267,13 @@ class BatteryTelemetrySettings:
         self.recovery_filter_seconds = float(self.recovery_filter_seconds)
         if self.mode not in {"voltage", "autopilot"}:
             raise ValueError(f"Desteklenmeyen batarya telemetri modu: {self.mode}")
+        # ``mode`` remains in persisted settings for backward compatibility.
+        # The boolean is the user-facing and authoritative percentage source.
+        if self.use_pixhawk_percent is None:
+            self.use_pixhawk_percent = self.mode == "autopilot"
+        else:
+            self.use_pixhawk_percent = bool(self.use_pixhawk_percent)
+        self.mode = "autopilot" if self.use_pixhawk_percent else "voltage"
         if self.cell_count <= 0:
             raise ValueError("Batarya hücre sayısı pozitif olmalı")
         if not 0.0 < self.reserve_percent < 100.0:
@@ -180,8 +304,12 @@ class BackendSettings:
     video_codec: str = "h265"
     video_latency_ms: int = 100
     video_frame_timeout_s: int = 3
+    video_shares: list[VideoShareConfig] = field(default_factory=list)
+    competition_servers: list[CompetitionServerConfig] = field(default_factory=list)
     cache: CacheSettings = field(default_factory=CacheSettings)
     mavlink: MavlinkSettings = field(default_factory=MavlinkSettings)
+    mavlink_connections: list[MavlinkConnectionConfig] = field(default_factory=list)
+    active_mavlink_connection_id: str = ""
     orin: OrinLinkConfig = field(default_factory=OrinLinkConfig)
     competition: CompetitionServerConfig = field(default_factory=CompetitionServerConfig)
     mission: MissionDefaults = field(default_factory=MissionDefaults)
@@ -197,6 +325,39 @@ class BackendSettings:
         self.video_codec = self.video_codec.strip().lower()
         self.video_latency_ms = int(self.video_latency_ms)
         self.video_frame_timeout_s = int(self.video_frame_timeout_s)
+        self.video_shares = [
+            value if isinstance(value, VideoShareConfig) else VideoShareConfig(**value)
+            for value in self.video_shares
+        ]
+        self.mavlink_connections = [
+            value if isinstance(value, MavlinkConnectionConfig) else MavlinkConnectionConfig(**value)
+            for value in self.mavlink_connections
+        ]
+        if not self.mavlink_connections:
+            self.mavlink_connections = [MavlinkConnectionConfig.from_mavlink(self.mavlink)]
+        identifiers = [profile.identifier for profile in self.mavlink_connections]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("Telemetri profil kimlikleri benzersiz olmalı")
+        selected = next(
+            (profile for profile in self.mavlink_connections if profile.identifier == self.active_mavlink_connection_id),
+            self.mavlink_connections[0],
+        )
+        self.active_mavlink_connection_id = selected.identifier
+        self.mavlink = selected.to_mavlink(self.mavlink)
+        identifiers = [share.identifier for share in self.video_shares]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("Video paylaşım kimlikleri benzersiz olmalı")
+        self.competition_servers = [
+            value if isinstance(value, CompetitionServerConfig) else CompetitionServerConfig(**value)
+            for value in self.competition_servers
+        ]
+        if not self.competition_servers:
+            self.competition_servers = [self.competition]
+        server_identifiers = [server.identifier for server in self.competition_servers]
+        if len(server_identifiers) != len(set(server_identifiers)):
+            raise ValueError("TEKNOFEST sunucu kimlikleri benzersiz olmalı")
+        if not any(server.identifier == self.competition.identifier for server in self.competition_servers):
+            self.competition = self.competition_servers[0]
         if self.video_source_type not in {
             "mock", "http", "rtsp", "udp", "usb", "file", "pipeline"
         }:
@@ -248,6 +409,11 @@ class SettingsModel(Model):
             ui_payload = dict(payload.get("ui", {}))
             cache = CacheSettings(**_known(CacheSettings, backend_payload.pop("cache", {})))
             mavlink = MavlinkSettings(**_known(MavlinkSettings, backend_payload.pop("mavlink", {})))
+            mavlink_connections = [
+                MavlinkConnectionConfig(**dict(item))
+                for item in backend_payload.pop("mavlink_connections", ())
+            ]
+            active_mavlink_connection_id = str(backend_payload.pop("active_mavlink_connection_id", ""))
             orin = OrinLinkConfig(**_known(OrinLinkConfig, backend_payload.pop("orin", {})))
             competition = CompetitionServerConfig(
                 **_known(CompetitionServerConfig, backend_payload.pop("competition", {}))
@@ -270,26 +436,56 @@ class SettingsModel(Model):
             battery_alarm = BatteryAlarmSettings(
                 **_known(BatteryAlarmSettings, battery_payload)
             )
-            battery_telemetry = BatteryTelemetrySettings(
-                **_known(
-                    BatteryTelemetrySettings,
-                    dict(backend_payload.pop("battery_telemetry", {})),
-                )
+            battery_telemetry_payload = dict(
+                backend_payload.pop("battery_telemetry", {})
             )
+            # Migrate the former string mode without changing existing profiles.
+            battery_telemetry_payload.setdefault(
+                "use_pixhawk_percent",
+                battery_telemetry_payload.get("mode") == "autopilot",
+            )
+            battery_telemetry = BatteryTelemetrySettings(
+                **_known(BatteryTelemetrySettings, battery_telemetry_payload)
+            )
+            video_shares = [
+                VideoShareConfig(**dict(item))
+                for item in backend_payload.pop("video_shares", ())
+            ]
+            competition_servers = [
+                CompetitionServerConfig(**dict(item))
+                for item in backend_payload.pop("competition_servers", ())
+            ]
             mission_payload = dict(backend_payload.pop("mission", {}))
             radii = dict(DEFAULT_RADII)
             radii.update({key: int(value) for key, value in mission_payload.get("radii", {}).items()})
+            safe_area_payload = dict(mission_payload.get("safe_area", {}))
+            safe_area = SafeAreaSettings(
+                **{
+                    key: SafeAreaPoint(
+                        **_known(
+                            SafeAreaPoint,
+                            dict(safe_area_payload.get(key, {})),
+                        )
+                    )
+                    for key in SAFE_AREA_POINT_KEYS
+                }
+            )
             backend = BackendSettings(
                 **_known(BackendSettings, backend_payload),
                 cache=cache,
                 mavlink=mavlink,
+                mavlink_connections=mavlink_connections,
+                active_mavlink_connection_id=active_mavlink_connection_id,
                 orin=orin,
                 competition=competition,
+                competition_servers=competition_servers,
                 battery_alarm=battery_alarm,
                 battery_telemetry=battery_telemetry,
+                video_shares=video_shares,
                 mission=MissionDefaults(
                     radii=radii,
                     default_altitude_m=int(mission_payload.get("default_altitude_m", 100)),
+                    safe_area=safe_area,
                 ),
             )
             return cls(backend=backend, ui=UiSettings(**_known(UiSettings, ui_payload)))
@@ -311,6 +507,7 @@ class SettingsModel(Model):
                 video_codec=str(payload.get("video_codec", "h265")),
                 video_latency_ms=int(payload.get("video_latency_ms", 100)),
                 video_frame_timeout_s=int(payload.get("video_frame_timeout_s", 3)),
+                video_shares=[],
                 cache=CacheSettings(
                     enabled=bool(payload.get("cache_enabled", True)),
                     limit_mb=int(payload.get("cache_limit_mb", 2048)),
@@ -350,6 +547,15 @@ class SettingsModel(Model):
         for part in parts[:-1]:
             target = target[part]
         target[parts[-1]] = value
+        if path.startswith("backend.mavlink."):
+            backend = payload["backend"]
+            active_id = backend.get("active_mavlink_connection_id", "")
+            for profile in backend.get("mavlink_connections", []):
+                if profile.get("identifier") == active_id:
+                    key = parts[-1]
+                    if key in {"endpoint", "baud", "heartbeat_timeout", "auto_connect"}:
+                        profile[key] = value
+                    break
         return self.from_dict(payload)
 
     def patch(self, **changes: Any) -> "SettingsModel":

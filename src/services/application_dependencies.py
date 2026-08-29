@@ -33,6 +33,7 @@ from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
 from src.services.kamikaze_approach import KamikazeApproachService
 from src.services.target_selection import TargetSelectionService
+from src.services.teknofest_archive import TeknofestSessionArchiveService
 from src.services.vehicle.dependencies import VehicleStack
 from src.services.video import GStreamerVideoService, MutableVideoService
 
@@ -94,15 +95,18 @@ def _video(
 ) -> VideoService:
     backend = settings_service.current.backend
     if backend.mock_mode or backend.video_source_type == "mock":
-        return MutableVideoService(logging.child("VIDEO"))
-    return GStreamerVideoService(
+        service: VideoService = MutableVideoService(logging.child("VIDEO"))
+    else:
+        service = GStreamerVideoService(
         backend.video_source_type,
         backend.video_source_uri,
         logging.child("VIDEO"),
         latency_ms=backend.video_latency_ms,
         codec=backend.video_codec,
         frame_timeout_s=backend.video_frame_timeout_s,
-    )
+        )
+    service.configure_shares(tuple(backend.video_shares))
+    return service
 
 
 def _tile_cache(
@@ -145,6 +149,18 @@ def _competition(
         vehicle,
         logging.child("TEKNOFEST"),
         async_runtime=async_runtime,
+    )
+
+
+def _teknofest_archive(
+    context: ApplicationContext,
+    competition: CompetitionService,
+    logging: LoggingService,
+) -> TeknofestSessionArchiveService:
+    return TeknofestSessionArchiveService(
+        context.base_dir,
+        competition,
+        logging.child("TEKNOFEST_ARCHIVE"),
     )
 
 
@@ -327,6 +343,16 @@ def register_application_dependencies(
         priority=priority,
     )
     container.singleton(
+        TeknofestSessionArchiveService,
+        factory=_teknofest_archive,
+        dependencies={
+            "context": ApplicationContext,
+            "competition": CompetitionService,
+            "logging": LoggingService,
+        },
+        priority=priority,
+    )
+    container.singleton(
         KamikazeApproachService,
         factory=_kamikaze_approach,
         dependencies={
@@ -404,6 +430,7 @@ def register_application_dependencies(
             "video_service": VideoService,
             "tile_cache_service": TileCacheServer,
             "competition_service": CompetitionService,
+            "teknofest_archive_service": TeknofestSessionArchiveService,
             "kamikaze_approach_service": KamikazeApproachService,
             "target_selection_service": TargetSelectionService,
             "connection_service": ConnectionControlService,

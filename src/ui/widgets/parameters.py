@@ -5,6 +5,7 @@ from typing import Iterable
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
     QFrame,
     QHeaderView,
@@ -22,14 +23,36 @@ from PyQt6.QtWidgets import (
 
 from src.ui.i18n import t
 from src.models.parameters import Parameter
+from src.models.target_selection import TargetSelectionResult
 from src.ui.config.commands import TASK_LABEL_KEYS
 from src.ui.widgets.common import PanelFrame, compact_button, horizontal_row
+
+
+_TARGET_SELECTOR_COLUMNS = (
+    "team", "score", "lock_probability", "pre_score", "tail_access",
+    "distance", "altitude_delta", "data_age", "merge_eta", "lock_start",
+    "lock_duration", "turn", "quality", "reason",
+)
+
+
+class _NumericTableItem(QTableWidgetItem):
+    """Table item that sorts by its numeric value instead of formatted text."""
+
+    def __init__(self, text: str, value: float) -> None:
+        super().__init__(text)
+        self.setData(Qt.ItemDataRole.UserRole, float(value))
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        return float(self.data(Qt.ItemDataRole.UserRole)) < float(
+            other.data(Qt.ItemDataRole.UserRole)
+        )
 
 
 class ParametersPanel(PanelFrame):
     parameter_changed = pyqtSignal(str, object)
     apply_requested = pyqtSignal(dict)
     reset_requested = pyqtSignal()
+    target_selector_visibility_changed = pyqtSignal(bool)
 
     def __init__(self, title: str, subtitle: str, search_placeholder: str, parent=None) -> None:
         super().__init__(title, subtitle, parent)
@@ -52,9 +75,13 @@ class ParametersPanel(PanelFrame):
         self.parameters_tab = QWidget(self.tabs)
         self.parameters_tab.setObjectName("CommandTabPage")
         self.mission_commands_tab = QWidget(self.tabs)
+        self.target_selector_tab = QWidget(self.tabs)
         self.mission_commands_tab.setObjectName("CommandTabPage")
+        self.target_selector_tab.setObjectName("CommandTabPage")
         self.tabs.addTab(self.parameters_tab, "")
         self.tabs.addTab(self.mission_commands_tab, "")
+        self.tabs.addTab(self.target_selector_tab, "")
+        self.tabs.currentChanged.connect(self._on_tab_changed)
         self.body_layout.addWidget(self.tabs, 1)
 
         parameters_layout = QVBoxLayout(self.parameters_tab)
@@ -132,6 +159,41 @@ class ParametersPanel(PanelFrame):
         empty_layout.addWidget(self.mission_empty_card)
         empty_layout.addStretch(1)
         self.mission_command_stack.addWidget(self.mission_empty_page)
+
+        target_selector_layout = QVBoxLayout(self.target_selector_tab)
+        target_selector_layout.setContentsMargins(6, 6, 6, 6)
+        target_selector_layout.setSpacing(6)
+        self.target_selector_summary = QLabel(self.target_selector_tab)
+        self.target_selector_summary.setProperty("role", "readout-label")
+        self.target_selector_summary.setWordWrap(True)
+        target_selector_layout.addWidget(self.target_selector_summary)
+        self.target_selector_table = QTableWidget(self.target_selector_tab)
+        self.target_selector_table.setObjectName("TargetSelectorTable")
+        self.target_selector_table.setColumnCount(len(_TARGET_SELECTOR_COLUMNS))
+        self.target_selector_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.target_selector_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.target_selector_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.target_selector_table.setAlternatingRowColors(True)
+        self.target_selector_table.setShowGrid(False)
+        self.target_selector_table.setWordWrap(False)
+        self.target_selector_table.setHorizontalScrollMode(
+            QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
+        self.target_selector_table.verticalHeader().setVisible(False)
+        selector_header = self.target_selector_table.horizontalHeader()
+        selector_header.setSectionsClickable(True)
+        selector_header.setSortIndicatorShown(True)
+        selector_header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        selector_header.setStretchLastSection(True)
+        selector_header.setSortIndicator(1, Qt.SortOrder.DescendingOrder)
+        target_selector_layout.addWidget(self.target_selector_table, 1)
+        self._target_selection_result = TargetSelectionResult()
         self._update_footer()
         self.set_language(self._language)
 
@@ -170,6 +232,13 @@ class ParametersPanel(PanelFrame):
         self._language = language
         self.tabs.setTabText(0, t("tab.parameters", language))
         self.tabs.setTabText(1, t("tab.mission_commands", language))
+        self.tabs.setTabText(2, t("vehicle_management.tab.target_selector", language))
+        self.target_selector_table.setHorizontalHeaderLabels(
+            [
+                t(f"target_selector.column.{column}", language)
+                for column in _TARGET_SELECTOR_COLUMNS
+            ]
+        )
         self.apply_button.setText(t("parameters.apply", language).upper())
         self.reset_button.setText(t("parameters.reset", language).upper())
         self.table.setHorizontalHeaderLabels(
@@ -187,6 +256,70 @@ class ParametersPanel(PanelFrame):
             )
         self._update_mission_command_placeholder()
         self._update_footer()
+        self.update_target_selection(self._target_selection_result)
+
+    def update_target_selection(self, result: TargetSelectionResult) -> None:
+        """Render the live target ranking while preserving the selected sort."""
+
+        self._target_selection_result = result
+        if not self.target_selector_active:
+            return
+        table = self.target_selector_table
+        header = table.horizontalHeader()
+        sort_column = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
+        if not 0 <= sort_column < len(_TARGET_SELECTOR_COLUMNS):
+            sort_column, sort_order = 1, Qt.SortOrder.DescendingOrder
+
+        table.setUpdatesEnabled(False)
+        table.setSortingEnabled(False)
+        try:
+            table.setRowCount(len(result.candidates))
+            for row, candidate in enumerate(result.candidates):
+                values = (
+                _NumericTableItem(
+                    t("target_selector.team", self._language, team=candidate.team_number),
+                    candidate.team_number,
+                ),
+                _NumericTableItem(f"{candidate.final_score:.1f}", candidate.final_score),
+                _NumericTableItem(f"{candidate.lock_probability:.1f}%", candidate.lock_probability),
+                _NumericTableItem(f"{candidate.pre_score:.1f}", candidate.pre_score),
+                _NumericTableItem(f"{candidate.tail_access_score:.1f}", candidate.tail_access_score),
+                _NumericTableItem(f"{candidate.distance_m:.1f} m", candidate.distance_m),
+                _NumericTableItem(f"{candidate.altitude_delta_m:+.1f} m", candidate.altitude_delta_m),
+                _NumericTableItem(f"{candidate.data_age_ms} ms", candidate.data_age_ms),
+                _NumericTableItem(f"{candidate.merge_eta_s:.2f} s", candidate.merge_eta_s),
+                _NumericTableItem("--" if candidate.best_lock_start_s is None else f"{candidate.best_lock_start_s:.2f} s", -1.0 if candidate.best_lock_start_s is None else candidate.best_lock_start_s),
+                _NumericTableItem(f"{candidate.best_lock_duration_s:.2f} s", candidate.best_lock_duration_s),
+                _NumericTableItem(f"{candidate.turn_required_deg:.1f}°", candidate.turn_required_deg),
+                _NumericTableItem(f"{candidate.simulation_quality:.1f}%", candidate.simulation_quality),
+                QTableWidgetItem(candidate.reason),
+                )
+                for column, item in enumerate(values):
+                    item.setTextAlignment(
+                        int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+                    )
+                    table.setItem(row, column, item)
+        finally:
+            table.setSortingEnabled(True)
+            table.setUpdatesEnabled(True)
+        table.sortItems(sort_column, sort_order)
+        header.setSortIndicator(sort_column, sort_order)
+        self.target_selector_summary.setText(t(
+            "target_selector.summary", self._language,
+            finalists=len(result.candidates), valid=result.valid_count,
+            considered=result.considered_count, elapsed=result.elapsed_ms,
+        ))
+
+    @property
+    def target_selector_active(self) -> bool:
+        return self.tabs.currentWidget() is self.target_selector_tab
+
+    def _on_tab_changed(self, _index: int) -> None:
+        active = self.target_selector_active
+        if active:
+            self.update_target_selection(self._target_selection_result)
+        self.target_selector_visibility_changed.emit(active)
 
     def set_selected_task(self, task_code: str | None) -> None:
         self._selected_task = str(task_code or "").strip().upper()

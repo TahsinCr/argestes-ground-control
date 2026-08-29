@@ -72,7 +72,6 @@ SETTINGS_SECTIONS = (
             FieldSpec("backend.competition.password", "dialog.settings.competition_password", "text"),
             FieldSpec("backend.competition.team_number", "dialog.settings.competition_team", "spin", minimum=1, maximum=9999),
             FieldSpec("backend.competition.timeout_s", "dialog.settings.competition_timeout", "spin", minimum=1, maximum=120, suffix=" s"),
-            FieldSpec("backend.competition.telemetry_period_ms", "dialog.settings.competition_period", "spin", minimum=500, maximum=60000, suffix=" ms"),
             FieldSpec("backend.competition.auto_connect", "dialog.settings.competition_auto_connect", "check"),
         ),
     ),
@@ -98,6 +97,11 @@ SETTINGS_SECTIONS = (
     SectionSpec(
         "dialog.settings.section.battery_alarm",
         (
+            FieldSpec(
+                "backend.battery_telemetry.use_pixhawk_percent",
+                "dialog.settings.battery_use_pixhawk_percent",
+                "check",
+            ),
             FieldSpec(
                 "backend.battery_telemetry.full_voltage",
                 "dialog.settings.battery_estimate_full_voltage",
@@ -193,6 +197,33 @@ SETTINGS_SECTIONS = (
             )
             for item_type in ("takeoff", "waypoint", "loiter", "rtl", "land", "hss")
             ),
+        ),
+    ),
+    SectionSpec(
+        "dialog.settings.section.safe_area",
+        tuple(
+            field
+            for point in range(1, 5)
+            for field in (
+                FieldSpec(
+                    f"backend.mission.safe_area.point_{point}.latitude",
+                    f"dialog.settings.safe_area_point_{point}_latitude",
+                    "double",
+                    minimum=-90.0,
+                    maximum=90.0,
+                    decimals=7,
+                    single_step=0.000001,
+                ),
+                FieldSpec(
+                    f"backend.mission.safe_area.point_{point}.longitude",
+                    f"dialog.settings.safe_area_point_{point}_longitude",
+                    "double",
+                    minimum=-180.0,
+                    maximum=180.0,
+                    decimals=7,
+                    single_step=0.000001,
+                ),
+            )
         ),
     ),
     SectionSpec(

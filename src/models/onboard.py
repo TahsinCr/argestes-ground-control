@@ -12,6 +12,7 @@ TERMINAL_MISSION_PHASES = frozenset({"stopped", "succeeded", "failed", "cancelle
 QR_EVENT_TYPES = frozenset({"QR_DECODED", "QR_DECODED_DURING_PULL_UP"})
 CRITICAL_KAMIKAZE_EVENTS = frozenset({"SAFETY_FLOOR_BREACH", "FAULT", "GROUND_CONTACT"})
 ACTUATOR_TEST_TASK = "system.actuator.test"
+KAMIKAZE_CHECK_TASK = "kamikaze.check"
 ACTUATOR_TEST_EVENTS = frozenset(
     {
         "ACTUATOR_TEST.STARTED",
@@ -98,7 +99,11 @@ class OnboardMissionState(Model):
     available_tasks: tuple[str, ...] = field(default_factory=tuple)
     queued_tasks: tuple[str, ...] = field(default_factory=tuple)
     mission_id: int | None = None
+    mission_contexts: dict[str, dict[str, Any]] = field(default_factory=dict)
+    target_lock_mission_id: int | None = None
+    target_lock_phase: str = "idle"
     phase: str = "idle"
+    reason_code: str = ""
     waiting_for_guided: bool = False
     pending_command: str = ""
     result: dict[str, Any] = field(default_factory=dict)
@@ -117,6 +122,7 @@ class OnboardMissionState(Model):
     hss_revision: int = 0
     hss_count: int = 0
     hss_content_hash: str = ""
+    hss_route: dict[str, Any] = field(default_factory=dict)
     critical_event: str = ""
     actuator_step: str = ""
     actuator_step_count: int = 0
@@ -128,6 +134,7 @@ class OnboardMissionState(Model):
     last_error: str = ""
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "reason_code", str(self.reason_code).strip().lower())
         object.__setattr__(self, "result", MappingProxyType(dict(self.result)))
         object.__setattr__(
             self,
@@ -135,6 +142,17 @@ class OnboardMissionState(Model):
             MappingProxyType(dict(self.acknowledgement_snapshot)),
         )
         object.__setattr__(self, "target", MappingProxyType(dict(self.target)))
+        object.__setattr__(self, "hss_route", MappingProxyType(dict(self.hss_route)))
+        object.__setattr__(
+            self,
+            "mission_contexts",
+            MappingProxyType(
+                {
+                    str(key): MappingProxyType(dict(value))
+                    for key, value in self.mission_contexts.items()
+                }
+            ),
+        )
         object.__setattr__(
             self,
             "available_tasks",
@@ -160,7 +178,13 @@ class OnboardMissionState(Model):
             "available_tasks": list(self.available_tasks),
             "queued_tasks": list(self.queued_tasks),
             "mission_id": self.mission_id,
+            "mission_contexts": {
+                key: dict(value) for key, value in self.mission_contexts.items()
+            },
+            "target_lock_mission_id": self.target_lock_mission_id,
+            "target_lock_phase": self.target_lock_phase,
             "phase": self.phase,
+            "reason_code": self.reason_code,
             "waiting_for_guided": self.waiting_for_guided,
             "pending_command": self.pending_command,
             "result": dict(self.result),
@@ -179,6 +203,7 @@ class OnboardMissionState(Model):
             "hss_revision": self.hss_revision,
             "hss_count": self.hss_count,
             "hss_content_hash": self.hss_content_hash,
+            "hss_route": dict(self.hss_route),
             "critical_event": self.critical_event,
             "actuator_step": self.actuator_step,
             "actuator_step_count": self.actuator_step_count,

@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QProgressBar,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QTabWidget,
@@ -27,11 +28,16 @@ from src.ui.i18n import t
 from src.ui.config.commands import (
     AUTONOMOUS_COMMANDS,
     FLIGHT_MODES,
+    NumericCommandField,
     PROFILE_FIELDS,
     TASK_LABEL_KEYS,
 )
 from src.models.commands import CommandResult
-from src.models.onboard import ACTUATOR_TEST_TASK, OnboardMissionState
+from src.models.onboard import (
+    ACTUATOR_TEST_TASK,
+    KAMIKAZE_CHECK_TASK,
+    OnboardMissionState,
+)
 from src.models.telemetry import TelemetrySnapshot
 from src.ui.themes.style import ThemePalette
 from src.ui.widgets.common import PanelFrame, compact_button
@@ -468,6 +474,7 @@ class CommandPanel(PanelFrame):
         target_layout.setVerticalSpacing(3)
 
         self.profile_inputs: dict[str, QDoubleSpinBox] = {}
+        self.profile_apply_buttons: dict[str, QPushButton] = {}
         for column, spec in enumerate(PROFILE_FIELDS):
             widget = QDoubleSpinBox(self)
             widget.setRange(spec.minimum, spec.maximum)
@@ -485,16 +492,12 @@ class CommandPanel(PanelFrame):
             field_label.setProperty("role", "readout-label")
             target_layout.addWidget(field_label, 0, column)
             target_layout.addWidget(widget, 1, column)
-
-        self.profile_apply_button = compact_button("APPLY", "primary")
-        self.profile_apply_button.clicked.connect(self._emit_profile_update)
-        target_layout.addWidget(
-            self.profile_apply_button,
-            2,
-            0,
-            1,
-            len(PROFILE_FIELDS),
-        )
+            apply_button = compact_button("APPLY", "primary")
+            apply_button.clicked.connect(
+                lambda _checked=False, field=spec: self._emit_profile_update(field)
+            )
+            self.profile_apply_buttons[spec.key] = apply_button
+            target_layout.addWidget(apply_button, 2, column)
         quick_profile_layout.addWidget(target_row)
         quick_layout.addStretch(1)
         quick_page_layout.addWidget(self.command_status)
@@ -646,6 +649,7 @@ class CommandPanel(PanelFrame):
         )
         self.kamikaze_card.hide()
 
+        task_page_layout.addWidget(self.kamikaze_card)
         self.task_apply_button = compact_button("START", "primary")
         self.task_apply_button.clicked.connect(self._emit_task_command)
 
@@ -699,14 +703,20 @@ class CommandPanel(PanelFrame):
         self.profile_label.setText(t("command.target_profile", language).upper())
         self.tasks_label.setText(t("command.tasks", language).upper())
         self.mode_apply_button.setText(t("command.apply", language).upper())
-        self.profile_apply_button.setText(t("command.apply", language).upper())
+        for spec in PROFILE_FIELDS:
+            self.profile_apply_buttons[spec.key].setText(
+                t(spec.apply_label_key, language).upper()
+            )
         self.actuator_title.setText(t("onboard.actuator.title", language).upper())
         self.kamikaze_title.setText(t("onboard.kamikaze.title", language).upper())
         self.task_cancel_button.setText(t("onboard.task.cancel", language).upper())
         self.update_onboard_state(self._onboard_state)
         self._sync_arm_controls()
         self.mode_apply_button.setToolTip(t("command.mode_apply.tooltip", language))
-        self.profile_apply_button.setToolTip(t("command.profile_apply.tooltip", language))
+        for spec in PROFILE_FIELDS:
+            self.profile_apply_buttons[spec.key].setToolTip(
+                t(spec.apply_tooltip_key, language)
+            )
         if not self._pending_commands:
             self._set_command_status(
                 t(
@@ -804,11 +814,12 @@ class CommandPanel(PanelFrame):
             text = t("onboard.status.waiting_guided", self._language)
             status = "warning"
         elif state.active_task:
+            phase = self._onboard_phase_text(state)
             text = t(
                 "onboard.status.active",
                 self._language,
                 task=state.active_task,
-                phase=state.phase,
+                phase=phase,
             )
             status = "success" if state.phase == "succeeded" else "neutral"
         else:
@@ -840,6 +851,14 @@ class CommandPanel(PanelFrame):
             state.connected and task_active and not cancel_pending
         )
         self._sync_command_availability()
+
+    def _onboard_phase_text(self, state: OnboardMissionState) -> str:
+        """Prefer the compact shared reason code without rejecting new codes."""
+        if not state.reason_code:
+            return state.phase
+        key = f"onboard.reason.{state.reason_code}"
+        translated = t(key, self._language)
+        return state.reason_code if translated == f"[{key}]" else translated
 
     def _update_actuator_card(self) -> None:
         state = self._onboard_state
@@ -924,12 +943,16 @@ class CommandPanel(PanelFrame):
 
     def _update_kamikaze_card(self) -> None:
         state = self._onboard_state
-        visible = self._selected_task_code() == "KAMIKAZE"
+        selected = self._selected_task_code()
+        visible = selected in {"KAMIKAZE", "KAMIKAZE_CHECK"}
         self.kamikaze_card.setVisible(visible)
         if not visible:
             return
 
-        relevant = state.active_task == "kamikaze.execute"
+        relevant_task = (
+            KAMIKAZE_CHECK_TASK if selected == "KAMIKAZE_CHECK" else "kamikaze.execute"
+        )
+        relevant = state.active_task == relevant_task
         if relevant and state.critical_event:
             status_text = state.last_error or t(
                 "onboard.kamikaze.critical",
@@ -978,7 +1001,7 @@ class CommandPanel(PanelFrame):
         mission_id = state.mission_id if relevant and state.mission_id is not None else "—"
         phase = state.phase if relevant and state.phase not in {"", "idle"} else "—"
         self.kamikaze_title.setText(
-            f"{t('onboard.kamikaze.title', self._language).upper()} · "
+            f"{t('onboard.kamikaze_check.title' if selected == 'KAMIKAZE_CHECK' else 'onboard.kamikaze.title', self._language).upper()} · "
             f"{t('onboard.feedback.id', self._language, value=mission_id)}"
         )
         target = dict(state.target)
@@ -1051,6 +1074,7 @@ class CommandPanel(PanelFrame):
         state = self._onboard_state
         relevant_task = {
             "KAMIKAZE": "kamikaze.execute",
+            "KAMIKAZE_CHECK": KAMIKAZE_CHECK_TASK,
             "ACTUATOR_TEST": ACTUATOR_TEST_TASK,
         }.get(selected, selected.lower())
         visible = bool(selected)
@@ -1130,10 +1154,18 @@ class CommandPanel(PanelFrame):
         self.mode_combo.setCurrentIndex(index)
         self.mode_combo.blockSignals(False)
 
-    def _profile_params(self) -> dict:
+    def _profile_params(self, key: str | None = None) -> dict:
+        fields = (
+            (spec for spec in PROFILE_FIELDS if spec.key == key)
+            if key is not None
+            else PROFILE_FIELDS
+        )
         return {
-            spec.key: round(self.profile_inputs[spec.key].value(), spec.decimals)
-            for spec in PROFILE_FIELDS
+            spec.key: round(
+                self.profile_inputs[spec.key].value(),
+                spec.decimals,
+            )
+            for spec in fields
         }
 
     def _sync_arm_controls(self) -> None:
@@ -1277,7 +1309,7 @@ class CommandPanel(PanelFrame):
         available = self._vehicle_connected and not self._pending_commands
         for button in (
             self.mode_apply_button,
-            self.profile_apply_button,
+            *self.profile_apply_buttons.values(),
         ):
             if button.isEnabled() != available:
                 button.setEnabled(available)
@@ -1285,8 +1317,12 @@ class CommandPanel(PanelFrame):
         selected_task = str(current.data(Qt.ItemDataRole.UserRole) or "") if current else ""
         onboard_task = selected_task in {
             "KAMIKAZE",
+            "KAMIKAZE_CHECK",
             "TARGET_LOCK",
             "ACTUATOR_TEST",
+            "HSS_ESCAPE",
+            "HSS_PREDICT",
+            "HSS_TRANSIT",
             "WAYPOINT_TRACK",
             "SURVEY_AREA",
         }
@@ -1373,8 +1409,11 @@ class CommandPanel(PanelFrame):
         self._mode_selection_dirty = self._requested_mode is not None
         self.command_requested.emit("APPLY_MODE", params)
 
-    def _emit_profile_update(self) -> None:
-        self.command_requested.emit("SET_TARGET_PROFILE", self._profile_params())
+    def _emit_profile_update(self, field: NumericCommandField) -> None:
+        self.command_requested.emit(
+            field.command_code,
+            self._profile_params(field.key),
+        )
 
     def _emit_task_command(self) -> None:
         if not self._onboard_state.connected:
@@ -1408,6 +1447,7 @@ class CommandPanel(PanelFrame):
         normalized = str(task).strip().upper()
         return {
             "KAMIKAZE": "kamikaze.execute",
+            "KAMIKAZE_CHECK": KAMIKAZE_CHECK_TASK,
             "TARGET_LOCK": "target.lock",
             "ACTUATOR_TEST": ACTUATOR_TEST_TASK,
         }.get(normalized, normalized.lower())

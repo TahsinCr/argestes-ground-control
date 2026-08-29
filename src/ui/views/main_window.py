@@ -16,9 +16,10 @@ from PyQt6.QtWidgets import (
 )
 
 from src.ui.i18n import connection_status_text, t
-from src.models.settings import SettingsModel
+from src.models.settings import MavlinkConnectionConfig, SettingsModel
+from src.models.competition import CompetitionServerConfig
 from src.models.telemetry import TelemetrySnapshot
-from src.models.video import VideoStreamStats
+from src.models.video import VideoShareConfig, VideoShareState, VideoStreamStats
 from src.models.connections import ConnectionStatus
 from src.services.abstracts import CommandService, TelemetryService, VideoService
 from src.services.logging_service import LoggingService
@@ -26,6 +27,7 @@ from src.services.battery_alarm import BatteryAlarmService
 from src.services.mission_archive import MissionArchiveService
 from src.services.planner import PlannerService
 from src.services.settings import SettingsService
+from src.services.video_share import active_ipv4_interfaces
 from src.ui.assets import application_icon
 from src.ui.themes.style import ThemePalette, apply_theme
 from src.ui.views.archive_dialog import MissionArchiveDialog
@@ -34,12 +36,15 @@ from src.ui.widgets.attitude import AttitudeIndicator
 from src.ui.widgets.battery_popup import BatterySettingsPopup
 from src.ui.widgets.common import BatteryMeter, PanelFrame, SignalMeter, StatusChip
 from src.ui.widgets.connection_popup import ConnectionPopup
+from src.ui.widgets.competition_servers_popup import CompetitionServersPopup
+from src.ui.widgets.mavlink_connections_popup import MavlinkConnectionsPopup
 from src.ui.widgets.control_panels import CommandPanel, TelemetryPanel
 from src.ui.widgets.logs import EventLogPanel
 from src.ui.widgets.map_panel import MapPanel
 from src.ui.widgets.parameters import ParametersPanel
 from src.ui.widgets.title_bar import AppTitleBar
 from src.ui.widgets.video import VideoPanel
+from src.ui.widgets.video_share_popup import VideoSharePopup
 
 
 class MainWindow(QMainWindow):
@@ -60,6 +65,7 @@ class MainWindow(QMainWindow):
         archive_service: MissionArchiveService,
         battery_alarm_service: BatteryAlarmService,
         onboard_service,
+        target_selection_service,
         base_dir: Path,
         theme: ThemePalette,
     ) -> None:
@@ -81,12 +87,15 @@ class MainWindow(QMainWindow):
         self.battery_alarm_service = battery_alarm_service
         self.archive_service = archive_service
         self.onboard_service = onboard_service
+        self.target_selection_service = target_selection_service
         self._last_warning_signature = ""
         self._last_snapshot = telemetry_service.current
         self._last_video_stats = video_service.stats
         self._serial_access_prompted: set[str] = set()
         self._serial_access_repair_running = False
         self._shutdown_prepared = False
+        self._editing_competition_server: CompetitionServerConfig | None = None
+        self._editing_mavlink_profile: MavlinkConnectionConfig | None = None
 
         self.setWindowIcon(application_icon(base_dir))
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
@@ -102,6 +111,19 @@ class MainWindow(QMainWindow):
             self.theme,
             self,
             language=self.language,
+        )
+        self.video_share_popup = VideoSharePopup(
+            self.theme,
+            self,
+            language=self.language,
+        )
+        self.competition_servers_popup = CompetitionServersPopup(
+            self.theme,
+            self,
+            language=self.language,
+        )
+        self.mavlink_connections_popup = MavlinkConnectionsPopup(
+            self.theme, self, language=self.language
         )
         self._connect_signals()
         self.parameters_panel.set_parameters(self.parameter_service.current)
@@ -134,6 +156,7 @@ class MainWindow(QMainWindow):
             "server": StatusChip("SERVER", self),
             "telemetry": StatusChip("TELEMETRY", self),
             "video": StatusChip("VIDEO", self),
+            "video_share": StatusChip("VIDEO SHARE", self),
             "autopilot": StatusChip("AUTOPILOT", self),
             "gps": StatusChip("GPS", self),
             "orin": StatusChip("ORIN", self),
@@ -302,7 +325,9 @@ class MainWindow(QMainWindow):
         self.telemetry_service.telemetry_updated.connect(self._on_telemetry)
         self.video_service.frame_ready.connect(self.video_panel.set_frame)
         self.video_service.stats_updated.connect(self._on_video_stats)
+        self.video_service.share_states_changed.connect(self._on_video_share_states)
         self.video_panel.reconnect_requested.connect(self._reconnect_video_from_panel)
+        self.video_panel.recording_requested.connect(self._set_onboard_video_recording)
         self.command_panel.command_requested.connect(self._request_command)
         self.command_panel.task_selected.connect(
             self.parameters_panel.set_selected_task
@@ -327,18 +352,48 @@ class MainWindow(QMainWindow):
         self.parameters_panel.apply_requested.connect(self._on_parameters_apply)
         self.parameters_panel.reset_requested.connect(self._on_parameters_reset)
         self.settings_service.settings_changed.connect(self.apply_settings)
+        save_failed = getattr(self.settings_service, "save_failed", None)
+        if save_failed is not None:
+            save_failed.connect(self._on_async_settings_save_failed)
         self.connection_service.status_changed.connect(self._on_connection_status)
         self.connection_service.operation_started.connect(self._on_connection_operation_started)
         self.connection_service.operation_finished.connect(self._on_connection_operation_finished)
         self.connection_popup.reconnect_requested.connect(self._reconnect_channel)
         self.connection_popup.disconnect_requested.connect(self._disconnect_channel)
         self.connection_popup.settings_requested.connect(self._open_settings_from_popup)
+        self.connection_popup.back_requested.connect(self._return_to_connection_profiles)
+        self.connection_popup.delete_requested.connect(self._delete_edited_connection_profile)
+        self.video_share_popup.shares_saved.connect(self._save_video_shares)
+        self.competition_servers_popup.servers_saved.connect(self._save_competition_servers)
+        self.competition_servers_popup.server_edit_requested.connect(
+            self._open_competition_server_editor
+        )
+        self.competition_servers_popup.server_connect_requested.connect(
+            self._connect_competition_server
+        )
+        self.mavlink_connections_popup.profiles_saved.connect(self._save_mavlink_profiles)
+        self.mavlink_connections_popup.profile_edit_requested.connect(self._open_mavlink_profile_editor)
+        self.mavlink_connections_popup.profile_connect_requested.connect(self._connect_mavlink_profile)
         self.battery_popup.save_requested.connect(self._save_battery_popup)
         self.battery_popup.settings_requested.connect(
             self._open_battery_full_settings
         )
         self.onboard_service.state_changed.connect(self.command_panel.update_onboard_state)
+        self.onboard_service.state_changed.connect(self.map_panel.update_onboard_state)
         self.command_panel.update_onboard_state(self.onboard_service.state)
+        self.map_panel.update_onboard_state(self.onboard_service.state)
+        self.target_selection_service.updated.connect(
+            self.parameters_panel.update_target_selection
+        )
+        self.parameters_panel.target_selector_visibility_changed.connect(
+            self.target_selection_service.set_ranking_enabled
+        )
+        self.target_selection_service.set_ranking_enabled(
+            self.parameters_panel.target_selector_active
+        )
+        self.parameters_panel.update_target_selection(
+            self.target_selection_service.last_result
+        )
 
     def _request_command(self, code: str, parameters: dict) -> None:
         task = str(parameters.get("task", "")).strip().upper()
@@ -434,6 +489,12 @@ class MainWindow(QMainWindow):
         self.map_panel.command_started(code, parameters)
 
     def _on_command_completed(self, result) -> None:
+        if result.request.code == "ONBOARD_VIDEO_RECORDING":
+            self.video_panel.set_recording_busy(False)
+            if result.accepted:
+                self.video_panel.set_recording_enabled(
+                    bool(result.details.get("video", result.request.parameters.get("enabled")))
+                )
         if result.request.source == "battery-failsafe":
             self.battery_log.event(
                 (
@@ -476,6 +537,14 @@ class MainWindow(QMainWindow):
                 },
             )
 
+    def _set_onboard_video_recording(self, enabled: bool) -> None:
+        self.video_panel.set_recording_busy(True)
+        self.command_service.issue_command(
+            "ONBOARD_VIDEO_RECORDING",
+            {"enabled": bool(enabled)},
+            source="qt-ui",
+        )
+
     def _confirm_force_arm(self, result) -> bool:
         dialog = QMessageBox(self)
         dialog.setIcon(QMessageBox.Icon.Warning)
@@ -501,7 +570,41 @@ class MainWindow(QMainWindow):
         # Keep the already isolated settings snapshot on the UI side. Reading
         # SettingsService.current deep-copies the complete model and must not
         # happen for every high-rate telemetry frame.
+        previous_settings = self._active_settings
         self._active_settings = settings
+        if self._is_connection_profile_only_update(previous_settings, settings):
+            # Popup profile/toggle writes are frequent and must not trigger a
+            # full map, theme and panel refresh on the GUI thread.
+            if self.video_share_popup.isVisible():
+                self.video_share_popup.show_shares(
+                    tuple(settings.backend.video_shares),
+                    self.video_service.share_states,
+                    network_interfaces=active_ipv4_interfaces(),
+                )
+            if self.competition_servers_popup.isVisible():
+                status = self.connection_service.status("server")
+                self.competition_servers_popup.show_servers(
+                    tuple(settings.backend.competition_servers),
+                    active_identifier=str(status.options.get("server_id", "")),
+                    connected=status.connected,
+                    running=bool(status.options.get("running", False)),
+                    detail=status.detail,
+                )
+            if self.mavlink_connections_popup.isVisible():
+                status = self.connection_service.status("telemetry")
+                self.mavlink_connections_popup.show_profiles(
+                    tuple(settings.backend.mavlink_connections),
+                    active_identifier=str(
+                        status.options.get(
+                            "profile_id",
+                            settings.backend.active_mavlink_connection_id,
+                        )
+                    ),
+                    connected=status.connected,
+                    running=bool(status.options.get("vehicle_connected", False)),
+                    detail=status.detail,
+                )
+            return
         self.language = settings.language
         app = QApplication.instance()
         if app:
@@ -533,12 +636,25 @@ class MainWindow(QMainWindow):
             chip.set_theme(self.theme)
         self.connection_popup.set_theme(self.theme)
         self.connection_popup.set_language(self.language)
+        self.video_share_popup.set_theme(self.theme)
+        self.video_share_popup.set_language(self.language)
+        self.video_share_popup.show_shares(
+            tuple(settings.backend.video_shares),
+            self.video_service.share_states,
+            network_interfaces=active_ipv4_interfaces(),
+        )
+        self._on_video_share_states(self.video_service.share_states)
+        self.competition_servers_popup.set_theme(self.theme)
+        self.competition_servers_popup.set_language(self.language)
+        self.mavlink_connections_popup.set_theme(self.theme)
+        self.mavlink_connections_popup.set_language(self.language)
         self.battery_popup.set_theme(self.theme)
         self.battery_popup.set_language(self.language)
         self.title_bar.set_theme(self.theme)
         self.telemetry_panel.set_theme(self.theme)
         self.attitude_indicator.set_theme(self.theme)
         self.map_panel.set_theme(self.theme)
+        self.map_panel.sync_safe_area(settings.backend.mission.safe_area)
         self.video_panel.set_theme(self.theme)
         self.map_panel.retranslate(self.language)
         self._retranslate_ui()
@@ -548,6 +664,33 @@ class MainWindow(QMainWindow):
                 settings.backend.battery_alarm,
             )
         )
+
+    @staticmethod
+    def _is_connection_profile_only_update(
+        previous: SettingsModel,
+        current: SettingsModel,
+    ) -> bool:
+        before = previous.to_dict()
+        after = current.to_dict()
+        # The first settings application also compares equal to the snapshot
+        # constructed during window setup.  It must still perform the normal
+        # UI initialization (translations, themes and panel titles).
+        if before == after:
+            return False
+        changed_backend = {
+            key
+            for key in set(before["backend"]) | set(after["backend"])
+            if before["backend"].get(key) != after["backend"].get(key)
+        }
+        ui_changed = before["ui"] != after["ui"]
+        return not ui_changed and changed_backend <= {
+            "competition",
+            "competition_servers",
+            "video_shares",
+            "mavlink",
+            "mavlink_connections",
+            "active_mavlink_connection_id",
+        }
 
     def _retranslate_ui(self) -> None:
         app = QApplication.instance()
@@ -603,6 +746,7 @@ class MainWindow(QMainWindow):
         self.bottom_status["server"].set_label(t("status.server", self.language))
         self.bottom_status["telemetry"].set_label(t("status.telemetry", self.language))
         self.bottom_status["video"].set_label(t("status.video", self.language))
+        self.bottom_status["video_share"].set_label("VIDEO SHARE")
         self.bottom_status["autopilot"].set_label(t("status.autopilot", self.language))
         self.bottom_status["gps"].set_label(t("status.gps", self.language))
         self.bottom_status["orin"].set_label(t("status.orin", self.language))
@@ -653,6 +797,22 @@ class MainWindow(QMainWindow):
         self._last_video_stats = stats
         self.video_panel.set_stats(stats)
         self._update_video_link_meter(stats)
+
+    def _on_video_share_states(self, states: tuple[VideoShareState, ...]) -> None:
+        if self._shutdown_prepared:
+            return
+        enabled = [state for state in states if state.status != "inactive"]
+        active = [state for state in states if state.active]
+        chip = self.bottom_status["video_share"]
+        # Same convention as the connection chips: red until at least one
+        # target really publishes; green while any target is active.
+        chip.set_state("success" if active else "danger")
+        chip.setToolTip(
+            f"{len(active)}/{len(enabled)} {'aktif' if self.language == 'tr' else 'active'}\n"
+            + "\n".join(f"{state.identifier[:8]}: {state.detail}" for state in states if state.detail)
+        )
+        if self.video_share_popup.isVisible():
+            self.video_share_popup.update_states(states)
 
     def _update_telemetry_link_meter(self, snapshot: TelemetrySnapshot) -> None:
         meter = self.link_meters["command"]
@@ -871,6 +1031,20 @@ class MainWindow(QMainWindow):
             )
         if self.connection_popup.isVisible() and self.connection_popup.channel == status.channel:
             self.connection_popup.refresh_status(status)
+        if status.channel == "server" and self.competition_servers_popup.isVisible():
+            self.competition_servers_popup.update_connection(
+                active_identifier=str(status.options.get("server_id", "")),
+                connected=status.connected,
+                running=bool(status.options.get("running", False)),
+                detail=status.detail,
+            )
+        if status.channel == "telemetry" and self.mavlink_connections_popup.isVisible():
+            self.mavlink_connections_popup.update_connection(
+                active_identifier=str(status.options.get("profile_id", self._active_settings.backend.active_mavlink_connection_id)),
+                connected=status.connected,
+                running=bool(status.options.get("vehicle_connected", False)),
+                detail=status.detail,
+            )
         self._offer_serial_access_repair(status)
 
     def _offer_serial_access_repair(self, status: ConnectionStatus) -> None:
@@ -931,6 +1105,20 @@ class MainWindow(QMainWindow):
 
     def _open_connection_popup(self, channel: str, chip: StatusChip) -> None:
         self.battery_popup.close()
+        if channel == "video_share":
+            self._open_video_share_popup(chip)
+            return
+        if channel == "server":
+            self._open_competition_servers_popup(chip)
+            return
+        if channel == "telemetry":
+            self._open_mavlink_connections_popup(chip)
+            return
+        self._editing_competition_server = None
+        self._editing_mavlink_profile = None
+        self.connection_popup.set_back_navigation(False)
+        self.connection_popup.set_server_profile_editor(False)
+        self.connection_popup.set_telemetry_profile_editor(False)
         status = self.connection_service.status(channel)
         self.connection_popup.show_status(status)
         self.connection_popup.adjustSize()
@@ -941,6 +1129,279 @@ class MainWindow(QMainWindow):
         self.connection_popup.move(x, y)
         self.connection_popup.show()
         self.connection_popup.raise_()
+
+    def _open_video_share_popup(self, chip: StatusChip) -> None:
+        self.connection_popup.close()
+        self.battery_popup.close()
+        self.video_share_popup.show_shares(
+            tuple(self._active_settings.backend.video_shares),
+            self.video_service.share_states,
+            network_interfaces=active_ipv4_interfaces(),
+        )
+        self.video_share_popup.adjustSize()
+        origin = chip.mapToGlobal(QPoint(0, 0))
+        screen = chip.screen().availableGeometry()
+        x = min(max(screen.left() + 6, origin.x()), screen.right() - self.video_share_popup.width() - 6)
+        y = max(screen.top() + 6, origin.y() - self.video_share_popup.height() - 7)
+        self.video_share_popup.move(x, y)
+        self.video_share_popup.show()
+        self.video_share_popup.raise_()
+
+    def _open_competition_servers_popup(self, chip: StatusChip) -> None:
+        self.connection_popup.close()
+        self.battery_popup.close()
+        status = self.connection_service.status("server")
+        active_identifier = self.connection_service.status("server").options.get("server_id", "")
+        if not active_identifier:
+            active_identifier = self._active_settings.backend.competition.identifier
+        self.competition_servers_popup.show_servers(
+            tuple(self._active_settings.backend.competition_servers),
+            active_identifier=str(active_identifier),
+            connected=status.connected,
+            running=bool(status.options.get("running", False)),
+            detail=status.detail,
+        )
+        self.competition_servers_popup.adjustSize()
+        origin = chip.mapToGlobal(QPoint(0, 0))
+        screen = chip.screen().availableGeometry()
+        x = min(max(screen.left() + 6, origin.x()), screen.right() - self.competition_servers_popup.width() - 6)
+        y = max(screen.top() + 6, origin.y() - self.competition_servers_popup.height() - 7)
+        self.competition_servers_popup.move(x, y)
+        self.competition_servers_popup.show()
+        self.competition_servers_popup.raise_()
+
+    def _open_mavlink_connections_popup(self, chip: StatusChip) -> None:
+        self.connection_popup.close()
+        self.battery_popup.close()
+        status = self.connection_service.status("telemetry")
+        self.mavlink_connections_popup.show_profiles(
+            tuple(self._active_settings.backend.mavlink_connections),
+            active_identifier=self._active_settings.backend.active_mavlink_connection_id,
+            connected=status.connected,
+            running=bool(status.options.get("vehicle_connected", False)),
+            detail=status.detail,
+        )
+        self.mavlink_connections_popup.adjustSize()
+        origin = chip.mapToGlobal(QPoint(0, 0)); screen = chip.screen().availableGeometry()
+        self.mavlink_connections_popup.move(
+            min(max(screen.left() + 6, origin.x()), screen.right() - self.mavlink_connections_popup.width() - 6),
+            max(screen.top() + 6, origin.y() - self.mavlink_connections_popup.height() - 7),
+        )
+        self.mavlink_connections_popup.show(); self.mavlink_connections_popup.raise_()
+
+    def _open_mavlink_profile_editor(self, profile: MavlinkConnectionConfig | None) -> None:
+        if profile is None:
+            template = self._active_settings.backend.mavlink
+            profile = MavlinkConnectionConfig(
+                name=f"Telemetri {len(self._active_settings.backend.mavlink_connections) + 1}",
+                endpoint=template.endpoint, baud=template.baud,
+                heartbeat_timeout=template.heartbeat_timeout,
+            )
+        self._editing_competition_server = None
+        self._editing_mavlink_profile = profile
+        self.mavlink_connections_popup.hide()
+        self.connection_popup.set_back_navigation(True)
+        self.connection_popup.set_server_profile_editor(False)
+        self.connection_popup.set_telemetry_profile_editor(True)
+        self.connection_popup.show_status(self._mavlink_profile_status(profile))
+        self.connection_popup.adjustSize()
+        chip = self.bottom_status["telemetry"]; origin = chip.mapToGlobal(QPoint(0, 0)); screen = chip.screen().availableGeometry()
+        self.connection_popup.move(min(max(screen.left() + 6, origin.x()), screen.right() - self.connection_popup.width() - 6), max(screen.top() + 6, origin.y() - self.connection_popup.height() - 7))
+        self.connection_popup.show(); self.connection_popup.raise_()
+
+    def _mavlink_profile_status(self, profile: MavlinkConnectionConfig) -> ConnectionStatus:
+        live = self.connection_service.status("telemetry")
+        active = profile.identifier == self._active_settings.backend.active_mavlink_connection_id
+        return ConnectionStatus("telemetry", live.connected if active else False,
+            "MAVLink telemetrisi bağlı" if active and live.connected else "MAVLink telemetrisi beklemede",
+            live.detail if active else "Bu profil seçildiğinde etkin telemetri bağlantısı değiştirilir",
+            profile.endpoint, profile.heartbeat_timeout,
+            {"baud": profile.baud, "auto_connect": profile.auto_connect, "profile_id": profile.identifier, "profile_name": profile.name},
+            can_disconnect=active and live.can_disconnect)
+
+    def _return_to_mavlink_connections(self) -> None:
+        self.connection_popup.hide(); self._editing_mavlink_profile = None
+        self.connection_popup.set_telemetry_profile_editor(False)
+        self._open_mavlink_connections_popup(self.bottom_status["telemetry"])
+
+    def _save_mavlink_profiles(self, profiles: tuple[MavlinkConnectionConfig, ...], active_identifier: str | None = None) -> None:
+        if not profiles: return
+        previous_active = self._active_settings.backend.active_mavlink_connection_id
+        if (
+            previous_active not in {profile.identifier for profile in profiles}
+            and self.connection_service.status("telemetry").options.get("vehicle_connected", False)
+        ):
+            # Removing the selected transport must not leave the vehicle
+            # service attached to a profile that no longer exists.
+            self.connection_service.disconnect("telemetry")
+        selected_id = active_identifier or self._active_settings.backend.active_mavlink_connection_id
+        selected = next((item for item in profiles if item.identifier == selected_id), profiles[0])
+        payload = self._active_settings.to_dict(); payload["backend"]["mavlink_connections"] = [item.to_dict() for item in profiles]
+        payload["backend"]["active_mavlink_connection_id"] = selected.identifier
+        try: updated = SettingsModel.from_dict(payload)
+        except (TypeError, ValueError) as exc:
+            self.ui_log.event("telemetry.profile_save_failed", f"Telemetri profilleri kaydedilemedi: {exc}", severity="danger"); return
+        self._save_popup_settings(updated)
+
+    def _connect_mavlink_profile(self, profile: MavlinkConnectionConfig) -> None:
+        status = self.connection_service.status("telemetry")
+        active = self._active_settings.backend.active_mavlink_connection_id
+        if status.connected and profile.identifier == active:
+            self.connection_service.disconnect("telemetry"); return
+        self._save_mavlink_profiles(tuple(self._active_settings.backend.mavlink_connections), profile.identifier)
+        self.mavlink_connections_popup.set_connecting(profile.identifier)
+        self.connection_service.reconnect("telemetry", {"profile_id": profile.identifier, "profile_name": profile.name, "endpoint": profile.endpoint, "baud": profile.baud, "timeout_s": profile.heartbeat_timeout, "auto_connect": profile.auto_connect})
+
+    def _competition_profile_status(self, server: CompetitionServerConfig) -> ConnectionStatus:
+        live = self.connection_service.status("server")
+        active_identifier = str(live.options.get("server_id", ""))
+        active = active_identifier == server.identifier
+        return ConnectionStatus(
+            "server",
+            live.connected if active else False,
+            "TEKNOFEST sunucusu bağlı" if live.connected and active else "TEKNOFEST sunucusu beklemede",
+            live.detail if active else "Bu profil seçildiğinde aktif sunucu değiştirilir",
+            server.base_url,
+            server.timeout_s,
+            {
+                "username": server.username,
+                "team_number": server.team_number,
+                "auto_connect": server.auto_connect,
+                "server_id": server.identifier,
+                "server_name": server.name,
+            },
+            can_disconnect=active and live.can_disconnect,
+        )
+
+    def _open_competition_server_editor(self, server: CompetitionServerConfig | None) -> None:
+        if server is None:
+            template = self._active_settings.backend.competition
+            server = CompetitionServerConfig(
+                name=f"TEKNOFEST {len(self._active_settings.backend.competition_servers) + 1}",
+                base_url=template.base_url,
+                username=template.username,
+                password=template.password,
+                team_number=template.team_number,
+                timeout_s=template.timeout_s,
+            )
+        self._editing_mavlink_profile = None
+        self._editing_competition_server = server
+        self.competition_servers_popup.hide()
+        self.mavlink_connections_popup.hide()
+        self.connection_popup.set_back_navigation(True)
+        self.connection_popup.set_server_profile_editor(True)
+        self.connection_popup.set_telemetry_profile_editor(False)
+        self.connection_popup.show_status(self._competition_profile_status(server))
+        self.connection_popup.adjustSize()
+        chip = self.bottom_status["server"]
+        origin = chip.mapToGlobal(QPoint(0, 0))
+        screen = chip.screen().availableGeometry()
+        x = min(max(screen.left() + 6, origin.x()), screen.right() - self.connection_popup.width() - 6)
+        y = max(screen.top() + 6, origin.y() - self.connection_popup.height() - 7)
+        self.connection_popup.move(x, y)
+        self.connection_popup.show()
+        self.connection_popup.raise_()
+
+    def _return_to_competition_servers(self) -> None:
+        self.connection_popup.hide()
+        self._editing_mavlink_profile = None
+        self._editing_competition_server = None
+        self.connection_popup.set_server_profile_editor(False)
+        self.connection_popup.set_telemetry_profile_editor(False)
+        self._open_competition_servers_popup(self.bottom_status["server"])
+
+    def _return_to_connection_profiles(self) -> None:
+        if self._editing_mavlink_profile is not None:
+            self._return_to_mavlink_connections()
+            return
+        self._return_to_competition_servers()
+
+    def _delete_edited_connection_profile(self) -> None:
+        if self._editing_mavlink_profile is not None:
+            profile = self._editing_mavlink_profile
+            profiles = tuple(self._active_settings.backend.mavlink_connections)
+            if len(profiles) > 1:
+                remaining = tuple(item for item in profiles if item.identifier != profile.identifier)
+                if profile.identifier == self._active_settings.backend.active_mavlink_connection_id:
+                    self.connection_service.disconnect("telemetry")
+                self._save_mavlink_profiles(remaining)
+            self._return_to_mavlink_connections()
+            return
+        self._delete_edited_competition_server()
+
+    def _delete_edited_competition_server(self) -> None:
+        server = self._editing_competition_server
+        profiles = tuple(self._active_settings.backend.competition_servers)
+        if server is None or len(profiles) <= 1:
+            return
+        if server.identifier == str(self.connection_service.status("server").options.get("server_id", "")):
+            self.connection_service.disconnect("server")
+        self._save_competition_servers(
+            tuple(item for item in profiles if item.identifier != server.identifier)
+        )
+        self._return_to_competition_servers()
+
+    def _connect_competition_server(self, server: CompetitionServerConfig) -> None:
+        status = self.connection_service.status("server")
+        active_identifier = str(status.options.get("server_id", ""))
+        if status.connected and active_identifier == server.identifier:
+            self.connection_service.disconnect("server")
+            return
+        self._editing_competition_server = server
+        self.competition_servers_popup.set_connecting(server.identifier)
+        self.connection_service.reconnect(
+            "server",
+            {
+                "server_id": server.identifier,
+                "server_name": server.name,
+                "endpoint": server.base_url,
+                "username": server.username,
+                "password": server.password,
+                "team_number": server.team_number,
+                "timeout_s": server.timeout_s,
+                "auto_connect": server.auto_connect,
+            },
+        )
+
+    def _save_competition_servers(self, servers: tuple[CompetitionServerConfig, ...]) -> None:
+        if not servers:
+            return
+        current_active = self._active_settings.backend.competition.identifier
+        selected = next(
+            (server for server in servers if server.identifier == current_active),
+            servers[0],
+        )
+        payload = self._active_settings.to_dict()
+        payload["backend"]["competition"] = selected.to_dict()
+        payload["backend"]["competition_servers"] = [server.to_dict() for server in servers]
+        try:
+            updated = SettingsModel.from_dict(payload)
+        except (TypeError, ValueError) as exc:
+            self.ui_log.event("competition.server_save_failed", f"TEKNOFEST sunucuları kaydedilemedi: {exc}", severity="danger")
+            return
+        self._save_popup_settings(updated)
+        self.ui_log.event(
+            "competition.servers_saved",
+            f"{len(servers)} TEKNOFEST sunucu profili kaydedildi",
+            severity="success",
+            details={"server_count": len(servers)},
+        )
+
+    def _save_video_shares(self, shares: tuple[VideoShareConfig, ...]) -> None:
+        payload = self._active_settings.to_dict()
+        payload["backend"]["video_shares"] = [share.to_dict() for share in shares]
+        try:
+            updated = SettingsModel.from_dict(payload)
+        except (TypeError, ValueError) as exc:
+            self.ui_log.event("video.share_save_failed", f"Video paylaşımı kaydedilemedi: {exc}", severity="danger")
+            return
+        self._save_popup_settings(updated)
+        self.ui_log.event(
+            "video.share_saved",
+            f"{len(shares)} video paylaşım hedefi kaydedildi",
+            severity="success",
+            details={"share_count": len(shares)},
+        )
 
     def _open_battery_popup(self) -> None:
         self.connection_popup.close()
@@ -960,11 +1421,30 @@ class MainWindow(QMainWindow):
         self.battery_popup.show()
         self.battery_popup.raise_()
 
+    def _save_popup_settings(self, settings: SettingsModel) -> None:
+        save_async = getattr(self.settings_service, "save_async", None)
+        if callable(save_async):
+            save_async(settings)
+            return
+        self.settings_service.save(settings)
+
+    def _on_async_settings_save_failed(self, message: str) -> None:
+        self.ui_log.event(
+            "settings.popup_save_failed",
+            f"Popup ayarları kaydedilemedi: {message}",
+            severity="danger",
+        )
+
     def _save_battery_popup(self, values: dict[str, object]) -> None:
         payload = self.settings_service.current.to_dict()
         profile = payload["backend"]["battery_telemetry"]
         alarm = payload["backend"]["battery_alarm"]
-        for key in ("full_voltage", "reserve_voltage", "reserve_percent"):
+        for key in (
+            "full_voltage",
+            "reserve_voltage",
+            "reserve_percent",
+            "use_pixhawk_percent",
+        ):
             profile[key] = values[key]
         for key in (
             "warning_mode",
@@ -992,7 +1472,37 @@ class MainWindow(QMainWindow):
         self.open_settings()
 
     def _reconnect_channel(self, channel: str, options: dict[str, object]) -> None:
+        if channel == "server" and self._editing_competition_server is not None:
+            options = {
+                **options,
+                "server_id": self._editing_competition_server.identifier,
+                "server_name": str(
+                    options.get(
+                        "server_name",
+                        self._editing_competition_server.name,
+                    )
+                ).strip(),
+            }
         if channel == "telemetry":
+            if self._editing_mavlink_profile is not None:
+                previous = self._editing_mavlink_profile
+                profile = MavlinkConnectionConfig(
+                    identifier=previous.identifier,
+                    name=str(options.get("profile_name", previous.name)).strip() or previous.name,
+                    endpoint=str(options.get("endpoint", previous.endpoint)).strip(),
+                    baud=int(options.get("baud", previous.baud)),
+                    heartbeat_timeout=int(float(options.get("timeout_s", previous.heartbeat_timeout))),
+                    auto_connect=bool(options.get("auto_connect", previous.auto_connect)),
+                )
+                profiles = tuple(
+                    profile if item.identifier == previous.identifier else item
+                    for item in self._active_settings.backend.mavlink_connections
+                )
+                if not any(item.identifier == previous.identifier for item in self._active_settings.backend.mavlink_connections):
+                    profiles = (*profiles, profile)
+                self._save_mavlink_profiles(profiles, profile.identifier)
+                options = {**options, "profile_id": profile.identifier, "profile_name": profile.name}
+                self._editing_mavlink_profile = profile
             endpoint = str(options.get("endpoint", "")).strip()
             if endpoint:
                 self._serial_access_prompted.discard(endpoint)
@@ -1107,6 +1617,8 @@ class MainWindow(QMainWindow):
         self.attitude_indicator.shutdown()
         self.battery_meter.set_alarm(False)
         self.connection_popup.hide()
+        self.video_share_popup.hide()
+        self.competition_servers_popup.hide()
         self.battery_popup.hide()
         self.map_panel.shutdown()
 

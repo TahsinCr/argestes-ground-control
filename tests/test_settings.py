@@ -8,12 +8,69 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.models.settings import SettingsModel
+from src.models.competition import CompetitionServerConfig
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
 from src.ui.config.settings_schema import iter_fields
 
 
 class SettingsTests(unittest.TestCase):
+    def test_competition_server_profiles_round_trip_and_preserve_legacy_profile(self) -> None:
+        primary = CompetitionServerConfig(name="Ana", base_url="http://10.0.0.10:10001")
+        backup = CompetitionServerConfig(name="Yedek", base_url="http://10.0.0.11:10001", auto_connect=True)
+        model = SettingsModel.from_dict(
+            {
+                "backend": {
+                    "competition": primary.to_dict(),
+                    "competition_servers": [primary.to_dict(), backup.to_dict()],
+                }
+            }
+        )
+
+        restored = SettingsModel.from_dict(model.to_dict())
+
+        self.assertEqual([item.name for item in restored.backend.competition_servers], ["Ana", "Yedek"])
+        self.assertEqual(restored.backend.competition.identifier, primary.identifier)
+
+    def test_safe_area_keeps_four_two_dimensional_corners(self) -> None:
+        settings = SettingsModel.default(Path("."))
+        updated = settings.with_value(
+            "backend.mission.safe_area.point_1.latitude",
+            39.925533,
+        ).with_value(
+            "backend.mission.safe_area.point_1.longitude",
+            32.866287,
+        )
+
+        restored = SettingsModel.from_dict(updated.to_dict())
+        point = restored.backend.mission.safe_area.point_1
+        self.assertAlmostEqual(point.latitude, 39.925533)
+        self.assertAlmostEqual(point.longitude, 32.866287)
+
+    def test_safe_area_orders_unordered_corners_into_a_perimeter(self) -> None:
+        settings = SettingsModel.from_dict(
+            {
+                "backend": {
+                    "mission": {
+                        "safe_area": {
+                            "point_1": {"latitude": 1.0, "longitude": 1.0},
+                            "point_2": {"latitude": 0.0, "longitude": 0.0},
+                            "point_3": {"latitude": 1.0, "longitude": 0.0},
+                            "point_4": {"latitude": 0.0, "longitude": 1.0},
+                        }
+                    }
+                }
+            }
+        )
+
+        ordered = settings.backend.mission.safe_area.ordered_corners()
+
+        self.assertEqual(
+            {(corner.latitude, corner.longitude) for corner in ordered},
+            {(0.0, 0.0), (0.0, 1.0), (1.0, 0.0), (1.0, 1.0)},
+        )
+        self.assertEqual(len(ordered), 4)
+
     def test_concurrent_path_updates_are_one_read_modify_write_transaction(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             service = SettingsService(Path(directory))

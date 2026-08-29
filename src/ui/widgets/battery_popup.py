@@ -74,6 +74,7 @@ class BatterySettingsPopup(QDialog):
         self.full_voltage = self._voltage_input()
         self.minimum_voltage = self._voltage_input()
         self.minimum_percent = self._percent_input(maximum=99.0)
+        self.use_pixhawk_percent = QCheckBox(self)
         self.warning_mode = self._mode_input()
         self.warning_threshold = self._percent_input()
         self.failsafe_enabled = QCheckBox(self)
@@ -83,6 +84,7 @@ class BatterySettingsPopup(QDialog):
         self.full_voltage_label = QLabel(self)
         self.minimum_voltage_label = QLabel(self)
         self.minimum_percent_label = QLabel(self)
+        self.use_pixhawk_percent_label = QLabel(self)
         self.warning_mode_label = QLabel(self)
         self.warning_threshold_label = QLabel(self)
         self.failsafe_enabled_label = QLabel(self)
@@ -92,6 +94,7 @@ class BatterySettingsPopup(QDialog):
             (self.full_voltage_label, self.full_voltage),
             (self.minimum_voltage_label, self.minimum_voltage),
             (self.minimum_percent_label, self.minimum_percent),
+            (self.use_pixhawk_percent_label, self.use_pixhawk_percent),
             (self.warning_mode_label, self.warning_mode),
             (self.warning_threshold_label, self.warning_threshold),
             (self.failsafe_enabled_label, self.failsafe_enabled),
@@ -127,6 +130,7 @@ class BatterySettingsPopup(QDialog):
                 self.failsafe_mode,
             )
         )
+        self.use_pixhawk_percent.toggled.connect(self._sync_percentage_source)
         self.all_settings_button.clicked.connect(self.settings_requested.emit)
         self.save_button.clicked.connect(
             lambda: self.save_requested.emit(self.values())
@@ -142,6 +146,9 @@ class BatterySettingsPopup(QDialog):
         self.full_voltage.setValue(telemetry.full_voltage)
         self.minimum_voltage.setValue(telemetry.reserve_voltage)
         self.minimum_percent.setValue(telemetry.reserve_percent)
+        use_pixhawk_percent = bool(telemetry.use_pixhawk_percent)
+        self.use_pixhawk_percent.setChecked(use_pixhawk_percent)
+        self._sync_percentage_source(use_pixhawk_percent)
         self._set_mode(self.warning_mode, alarm.warning_mode)
         self.warning_threshold.setValue(alarm.warning_threshold)
         self.failsafe_enabled.setChecked(alarm.failsafe_enabled)
@@ -178,6 +185,7 @@ class BatterySettingsPopup(QDialog):
             "full_voltage": self.full_voltage.value(),
             "reserve_voltage": self.minimum_voltage.value(),
             "reserve_percent": self.minimum_percent.value(),
+            "use_pixhawk_percent": self.use_pixhawk_percent.isChecked(),
             "warning_mode": str(self.warning_mode.currentData()),
             "warning_threshold": self.warning_threshold.value(),
             "failsafe_enabled": self.failsafe_enabled.isChecked(),
@@ -196,6 +204,9 @@ class BatterySettingsPopup(QDialog):
         self.full_voltage_label.setText(t("dialog.settings.battery_estimate_full_voltage", language))
         self.minimum_voltage_label.setText(t("dialog.settings.battery_estimate_min_voltage", language))
         self.minimum_percent_label.setText(t("dialog.settings.battery_estimate_min_percent", language))
+        self.use_pixhawk_percent_label.setText(
+            t("dialog.settings.battery_use_pixhawk_percent", language)
+        )
         self.warning_mode_label.setText(t("dialog.settings.battery_warning_mode", language))
         self.warning_threshold_label.setText(t("dialog.settings.battery_warning_threshold", language))
         self.failsafe_enabled_label.setText(t("dialog.settings.battery_failsafe_enabled", language))
@@ -260,6 +271,20 @@ class BatterySettingsPopup(QDialog):
     @staticmethod
     def _sync_threshold_unit(spin: QDoubleSpinBox, combo: QComboBox) -> None:
         spin.setSuffix(" V" if combo.currentData() == "voltage" else " %")
+
+    def _sync_percentage_source(self, use_pixhawk_percent: bool) -> None:
+        for widget in (
+            self.full_voltage,
+            self.minimum_voltage,
+            self.minimum_percent,
+        ):
+            widget.setEnabled(not use_pixhawk_percent)
+        for label in (
+            self.full_voltage_label,
+            self.minimum_voltage_label,
+            self.minimum_percent_label,
+        ):
+            label.setEnabled(not use_pixhawk_percent)
 
 
 __all__ = ["BatterySettingsPopup"]

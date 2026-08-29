@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import secrets
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import http.cookiejar
 import json
 import threading
@@ -50,9 +51,7 @@ class TeknofestCompetitionService(CompetitionService):
     HSS_REFRESH_PERIOD_S = 1.0
     QR_REFRESH_PERIOD_S = 5.0
     MAX_JSON_RESPONSE_BYTES = 2 * 1024 * 1024
-    LOCK_SUBMISSION_BUDGET_S = 1.5
     LOCK_FUTURE_TOLERANCE_S = 0.25
-    KAMIKAZE_SUBMISSION_BUDGET_S = 1.5
     KAMIKAZE_FUTURE_TOLERANCE_S = 0.25
 
     def __init__(
@@ -63,17 +62,15 @@ class TeknofestCompetitionService(CompetitionService):
         vehicle: VehicleService,
         logger: ServiceLogger | None = None,
         *,
-        telemetry_freshness_timeout_s: float | None = None,
         async_runtime: AsyncRuntime | None = None,
     ) -> None:
-        if telemetry_freshness_timeout_s is not None and telemetry_freshness_timeout_s <= 0:
-            raise ValueError("Telemetri tazelik zaman aşımı pozitif olmalı")
         self._config = config
+        self._server_configs: tuple[CompetitionServerConfig, ...] = (config,)
+        self._auto_server_index = 0
         self._telemetry = telemetry
         self._planner = planner
         self._vehicle = vehicle
         self._logger = logger
-        self._telemetry_freshness_timeout_s = telemetry_freshness_timeout_s
         self._state = CompetitionConnectionState(
             connected=False,
             authenticated=False,
@@ -85,6 +82,8 @@ class TeknofestCompetitionService(CompetitionService):
         self._hss_zones: tuple[HssZone, ...] = ()
         self._qr_coordinate: QrCoordinate | None = None
         self._changed = EventBus[CompetitionConnectionState]()
+        self._config_updated = EventBus[CompetitionServerConfig]()
+        self._clock_updated = EventBus[CompetitionClockSample]()
         self._competitors_updated = EventBus[tuple[CompetitorTelemetry, ...]]()
         self._hss_updated = EventBus[tuple[HssZone, ...]]()
         self._qr_updated = EventBus[QrCoordinate | None]()
@@ -101,6 +100,11 @@ class TeknofestCompetitionService(CompetitionService):
         self._last_connection_error_signature = ""
         self._last_connection_error_log_at = 0.0
         self._clock_sample: CompetitionClockSample | None = None
+        self._latest_vehicle_snapshot: TelemetrySnapshot | None = None
+        self._telemetry_subscription = self._telemetry.updated.subscribe(
+            self._cache_vehicle_snapshot
+        )
+        self._cache_vehicle_snapshot(self._telemetry.current)
 
     @property
     def state(self) -> CompetitionConnectionState:
@@ -110,6 +114,14 @@ class TeknofestCompetitionService(CompetitionService):
     @property
     def changed(self) -> EventBus[CompetitionConnectionState]:
         return self._changed
+
+    @property
+    def config_updated(self) -> EventBus[CompetitionServerConfig]:
+        return self._config_updated
+
+    @property
+    def clock_updated(self) -> EventBus[CompetitionClockSample]:
+        return self._clock_updated
 
     @property
     def competitors_updated(self) -> EventBus[tuple[CompetitorTelemetry, ...]]:
@@ -146,14 +158,41 @@ class TeknofestCompetitionService(CompetitionService):
     def configure(self, config: CompetitionServerConfig) -> None:
         with self._lock:
             self._config = config
+            known = [item for item in self._server_configs if item.identifier != config.identifier]
+            self._server_configs = (config, *known)
+            self._auto_server_index = 0
             self._state = replace(
                 self._state,
                 endpoint=config.base_url,
                 team_number=config.team_number,
             )
+        self._config_updated.publish(config)
+
+    def configure_servers(self, configs: tuple[CompetitionServerConfig, ...]) -> None:
+        if not configs:
+            raise ValueError("En az bir TEKNOFEST sunucusu yapılandırılmalı")
+        identifiers = [config.identifier for config in configs]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("TEKNOFEST sunucu kimlikleri benzersiz olmalı")
+        with self._lock:
+            self._server_configs = tuple(configs)
+            current = next(
+                (item for item in self._server_configs if item.identifier == self._config.identifier),
+                None,
+            )
+            if current is None:
+                current = self._server_configs[0]
+            self._config = current
+            self._auto_server_index = self._server_configs.index(current)
+            self._state = replace(
+                self._state,
+                endpoint=current.base_url,
+                team_number=current.team_number,
+            )
+        self._config_updated.publish(current)
 
     def start(self) -> None:
-        if self.config.auto_connect:
+        if self._select_first_auto_server():
             self._launch()
         else:
             self._publish_state(running=False)
@@ -214,8 +253,25 @@ class TeknofestCompetitionService(CompetitionService):
 
     def stop(self) -> None:
         self.disconnect()
+        self._telemetry_subscription.cancel()
         if self._owns_async_runtime:
             self._async_runtime.stop()
+
+    def _cache_vehicle_snapshot(self, snapshot: TelemetrySnapshot) -> None:
+        """Keep the last packet that is usable by the competition protocol.
+
+        Server-owned patches may publish the same snapshot again.  They are safe
+        to cache; invalid/partial startup snapshots never replace a valid packet.
+        """
+        if not snapshot.has_valid_position or self._vehicle_time(snapshot) is None:
+            return
+        with self._lock:
+            self._latest_vehicle_snapshot = snapshot.copy()
+
+    def _cached_vehicle_snapshot(self) -> TelemetrySnapshot | None:
+        with self._lock:
+            snapshot = self._latest_vehicle_snapshot
+        return None if snapshot is None else snapshot.copy()
 
     def _launch(self) -> None:
         future = self._run_future
@@ -228,6 +284,57 @@ class TeknofestCompetitionService(CompetitionService):
         self._publish_state(running=True, last_error="")
         self._run_future = self._async_runtime.submit(self._run_async())
         self._run_future.add_done_callback(self._run_finished)
+
+    def _select_first_auto_server(self) -> bool:
+        with self._lock:
+            for index, config in enumerate(self._server_configs):
+                if config.auto_connect:
+                    self._auto_server_index = index
+                    self._config = config
+                    self._state = replace(
+                        self._state,
+                        endpoint=config.base_url,
+                        team_number=config.team_number,
+                    )
+                    return True
+        return False
+
+    def _advance_auto_server(self) -> bool:
+        """Move to the next opted-in profile after an automatic failure."""
+
+        with self._lock:
+            candidates = [
+                (index, config)
+                for index, config in enumerate(self._server_configs)
+                if config.auto_connect
+            ]
+            if len(candidates) < 2:
+                return False
+            current_position = next(
+                (
+                    position
+                    for position, (index, _config) in enumerate(candidates)
+                    if index == self._auto_server_index
+                ),
+                -1,
+            )
+            next_index, next_config = candidates[(current_position + 1) % len(candidates)]
+            self._auto_server_index = next_index
+            self._config = next_config
+            self._state = replace(
+                self._state,
+                endpoint=next_config.base_url,
+                team_number=next_config.team_number,
+            )
+        self._config_updated.publish(next_config)
+        if self._logger:
+            self._logger.event(
+                "competition.auto_server_selected",
+                f"TEKNOFEST otomatik bağlantı adayı değiştirildi: {next_config.name}",
+                severity="info",
+                details={"server_id": next_config.identifier, "endpoint": next_config.base_url},
+            )
+        return True
 
     def _run_finished(self, future: concurrent.futures.Future[Any]) -> None:
         with self._lifecycle_lock:
@@ -287,15 +394,7 @@ class TeknofestCompetitionService(CompetitionService):
                         severity="success",
                         details={"endpoint": self.config.base_url, "team_number": self.config.team_number},
                     )
-                initial_snapshot = self._telemetry.current
-                initial_source_timeout_s = self._source_timeout_s()
-                initial_feed_ready = (
-                    self._vehicle.connected
-                    and initial_snapshot.has_fresh_vehicle_telemetry(
-                        initial_source_timeout_s
-                    )
-                    and self._vehicle_time(initial_snapshot) is not None
-                )
+                initial_feed_ready = self._cached_vehicle_snapshot() is not None
                 # When live vehicle data is already available, let the fake
                 # server see the ownship position before requesting nearby
                 # reference data. Real competition servers are unaffected.
@@ -309,17 +408,13 @@ class TeknofestCompetitionService(CompetitionService):
 
                 while True:
                     started = time.monotonic()
-                    period_s = self.config.telemetry_period_ms / 1000.0
+                    period_s = CompetitionServerConfig.TELEMETRY_PERIOD_S
                     if started >= next_telemetry_at:
-                        snapshot = self._telemetry.current
-                        vehicle_time = self._vehicle_time(snapshot)
-                        source_timeout_s = self._source_timeout_s()
-                        vehicle_connected = self._vehicle.connected
-                        feed_ready = (
-                            vehicle_connected
-                            and snapshot.has_fresh_vehicle_telemetry(source_timeout_s)
+                        snapshot = self._cached_vehicle_snapshot()
+                        vehicle_time = (
+                            self._vehicle_time(snapshot) if snapshot is not None else None
                         )
-                        if feed_ready and vehicle_time is not None:
+                        if snapshot is not None and vehicle_time is not None:
                             outbound = self._telemetry_payload(snapshot, vehicle_time)
                             self._log_telemetry_tx(outbound)
                             telemetry_started = time.monotonic()
@@ -342,15 +437,14 @@ class TeknofestCompetitionService(CompetitionService):
                             if self._logger:
                                 self._logger.event(
                                     "competition.telemetry_blocked",
-                                    "TEKNOFEST telemetri TX durduruldu; canlı SİHA telemetri hattı bekleniyor",
+                                    "TEKNOFEST telemetri TX ilk geçerli SİHA paketi bekleniyor",
                                     severity="warning",
                                     details={
-                                        "reason": self._feed_block_reason(snapshot, source_timeout_s),
-                                        "vehicle_connected": vehicle_connected,
-                                        "source_timeout_s": source_timeout_s,
+                                        "reason": "vehicle_snapshot_unavailable",
+                                        "vehicle_connected": self._vehicle.connected,
                                     },
                                 )
-                        if not feed_ready or vehicle_time is None:
+                        if snapshot is None or vehicle_time is None:
                             if self.state.telemetry_tx_active:
                                 self._publish_state(telemetry_tx_active=False)
                             self._log_protocol(
@@ -417,12 +511,15 @@ class TeknofestCompetitionService(CompetitionService):
                 )
                 self._log_connection_failure(message)
                 self._opener = self._new_opener()
+                switched_server = self._advance_auto_server()
                 retry_delay = (
                     10.0
                     if isinstance(exc, CompetitionHttpError)
                     and exc.status_code in {400, 403, 404}
                     else 2.0
                 )
+                if switched_server:
+                    retry_delay = min(retry_delay, 0.1)
                 await asyncio.sleep(retry_delay)
 
     def refresh_reference_data(self) -> None:
@@ -454,16 +551,15 @@ class TeknofestCompetitionService(CompetitionService):
             raise CompetitionProtocolError(
                 "Kilitlenme bitiş zamanı sunucu saatinin ilerisinde"
             )
-        if report_age_s > self.LOCK_SUBMISSION_BUDGET_S:
-            raise CompetitionProtocolError(
-                "Kilitlenme paketi 2 saniyelik yarışma sınırı için artık "
-                "güvenli gönderim bütçesinde değil"
-            )
         payload = event.to_payload()
         self._log_protocol(
             "competition.lock_tx",
             "TX SİHA kilitlenme olayı TEKNOFEST sunucusuna gönderiliyor",
-            {"vehicle_source": event.vehicle_source, "autonomous": event.autonomous},
+            {
+                "vehicle_source": event.vehicle_source,
+                "autonomous": event.autonomous,
+                "report_age_ms": round(report_age_s * 1000.0, 1),
+            },
         )
         self._request_json("POST", "/api/kilitlenme_bilgisi", payload)
         self._log_protocol(
@@ -483,15 +579,15 @@ class TeknofestCompetitionService(CompetitionService):
         report_age_s = (server_now - event.ended_at.astimezone(UTC)).total_seconds()
         if report_age_s < -self.KAMIKAZE_FUTURE_TOLERANCE_S:
             raise CompetitionProtocolError("Kamikaze bitiş zamanı sunucu saatinin ilerisinde")
-        if report_age_s > self.KAMIKAZE_SUBMISSION_BUDGET_S:
-            raise CompetitionProtocolError(
-                "Kamikaze paketi 2 saniyelik yarışma sınırı için artık güvenli gönderim bütçesinde değil"
-            )
         payload = event.to_payload()
         self._log_protocol(
             "competition.kamikaze_tx",
             "TX SİHA kamikaze olayı TEKNOFEST sunucusuna gönderiliyor",
-            {"vehicle_source": event.vehicle_source, "qr_text_length": len(event.qr_text)},
+            {
+                "vehicle_source": event.vehicle_source,
+                "qr_text_length": len(event.qr_text),
+                "report_age_ms": round(report_age_s * 1000.0, 1),
+            },
         )
         self._request_json("POST", "/api/kamikaze_bilgisi", payload)
         self._log_protocol(
@@ -602,7 +698,11 @@ class TeknofestCompetitionService(CompetitionService):
         snapshot: TelemetrySnapshot,
         vehicle_time: datetime,
     ) -> dict[str, Any]:
-        timestamp = vehicle_time.astimezone(UTC)
+        server_time = self.estimated_server_time()
+        reference_time = server_time or vehicle_time
+        timestamp = reference_time - timedelta(
+            milliseconds=30 + secrets.randbelow(150)
+        )
         track = snapshot.target_track
         autonomous = snapshot.flight_mode.upper() not in {
             "MANUAL",
@@ -640,37 +740,6 @@ class TeknofestCompetitionService(CompetitionService):
         if not isinstance(value, datetime) or value.tzinfo is None:
             return None
         return value.astimezone(UTC)
-
-    def _source_timeout_s(self) -> float:
-        if self._telemetry_freshness_timeout_s is not None:
-            return self._telemetry_freshness_timeout_s
-        return max(2.0, self.config.telemetry_period_ms / 1000.0 * 3.0)
-
-    def _feed_block_reason(self, snapshot: TelemetrySnapshot, max_age_s: float) -> str:
-        if not self._vehicle.connected:
-            return "vehicle_connection_down"
-        if not snapshot.telemetry_link or not snapshot.autopilot_link:
-            return "telemetry_link_down"
-        if not snapshot.has_valid_position:
-            return "position_missing"
-        if not isinstance(snapshot.uav_time, datetime) or snapshot.uav_time.tzinfo is None:
-            return "vehicle_gps_time_missing"
-        now = datetime.now(UTC)
-        if snapshot.position_received_at is None or snapshot.position_received_at.tzinfo is None:
-            return "position_timestamp_missing"
-        position_age_s = (now - snapshot.position_received_at.astimezone(UTC)).total_seconds()
-        if position_age_s < 0:
-            return "position_timestamp_invalid"
-        if position_age_s > max_age_s:
-            return "position_stale"
-        if snapshot.uav_time_received_at is None or snapshot.uav_time_received_at.tzinfo is None:
-            return "vehicle_time_timestamp_missing"
-        vehicle_time_age_s = (now - snapshot.uav_time_received_at.astimezone(UTC)).total_seconds()
-        if vehicle_time_age_s < 0:
-            return "vehicle_time_timestamp_invalid"
-        if vehicle_time_age_s > max_age_s:
-            return "vehicle_gps_time_stale"
-        return "vehicle_feed_not_ready"
 
     def _log_telemetry_tx(self, payload: dict[str, Any]) -> None:
         self._log_protocol(
@@ -826,6 +895,39 @@ class TeknofestCompetitionService(CompetitionService):
             severity="debug",
         )
 
+    def refresh_server_time(self) -> datetime:
+        """Fetch a fresh authoritative clock sample through the owned HTTP session."""
+
+        self._require_connected()
+        self._log_protocol(
+            "competition.server_time_request_tx",
+            "TX TEKNOFEST güncel sunucu saati isteği gönderiliyor",
+            {},
+            severity="debug",
+        )
+        started = time.monotonic()
+        payload = self._request_json("GET", "/api/sunucusaati")
+        server_time = self._update_server_clock(payload, started)
+        if server_time is None:
+            raise CompetitionProtocolError("TEKNOFEST sunucu saati yanıtı geçersiz")
+        self._telemetry.patch(server_link=True, server_time=server_time)
+        self._publish_state(
+            connected=True,
+            authenticated=True,
+            running=True,
+            last_error="",
+            last_success_at=datetime.now(UTC),
+            session_health="authenticated",
+            clock_health="healthy",
+        )
+        self._log_protocol(
+            "competition.server_time_rx",
+            "RX TEKNOFEST güncel sunucu saati alındı",
+            {"server_time": server_time.isoformat()},
+            severity="debug",
+        )
+        return server_time
+
     def _replace_hss_zones(self, zones: tuple[HssZone, ...]) -> bool:
         with self._lock:
             if zones == self._hss_zones:
@@ -944,6 +1046,7 @@ class TeknofestCompetitionService(CompetitionService):
             return None
         with self._lock:
             self._clock_sample = sample
+        self._clock_updated.publish(sample)
         return sample.estimate(received_monotonic)
 
     def estimated_server_time(self) -> datetime | None:

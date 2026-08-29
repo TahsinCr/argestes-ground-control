@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from bisect import bisect_left, insort
 from collections import defaultdict, deque
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import math
@@ -119,6 +121,40 @@ class _Scenario:
     weight: float
 
 
+@dataclass(frozen=True, slots=True)
+class _RankingSnapshot:
+    """Pickle-safe input for an isolated target-ranking process."""
+
+    contacts: tuple[CompetitorTelemetry, ...]
+    ownship: TelemetrySnapshot
+    histories: tuple[tuple[int, tuple[CompetitorTelemetry, ...]], ...]
+    config: TargetSelectionConfig
+    reference_time: datetime
+
+
+class _SnapshotCompetition:
+    def __init__(self, contacts: tuple[CompetitorTelemetry, ...]) -> None:
+        self.competitors = contacts
+
+
+class _SnapshotTelemetry:
+    def __init__(self, current: TelemetrySnapshot) -> None:
+        self.current = current
+
+
+def _rank_snapshot(snapshot: _RankingSnapshot) -> TargetSelectionResult:
+    """Calculate one ranking in a separate interpreter process."""
+
+    service = TargetSelectionService(
+        _SnapshotCompetition(snapshot.contacts),  # type: ignore[arg-type]
+        _SnapshotTelemetry(snapshot.ownship),  # type: ignore[arg-type]
+        config=snapshot.config,
+    )
+    for team_number, history in snapshot.histories:
+        service._histories[team_number].extend(history)
+    return service.rank_targets(reference_time=snapshot.reference_time)
+
+
 _SCENARIOS = (
     _Scenario(0.0, 0.0, 0.0, 0.28),
     _Scenario(999.0, 0.0, 0.0, 0.16),  # 999 => force straight flight
@@ -164,7 +200,9 @@ class TargetSelectionService:
         self._rank_stop = threading.Event()
         self._rank_wakeup = threading.Event()
         self._rank_thread: threading.Thread | None = None
+        self._rank_executor: ProcessPoolExecutor | None = None
         self._started = False
+        self._ranking_enabled = False
         self._last_result = TargetSelectionResult()
         self._locked = False
         self._selected_team_number: int | None = None
@@ -183,7 +221,7 @@ class TargetSelectionService:
 
     @property
     def updated(self) -> EventBus[TargetSelectionResult]:
-        """Publishes Top-5 updates while target selection is unlocked."""
+        """Publishes the current ranked competitor list while unlocked."""
         return self._updated
 
     @property
@@ -237,7 +275,6 @@ class TargetSelectionService:
             daemon=True,
         )
         self._rank_thread.start()
-        self._rank_wakeup.set()
 
     def stop(self) -> None:
         subscription = self._subscription
@@ -250,11 +287,15 @@ class TargetSelectionService:
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=max(1.0, self._config.refresh_interval_s + 0.5))
         self._rank_thread = None
+        executor = self._rank_executor
+        self._rank_executor = None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
         with self._lock:
             self._started = False
 
     def select_target(self, team_number: int) -> CompetitorTelemetry:
-        """Lock the current Top-5 and start streaming one team to onboard/APN.
+        """Lock one currently ranked team and stream it to onboard/APN.
 
         Ranking stays frozen until :meth:`clear_target` is called. The selected
         team's telemetry continues to refresh from TEKNOFEST and is forwarded
@@ -266,7 +307,7 @@ class TargetSelectionService:
         with self._lock:
             allowed = {item.team_number for item in self._last_result.candidates}
             if team_number not in allowed:
-                raise ValueError("Hedef yalnızca güncel Top-5 listesinden seçilebilir")
+                raise ValueError("Hedef yalnızca güncel sıralama listesinden seçilebilir")
         target = next(
             (item for item in self._competition.competitors if item.team_number == team_number),
             None,
@@ -287,7 +328,7 @@ class TargetSelectionService:
         self._forward_to_apn(target)
         self._log(
             "target_selection.locked",
-            f"Top-5 kilitlendi; aktif APN hedefi Takım {team_number}",
+            f"Hedef sıralaması kilitlendi; aktif APN hedefi Takım {team_number}",
             "success",
             {"team_number": team_number},
         )
@@ -308,7 +349,7 @@ class TargetSelectionService:
         self._rank_wakeup.set()
         self._log(
             "target_selection.unlocked",
-            "Aktif APN hedefi temizlendi; Top-5 güncellemesi yeniden açıldı",
+            "Aktif APN hedefi temizlendi; hedef sıralaması yeniden açıldı",
             "info",
             {"previous_team_number": previous},
         )
@@ -354,7 +395,7 @@ class TargetSelectionService:
         self._forward_to_apn(target)
 
     def _rank_loop(self) -> None:
-        """Refresh Top-5 at a fixed two-second cadence until operator lock."""
+        """Refresh the ranked target list at a fixed cadence until lock."""
         immediate = True
         while not self._rank_stop.is_set():
             if not immediate:
@@ -365,11 +406,14 @@ class TargetSelectionService:
                 return
             with self._lock:
                 locked = self._locked
+                ranking_enabled = self._ranking_enabled
             if locked:
                 self._check_selected_freshness()
                 continue
+            if not ranking_enabled:
+                continue
             try:
-                result = self.rank_targets()
+                result = self._rank_in_worker_process()
             except Exception as exc:
                 self._log(
                     "target_selection.background_failed",
@@ -379,6 +423,42 @@ class TargetSelectionService:
                 )
                 continue
             self._updated.publish(result)
+
+    def _rank_in_worker_process(self) -> TargetSelectionResult:
+        """Offload CPU-bound simulation so it cannot hold the GUI's GIL."""
+
+        with self._lock:
+            executor = self._rank_executor
+            if executor is None:
+                executor = ProcessPoolExecutor(max_workers=1)
+                self._rank_executor = executor
+            histories = tuple(
+                (team_number, tuple(history))
+                for team_number, history in self._histories.items()
+            )
+        snapshot = _RankingSnapshot(
+            contacts=tuple(self._competition.competitors),
+            ownship=self._telemetry.current,
+            histories=histories,
+            config=self._config,
+            reference_time=datetime.now(UTC),
+        )
+        return executor.submit(_rank_snapshot, snapshot).result()
+
+    def set_ranking_enabled(self, enabled: bool) -> None:
+        """Run costly rival simulations only while the operator views them.
+
+        Rival histories keep collecting regardless, so returning to the panel
+        immediately produces a current ranking without consuming CPU or GUI
+        time while the panel is hidden.
+        """
+
+        enabled = bool(enabled)
+        with self._lock:
+            changed = self._ranking_enabled != enabled
+            self._ranking_enabled = enabled
+        if changed and enabled:
+            self._rank_wakeup.set()
 
     def _check_selected_freshness(self) -> None:
         """Detect a stalled TEKNOFEST stream without changing the locked team."""
@@ -485,12 +565,16 @@ class TargetSelectionService:
                 details=details or {},
             )
 
-    def rank_targets(self) -> TargetSelectionResult:
+    def rank_targets(
+        self,
+        *,
+        reference_time: datetime | None = None,
+    ) -> TargetSelectionResult:
         with self._lock:
             if self._locked:
                 return self._last_result
         started = time.perf_counter()
-        now = datetime.now(UTC)
+        now = reference_time or datetime.now(UTC)
         contacts = self._competition.competitors
         self._capture_competitors(contacts)
         own_snapshot = self._telemetry.current
@@ -504,10 +588,18 @@ class TargetSelectionService:
             pre_candidates.append(self._pre_score(own, target))
 
         pre_candidates.sort(key=lambda item: item.pre_score, reverse=True)
-        simulated = pre_candidates[: self._config.prefilter_limit]
+        simulated = (
+            pre_candidates
+            if self._config.prefilter_limit == 0
+            else pre_candidates[: self._config.prefilter_limit]
+        )
         finals = [self._simulate_candidate(own, candidate) for candidate in simulated]
         finals.sort(key=lambda item: item.final_score, reverse=True)
-        finalists = tuple(finals[: self._config.final_limit])
+        finalists = tuple(
+            finals
+            if self._config.final_limit == 0
+            else finals[: self._config.final_limit]
+        )
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         result = TargetSelectionResult(
             candidates=finalists,
@@ -519,19 +611,6 @@ class TargetSelectionService:
         )
         with self._lock:
             self._last_result = result
-        if self._logger:
-            self._logger.event(
-                "target_selection.completed",
-                f"Hedef seçimi tamamlandı: {len(contacts)} rakip, {len(simulated)} simülasyon, {len(finalists)} finalist",
-                severity="success",
-                details={
-                    "considered": len(contacts),
-                    "valid": len(pre_candidates),
-                    "simulated": len(simulated),
-                    "finalists": [item.team_number for item in finalists],
-                    "elapsed_ms": round(elapsed_ms, 2),
-                },
-            )
         return result
 
     def _capture_competitors(self, contacts: Iterable[CompetitorTelemetry]) -> None:
@@ -987,22 +1066,27 @@ class TargetSelectionService:
             prefix.append(prefix[-1] + value)
         best_avg = -1.0
         best_p10 = 0.0
-        best_start_index = 0
-        # 50 ms stepping is deliberate here; 16 s x 9 scenarios is still tiny.
-        for start in range(0, len(qualities) - window_steps + 1):
+        window = sorted(qualities[:window_steps])
+        final_start = len(qualities) - window_steps
+        # Keep the exact p10 calculation, but maintain the sorted four-second
+        # window incrementally.  Re-sorting a nearly identical window at every
+        # 50 ms step dominated runtime once the UI began listing all rivals.
+        for start in range(final_start + 1):
             end = start + window_steps
             avg = (prefix[end] - prefix[start]) / window_steps
             if avg <= best_avg:
-                continue
-            window = qualities[start:end]
-            ordered = sorted(window)
-            p10 = ordered[max(0, int(0.10 * (len(ordered) - 1)))]
-            robustness = 0.72 * avg + 0.28 * p10
-            current_best_robustness = 0.72 * best_avg + 0.28 * best_p10
-            if robustness > current_best_robustness:
-                best_avg = avg
-                best_p10 = p10
-                best_start_index = start
+                pass
+            else:
+                p10 = window[max(0, int(0.10 * (window_steps - 1)))]
+                robustness = 0.72 * avg + 0.28 * p10
+                current_best_robustness = 0.72 * best_avg + 0.28 * best_p10
+                if robustness > current_best_robustness:
+                    best_avg = avg
+                    best_p10 = p10
+            if start < final_start:
+                outgoing = qualities[start]
+                window.pop(bisect_left(window, outgoing))
+                insort(window, qualities[end])
 
         if best_avg < 0.0:
             return 0.0, 0.0, None, longest_lock_s

@@ -7,6 +7,7 @@ from src.core.events import EventBus
 from src.models.kamikaze_approach import KamikazeApproachPlan
 from src.models.onboard import OnboardMissionEvent, OnboardMissionState
 from src.models.orin import OrinCommandReceipt
+from src.models.geometry import Point
 
 
 class OnboardMissionServiceContract(Service):
@@ -36,6 +37,14 @@ class OnboardMissionServiceContract(Service):
     ) -> OrinCommandReceipt: ...
 
     @abstractmethod
+    def start_hss_transit(
+        self,
+        destination: Point,
+        *,
+        source: str = "ui",
+    ) -> OrinCommandReceipt: ...
+
+    @abstractmethod
     def pause_task(self, task: str = "kamikaze.execute") -> OrinCommandReceipt: ...
 
     @abstractmethod
@@ -46,6 +55,10 @@ class OnboardMissionServiceContract(Service):
 
     @abstractmethod
     def cancel_task(self, task: str = "kamikaze.execute") -> OrinCommandReceipt: ...
+
+    @abstractmethod
+    def set_video_recording(self, enabled: bool) -> OrinCommandReceipt:
+        """Enable or disable only the Onboard camera-video recorder."""
 
     @abstractmethod
     def refresh(self) -> OrinCommandReceipt: ...

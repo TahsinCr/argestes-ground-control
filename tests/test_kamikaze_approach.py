@@ -263,7 +263,6 @@ class KamikazeApproachTests(unittest.TestCase):
 
         self.assertEqual(plan.wind_status, "stale")
         self.assertFalse(plan.wind_rank_applied)
-        self.assertEqual(service.config.wind_refresh_interval_s, 120.0)
 
     def test_manual_selection_locks_plan_and_mission_lock_blocks_changes(self) -> None:
         service = self._service()

@@ -643,6 +643,10 @@
       text-shadow: 0 1px 2px rgba(0, 0, 0, 0.98), 0 0 4px rgba(0, 0, 0, 0.9);
     }
 
+    .guided-goto-distance-label {
+      color: #f3c64d;
+    }
+
     .hud-footer {
       top: 54px;
       bottom: auto;
@@ -1000,6 +1004,7 @@
       </div>
       <div id="context-menu" class="context-menu">
         <button data-action="goto"></button>
+        <button data-action="hss_goto"></button>
         <button data-action="center"></button>
         <button data-action="set_home"></button>
         <div id="context-point-editor" class="context-point-editor">
@@ -1008,6 +1013,9 @@
           </label>
           <label>ALT
             <input id="context-altitude-input" aria-label="Altitude (m)" title="Altitude (m)" type="number" min="0" max="10000" step="1">
+          </label>
+          <label>PITCH
+            <input id="context-takeoff-pitch-input" aria-label="Takeoff pitch (deg)" title="Takeoff pitch (deg)" type="number" min="0" max="90" step="0.1">
           </label>
         </div>
         <button data-action="delete"></button>
@@ -1023,6 +1031,9 @@
           </label>
           <label>Irtifa (m)
             <input id="point-altitude-input" type="number" min="0" max="10000" step="1">
+          </label>
+          <label>Kalkis Pitch (°)
+            <input id="point-takeoff-pitch-input" type="number" min="0" max="90" step="0.1">
           </label>
           <label>Waypoint Sirasi
             <input id="point-order-input" type="number" min="1" max="999" step="1">
@@ -1080,6 +1091,7 @@
     };
     const CONTEXT_DEFAULTS = {
       goto: 'Send GOTO',
+      hss_goto: 'HSS GOTO',
       center: 'Center vehicle',
       set_home: 'Set home/reference here',
       delete: 'Delete selected',
@@ -1116,12 +1128,14 @@
     let safeMaskGroup;
     let labelGroup;
     let missionDistanceLabelGroup;
+    let guidedGotoDistanceLabelGroup;
     let contactGroup;
     let vehicleMarker = null;
     let homeReferenceMarker = null;
     let trailLine = null;
     let missionRouteLine = null;
     let rtlReturnLine = null;
+    let guidedGotoLine = null;
     let contextPoint = null;
     let contextOverlayId = null;
     let contextEditorDirty = false;
@@ -1150,6 +1164,7 @@
       activeTool: 'pan',
       currentLayer: 'vector',
       missionLoop: false,
+      flightMode: '',
       selectedId: null,
       overlayOrder: [],
       layers: new Map(),
@@ -1586,6 +1601,17 @@
       return Number.isFinite(altitude) ? altitude : null;
     }
 
+    function takeoffPitchForLayer(layer) {
+      const pitch = Number(layer?.overlayData?.metadata?.takeoff_pitch_deg);
+      return Number.isFinite(pitch) ? Math.max(0, Math.min(90, pitch)) : 0;
+    }
+
+    function setTakeoffPitchVisibility(input, type) {
+      const visible = normalizeType(type) === 'takeoff';
+      input.disabled = !visible;
+      input.closest('label').hidden = !visible;
+    }
+
     function inferLabel(type) {
       const normalized = normalizeType(type);
       const count = state.overlayOrder.filter((overlayId) => {
@@ -1628,7 +1654,7 @@
       return inferLabel(normalized);
     }
 
-    function styleFor(type, selected) {
+    function styleFor(type, selected, metadata = {}) {
       const normalized = normalizeType(type);
       const base = {
         color: colorFor(normalized),
@@ -1647,6 +1673,17 @@
         return { ...base, fillOpacity: selected ? 0.12 : 0.07, dashArray: '10 5' };
       }
       if (normalized === 'safe_zone') {
+        if (String(metadata.source || '').trim().toLowerCase() === 'settings-safe-area') {
+          return {
+            ...base,
+            color: '#73d06b',
+            opacity: 1.0,
+            fill: false,
+            fillOpacity: 0.0,
+            dashArray: '9 5',
+            weight: selected ? 3.0 : 2.6,
+          };
+        }
         return { ...base, color: '#73d06b', fillOpacity: 0.0, dashArray: '12 4', weight: selected ? 3.2 : 2.4 };
       }
       if (normalized === 'hss') {
@@ -1869,6 +1906,10 @@
 
     function updateLabel(layer, selected) {
       const id = layer.overlayData.overlay_id;
+      if (layer.overlayData.metadata?.show_label === false) {
+        removeLabel(id);
+        return;
+      }
       const position = labelPositionForLayer(layer);
       if (!position) {
         return;
@@ -2082,7 +2123,11 @@
       if (layer instanceof L.Marker) {
         layer.setIcon(markerIcon(layer.overlayData.overlay_type, selected));
       } else {
-        layer.setStyle(styleFor(layer.overlayData.overlay_type, selected));
+        layer.setStyle(styleFor(
+          layer.overlayData.overlay_type,
+          selected,
+          layer.overlayData.metadata,
+        ));
       }
       updateSafeMask(layer);
       updateLabel(layer, selected);
@@ -2257,6 +2302,39 @@
         );
       }
       addMissionDistanceLabel(rtlOrigin, rtlDestination);
+    }
+
+    function refreshGuidedGoto(payload, vehiclePosition) {
+      if (!guidedGotoLine || !guidedGotoDistanceLabelGroup) {
+        return;
+      }
+      guidedGotoDistanceLabelGroup.clearLayers();
+      const target = payload && (payload.hssGoto || payload.guidedGoto);
+      const latitude = Number(target && target.lat);
+      const longitude = Number(target && target.lon);
+      if (!target || !target.active || !vehiclePosition || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        guidedGotoLine.setLatLngs([]);
+        return;
+      }
+      const destination = L.latLng(latitude, longitude);
+      guidedGotoLine.setLatLngs([vehiclePosition, destination]);
+      if (map.getZoom() < 12) {
+        return;
+      }
+      const text = formatDistance(map.distance(vehiclePosition, destination));
+      if (!text) {
+        return;
+      }
+      guidedGotoDistanceLabelGroup.addLayer(L.marker(segmentMidpoint(vehiclePosition, destination), {
+        interactive: false,
+        keyboard: false,
+        icon: L.divIcon({
+          className: 'segment-distance-label-wrap',
+          html: `<div class="segment-distance-label guided-goto-distance-label">${text}</div>`,
+          iconSize: [94, 18],
+          iconAnchor: [47, 9],
+        }),
+      }));
     }
 
     function routeOrderFor(layer) {
@@ -2488,6 +2566,7 @@
     function createLayerFromData(data) {
       const type = normalizeType(data.overlay_type);
       const points = data.points || [];
+      const interactive = data.metadata?.map_interactive !== false;
       const pointAltitude = Number(points[0]?.[2]);
       const metadataAltitude = Number(data.metadata?.altitude_m ?? data.metadata?.altitude);
       const altitude = Number.isFinite(pointAltitude)
@@ -2501,14 +2580,21 @@
           ? (homeReferenceLatLng() || points[0])
           : points[0];
         layer = L.circle(point, {
-          ...styleFor(type, false),
+          ...styleFor(type, false, data.metadata),
           radius: data.radius_m || radiusFor(type),
           bubblingMouseEvents: false,
+          interactive,
         });
       } else if (type === 'route') {
-        layer = L.polyline(points, styleFor(type, false));
+        layer = L.polyline(points, {
+          ...styleFor(type, false, data.metadata),
+          interactive,
+        });
       } else {
-        layer = L.polygon(points, styleFor(type, false));
+        layer = L.polygon(points, {
+          ...styleFor(type, false, data.metadata),
+          interactive,
+        });
       }
       layer.overlayData = {
         overlay_id: data.overlay_id,
@@ -2634,6 +2720,20 @@
       }, 6000);
     }
 
+    function addHssGotoCommand(latlng) {
+      emitAction({ type: 'hss_goto_request', lat: latlng.lat, lon: latlng.lng });
+      const marker = L.circleMarker(latlng, {
+        radius: 7,
+        color: '#f3c64d',
+        fillColor: '#f3c64d',
+        fillOpacity: 0.35,
+        weight: 2,
+      }).addTo(overlayGroup);
+      setTimeout(() => {
+        overlayGroup.removeLayer(marker);
+      }, 6000);
+    }
+
     function startShapeTool(tool) {
       map.editTools.stopDrawing();
       const normalized = normalizeType(tool);
@@ -2659,7 +2759,8 @@
       contextEditorDirty = false;
       const menu = document.getElementById('context-menu');
       const selected = overlayId ? state.layers.get(overlayId) : null;
-      const deletable = Boolean(
+      const deletable = Boolean(selected && isEditableLayer(selected));
+      const pointEditable = Boolean(
         selected
         && POINT_TYPES.has(selected.overlayData.overlay_type)
         && isEditableLayer(selected)
@@ -2668,19 +2769,25 @@
         hideContextMenu();
         return;
       }
-      ['goto', 'center', 'set_home'].forEach((action) => {
+      ['center', 'set_home'].forEach((action) => {
         menu.querySelector(`[data-action="${action}"]`).style.display = deletable
           ? 'none'
           : 'flex';
+      });
+      ['goto', 'hss_goto'].forEach((action) => {
+        menu.querySelector(`[data-action="${action}"]`).style.display = (
+          !deletable && state.flightMode === 'GUIDED'
+        ) ? 'flex' : 'none';
       });
       menu.querySelector('[data-action="delete"]').style.display = deletable
         ? 'flex'
         : 'none';
       const editor = document.getElementById('context-point-editor');
-      editor.style.display = deletable ? 'grid' : 'none';
-      if (deletable) {
+      editor.style.display = pointEditable ? 'grid' : 'none';
+      if (pointEditable) {
         const radiusInput = document.getElementById('context-radius-input');
         const altitudeInput = document.getElementById('context-altitude-input');
+        const pitchInput = document.getElementById('context-takeoff-pitch-input');
         radiusInput.value = Math.round(
           selected instanceof L.Circle
             ? selected.getRadius()
@@ -2691,6 +2798,8 @@
           ? defaultAltitudeFor(selected.overlayData.overlay_type)
           : altitude;
         altitudeInput.disabled = !ALTITUDE_TYPES.has(selected.overlayData.overlay_type);
+        pitchInput.value = takeoffPitchForLayer(selected);
+        setTakeoffPitchVisibility(pitchInput, selected.overlayData.overlay_type);
       }
       menu.style.display = 'block';
       const maxLeft = Math.max(0, map.getContainer().clientWidth - menu.offsetWidth - 6);
@@ -2706,6 +2815,7 @@
       }
       const radius = Number(document.getElementById('context-radius-input').value);
       const altitude = Number(document.getElementById('context-altitude-input').value);
+      const pitch = Number(document.getElementById('context-takeoff-pitch-input').value);
       let changed = false;
       if (layer instanceof L.Circle && Number.isFinite(radius)) {
         const nextRadius = Math.max(5, Math.min(1000, radius));
@@ -2718,6 +2828,16 @@
         const nextAltitude = Math.max(0, Math.min(10000, altitude));
         if (altitudeForLayer(layer) !== nextAltitude) {
           layer.overlayData.altitude_m = nextAltitude;
+          changed = true;
+        }
+      }
+      if (layer.overlayData.overlay_type === 'takeoff' && Number.isFinite(pitch)) {
+        const nextPitch = Math.max(0, Math.min(90, pitch));
+        if (takeoffPitchForLayer(layer) !== nextPitch) {
+          layer.overlayData.metadata = {
+            ...(layer.overlayData.metadata || {}),
+            takeoff_pitch_deg: nextPitch,
+          };
           changed = true;
         }
       }
@@ -3169,12 +3289,15 @@
       const typeInput = document.getElementById('point-type-input');
       const radiusInput = document.getElementById('point-radius-input');
       const altitudeInput = document.getElementById('point-altitude-input');
+      const pitchInput = document.getElementById('point-takeoff-pitch-input');
       const orderInput = document.getElementById('point-order-input');
       typeInput.innerHTML = typeOptions(EDITABLE_POINT_TYPES, layer.overlayData.overlay_type);
       radiusInput.value = Math.round(layer instanceof L.Circle ? layer.getRadius() : radiusFor(layer.overlayData.overlay_type));
       const altitude = altitudeForLayer(layer);
       altitudeInput.value = altitude === null ? defaultAltitudeFor(layer.overlayData.overlay_type) : altitude;
       altitudeInput.disabled = !ALTITUDE_TYPES.has(layer.overlayData.overlay_type);
+      pitchInput.value = takeoffPitchForLayer(layer);
+      setTakeoffPitchVisibility(pitchInput, layer.overlayData.overlay_type);
       orderInput.value = layer.overlayData.metadata?.route_order || routeLayers().length + 1;
       orderInput.disabled = !ROUTE_TYPES.has(layer.overlayData.overlay_type);
       dialog.dataset.overlayId = overlayId;
@@ -3192,11 +3315,16 @@
       const nextType = document.getElementById('point-type-input').value;
       const nextRadius = Number(document.getElementById('point-radius-input').value || radiusFor(nextType));
       const altitudeInput = document.getElementById('point-altitude-input');
+      const pitchInput = document.getElementById('point-takeoff-pitch-input');
       const requestedAltitude = altitudeInput.value.trim() === '' ? NaN : Number(altitudeInput.value);
       const nextAltitude = Number.isFinite(requestedAltitude) && requestedAltitude >= 0
         ? requestedAltitude
         : defaultAltitudeFor(nextType);
       const nextOrder = Number(document.getElementById('point-order-input').value || routeLayers().length + 1);
+      const requestedPitch = pitchInput.value.trim() === '' ? NaN : Number(pitchInput.value);
+      const nextPitch = Number.isFinite(requestedPitch)
+        ? Math.max(0, Math.min(90, requestedPitch))
+        : 0;
       layer.overlayData.overlay_type = nextType;
       layer.overlayData.color = colorFor(nextType);
       layer.overlayData.label = labelForPoint(nextType, nextOrder);
@@ -3205,6 +3333,7 @@
         ...(layer.overlayData.metadata || {}),
         route_order: ROUTE_TYPES.has(nextType) ? nextOrder : null,
         independent: !ROUTE_TYPES.has(nextType),
+        takeoff_pitch_deg: nextType === 'takeoff' ? nextPitch : null,
       };
       if (layer instanceof L.Circle) {
         layer.setRadius(nextRadius);
@@ -3514,8 +3643,13 @@
         const orderInput = document.getElementById('point-order-input');
         const radiusInput = document.getElementById('point-radius-input');
         const altitudeInput = document.getElementById('point-altitude-input');
+        const pitchInput = document.getElementById('point-takeoff-pitch-input');
         orderInput.disabled = !ROUTE_TYPES.has(type);
         altitudeInput.disabled = !ALTITUDE_TYPES.has(type);
+        setTakeoffPitchVisibility(pitchInput, type);
+        if (type === 'takeoff' && pitchInput.value === '') {
+          pitchInput.value = '0';
+        }
         if (ALTITUDE_TYPES.has(type) && altitudeInput.value === '') {
           altitudeInput.value = defaultAltitudeFor(type);
         }
@@ -3608,8 +3742,18 @@
         lineJoin: 'round',
         interactive: false,
       }).addTo(map);
+      guidedGotoLine = L.polyline([], {
+        color: '#f3c64d',
+        weight: 2.5,
+        opacity: 0.95,
+        dashArray: '8 6',
+        lineCap: 'round',
+        lineJoin: 'round',
+        interactive: false,
+      }).addTo(map);
       labelGroup = L.layerGroup().addTo(map);
       missionDistanceLabelGroup = L.layerGroup().addTo(map);
+      guidedGotoDistanceLabelGroup = L.layerGroup().addTo(map);
       contactGroup = L.layerGroup().addTo(map);
       trailLine = L.polyline([], {
         color: '#61a8ff',
@@ -3678,6 +3822,8 @@
         hideContextMenu(action !== 'delete');
         if (action === 'goto') {
           addGotoCommand(actionPoint);
+        } else if (action === 'hss_goto') {
+          addHssGotoCommand(actionPoint);
         } else if (action === 'center') {
           const ownLatLng = ownVehicleLatLng();
           if (ownLatLng) {
@@ -3692,7 +3838,7 @@
         }
       });
 
-      ['context-radius-input', 'context-altitude-input'].forEach((inputId) => {
+      ['context-radius-input', 'context-altitude-input', 'context-takeoff-pitch-input'].forEach((inputId) => {
         const input = document.getElementById(inputId);
         input.addEventListener('click', (event) => event.stopPropagation());
         input.addEventListener('input', () => {
@@ -4005,6 +4151,7 @@
         if (payload && Object.prototype.hasOwnProperty.call(payload, 'commandAvailable')) {
           window.ykiMap.setCommandAvailable(payload.commandAvailable);
         }
+        state.flightMode = String(payload && payload.mode || '').trim().toUpperCase();
         updateGpsSummary(payload || {});
         updateHomeReference(payload || {});
         const localReadout = document.querySelector('#local-readout');
@@ -4029,6 +4176,7 @@
           localReadout.innerHTML = localReadoutText;
         }
         if (!payload || !payload.active) {
+          refreshGuidedGoto(null, null);
           state.vehicleMotion.motion = null;
           state.vehicleMotion.lastSampleAt = 0;
           if (vehicleMarker && map.hasLayer(vehicleMarker)) {
@@ -4062,6 +4210,7 @@
           return;
         }
         const latlng = L.latLng(latitude, longitude);
+        refreshGuidedGoto(payload, latlng);
         if (!state.homeReferenceInitialized && !state.homeReferencePending) {
           setHomeReference(latlng, false);
         }

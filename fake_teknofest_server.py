@@ -31,8 +31,14 @@ HSS_MIN_CENTER_DISTANCE_M = 280.0
 HSS_MAX_CENTER_DISTANCE_M = 900.0
 HSS_RADII_M = (50, 75, 100, 150)
 
-QR_LATITUDE = 40.24235
-QR_LONGITUDE = 28.87395
+QR_LATITUDE = 37.980637
+QR_LONGITUDE = 41.842464
+
+ANSI_RED = "\033[91m"
+ANSI_RESET = "\033[0m"
+# Keep the fake-server console focused on received competition result payloads.
+CONSOLE_PACKET_LOG_KEYS = frozenset({"lock_received", "kamikaze_received"})
+RED_PACKET_LOG_KEYS = CONSOLE_PACKET_LOG_KEYS
 
 LOG_MESSAGES: dict[str, dict[str, str]] = {
     "en": {
@@ -106,6 +112,15 @@ def log_message(language: str, key: str) -> str:
     """Return a localized console message template."""
 
     return LOG_MESSAGES[language][key]
+
+
+def console_log_message(language: str, key: str) -> str:
+    """Colour only QR and target-lock packet logs red in a terminal."""
+
+    message = log_message(language, key)
+    if key in RED_PACKET_LOG_KEYS:
+        return f"{ANSI_RED}{message}{ANSI_RESET}"
+    return message
 
 
 def server_time(now: datetime | None = None) -> dict[str, int]:
@@ -399,9 +414,9 @@ class FakeTeknofestState:
         return {"sunucusaati": server_time(), "hss_koordinat_bilgileri": values}
 
     def log(self, key: str, *args: Any) -> None:
-        if not self.quiet:
+        if not self.quiet and key in CONSOLE_PACKET_LOG_KEYS:
             logging.getLogger("fake-teknofest").info(
-                log_message(self.language, key),
+                console_log_message(self.language, key),
                 *args,
             )
 
@@ -635,9 +650,9 @@ def main() -> int:
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5000)
-    parser.add_argument("--username", default="kirlangic")
-    parser.add_argument("--password", default="kirlangic-demo")
-    parser.add_argument("--team-number", type=int, default=1)
+    parser.add_argument("--username", default="kapsulkirlangic")
+    parser.add_argument("--password", default="E9mB3tJwQS")
+    parser.add_argument("--team-number", type=int, default=21)
     parser.add_argument("--competitors", type=int, default=27)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument(
@@ -663,21 +678,10 @@ def main() -> int:
         seed=args.seed,
         language=args.lang,
     )
-    host, port = server.server_address[:2]
-    logging.getLogger("fake-teknofest").info(
-        log_message(args.lang, "server_ready"),
-        host,
-        port,
-        args.team_number,
-        args.competitors,
-        args.username,
-    )
     try:
         server.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:
-        logging.getLogger("fake-teknofest").info(
-            log_message(args.lang, "server_stopping")
-        )
+        pass
     finally:
         server.server_close()
     return 0

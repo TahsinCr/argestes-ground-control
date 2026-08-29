@@ -8,6 +8,9 @@ from fake_teknofest_server import (
     HSS_MAX_CENTER_DISTANCE_M,
     HSS_MIN_CENTER_DISTANCE_M,
     FakeTeknofestState,
+    ANSI_RED,
+    ANSI_RESET,
+    console_log_message,
     create_server,
     log_message,
 )
@@ -155,6 +158,29 @@ class FakeTeknofestHssTests(unittest.TestCase):
 
 
 class FakeTeknofestLanguageTests(unittest.TestCase):
+    def test_only_qr_and_lock_packet_logs_are_red(self) -> None:
+        for key in (
+            "lock_received",
+            "kamikaze_received",
+        ):
+            message = console_log_message("tr", key)
+            self.assertTrue(message.startswith(ANSI_RED), key)
+            self.assertTrue(message.endswith(ANSI_RESET), key)
+
+        for key in (
+            "server_ready",
+            "control_time_request",
+            "reference_qr_request",
+            "reference_hss_request",
+            "login_received",
+            "telemetry_received",
+            "lock_accepted",
+            "kamikaze_accepted",
+        ):
+            message = console_log_message("tr", key)
+            self.assertNotIn(ANSI_RED, message, key)
+            self.assertNotIn(ANSI_RESET, message, key)
+
     def test_console_language_defaults_to_english(self) -> None:
         server = create_server(port=0, quiet=True)
         self.addCleanup(server.server_close)

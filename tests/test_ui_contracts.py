@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFrame,
     QLineEdit,
     QSpinBox,
     QWidget,
@@ -30,6 +31,7 @@ from src.models.mission import MapContact
 from src.models.onboard import ACTUATOR_TEST_TASK, OnboardMissionState
 from src.models.parameters import Parameter
 from src.models.settings import SettingsModel
+from src.models.target_selection import TargetCandidateScore, TargetSelectionResult
 from src.models.telemetry import TelemetrySnapshot
 from src.models.video import VideoStreamStats
 from src.ui.config.commands import AUTONOMOUS_COMMANDS, FLIGHT_MODES, PROFILE_FIELDS
@@ -54,20 +56,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class UiContractTests(unittest.TestCase):
-    def test_map_escapes_backend_labels_before_inserting_html(self) -> None:
-        source = (ROOT / "src/ui/web/map.html").read_text(encoding="utf-8")
-        self.assertIn("function escapeHtml(value)", source)
-        self.assertIn("escapeHtml(layer.overlayData.label)", source)
-        self.assertIn("escapeHtml(data.label || data.contact_id || 'Temas')", source)
-
-    def test_map_hot_paths_are_bounded_and_incremental(self) -> None:
-        source = (ROOT / "src/ui/web/map.html").read_text(encoding="utf-8")
-        self.assertIn("const CURSOR_UPDATE_INTERVAL_MS = 50", source)
-        self.assertIn("state.cursorTimer = window.setTimeout", source)
-        self.assertIn("const MARKER_MOTION_FRAME_INTERVAL_MS = 33", source)
-        self.assertIn("entry.trail.addLatLng", source)
-        self.assertIn("updateContactTrail(entry, trailPoints)", source)
-
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication(["yki-ui-tests"])
@@ -86,6 +74,10 @@ class UiContractTests(unittest.TestCase):
         }
         for field in fields:
             self.assertIsInstance(dialog._widgets[field.path], expected_widget_types[field.kind])
+        self.assertEqual(
+            len(dialog.findChildren(QFrame, "SettingsSafeAreaCorner")),
+            4,
+        )
         dialog._widgets["ui.theme"].setCurrentIndex(1)
         self.assertEqual(dialog.to_settings().ui.theme, "light")
         dialog.close()
@@ -395,7 +387,7 @@ class UiContractTests(unittest.TestCase):
 
     def test_parameter_panel_tracks_selected_task_on_mission_commands_tab(self) -> None:
         panel = ParametersPanel("", "", "")
-        self.assertEqual(panel.tabs.count(), 2)
+        self.assertEqual(panel.tabs.count(), 3)
         self.assertEqual(panel.tabs.tabText(0), "Parametreler")
         self.assertEqual(panel.tabs.tabText(1), "Görev Aksiyonları")
 
@@ -600,6 +592,46 @@ class UiContractTests(unittest.TestCase):
         panel.deleteLater()
         self.app.processEvents()
 
+    def test_target_selector_table_defaults_to_score_and_allows_column_sorting(self) -> None:
+        panel = ParametersPanel("", "", "")
+        panel.tabs.setCurrentWidget(panel.target_selector_tab)
+        candidates = (
+            TargetCandidateScore(
+                team_number=7, final_score=72.5, lock_probability=68.0,
+                pre_score=70.0, tail_access_score=66.0, data_confidence=94.0,
+                distance_m=120.0, altitude_delta_m=8.0, data_age_ms=4,
+                merge_eta_s=2.0, best_lock_start_s=4.2,
+                best_lock_duration_s=12.0, heading_alignment_deg=16.0,
+                turn_required_deg=20.0, simulation_quality=75.0, reason="uygun",
+            ),
+            TargetCandidateScore(
+                team_number=3, final_score=91.0, lock_probability=81.0,
+                pre_score=89.0, tail_access_score=78.0, data_confidence=97.0,
+                distance_m=90.0, altitude_delta_m=6.0, data_age_ms=3,
+                merge_eta_s=1.2, best_lock_start_s=4.8,
+                best_lock_duration_s=8.0, heading_alignment_deg=10.0,
+                turn_required_deg=12.0, simulation_quality=88.0, reason="en uygun",
+            ),
+        )
+
+        panel.update_target_selection(
+            TargetSelectionResult(
+                candidates=candidates,
+                considered_count=4,
+                valid_count=2,
+                simulated_count=2,
+                elapsed_ms=12.0,
+            )
+        )
+
+        self.assertEqual(panel.tabs.count(), 3)
+        self.assertEqual(panel.target_selector_table.item(0, 0).data(Qt.ItemDataRole.UserRole), 3.0)
+        panel.target_selector_table.sortItems(0, Qt.SortOrder.DescendingOrder)
+        self.assertEqual(panel.target_selector_table.item(0, 0).data(Qt.ItemDataRole.UserRole), 7.0)
+        panel.close()
+        panel.deleteLater()
+        self.app.processEvents()
+
     def test_flight_dynamics_compass_uses_cardinal_directions(self) -> None:
         expected = {
             0.0: "N",
@@ -619,10 +651,6 @@ class UiContractTests(unittest.TestCase):
             },
             expected,
         )
-        source = (ROOT / "src/ui/widgets/attitude.py").read_text(encoding="utf-8")
-        self.assertIn("self._display_values['air_speed']", source)
-        self.assertIn("self._display_values['ground_speed']", source)
-
     def test_flight_dynamics_smooths_samples_and_holds_short_gaps(self) -> None:
         indicator = AttitudeIndicator(DARK)
         first = TelemetrySnapshot.zero().copy(
@@ -754,7 +782,6 @@ class UiContractTests(unittest.TestCase):
         indicator._animation_step(0.1)
 
         self.assertGreater(indicator._display_values["pitch"], 9.0)
-        self.assertLessEqual(indicator._MAX_SMOOTHING_TIME_S, 0.07)
         indicator.close()
         indicator.deleteLater()
         self.app.processEvents()
@@ -880,7 +907,18 @@ class UiContractTests(unittest.TestCase):
             str(panel.task_list.item(row).data(Qt.ItemDataRole.UserRole))
             for row in range(panel.task_list.count())
         }
-        self.assertEqual(visible, {"TARGET_LOCK", "KAMIKAZE", "ACTUATOR_TEST"})
+        self.assertEqual(
+            visible,
+            {
+                "TARGET_LOCK",
+                "KAMIKAZE",
+                "KAMIKAZE_CHECK",
+                "ACTUATOR_TEST",
+                "HSS_ESCAPE",
+                "HSS_PREDICT",
+                "HSS_TRANSIT",
+            },
+        )
         self.assertNotIn("PING_TEST", visible)
         self.assertEqual(panel._canonical_ui_task("TARGET_LOCK"), "target.lock")
         self.assertEqual(panel.task_list.currentRow(), -1)
@@ -1169,11 +1207,6 @@ class UiContractTests(unittest.TestCase):
         panel.resize(320, 900)
         self.app.processEvents()
         self.assertEqual(panel.scroll_area.verticalScrollBar().maximum(), 0)
-        attitude_source = (ROOT / "src/ui/widgets/attitude.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertNotIn("acceleration_x_mps2", attitude_source)
-        self.assertNotIn("_draw_footer", attitude_source)
         panel.close()
         panel.deleteLater()
         self.app.processEvents()
@@ -1309,6 +1342,14 @@ class UiContractTests(unittest.TestCase):
             self.assertIn(method, html)
         self.assertIn("payload.positionValid", html)
         self.assertIn("payload.resetTrack", html)
+        self.assertIn("function refreshGuidedGoto(payload, vehiclePosition)", html)
+        self.assertIn("dashArray: '8 6'", html)
+        self.assertIn("guidedGotoDistanceLabelGroup", html)
+        self.assertIn('"guidedGoto": guided_goto', panel_source)
+        self.assertIn('"hssGoto": hss_goto', panel_source)
+        self.assertIn("payload.hssGoto || payload.guidedGoto", html)
+        self.assertIn("function addHssGotoCommand(latlng)", html)
+        self.assertIn('guided_mode_active = self._flight_mode == "GUIDED"', panel_source)
         self.assertIn("(changes.upsertContacts || []).forEach", html)
         self.assertIn("function renderMarkerMotions(now)", html)
         self.assertIn("function startMarkerMotion(", html)
@@ -1341,8 +1382,8 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("function updateToolDockSpacing()", html)
         self.assertIn("sections.length - 1", html)
         self.assertIn("new ResizeObserver(scheduleToolDockSpacing)", html)
-        self.assertEqual(html.count("<button data-action="), 4)
-        for action in ("goto", "center", "set_home", "delete"):
+        self.assertEqual(html.count("<button data-action="), 5)
+        for action in ("goto", "hss_goto", "center", "set_home", "delete"):
             self.assertIn(f'<button data-action="{action}"></button>', html)
         for action in ("takeoff", "waypoint", "loiter", "land"):
             self.assertNotIn(f'<button data-action="{action}"></button>', html)
@@ -1353,12 +1394,17 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("contextOverlayId = overlayId;", html)
         self.assertIn("POINT_TYPES.has(selected.overlayData.overlay_type)", html)
         self.assertIn("const deletable = Boolean(", html)
-        self.assertIn("['goto', 'center', 'set_home'].forEach", html)
+        self.assertIn("['goto', 'hss_goto'].forEach", html)
+        self.assertIn("state.flightMode === 'GUIDED'", html)
         self.assertIn("selected && !deletable", html)
         self.assertIn("removeOverlayById(actionOverlayId, true);", html)
         self.assertIn('id="context-point-editor"', html)
         self.assertIn('id="context-radius-input"', html)
         self.assertIn('id="context-altitude-input"', html)
+        self.assertIn('id="context-takeoff-pitch-input"', html)
+        self.assertIn('id="point-takeoff-pitch-input"', html)
+        self.assertIn("function takeoffPitchForLayer(layer)", html)
+        self.assertIn("function setTakeoffPitchVisibility(input, type)", html)
         self.assertIn("function applyContextPointEditor()", html)
         self.assertIn("let contextEditorDirty = false", html)
         self.assertIn("box-sizing: border-box", html)

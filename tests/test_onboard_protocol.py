@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from src.core.events import EventBus, Subscription
 from src.models.competition import HssZone, KamikazeEvent, LockEvent, QrCoordinate
+from src.models.geometry import Point
 from src.models.onboard import ACTUATOR_TEST_TASK
 from src.services.kamikaze_approach import KamikazeApproachService
 from src.models.orin import (
@@ -116,6 +117,8 @@ class FakeCompetitionService:
         self.submitted_kamikaze: list[KamikazeEvent] = []
         self.submitted_locks: list[LockEvent] = []
         self.refresh_count = 0
+        self.clock_refresh_count = 0
+        self.server_time = datetime(2026, 8, 28, 12, 0, 4, 321_000, tzinfo=UTC)
 
     def refresh_qr_coordinate(self) -> None:
         self.refresh_count += 1
@@ -126,12 +129,24 @@ class FakeCompetitionService:
     def submit_lock_event(self, event: LockEvent) -> None:
         self.submitted_locks.append(event)
 
-    @staticmethod
-    def estimated_server_time() -> datetime:
-        return datetime.now(UTC)
+    def refresh_server_time(self) -> datetime:
+        self.clock_refresh_count += 1
+        return self.server_time
+
+    def estimated_server_time(self) -> datetime:
+        return self.server_time
 
 
 class OnboardMissionProtocolTests(unittest.TestCase):
+    @staticmethod
+    def _wait_until(predicate, timeout: float = 1.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(0.005)
+        raise AssertionError("condition was not met before timeout")
+
     def setUp(self) -> None:
         self.orin = FakeOrinService()
         self.competition = FakeCompetitionService()
@@ -171,12 +186,15 @@ class OnboardMissionProtocolTests(unittest.TestCase):
 
         self.assertEqual(receipt.request_id, 101)
         self.assertEqual(self.competition.refresh_count, 0)
+        self.assertEqual(self.competition.clock_refresh_count, 1)
         self.assertFalse(
             any(
                 packet_type == "competition.hss.update"
                 for packet_type, _payload in self.orin.requests
             )
         )
+        self.assertEqual(self.orin.requests[-3][0], "competition.clock.update")
+        self.assertGreater(self.orin.requests[-3][1]["source_revision"], 0)
         self.assertEqual(self.orin.requests[-2][0], "kamikaze.target.update")
         target_payload = self.orin.requests[-2][1]
         self.assertEqual(target_payload["latitude_deg"], 39.925533)
@@ -185,8 +203,6 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertEqual(target_payload["plate_height_m"], 3.0)
         self.assertEqual(target_payload["target_id"], "teknofest-qr-target")
         self.assertTrue(target_payload["fetched_at_utc"].endswith("Z"))
-        self.assertEqual(self.orin.requests[-3][0], "competition.clock.update")
-        self.assertGreater(self.orin.requests[-3][1]["source_revision"], 0)
         self.assertEqual(
             self.orin.requests[-1],
             ("task.start", {"task": "KAMIKAZE", "source": "ui"}),
@@ -380,8 +396,8 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         self.assertEqual(
             packet_types[-4:],
             [
-                "kamikaze.target.update",
                 "competition.clock.update",
+                "kamikaze.target.update",
                 "kamikaze.approach.update",
                 "task.start",
             ],
@@ -413,6 +429,24 @@ class OnboardMissionProtocolTests(unittest.TestCase):
             ["competition.hss.update", "task.start"],
         )
         self.assertEqual(self.orin.requests[-1][1]["task"], "HSS_ESCAPE")
+
+    def test_hss_transit_replaces_previous_destination_with_new_revision(self) -> None:
+        first = self.service.start_hss_transit(Point(39.90, 32.80, 120.0))
+        second = self.service.start_hss_transit(Point(39.91, 32.81, 120.0))
+
+        self.assertTrue(first.accepted)
+        self.assertTrue(second.accepted)
+        requests = [
+            payload
+            for packet_type, payload in self.orin.requests
+            if packet_type == "hss.transit.request"
+        ]
+        self.assertEqual(len(requests), 2)
+        self.assertGreater(requests[1]["revision"], requests[0]["revision"])
+        self.assertEqual(requests[-1]["destination"]["latitude_deg"], 39.91)
+        self.assertTrue(
+            any(packet_type == "task.cancel" for packet_type, _ in self.orin.requests)
+        )
 
     def test_generic_kamikaze_transit_start_is_blocked_without_locked_plan(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "P1/P2 planı"):
@@ -578,15 +612,15 @@ class OnboardMissionProtocolTests(unittest.TestCase):
             any(packet_type == "task.start" for packet_type, _ in self.orin.requests)
         )
 
-    def test_missing_target_blocks_kamikaze_start_before_task_request(self) -> None:
+    def test_missing_teknofest_target_does_not_block_kamikaze_start(self) -> None:
         self.competition.qr_coordinate = None
 
-        with self.assertRaisesRegex(RuntimeError, "hedefi Onboard"):
-            self.service.start_task("KAMIKAZE")
+        receipt = self.service.start_task("KAMIKAZE")
 
+        self.assertTrue(receipt.accepted)
         self.assertEqual(
             [packet_type for packet_type, _payload in self.orin.requests],
-            ["competition.clock.update"],
+            ["competition.clock.update", "task.start"],
         )
         self.assertTrue(
             any(
@@ -997,9 +1031,11 @@ class OnboardMissionProtocolTests(unittest.TestCase):
 
         self.assertIsInstance(first, OrinHandlerResponse)
         self.assertIsInstance(duplicate, OrinHandlerResponse)
+        self.assertTrue(first.payload["accepted"])
         self.assertEqual(first.payload["execution"], "submitted")
-        self.assertEqual(duplicate.payload["execution"], "duplicate")
+        self.assertEqual(duplicate.payload, first.payload)
         self.assertEqual(first.message, "QR report accepted")
+        self._wait_until(lambda: len(self.competition.submitted_kamikaze) == 1)
         self.assertEqual(len(self.competition.submitted_kamikaze), 1)
         self.assertEqual(
             self.competition.submitted_kamikaze[0].qr_text,
@@ -1010,7 +1046,50 @@ class OnboardMissionProtocolTests(unittest.TestCase):
             any(entry.action == "kamikaze.qr_submitted" for entry in self.logs.history)
         )
 
-    def test_failed_qr_submission_is_not_cached_and_can_be_retried(self) -> None:
+    def test_qr_report_ack_does_not_wait_for_server_http(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocked_submit(_event: KamikazeEvent) -> None:
+            entered.set()
+            release.wait(1.0)
+            self.competition.submitted_kamikaze.append(_event)
+
+        self.competition.submit_kamikaze_event = blocked_submit
+        handler = self.orin.handlers["kamikaze.qr.report"]
+        message = OrinMessage(
+            "kamikaze.qr.report",
+            {
+                "report_id": "nonblocking-report",
+                "mission_id": 47,
+                "event": "QR_DECODED",
+                "qr_text": "NONBLOCKING",
+                "started_at_server": {
+                    "saat": 12,
+                    "dakika": 0,
+                    "saniye": 1,
+                    "milisaniye": 0,
+                },
+                "ended_at_server": {"saat": 12, "dakika": 0, "saniye": 4, "milisaniye": 0},
+                "altitude_m": 40.0,
+            },
+            708,
+            1,
+            191,
+        )
+
+        started = time.monotonic()
+        response = handler(message)
+        elapsed = time.monotonic() - started
+
+        self.assertTrue(response.payload["accepted"])
+        self.assertEqual(response.payload["execution"], "submitted")
+        self.assertLess(elapsed, 0.25)
+        self.assertTrue(entered.wait(0.5))
+        release.set()
+        self._wait_until(lambda: len(self.competition.submitted_kamikaze) == 1)
+
+    def test_failed_qr_submission_retries_without_duplicate_handler_delivery(self) -> None:
         attempts = 0
 
         def submit(event: KamikazeEvent) -> None:
@@ -1038,22 +1117,22 @@ class OnboardMissionProtocolTests(unittest.TestCase):
             191,
         )
 
-        with self.assertRaisesRegex(ConnectionError, "unavailable"):
-            handler(message)
         response = handler(message)
+        duplicate = handler(message)
 
         self.assertIsInstance(response, OrinHandlerResponse)
         self.assertEqual(response.payload["execution"], "submitted")
+        self.assertEqual(duplicate.payload, response.payload)
+        self._wait_until(lambda: len(self.competition.submitted_kamikaze) == 1)
         self.assertEqual(attempts, 2)
         self.assertEqual(len(self.competition.submitted_kamikaze), 1)
 
     def test_qr_report_accepts_the_exact_shared_wire_timestamp_shape(self) -> None:
-        now = datetime.now(UTC)
         clock = {
-            "saat": now.hour,
-            "dakika": now.minute,
-            "saniye": now.second,
-            "milisaniye": now.microsecond // 1000,
+            "saat": 12,
+            "dakika": 0,
+            "saniye": 1,
+            "milisaniye": 111,
         }
         handler = self.orin.handlers["kamikaze.qr.report"]
 
@@ -1066,7 +1145,7 @@ class OnboardMissionProtocolTests(unittest.TestCase):
                     "event": "QR_DECODED",
                     "qr_text": "WIRE-QR",
                     "kamikazeBaslangicZamani": clock,
-                    "kamikazeBitisZamani": clock,
+                    "kamikazeBitisZamani": {"saat": 12, "dakika": 0, "saniye": 4, "milisaniye": 111},
                     "altitude_m": 90.0,
                 },
                 705,
@@ -1076,6 +1155,7 @@ class OnboardMissionProtocolTests(unittest.TestCase):
         )
 
         self.assertEqual(response.payload["execution"], "submitted")
+        self._wait_until(lambda: bool(self.competition.submitted_kamikaze))
         self.assertEqual(self.competition.submitted_kamikaze[-1].qr_text, "WIRE-QR")
 
     def test_qr_report_id_uses_the_same_192_character_contract(self) -> None:
@@ -1108,27 +1188,36 @@ class OnboardMissionProtocolTests(unittest.TestCase):
                 )
             )
 
-    def test_ground_check_report_is_accepted_without_competition_post(self) -> None:
+    def test_qr_report_preserves_onboard_start_and_end_times(self) -> None:
         handler = self.orin.handlers["kamikaze.qr.report"]
         payload = {
-            "report_id": "ground-check:46",
+            "report_id": "fresh-clock:46",
             "mission_id": 46,
             "event": "QR_DECODED",
-            "qr_text": "GROUND-CHECK-QR",
-            "started_at_server": {"saat": 13, "dakika": 1, "saniye": 2, "milisaniye": 3},
-            "ended_at_server": {"saat": 13, "dakika": 1, "saniye": 5, "milisaniye": 6},
+            "qr_text": "FRESH-CLOCK-QR",
+            "started_at_server": {"saat": 12, "dakika": 0, "saniye": 1, "milisaniye": 123},
+            "ended_at_server": {"saat": 12, "dakika": 0, "saniye": 3, "milisaniye": 456},
             "altitude_m": 0.0,
-            "test_only": True,
         }
 
         first = handler(OrinMessage("kamikaze.qr.report", payload, 706, 1, 191))
         duplicate = handler(OrinMessage("kamikaze.qr.report", payload, 707, 1, 191))
 
-        self.assertEqual(first.payload["execution"], "accepted")
-        self.assertTrue(first.payload["test_only"])
-        self.assertEqual(duplicate.payload["execution"], "duplicate")
-        self.assertEqual(self.competition.submitted_kamikaze, [])
-        self.assertEqual(self.service.state.qr_text, "GROUND-CHECK-QR")
+        self.assertEqual(first.payload, duplicate.payload)
+        self.assertEqual(first.payload["report_id"], "fresh-clock:46")
+        self.assertEqual(first.payload["mission_id"], 46)
+        self._wait_until(lambda: len(self.competition.submitted_kamikaze) == 1)
+        posted = self.competition.submitted_kamikaze[0].to_payload()
+        self.assertEqual(
+            posted["kamikazeBaslangicZamani"],
+            {"saat": 12, "dakika": 0, "saniye": 1, "milisaniye": 123},
+        )
+        self.assertEqual(
+            posted["kamikazeBitisZamani"],
+            {"saat": 12, "dakika": 0, "saniye": 3, "milisaniye": 456},
+        )
+        self.assertEqual(self.competition.clock_refresh_count, 0)
+        self.assertEqual(self.service.state.qr_text, "FRESH-CLOCK-QR")
 
     def test_source_revisions_remain_monotonic_above_wall_clock_value(self) -> None:
         high_revision = 9_000_000_000_000_000

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+import re
 
 from src.core.abstracts import Model
 
@@ -62,3 +63,65 @@ class VideoFrame(Model):
             "timestamp": self.timestamp.isoformat(),
             "data_size": len(self.data),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class VideoShareConfig(Model):
+    """One camera-feed rebroadcast target.
+
+    The source is deliberately not configurable: every target consumes the
+    decoded Video Link frames, so a desktop/screen source cannot be selected.
+    """
+
+    identifier: str
+    name: str
+    endpoint: str
+    connection_type: str = "udp"
+    codec: str = "h264"
+    fps: int = 30
+    enabled: bool = True
+    timestamp_enabled: bool = True
+    fixed_frame_rate: bool = True
+    network_interface: str = ""
+
+    def __post_init__(self) -> None:
+        identifier = str(self.identifier).strip()
+        name = str(self.name).strip()
+        endpoint = str(self.endpoint).strip()
+        connection_type = str(self.connection_type).strip().lower()
+        codec = str(self.codec).strip().lower()
+        network_interface = str(self.network_interface).strip()
+        if not identifier or not name:
+            raise ValueError("Video paylaşım adı ve kimliği boş olamaz")
+        if not endpoint:
+            raise ValueError("Video paylaşım bağlantı adresi boş olamaz")
+        if connection_type not in {"udp", "srt", "rtmp", "rtsp"}:
+            raise ValueError(f"Desteklenmeyen video paylaşım türü: {connection_type}")
+        if codec not in {"h264", "h264-baseline", "h265"}:
+            raise ValueError(f"Desteklenmeyen video paylaşım codec'i: {codec}")
+        if not 15 <= int(self.fps) <= 120:
+            raise ValueError("Video paylaşım FPS değeri 15..120 aralığında olmalı")
+        if network_interface and not re.fullmatch(r"[A-Za-z0-9_.:-]+", network_interface):
+            raise ValueError("Video paylaşım ağ arayüzü geçersiz")
+        object.__setattr__(self, "identifier", identifier)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "endpoint", endpoint)
+        object.__setattr__(self, "connection_type", connection_type)
+        object.__setattr__(self, "codec", codec)
+        object.__setattr__(self, "fps", int(self.fps))
+        object.__setattr__(self, "enabled", bool(self.enabled))
+        object.__setattr__(self, "timestamp_enabled", bool(self.timestamp_enabled))
+        object.__setattr__(self, "fixed_frame_rate", bool(self.fixed_frame_rate))
+        object.__setattr__(self, "network_interface", network_interface)
+
+
+@dataclass(frozen=True, slots=True)
+class VideoShareState(Model):
+    identifier: str
+    active: bool = False
+    status: str = "inactive"
+    detail: str = ""
+
+    def __post_init__(self) -> None:
+        if self.status not in {"inactive", "waiting", "active", "error"}:
+            raise ValueError(f"Geçersiz video paylaşım durumu: {self.status}")

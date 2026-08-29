@@ -27,6 +27,7 @@ from src.models.video import VideoStreamStats
 from src.ui.i18n import t
 from src.ui.themes.manager import apply_theme
 from src.ui.views.main_window import MainWindow
+from src.ui.widgets.map_panel import WEBENGINE_AVAILABLE
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +38,10 @@ class UiSmokeTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication(["yki-smoke-tests"])
 
+    @unittest.skipUnless(
+        WEBENGINE_AVAILABLE,
+        "PyQt6-WebEngine is required for the interactive map smoke test",
+    )
     def test_main_window_starts_with_the_new_backend_adapters(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base_dir = Path(directory)
@@ -177,6 +182,7 @@ class UiSmokeTests(unittest.TestCase):
             map_interaction_result: list[object] = []
             window.map_panel._view.page().runJavaScript(
                 "setHomeReference(L.latLng(39.8672, 32.7481), false);"
+                "state.flightMode = 'GUIDED';"
                 "window.ykiMap.setMissionLoop(false);"
                 "window.ykiMap.setOverlays(["
                 "{overlay_id:'route-takeoff',overlay_type:'takeoff',label:'TKF 1',"
@@ -277,6 +283,7 @@ class UiSmokeTests(unittest.TestCase):
                     "downloadButton": True,
                     "pointMenu": {
                         "goto": "none",
+                        "hss_goto": "none",
                         "center": "none",
                         "set_home": "none",
                         "delete": "flex",
@@ -291,6 +298,7 @@ class UiSmokeTests(unittest.TestCase):
                     "centerTouchZoom": True,
                     "mapMenu": {
                         "goto": "flex",
+                        "hss_goto": "flex",
                         "center": "flex",
                         "set_home": "flex",
                         "delete": "none",
@@ -621,6 +629,7 @@ class UiSmokeTests(unittest.TestCase):
                 "metadata:{route_order:1}});"
                 "openPointDialog('altitude-takeoff');"
                 "document.getElementById('point-altitude-input').value='125';"
+                "document.getElementById('point-takeoff-pitch-input').value='12.5';"
                 "applyPointDialog();"
                 "[...document.querySelectorAll('.overlay-label')]"
                 ".some((label) => label.textContent.includes('125 m'));",
@@ -637,6 +646,7 @@ class UiSmokeTests(unittest.TestCase):
                 if item.overlay_id == "altitude-takeoff"
             )
             self.assertEqual(altitude_overlay.points[0][2], 125.0)
+            self.assertEqual(altitude_overlay.metadata["takeoff_pitch_deg"], 12.5)
 
             transfer_scripts: list[str] = []
             original_run_script = window.map_panel._run_script

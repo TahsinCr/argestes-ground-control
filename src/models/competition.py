@@ -3,28 +3,37 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 import math
-from typing import Any
+from typing import Any, ClassVar
+from uuid import uuid4
 
 from src.core.abstracts import Model
 from src.models.geometry import Point
-from src.models.mission import MapContact
+from src.models.mission import MapContact, MapOverlay
 
 
 @dataclass(frozen=True, slots=True)
 class CompetitionServerConfig(Model):
     """UI-independent connection settings for the TEKNOFEST HTTP server."""
 
+    TELEMETRY_PERIOD_S: ClassVar[float] = 1.0
+    identifier: str = field(default_factory=lambda: uuid4().hex)
+    name: str = "TEKNOFEST"
     base_url: str = "http://127.0.0.1:5000"
     username: str = "kirlangic"
     password: str = "kirlangic-demo"
     team_number: int = 1
     timeout_s: float = 3.0
-    telemetry_period_ms: int = 1000
     auto_connect: bool = False
 
     def __post_init__(self) -> None:
+        identifier = self.identifier.strip()
+        name = self.name.strip()
         base_url = self.base_url.strip().rstrip("/")
         username = self.username.strip()
+        if not identifier:
+            raise ValueError("TEKNOFEST sunucu kimliği boş olamaz")
+        if not name:
+            raise ValueError("TEKNOFEST sunucu adı boş olamaz")
         if not base_url.startswith(("http://", "https://")):
             raise ValueError("TEKNOFEST sunucu adresi http:// veya https:// ile başlamalı")
         if not username:
@@ -33,13 +42,12 @@ class CompetitionServerConfig(Model):
             raise ValueError("Takım numarası 1..9999 aralığında olmalı")
         if not 0.1 <= float(self.timeout_s) <= 120.0:
             raise ValueError("Sunucu zaman aşımı 0.1..120 saniye aralığında olmalı")
-        if not 500 <= int(self.telemetry_period_ms) <= 60_000:
-            raise ValueError("Telemetri periyodu en az 500 ms olmalı")
+        object.__setattr__(self, "identifier", identifier)
+        object.__setattr__(self, "name", name)
         object.__setattr__(self, "base_url", base_url)
         object.__setattr__(self, "username", username)
         object.__setattr__(self, "team_number", int(self.team_number))
         object.__setattr__(self, "timeout_s", float(self.timeout_s))
-        object.__setattr__(self, "telemetry_period_ms", int(self.telemetry_period_ms))
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -249,8 +257,6 @@ class HssZone(Model):
         )
 
     def to_overlay(self) -> "MapOverlay":
-        from src.models.mission import MapOverlay
-
         return MapOverlay(
             overlay_id=f"teknofest-hss-{self.identifier}",
             overlay_type="hss",
@@ -284,8 +290,6 @@ class QrCoordinate(Model):
         return cls(float(payload["qrEnlem"]), float(payload["qrBoylam"]))
 
     def to_overlay(self) -> "MapOverlay":
-        from src.models.mission import MapOverlay
-
         return MapOverlay(
             overlay_id="teknofest-qr",
             overlay_type="target",

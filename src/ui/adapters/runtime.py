@@ -15,6 +15,7 @@ from src.ui.adapters.services import (
     QtParameterService,
     QtSettingsService,
     QtTelemetryService,
+    QtTargetSelectionService,
     QtTileCacheService,
     QtVideoService,
 )
@@ -33,6 +34,7 @@ class QtRuntimeServices:
     tile_cache_service: QtTileCacheService
     connection_service: QtConnectionControlService
     onboard_service: QtOnboardMissionService | None = None
+    target_selection_service: QtTargetSelectionService | None = None
     _start_thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _lifecycle_lock: threading.RLock = field(
         default_factory=threading.RLock,
@@ -113,6 +115,7 @@ class QtRuntimeServices:
             self.tile_cache_service,
             self.connection_service,
             self.onboard_service,
+            self.target_selection_service,
         ) if adapter is not None)
 
 

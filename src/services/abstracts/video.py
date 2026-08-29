@@ -4,7 +4,10 @@ from abc import abstractmethod
 
 from src.core.abstracts import Service
 from src.core.events import EventBus
-from src.models.video import VideoFrame, VideoStreamStats
+from collections.abc import Callable
+from datetime import datetime
+
+from src.models.video import VideoFrame, VideoShareConfig, VideoShareState, VideoStreamStats
 
 
 class VideoService(Service):
@@ -27,6 +30,20 @@ class VideoService(Service):
     @property
     @abstractmethod
     def stats_changed(self) -> EventBus[VideoStreamStats]: ...
+
+    @property
+    @abstractmethod
+    def share_states_changed(self) -> EventBus[tuple[VideoShareState, ...]]: ...
+
+    @property
+    @abstractmethod
+    def share_states(self) -> tuple[VideoShareState, ...]: ...
+
+    @abstractmethod
+    def configure_shares(self, configs: tuple[VideoShareConfig, ...]) -> None: ...
+
+    @abstractmethod
+    def set_server_time_provider(self, provider: Callable[[], datetime | None]) -> None: ...
 
     @abstractmethod
     def configure(

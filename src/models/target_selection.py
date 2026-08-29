@@ -19,8 +19,9 @@ class TargetSelectionConfig(Model):
     max_target_age_ms: int = 4500
     max_ownship_age_ms: int = 1200
     history_limit: int = 12
-    prefilter_limit: int = 10
-    final_limit: int = 5
+    # Zero means no limit: every valid competitor is simulated and displayed.
+    prefilter_limit: int = 0
+    final_limit: int = 0
     refresh_interval_s: float = 2.0
     selected_target_max_age_ms: int = 4500
 
@@ -57,8 +58,14 @@ class TargetSelectionConfig(Model):
             raise ValueError("Hedef listesi yenileme aralığı 0.5..60 saniye olmalı")
         if self.selected_target_max_age_ms <= 0:
             raise ValueError("Seçili hedef telemetri yaş limiti pozitif olmalı")
-        if self.final_limit <= 0 or self.prefilter_limit < self.final_limit:
+        if self.final_limit < 0 or self.prefilter_limit < 0:
             raise ValueError("Ön eleme/final hedef limitleri geçersiz")
+        if (
+            self.prefilter_limit
+            and self.final_limit
+            and self.prefilter_limit < self.final_limit
+        ):
+            raise ValueError("Ön eleme limiti final limitinden küçük olamaz")
         if self.simulation_horizon_s <= self.lock_duration_s:
             raise ValueError("Simülasyon ufku kilit süresinden uzun olmalı")
         if not 0.01 <= self.simulation_dt_s <= 0.25:

@@ -6,6 +6,7 @@ from datetime import datetime
 from src.core.abstracts import Service
 from src.core.events import EventBus
 from src.models.competition import (
+    CompetitionClockSample,
     CompetitionConnectionState,
     CompetitionServerConfig,
     CompetitorTelemetry,
@@ -26,6 +27,14 @@ class CompetitionService(Service):
     @property
     @abstractmethod
     def changed(self) -> EventBus[CompetitionConnectionState]: ...
+
+    @property
+    @abstractmethod
+    def config_updated(self) -> EventBus[CompetitionServerConfig]: ...
+
+    @property
+    @abstractmethod
+    def clock_updated(self) -> EventBus[CompetitionClockSample]: ...
 
     @property
     @abstractmethod
@@ -51,8 +60,15 @@ class CompetitionService(Service):
     @abstractmethod
     def qr_coordinate(self) -> QrCoordinate | None: ...
 
+    @property
+    @abstractmethod
+    def config(self) -> CompetitionServerConfig: ...
+
     @abstractmethod
     def configure(self, config: CompetitionServerConfig) -> None: ...
+
+    @abstractmethod
+    def configure_servers(self, configs: tuple[CompetitionServerConfig, ...]) -> None: ...
 
     @abstractmethod
     def reconnect(self, config: CompetitionServerConfig | None = None) -> None: ...
@@ -65,6 +81,10 @@ class CompetitionService(Service):
 
     @abstractmethod
     def refresh_qr_coordinate(self) -> None: ...
+
+    @abstractmethod
+    def refresh_server_time(self) -> datetime:
+        """Fetch and cache a new competition-server clock sample."""
 
     @abstractmethod
     def estimated_server_time(self) -> datetime | None: ...

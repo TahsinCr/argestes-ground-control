@@ -16,8 +16,9 @@ from src.models.logs import LogEntry
 from src.models.connections import ConnectionStatus
 from src.models.mission import MapContact, MapOverlay, MissionState
 from src.models.settings import SettingsModel
+from src.models.target_selection import TargetSelectionResult
 from src.models.telemetry import TelemetrySnapshot
-from src.models.video import VideoFrame
+from src.models.video import VideoFrame, VideoShareConfig
 from src.services.abstracts.commands import CommandService
 from src.services.abstracts.connections import ConnectionControlService
 from src.services.planner import PlannerService
@@ -28,6 +29,7 @@ from src.services.abstracts.onboard import OnboardMissionServiceContract
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
+from src.services.target_selection import TargetSelectionService
 
 
 class _QtAdapter(QObject):
@@ -230,18 +232,58 @@ class QtLoggingService(_QtAdapter):
 
 
 class QtSettingsService(_QtAdapter):
+    _POPUP_SAVE_DEBOUNCE_S = 0.12
     settings_changed = pyqtSignal(object)
     cache_cleared = pyqtSignal()
+    save_failed = pyqtSignal(str)
 
     def __init__(self, backend: SettingsService, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.backend = backend
+        self._pending_save: SettingsModel | None = None
+        self._save_lock = threading.Lock()
+        self._save_worker_running = False
         self._subscribe(backend.changed, self.settings_changed.emit)
         self._subscribe(backend.cache_cleared, lambda _value: self.cache_cleared.emit())
 
     @property
     def current(self) -> SettingsModel: return self.backend.current
     def save(self, settings: SettingsModel) -> None: self.backend.save(settings)
+    def save_async(self, settings: SettingsModel) -> None:
+        """Persist the latest popup change without blocking the Qt event loop.
+
+        Applying a video-share profile may stop GStreamer workers, which can
+        wait briefly for a blocked transport sink.  Coalescing avoids making a
+        burst of toggle clicks execute every intermediate configuration.
+        """
+
+        snapshot = SettingsModel.from_dict(settings.to_dict())
+        with self._save_lock:
+            self._pending_save = snapshot
+            if self._save_worker_running:
+                return
+            self._save_worker_running = True
+        self._start_worker(self._drain_saves, name="QtSettingsSave")
+
+    def _drain_saves(self) -> None:
+        while True:
+            # Let a quick run of toggles settle into one persisted update.
+            # This prevents every intermediate state from triggering the
+            # complete settings/UI refresh path.
+            time.sleep(self._POPUP_SAVE_DEBOUNCE_S)
+            with self._save_lock:
+                pending = self._pending_save
+                self._pending_save = None
+            if pending is None:
+                with self._save_lock:
+                    if self._pending_save is None:
+                        self._save_worker_running = False
+                        return
+                continue
+            try:
+                self.backend.save(pending)
+            except Exception as exc:
+                self._post(self.save_failed.emit, str(exc))
     def patch(self, **changes: object) -> None: self.backend.patch(**changes)
     def set_value(self, path: str, value: object) -> None: self.backend.set_value(path, value)
     def clear_cache(self) -> None:
@@ -427,6 +469,28 @@ class QtCommandService(_QtAdapter):
         )
 
 
+class QtTargetSelectionService(_QtAdapter):
+    """Deliver selector updates to Qt on the GUI thread."""
+
+    updated = pyqtSignal(object)
+
+    def __init__(
+        self,
+        backend: TargetSelectionService,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.backend = backend
+        self._subscribe(backend.updated, self.updated.emit)
+
+    @property
+    def last_result(self) -> TargetSelectionResult:
+        return self.backend.last_result
+
+    def set_ranking_enabled(self, enabled: bool) -> None:
+        self.backend.set_ranking_enabled(enabled)
+
+
 class QtOnboardMissionService(_QtAdapter):
     state_changed = pyqtSignal(object)
     event_received = pyqtSignal(object)
@@ -587,6 +651,7 @@ class QtParameterService(_QtAdapter):
 class QtVideoService(_QtAdapter):
     frame_ready = pyqtSignal(QImage)
     stats_updated = pyqtSignal(object)
+    share_states_changed = pyqtSignal(object)
     _UI_FRAME_INTERVAL_MS = 33
 
     def __init__(
@@ -618,6 +683,9 @@ class QtVideoService(_QtAdapter):
             backend.frames.subscribe(self._capture_latest_frame)
         )
         self._subscribe(backend.stats_changed, self.stats_updated.emit)
+        share_states_changed = getattr(backend, "share_states_changed", None)
+        if share_states_changed is not None:
+            self._subscribe(share_states_changed, self.share_states_changed.emit)
 
     @property
     def connected(self) -> bool:
@@ -626,6 +694,15 @@ class QtVideoService(_QtAdapter):
     @property
     def stats(self):
         return self.backend.stats
+
+    @property
+    def share_states(self):
+        return getattr(self.backend, "share_states", ())
+
+    def configure_shares(self, configs: tuple[VideoShareConfig, ...]) -> None:
+        configure = getattr(self.backend, "configure_shares", None)
+        if configure is not None:
+            configure(configs)
 
     def start(self) -> None:
         if self._mock_mode:

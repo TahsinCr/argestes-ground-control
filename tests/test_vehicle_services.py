@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from src.core.events import EventBus, Subscription
-from src.models.commands import CommandRequest
+from src.models.commands import CommandRequest, CommandResult
 from src.models.mission import MapOverlay
 from src.models.parameters import Parameter
 from src.models.settings import BatteryTelemetrySettings
@@ -142,7 +142,11 @@ class VehicleServiceTests(unittest.TestCase):
 
         class Client:
             endpoint = SimpleNamespace(uri="test")
-            connection = SimpleNamespace(target_system=7, target_component=1)
+            connection = SimpleNamespace(
+                target_system=7,
+                target_component=1,
+                message_state={"HEARTBEAT": SimpleNamespace(base_mode=0)},
+            )
             is_connected = True
 
             def __init__(self) -> None:
@@ -170,6 +174,7 @@ class VehicleServiceTests(unittest.TestCase):
         client = Client()
         vehicle = MavlinkVehicleService(client)  # type: ignore[arg-type]
         vehicle._state = VehicleConnectionState(True, "test", 7, 1)
+        vehicle._last_heartbeat = time.monotonic()
         vehicle._request_telemetry_streams()
 
         requested_rates = {
@@ -309,7 +314,7 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(snapshot.mission_total, 5)
 
     def test_telemetry_decoder_exposes_battery_baro_and_body_axis_acceleration(self) -> None:
-        decoder = TelemetryDecoder(BatteryTelemetrySettings(mode="autopilot"))
+        decoder = TelemetryDecoder(BatteryTelemetrySettings(use_pixhawk_percent=True))
         snapshot = decoder.apply(
             TelemetrySnapshot.zero(),
             _Message(
@@ -351,7 +356,7 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertAlmostEqual(snapshot.acceleration_z_mps2 or 0.0, 9.80665)
         self.assertIsNotNone(snapshot.load_factor_g)
 
-    def test_voltage_only_battery_uses_filtered_voltage_and_ignores_current(self) -> None:
+    def test_voltage_only_battery_uses_filtered_voltage_and_preserves_current(self) -> None:
         decoder = TelemetryDecoder()
         snapshot = TelemetrySnapshot.zero().copy(
             battery_current_amps=42.0,
@@ -371,7 +376,7 @@ class VehicleServiceTests(unittest.TestCase):
 
         self.assertEqual(snapshot.battery_percent, 10)
         self.assertAlmostEqual(snapshot.battery_voltage, 14.8)
-        self.assertIsNone(snapshot.battery_current_amps)
+        self.assertAlmostEqual(snapshot.battery_current_amps or 0.0, 24.0)
         self.assertIsNone(snapshot.battery_consumed_mah)
 
     def test_voltage_estimator_rejects_transient_motor_sag(self) -> None:
@@ -435,7 +440,7 @@ class VehicleServiceTests(unittest.TestCase):
             )
 
             self.assertEqual(telemetry.current.battery_percent, 20)
-            self.assertIsNone(telemetry.current.battery_current_amps)
+            self.assertAlmostEqual(telemetry.current.battery_current_amps or 0.0, 15.0)
             telemetry.stop()
 
     def test_radio_status_uses_both_rf_margins_and_tx_buffer_for_link_health(self) -> None:
@@ -971,6 +976,92 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertTrue(all(not worker.is_alive() for worker in workers))
         self.assertEqual(vehicle.maximum_active, 1)
 
+    def test_queued_navigation_commands_keep_only_the_newest_target(self) -> None:
+        first_started = threading.Event()
+        release_first = threading.Event()
+
+        class SlowVehicle:
+            connected = True
+            state = VehicleConnectionState(True, "test", 1, 1)
+
+            def __init__(self) -> None:
+                self.targets: list[float] = []
+
+            def execute(self, request: CommandRequest) -> bool:
+                self.targets.append(float(request.parameters["latitude"]))
+                if len(self.targets) == 1:
+                    first_started.set()
+                    release_first.wait(timeout=1.0)
+                return True
+
+        vehicle = SlowVehicle()
+        commands = DispatchCommandService(
+            vehicle,  # type: ignore[arg-type]
+            MutableParameterService(),
+        )
+        results: list[CommandResult] = []
+
+        def send(latitude: float) -> None:
+            results.append(
+                commands.dispatch(
+                    CommandRequest("GOTO", {"latitude": latitude, "longitude": 32.0})
+                )
+            )
+
+        workers = [threading.Thread(target=send, args=(value,)) for value in (1.0, 2.0, 3.0)]
+        workers[0].start()
+        self.assertTrue(first_started.wait(timeout=1.0))
+        workers[1].start()
+        workers[2].start()
+        deadline = time.monotonic() + 1.0
+        while commands._navigation_revision < 3 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        release_first.set()
+        for worker in workers:
+            worker.join(timeout=1.0)
+
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertEqual(vehicle.targets, [1.0, 3.0])
+        self.assertEqual(
+            sum(result.details.get("navigation") == "superseded" for result in results),
+            1,
+        )
+
+    def test_plain_goto_cancels_active_hss_transit_before_vehicle_command(self) -> None:
+        calls: list[str] = []
+
+        class Vehicle:
+            connected = True
+            state = VehicleConnectionState(True, "test", 1, 1)
+
+            def execute(self, _request: CommandRequest) -> bool:
+                calls.append("goto")
+                return True
+
+        class Onboard:
+            state = SimpleNamespace(
+                active_task="hss.transit",
+                terminal=False,
+                hss_route={"route_id": "route-1"},
+            )
+
+            def cancel_task(self, task: str):
+                calls.append(f"cancel:{task}")
+                return SimpleNamespace(accepted=True)
+
+        commands = DispatchCommandService(
+            Vehicle(),  # type: ignore[arg-type]
+            MutableParameterService(),
+            onboard=Onboard(),  # type: ignore[arg-type]
+        )
+
+        result = commands.dispatch(
+            CommandRequest("GOTO", {"latitude": 39.0, "longitude": 32.0})
+        )
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(calls, ["cancel:hss.transit", "goto"])
+
     def test_home_reference_is_sent_with_acknowledged_mavlink_command(self) -> None:
         mavlink = SimpleNamespace(
             MAV_CMD_DO_SET_HOME=179,
@@ -980,7 +1071,11 @@ class VehicleServiceTests(unittest.TestCase):
 
         class Client:
             endpoint = SimpleNamespace(uri="test")
-            connection = SimpleNamespace(target_system=7, target_component=1)
+            connection = SimpleNamespace(
+                target_system=7,
+                target_component=1,
+                message_state={"HEARTBEAT": SimpleNamespace(base_mode=0)},
+            )
             router = SimpleNamespace(sequence=12)
             is_connected = True
 
@@ -1000,6 +1095,7 @@ class VehicleServiceTests(unittest.TestCase):
         client = Client()
         vehicle = MavlinkVehicleService(client)  # type: ignore[arg-type]
         vehicle._state = VehicleConnectionState(True, "test", 7, 1)
+        vehicle._last_heartbeat = time.monotonic()
 
         confirmed = vehicle.execute(
             CommandRequest(
@@ -1020,6 +1116,74 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertAlmostEqual(arguments[8], 39.925533)
         self.assertAlmostEqual(arguments[9], 32.836974)
         self.assertAlmostEqual(arguments[10], 938.4)
+
+    def test_home_reference_is_rejected_while_vehicle_is_armed(self) -> None:
+        mavlink = SimpleNamespace(
+            MAV_CMD_DO_SET_HOME=179,
+            MAV_MODE_FLAG_SAFETY_ARMED=128,
+        )
+
+        class Client:
+            endpoint = SimpleNamespace(uri="test")
+            connection = SimpleNamespace(
+                target_system=7,
+                target_component=1,
+                message_state={"HEARTBEAT": SimpleNamespace(base_mode=128)},
+            )
+            is_connected = True
+
+            def __init__(self) -> None:
+                self.mavlink = mavlink
+
+            def call_mav(self, *_args) -> None:
+                raise AssertionError("MAV_CMD_DO_SET_HOME must not be sent while armed")
+
+            def latest(self, _message_type):
+                return None
+
+        vehicle = MavlinkVehicleService(Client())  # type: ignore[arg-type]
+        vehicle._state = VehicleConnectionState(True, "test", 7, 1)
+        vehicle._last_heartbeat = time.monotonic()
+
+        with self.assertRaisesRegex(RuntimeError, "armed"):
+            vehicle.execute(
+                CommandRequest(
+                    "SET_HOME",
+                    {"latitude": 39.925533, "longitude": 32.836974, "altitude": 938.4},
+                )
+            )
+
+    def test_guided_goto_holds_current_relative_altitude(self) -> None:
+        mavlink = SimpleNamespace(MAV_FRAME_GLOBAL_RELATIVE_ALT_INT=6)
+
+        class Client:
+            endpoint = SimpleNamespace(uri="test")
+            connection = SimpleNamespace(target_system=7, target_component=1)
+            router = SimpleNamespace(sequence=0)
+            is_connected = True
+
+            def __init__(self) -> None:
+                self.mavlink = mavlink
+                self.sent: list[tuple[str, tuple]] = []
+
+            def call_mav(self, method: str, *args) -> None:
+                self.sent.append((method, args))
+
+            @staticmethod
+            def latest(message_type: str):
+                assert message_type == "GLOBAL_POSITION_INT"
+                return SimpleNamespace(relative_alt=123_400)
+
+        client = Client()
+        vehicle = MavlinkVehicleService(client)  # type: ignore[arg-type]
+        vehicle._state = VehicleConnectionState(True, "test", 7, 1)
+
+        vehicle.execute(CommandRequest("GOTO", {"latitude": 39.925533, "longitude": 32.836974}))
+
+        method, arguments = client.sent[0]
+        self.assertEqual(method, "set_position_target_global_int_send")
+        self.assertEqual(arguments[4], 0b0000111111111000)
+        self.assertAlmostEqual(arguments[7], 123.4)
 
     def test_unacknowledged_transport_is_logged_as_sent_not_confirmed(self) -> None:
         class Vehicle:
@@ -1561,17 +1725,26 @@ class VehicleServiceTests(unittest.TestCase):
         )
         items, ignored = MavlinkVehicleService._mission_items(
             [
+                MapOverlay(
+                    "takeoff",
+                    "takeoff",
+                    "Takeoff",
+                    [[39.0, 32.0, 100]],
+                    "#fff",
+                    metadata={"route_order": 0, "takeoff_pitch_deg": 12.5},
+                ),
                 MapOverlay("safe", "safe_zone", "Safe", [[39.0, 32.0]], "#fff"),
                 MapOverlay("land", "land", "Land", [[39.2, 32.2]], "#fff", metadata={"route_order": 2}),
                 MapOverlay("wp", "waypoint", "WP", [[39.1, 32.1, 100]], "#fff", 45, {"route_order": 1}),
             ],
             mavlink,
         )
-        self.assertEqual([item[1] for item in items], [16, 21])
-        self.assertEqual(items[0][8:10], (391_000_000, 321_000_000))
-        self.assertEqual(items[0][5:7], (45.0, 0.0))
-        self.assertEqual(items[1][10], 0.0)
-        self.assertTrue(math.isnan(items[0][7]))
+        self.assertEqual([item[1] for item in items], [22, 16, 21])
+        self.assertEqual(items[0][4], 12.5)
+        self.assertEqual(items[1][8:10], (391_000_000, 321_000_000))
+        self.assertEqual(items[1][5:7], (45.0, 0.0))
+        self.assertEqual(items[2][10], 0.0)
+        self.assertTrue(math.isnan(items[1][7]))
         self.assertEqual(ignored, ["safe_zone"])
 
     def test_gstreamer_pipeline_produces_backend_video_frames(self) -> None:

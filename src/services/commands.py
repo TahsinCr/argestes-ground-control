@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from src.communication import TaskStart
 from src.core.events import EventBus
 from src.models.commands import CommandRequest, CommandResult
+from src.models.geometry import Point
 from src.models.mission import MapOverlay
 from src.services.abstracts.commands import CommandService
 from src.services.abstracts.orin import OrinService
@@ -16,9 +17,11 @@ from src.services.logging_service import ServiceLogger
 
 
 class DispatchCommandService(CommandService):
+    _NAVIGATION_COMMANDS = frozenset({"GOTO", "HSS_GOTO"})
     _DEFAULT_TASKS = (
         "TARGET_LOCK",
         "KAMIKAZE",
+        "KAMIKAZE_CHECK",
         "ACTUATOR_TEST",
     )
     _STANDARD_TASK_MODES = {
@@ -29,7 +32,11 @@ class DispatchCommandService(CommandService):
         {
             "TARGET_LOCK",
             "KAMIKAZE",
+            "KAMIKAZE_CHECK",
             "ACTUATOR_TEST",
+            "HSS_ESCAPE",
+            "HSS_PREDICT",
+            "HSS_TRANSIT",
             "WAYPOINT_TRACK",
             "SURVEY_AREA",
         }
@@ -66,6 +73,8 @@ class DispatchCommandService(CommandService):
         # Serializing operator commands prevents concurrent waits from racing
         # for the same COMMAND_ACK or HEARTBEAT response.
         self._dispatch_lock = threading.Lock()
+        self._navigation_lock = threading.Lock()
+        self._navigation_revision = 0
 
     @property
     def available_tasks(self) -> tuple[str, ...]:
@@ -80,8 +89,57 @@ class DispatchCommandService(CommandService):
         return self._completed
 
     def dispatch(self, request: CommandRequest) -> CommandResult:
+        navigation_revision: int | None = None
+        if request.code in self._NAVIGATION_COMMANDS:
+            with self._navigation_lock:
+                self._navigation_revision += 1
+                navigation_revision = self._navigation_revision
         with self._dispatch_lock:
+            if navigation_revision is not None:
+                with self._navigation_lock:
+                    latest_revision = self._navigation_revision
+                if navigation_revision != latest_revision:
+                    return self._complete_superseded_navigation(
+                        request,
+                        navigation_revision,
+                        latest_revision,
+                    )
             return self._dispatch_serial(request)
+
+    def _complete_superseded_navigation(
+        self,
+        request: CommandRequest,
+        revision: int,
+        latest_revision: int,
+    ) -> CommandResult:
+        result = CommandResult(
+            request,
+            True,
+            f"{request.code} daha yeni bir hedef tarafından geçersiz kılındı",
+            {
+                "navigation": "superseded",
+                "revision": revision,
+                "latest_revision": latest_revision,
+            },
+        )
+        if self._logger:
+            self._logger.event(
+                "command.superseded",
+                result.message,
+                severity="info",
+                details={
+                    "code": request.code,
+                    "source": request.source,
+                    **result.details,
+                },
+                device_id=(
+                    self._vehicle.state.device_id
+                    if self._vehicle.connected
+                    else None
+                ),
+            )
+        self._completed.publish(result)
+        return result
 
     def _dispatch_serial(self, request: CommandRequest) -> CommandResult:
         self._dispatched.publish(request)
@@ -171,6 +229,41 @@ class DispatchCommandService(CommandService):
         return result
 
     def _execute(self, request: CommandRequest) -> tuple[bool, dict[str, object]]:
+        if request.code == "GOTO":
+            if self._onboard is not None:
+                state = self._onboard.state
+                if (
+                    state.active_task == "hss.transit" and not state.terminal
+                ) or bool(state.hss_route):
+                    self._onboard.cancel_task("hss.transit")
+            return self._vehicle.execute(request), {
+                "navigation": "goto",
+                "latitude": float(request.parameters["latitude"]),
+                "longitude": float(request.parameters["longitude"]),
+            }
+        if request.code == "HSS_GOTO":
+            if self._onboard is None:
+                raise ConnectionError("Onboard HSS görev servisi kullanılamıyor")
+            destination = Point(
+                float(request.parameters["latitude"]),
+                float(request.parameters["longitude"]),
+                float(request.parameters.get("altitude", 0.0)),
+            )
+            receipt = self._onboard.start_hss_transit(
+                destination,
+                source=request.source,
+            )
+            if not receipt.accepted:
+                raise RuntimeError(receipt.message)
+            return True, {
+                "navigation": "hss_goto",
+                "target": "orin",
+                "latitude": destination.latitude,
+                "longitude": destination.longitude,
+                "altitude": destination.altitude,
+                "request_id": receipt.request_id,
+                "round_trip_ms": receipt.round_trip_ms,
+            }
         if request.code in {"RESTART_MISSION_TASK", "ONBOARD_TASK_CANCEL"}:
             if self._onboard is None:
                 raise ConnectionError("Onboard görev servisi kullanılamıyor")
@@ -188,6 +281,22 @@ class DispatchCommandService(CommandService):
                 "request_id": receipt.request_id,
                 "orin_execution": receipt.response.get("execution", "acknowledged"),
                 "restarted": request.code == "RESTART_MISSION_TASK",
+            }
+        if request.code == "ONBOARD_VIDEO_RECORDING":
+            if self._onboard is None:
+                raise ConnectionError("Onboard kayıt servisi kullanılamıyor")
+            enabled = request.parameters.get("enabled")
+            if not isinstance(enabled, bool):
+                raise ValueError("Video kayıt durumu true veya false olmalı")
+            receipt = self._onboard.set_video_recording(enabled)
+            if not receipt.accepted:
+                raise RuntimeError(receipt.message)
+            return True, {
+                "target": "orin",
+                "request_id": receipt.request_id,
+                "round_trip_ms": receipt.round_trip_ms,
+                "video": bool(receipt.response.get("video", enabled)),
+                "telemetry": bool(receipt.response.get("telemetry", True)),
             }
         if request.code == "APPLY_MODE":
             mode = str(request.parameters.get("mode", "")).strip().upper()
@@ -266,8 +375,12 @@ class DispatchCommandService(CommandService):
         assert self._orin is not None
         if self._onboard is not None and task in {
             "KAMIKAZE",
+            "KAMIKAZE_CHECK",
             "TARGET_LOCK",
             "ACTUATOR_TEST",
+            "HSS_ESCAPE",
+            "HSS_PREDICT",
+            "HSS_TRANSIT",
         }:
             source = "operator-ui" if task == "ACTUATOR_TEST" else request.source
             receipt = self._onboard.start_task(task, source=source)
@@ -340,6 +453,10 @@ class DispatchCommandService(CommandService):
             return f"{mode} modu heartbeat ile doğrulandı"
         if request.code == "FORCE_ARM":
             return "ZORLA ARM uçuş cihazı heartbeat verisiyle doğrulandı"
+        if request.code == "ONBOARD_VIDEO_RECORDING":
+            return "Onboard video kaydı açık" if details.get("video") else "Onboard video kaydı kapalı"
+        if request.code == "HSS_GOTO":
+            return "HSS GOTO hedefi Orin tarafından kabul edildi"
         return (
             f"{request.code} uçuş cihazında doğrulandı"
             if confirmed
@@ -396,7 +513,7 @@ class DispatchCommandService(CommandService):
                 "task": str(request.parameters.get("task", "")).strip().upper()
                 or "-",
             }
-        if request.code in {"GOTO", "SET_HOME"}:
+        if request.code in {"GOTO", "HSS_GOTO", "SET_HOME"}:
             return {
                 key: request.parameters[key]
                 for key in ("latitude", "longitude", "altitude")
