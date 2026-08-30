@@ -577,9 +577,9 @@ class UiSmokeTests(unittest.TestCase):
             self.assertIn(theme.danger, telemetry_chip.text_label.styleSheet())
 
             window._open_connection_popup("telemetry", telemetry_chip)
-            self.assertTrue(window.connection_popup.isVisible())
-            self.assertEqual(window.connection_popup.channel, "telemetry")
-            window.connection_popup.close()
+            self.assertTrue(window.mavlink_connections_popup.isVisible())
+            self.assertFalse(window.connection_popup.isVisible())
+            window.mavlink_connections_popup.close()
 
             orin_chip = window.bottom_status["orin"]
             window._open_connection_popup("orin", orin_chip)
