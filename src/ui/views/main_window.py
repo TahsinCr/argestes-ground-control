@@ -1549,6 +1549,18 @@ class MainWindow(QMainWindow):
         if channel == "video":
             self.video_panel.set_reconnect_busy(False)
         self._on_connection_status(status)
+        if channel == "telemetry" and self.mavlink_connections_popup.isVisible():
+            self.mavlink_connections_popup.finish_connection(
+                active_identifier=str(
+                    status.options.get(
+                        "profile_id",
+                        self._active_settings.backend.active_mavlink_connection_id,
+                    )
+                ),
+                connected=status.connected,
+                running=bool(status.options.get("vehicle_connected", False)),
+                detail=status.detail if success else message,
+            )
         if self.connection_popup.isVisible() and self.connection_popup.channel == channel:
             localized_summary, _detail = connection_status_text(status, self.language)
             self.connection_popup.finish_operation(

@@ -26,6 +26,7 @@ class MavlinkConnectionsPopup(QDialog):
         self._profiles: list[MavlinkConnectionConfig] = []
         self._active_identifier = ""
         self._connected = self._running = False
+        self._connecting_identifier = ""
         self._detail = ""
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
@@ -54,12 +55,24 @@ class MavlinkConnectionsPopup(QDialog):
     def show_profiles(self, profiles: tuple[MavlinkConnectionConfig, ...], *, active_identifier: str, connected: bool, running: bool, detail: str = "") -> None:
         self._profiles = list(profiles)
         self._active_identifier, self._connected, self._running, self._detail = active_identifier, connected, running, detail
+        if self._connected:
+            self._connecting_identifier = ""
         self._render()
 
     def set_connecting(self, identifier: str) -> None:
-        if self._active_identifier == identifier and not self._connected and self._running:
+        if self._connecting_identifier == identifier:
             return
+        self._connecting_identifier = identifier
         self._active_identifier, self._connected, self._running = identifier, False, True
+        self._render()
+
+    def finish_connection(self, *, active_identifier: str, connected: bool, running: bool, detail: str = "") -> None:
+        """Unlock the selected profile after its asynchronous operation ends."""
+        self._connecting_identifier = ""
+        self._active_identifier = active_identifier
+        self._connected = bool(connected)
+        self._running = bool(running)
+        self._detail = detail
         self._render()
 
     def update_connection(
@@ -75,6 +88,8 @@ class MavlinkConnectionsPopup(QDialog):
         if signature == previous:
             return
         self._active_identifier, self._connected, self._running, self._detail = signature
+        if self._connected:
+            self._connecting_identifier = ""
         self._render_timer.start()
 
     def _build_ui(self) -> None:
@@ -107,12 +122,13 @@ class MavlinkConnectionsPopup(QDialog):
         name = QLabel(profile.name, card); name.setStyleSheet("font-weight: 700;"); row.addWidget(name, 1)
         edit = QPushButton("Düzenle", card); edit.setProperty("compact", "true"); edit.clicked.connect(lambda _=False, p=profile: self.profile_edit_requested.emit(p)); row.addWidget(edit); layout.addLayout(row)
         endpoint = QLabel(profile.endpoint, card); endpoint.setProperty("role", "detail"); endpoint.setWordWrap(True); layout.addWidget(endpoint)
-        state = "Bağlı" if active and self._connected else "Bağlanıyor" if active and self._running else "Beklemede"
+        is_connecting = profile.identifier == self._connecting_identifier
+        state = "Bağlı" if active and self._connected else "Bağlanıyor" if is_connecting else "Beklemede"
         info = QLabel(f"{profile.baud} baud · {profile.heartbeat_timeout} sn · {self._detail if active and self._detail else state}", card); info.setProperty("role", "detail"); info.setWordWrap(True); layout.addWidget(info)
         actions = QHBoxLayout()
         auto = QPushButton("OTO: AÇIK" if profile.auto_connect else "OTO: KAPALI", card); auto.setCheckable(True); auto.setChecked(profile.auto_connect); auto.setProperty("compact", "true"); auto.setProperty("role", "primary" if profile.auto_connect else "secondary")
         auto.clicked.connect(lambda checked, ident=profile.identifier: self._set_auto(ident, checked)); actions.addWidget(auto)
-        busy = active and self._running and not self._connected
+        busy = is_connecting
         connect = QPushButton("Bağlantıyı Kes" if active and self._connected else "Bağlanıyor" if busy else "Bağlan", card); connect.setProperty("compact", "true"); connect.setProperty("role", "danger" if active and self._connected else "primary"); connect.setEnabled(not busy); connect.clicked.connect(lambda _=False, p=profile: self.profile_connect_requested.emit(p)); actions.addWidget(connect)
         delete = QPushButton("Sil", card); delete.setProperty("compact", "true"); delete.setProperty("role", "danger"); delete.setEnabled(len(self._profiles) > 1); delete.clicked.connect(lambda _=False, ident=profile.identifier: self._delete(ident)); actions.addWidget(delete)
         layout.addLayout(actions); self.layout.addWidget(card)
