@@ -51,6 +51,43 @@ class VehicleTransportStats(Model):
 
 
 @dataclass(frozen=True, slots=True)
+class VehicleCapabilities(Model):
+    """Capabilities advertised by the active vehicle adapter.
+
+    ``command_codes`` intentionally represents protocol operations, while
+    ``flight_modes`` is populated from the connected autopilot.  Consumers
+    must treat an empty capability set as "not yet known", rather than
+    guessing from a vehicle type number.
+    """
+
+    command_codes: tuple[str, ...] = ()
+    flight_modes: tuple[str, ...] = ()
+    vehicle_type: int | None = None
+    autopilot_type: int | None = None
+
+    def __post_init__(self) -> None:
+        commands = tuple(
+            dict.fromkeys(
+                str(code).strip().upper()
+                for code in self.command_codes
+                if str(code).strip()
+            )
+        )
+        modes = tuple(
+            dict.fromkeys(
+                str(mode).strip().upper()
+                for mode in self.flight_modes
+                if str(mode).strip()
+            )
+        )
+        object.__setattr__(self, "command_codes", commands)
+        object.__setattr__(self, "flight_modes", modes)
+
+    def supports(self, code: str) -> bool:
+        return code.strip().upper() in self.command_codes
+
+
+@dataclass(frozen=True, slots=True)
 class VehicleConnectionState(Model):
     connected: bool
     endpoint: str

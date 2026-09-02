@@ -17,7 +17,7 @@ from src.services.planner import PlannerService
 from src.services.runtime import RuntimeServices
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
-from src.services.target_selection import TargetSelectionService
+from src.services.ui_compatibility import TargetSelectionService
 from src.ui.adapters.runtime import QtRuntimeServices
 from src.ui.adapters.services import (
     QtCommandService,

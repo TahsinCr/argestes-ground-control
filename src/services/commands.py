@@ -1,72 +1,67 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterable
-
-from src.communication import TaskStart
+from collections.abc import Mapping
+from types import MappingProxyType
 from src.core.events import EventBus
-from src.models.commands import CommandRequest, CommandResult
-from src.models.geometry import Point
+from src.models.commands import CommandDefinition, CommandRequest, CommandResult
 from src.models.mission import MapOverlay
+from src.models.vehicle import VehicleCapabilities
 from src.services.abstracts.commands import CommandService
-from src.services.abstracts.orin import OrinService
-from src.services.abstracts.onboard import OnboardMissionServiceContract
 from src.services.abstracts.parameters import ParameterService
 from src.services.abstracts.vehicle import VehicleService
 from src.services.logging_service import ServiceLogger
 
 
 class DispatchCommandService(CommandService):
-    _NAVIGATION_COMMANDS = frozenset({"GOTO", "HSS_GOTO"})
-    _DEFAULT_TASKS = (
-        "TARGET_LOCK",
-        "KAMIKAZE",
-        "KAMIKAZE_CHECK",
-        "ACTUATOR_TEST",
+    _DEFINITIONS = (
+        CommandDefinition("ARM", "safety"),
+        CommandDefinition("DISARM", "safety"),
+        CommandDefinition("FORCE_ARM", "safety", requires_confirmation=True),
+        CommandDefinition("SET_MODE", "flight", ("mode",)),
+        CommandDefinition("GOTO", "navigation", ("latitude", "longitude"), True),
+        CommandDefinition("SET_HOME", "navigation", ("latitude", "longitude")),
+        CommandDefinition("TAKEOFF", "navigation"),
+        CommandDefinition("LAND", "navigation"),
+        CommandDefinition("RTL", "navigation"),
+        CommandDefinition("HOLD", "navigation"),
+        CommandDefinition("MISSION_START", "mission"),
+        CommandDefinition("MISSION_PAUSE", "mission"),
+        CommandDefinition("MISSION_RESUME", "mission"),
+        CommandDefinition("MISSION_UPLOAD", "mission", ("overlays",)),
     )
+    _DEFINITION_BY_CODE: Mapping[str, CommandDefinition] = MappingProxyType(
+        {definition.code: definition for definition in _DEFINITIONS}
+    )
+    _ALIASES: Mapping[str, str] = MappingProxyType(
+        {
+            "RETURN_HOME": "RTL",
+            "RETURN_TO_LAUNCH": "RTL",
+            "LOITER": "HOLD",
+            "PAUSE_MISSION": "MISSION_PAUSE",
+            "RESUME_MISSION": "MISSION_RESUME",
+        }
+    )
+    _NAVIGATION_COMMANDS = frozenset(
+        definition.code
+        for definition in _DEFINITIONS
+        if definition.supersedes_navigation
+    )
+    _DEFAULT_TASKS: tuple[str, ...] = ()
     _STANDARD_TASK_MODES = {
         "AUTO_TAKEOFF": "TAKEOFF",
         "AUTO_LAND": "AUTOLAND",
     }
-    _BUILTIN_ORIN_TASKS = frozenset(
-        {
-            "TARGET_LOCK",
-            "KAMIKAZE",
-            "KAMIKAZE_CHECK",
-            "ACTUATOR_TEST",
-            "HSS_ESCAPE",
-            "HSS_PREDICT",
-            "HSS_TRANSIT",
-            "WAYPOINT_TRACK",
-            "SURVEY_AREA",
-        }
-    )
-
     def __init__(
         self,
         vehicle: VehicleService,
         parameters: ParameterService,
         logger: ServiceLogger | None = None,
-        orin: OrinService | None = None,
-        onboard: OnboardMissionServiceContract | None = None,
-        configured_orin_tasks: Iterable[str] = (),
     ) -> None:
         self._vehicle = vehicle
         self._parameters = parameters
         self._logger = logger
-        self._orin = orin
-        self._onboard = onboard
-        configured = tuple(
-            dict.fromkeys(
-                str(task).strip().upper()
-                for task in configured_orin_tasks
-                if str(task).strip()
-            )
-        )
-        self._orin_tasks = self._BUILTIN_ORIN_TASKS | frozenset(configured)
-        self._available_tasks = self._DEFAULT_TASKS + tuple(
-            task for task in configured if task not in self._DEFAULT_TASKS
-        )
+        self._available_tasks = self._DEFAULT_TASKS
         self._dispatched = EventBus[CommandRequest]()
         self._completed = EventBus[CommandResult]()
         # MAVLink command transactions share one router and acknowledgements.
@@ -81,6 +76,30 @@ class DispatchCommandService(CommandService):
         return self._available_tasks
 
     @property
+    def command_definitions(self) -> tuple[CommandDefinition, ...]:
+        return self._DEFINITIONS
+
+    @property
+    def available_commands(self) -> tuple[CommandDefinition, ...]:
+        capabilities = self._vehicle_capabilities()
+        if capabilities is None or not capabilities.command_codes:
+            return self.command_definitions
+        return tuple(
+            definition
+            for definition in self.command_definitions
+            if capabilities.supports(definition.code)
+        )
+
+    @property
+    def available_flight_modes(self) -> tuple[str, ...]:
+        capabilities = self._vehicle_capabilities()
+        return capabilities.flight_modes if capabilities is not None else ()
+
+    @property
+    def available_command_codes(self) -> tuple[str, ...]:
+        return tuple(definition.code for definition in self.available_commands)
+
+    @property
     def dispatched(self) -> EventBus[CommandRequest]:
         return self._dispatched
 
@@ -89,6 +108,7 @@ class DispatchCommandService(CommandService):
         return self._completed
 
     def dispatch(self, request: CommandRequest) -> CommandResult:
+        request = self._normalize_request(request)
         navigation_revision: int | None = None
         if request.code in self._NAVIGATION_COMMANDS:
             with self._navigation_lock:
@@ -148,11 +168,7 @@ class DispatchCommandService(CommandService):
             self._logger.event(
                 "command.dispatched",
                 f"Komut servis katmanına aktarıldı: {request.code}",
-                severity=(
-                    "warning"
-                    if request.code == "ONBOARD_TASK_CANCEL"
-                    else "info"
-                ),
+                severity="info",
                 details={
                     "code": request.code,
                     "source": request.source,
@@ -165,6 +181,7 @@ class DispatchCommandService(CommandService):
                 ),
             )
         try:
+            self._validate_request(request)
             confirmed, details = self._execute(request)
             details = {**request_details, **details}
         except NotImplementedError as exc:
@@ -230,73 +247,10 @@ class DispatchCommandService(CommandService):
 
     def _execute(self, request: CommandRequest) -> tuple[bool, dict[str, object]]:
         if request.code == "GOTO":
-            if self._onboard is not None:
-                state = self._onboard.state
-                if (
-                    state.active_task == "hss.transit" and not state.terminal
-                ) or bool(state.hss_route):
-                    self._onboard.cancel_task("hss.transit")
             return self._vehicle.execute(request), {
                 "navigation": "goto",
                 "latitude": float(request.parameters["latitude"]),
                 "longitude": float(request.parameters["longitude"]),
-            }
-        if request.code == "HSS_GOTO":
-            if self._onboard is None:
-                raise ConnectionError("Onboard HSS görev servisi kullanılamıyor")
-            destination = Point(
-                float(request.parameters["latitude"]),
-                float(request.parameters["longitude"]),
-                float(request.parameters.get("altitude", 0.0)),
-            )
-            receipt = self._onboard.start_hss_transit(
-                destination,
-                source=request.source,
-            )
-            if not receipt.accepted:
-                raise RuntimeError(receipt.message)
-            return True, {
-                "navigation": "hss_goto",
-                "target": "orin",
-                "latitude": destination.latitude,
-                "longitude": destination.longitude,
-                "altitude": destination.altitude,
-                "request_id": receipt.request_id,
-                "round_trip_ms": receipt.round_trip_ms,
-            }
-        if request.code in {"RESTART_MISSION_TASK", "ONBOARD_TASK_CANCEL"}:
-            if self._onboard is None:
-                raise ConnectionError("Onboard görev servisi kullanılamıyor")
-            task = str(request.parameters.get("task", "kamikaze.execute"))
-            receipt = self._onboard.cancel_task(task)
-            if not receipt.accepted:
-                raise RuntimeError(receipt.message)
-            if request.code == "RESTART_MISSION_TASK":
-                receipt = self._onboard.start_task(task, source=request.source)
-                if not receipt.accepted:
-                    raise RuntimeError(receipt.message)
-            return True, {
-                "task": task,
-                "target": "orin",
-                "request_id": receipt.request_id,
-                "orin_execution": receipt.response.get("execution", "acknowledged"),
-                "restarted": request.code == "RESTART_MISSION_TASK",
-            }
-        if request.code == "ONBOARD_VIDEO_RECORDING":
-            if self._onboard is None:
-                raise ConnectionError("Onboard kayıt servisi kullanılamıyor")
-            enabled = request.parameters.get("enabled")
-            if not isinstance(enabled, bool):
-                raise ValueError("Video kayıt durumu true veya false olmalı")
-            receipt = self._onboard.set_video_recording(enabled)
-            if not receipt.accepted:
-                raise RuntimeError(receipt.message)
-            return True, {
-                "target": "orin",
-                "request_id": receipt.request_id,
-                "round_trip_ms": receipt.round_trip_ms,
-                "video": bool(receipt.response.get("video", enabled)),
-                "telemetry": bool(receipt.response.get("telemetry", True)),
             }
         if request.code == "APPLY_MODE":
             mode = str(request.parameters.get("mode", "")).strip().upper()
@@ -348,16 +302,12 @@ class DispatchCommandService(CommandService):
                     request.source,
                 )
                 return self._vehicle.execute(forwarded), {"task": task, "mode": mode}
-            if task in self._orin_tasks and self._orin is not None:
-                return self._execute_orin_task(task, request)
             forwarded = CommandRequest(
                 task,
                 {key: value for key, value in request.parameters.items() if key != "task"},
                 request.source,
             )
             return self._vehicle.execute(forwarded), {"task": task}
-        if request.code in self._orin_tasks and self._orin is not None:
-            return self._execute_orin_task(request.code, request)
         if request.code == "FORCE_ARM":
             confirmed = self._vehicle.execute(request)
             return confirmed, {
@@ -365,64 +315,57 @@ class DispatchCommandService(CommandService):
                 "operator_confirmation": request.parameters.get("operator_confirmation") is True,
                 "normal_arm_error": str(request.parameters.get("normal_arm_error", "")),
             }
-        return self._vehicle.execute(request), {}
+        return self._vehicle.execute(request), {
+            "operation": request.code.lower(),
+            "vehicle_type": self._vehicle.state.vehicle_type,
+            "autopilot_type": self._vehicle.state.autopilot_type,
+        }
 
-    def _execute_orin_task(
-        self,
-        task: str,
-        request: CommandRequest,
-    ) -> tuple[bool, dict[str, object]]:
-        assert self._orin is not None
-        if self._onboard is not None and task in {
-            "KAMIKAZE",
-            "KAMIKAZE_CHECK",
-            "TARGET_LOCK",
-            "ACTUATOR_TEST",
-            "HSS_ESCAPE",
-            "HSS_PREDICT",
-            "HSS_TRANSIT",
-        }:
-            source = "operator-ui" if task == "ACTUATOR_TEST" else request.source
-            receipt = self._onboard.start_task(task, source=source)
-            if not receipt.accepted:
-                raise RuntimeError(receipt.message)
-            return True, {
-                "task": task,
-                "target": "orin",
-                "request_id": receipt.request_id,
-                "round_trip_ms": receipt.round_trip_ms,
-                "orin_execution": receipt.response.get("execution", "acknowledged"),
-                "waiting_for_mode": bool(receipt.response.get("waiting_for_mode", False)),
-                "mission_id": receipt.response.get("mission_id"),
-                "vehicle_mode": receipt.response.get("vehicle_mode"),
-                "snapshot": receipt.response.get("snapshot", {}),
-                "orin_response": receipt.response,
-            }
-        parameters = {
-            key: value
-            for key, value in request.parameters.items()
-            if key != "task"
-        }
-        command = TaskStart(
-            task,
-            request.source,
-            parameters,
-            request.timestamp.isoformat(),
-        )
-        receipt = self._orin.issue(
-            command.packet_type,
-            command.to_payload(),
-        )
-        if not receipt.accepted:
-            raise RuntimeError(receipt.message)
-        return True, {
-            "task": task,
-            "target": "orin",
-            "request_id": receipt.request_id,
-            "round_trip_ms": receipt.round_trip_ms,
-            "orin_execution": receipt.response.get("execution", "acknowledged"),
-            "orin_response": receipt.response,
-        }
+    def _normalize_request(self, request: CommandRequest) -> CommandRequest:
+        canonical_code = self._ALIASES.get(request.code, request.code)
+        if canonical_code == request.code:
+            return request
+        return CommandRequest(canonical_code, request.parameters, request.source)
+
+    def _vehicle_capabilities(self) -> VehicleCapabilities | None:
+        capabilities = getattr(self._vehicle, "capabilities", None)
+        return capabilities if isinstance(capabilities, VehicleCapabilities) else None
+
+    def _validate_request(self, request: CommandRequest) -> None:
+        """Validate generic command shape before touching a vehicle adapter."""
+
+        definition = self._DEFINITION_BY_CODE.get(request.code)
+        if definition is not None:
+            missing = [
+                name for name in definition.required_parameters if name not in request.parameters
+            ]
+            if missing:
+                raise ValueError(
+                    f"{request.code} için zorunlu alanlar eksik: {', '.join(missing)}"
+                )
+            if definition.requires_confirmation and request.parameters.get(
+                "operator_confirmation"
+            ) is not True:
+                raise PermissionError(f"{request.code} için açık operatör onayı gerekli")
+
+        capabilities = self._vehicle_capabilities()
+        if (
+            definition is not None
+            and capabilities is not None
+            and capabilities.command_codes
+            and not capabilities.supports(request.code)
+        ):
+            raise NotImplementedError(
+                f"Bağlı araç {request.code} komutunu desteklediğini bildirmiyor"
+            )
+        if request.code == "APPLY_MODE":
+            mode = str(request.parameters.get("mode", "")).strip().upper()
+            if (
+                capabilities is not None
+                and capabilities.flight_modes
+                and mode not in capabilities.flight_modes
+            ):
+                raise ValueError(f"Bağlı araç modu desteklemiyor: {mode}")
 
     @staticmethod
     def _success_message(
@@ -439,24 +382,12 @@ class DispatchCommandService(CommandService):
         if request.code == "SET_TARGET_PROFILE":
             return f"{int(details.get('profile_field_count', 0))} uçuş profili değeri doğrulandı"
         if request.code == "SET_MISSION_TASK":
-            target = "Orin" if details.get("target") == "orin" else "uçuş cihazı"
-            if details.get("orin_execution") == "state_only":
-                return (
-                    f"{details.get('task', 'Otonom görev')} Orin görev durumu olarak seçildi; "
-                    "algoritma işleyicisi henüz bağlı değil"
-                )
-            if details.get("orin_execution") == "completed":
-                return f"{details.get('task', 'Otonom görev')} Orin scripti başarıyla tamamlandı"
-            return f"{details.get('task', 'Otonom görev')} {target} tarafından doğrulandı"
+            return f"{details.get('task', 'Görev')} uçuş cihazı tarafından doğrulandı"
         if request.code == "APPLY_MODE":
             mode = str(details.get("mode", "Uçuş modu"))
             return f"{mode} modu heartbeat ile doğrulandı"
         if request.code == "FORCE_ARM":
             return "ZORLA ARM uçuş cihazı heartbeat verisiyle doğrulandı"
-        if request.code == "ONBOARD_VIDEO_RECORDING":
-            return "Onboard video kaydı açık" if details.get("video") else "Onboard video kaydı kapalı"
-        if request.code == "HSS_GOTO":
-            return "HSS GOTO hedefi Orin tarafından kabul edildi"
         return (
             f"{request.code} uçuş cihazında doğrulandı"
             if confirmed
@@ -513,7 +444,7 @@ class DispatchCommandService(CommandService):
                 "task": str(request.parameters.get("task", "")).strip().upper()
                 or "-",
             }
-        if request.code in {"GOTO", "HSS_GOTO", "SET_HOME"}:
+        if request.code in {"GOTO", "SET_HOME", "TAKEOFF", "LAND"}:
             return {
                 key: request.parameters[key]
                 for key in ("latitude", "longitude", "altitude")

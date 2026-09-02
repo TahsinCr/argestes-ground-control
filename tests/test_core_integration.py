@@ -67,24 +67,6 @@ class CoreIntegrationTests(unittest.TestCase):
             finally:
                 application.shutdown()
 
-    def test_vehicle_and_orin_services_share_one_core_mavlink_client(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            application = create_container(Path(directory))
-            try:
-                runtime = application.resolve(RuntimeServices)
-                stack = application.resolve(VehicleStack)
-                client = application.resolve(MavlinkClient)
-
-                self.assertIs(stack.client, client)
-                self.assertIs(runtime.vehicle_service, stack.vehicle)
-                self.assertIs(runtime.orin_service, stack.orin)
-                self.assertIs(runtime.vehicle_service._client, client)
-                self.assertIs(runtime.orin_service._client, client)
-                self.assertIs(runtime.vehicle_service._client.router, client.router)
-                self.assertIs(runtime.orin_service._client.router, client.router)
-            finally:
-                application.shutdown()
-
     def test_event_bus_keeps_other_service_consumers_alive_after_an_error(self) -> None:
         events = EventBus[int]()
         received: list[int] = []

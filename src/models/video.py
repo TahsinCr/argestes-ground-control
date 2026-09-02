@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import re
+from uuid import uuid4
 
 from src.core.abstracts import Model
 
@@ -66,11 +67,68 @@ class VideoFrame(Model):
 
 
 @dataclass(frozen=True, slots=True)
+class VideoSourceFrame(Model):
+    """A decoded frame tagged with the input profile that produced it."""
+
+    source_id: str
+    frame: VideoFrame
+
+
+@dataclass(frozen=True, slots=True)
+class VideoSourceStats(Model):
+    """Per-input stream state used by multi-camera UI and routing."""
+
+    source_id: str
+    stats: VideoStreamStats
+
+
+@dataclass(frozen=True, slots=True)
+class VideoSourceConfig(Model):
+    """One selectable camera/video-link input profile."""
+
+    name: str = "Kamera 1"
+    source_type: str = "udp"
+    source_uri: str = ""
+    codec: str = "h265"
+    latency_ms: int = 100
+    frame_timeout_s: float = 3.0
+    auto_connect: bool = False
+    identifier: str = field(default_factory=lambda: uuid4().hex)
+
+    def __post_init__(self) -> None:
+        identifier = str(self.identifier).strip()
+        name = str(self.name).strip()
+        source_type = str(self.source_type).strip().lower()
+        source_uri = str(self.source_uri).strip()
+        codec = str(self.codec).strip().lower()
+        if not identifier or not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", identifier):
+            raise ValueError("Video bağlantı kimliği geçersiz")
+        if not name:
+            raise ValueError("Video bağlantı adı boş olamaz")
+        if source_type not in {"mock", "http", "rtsp", "udp", "usb", "file", "pipeline"}:
+            raise ValueError(f"Desteklenmeyen video kaynağı: {source_type}")
+        if codec not in {"h264", "h265", "mjpeg"}:
+            raise ValueError(f"Desteklenmeyen video codec: {codec}")
+        if not 0 <= int(self.latency_ms) <= 10_000:
+            raise ValueError("Video gecikmesi 0..10000 ms aralığında olmalı")
+        if not 1 <= float(self.frame_timeout_s) <= 60:
+            raise ValueError("Video kare zaman aşımı 1..60 saniye aralığında olmalı")
+        object.__setattr__(self, "identifier", identifier)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "source_type", source_type)
+        object.__setattr__(self, "source_uri", source_uri)
+        object.__setattr__(self, "codec", codec)
+        object.__setattr__(self, "latency_ms", int(self.latency_ms))
+        object.__setattr__(self, "frame_timeout_s", float(self.frame_timeout_s))
+        object.__setattr__(self, "auto_connect", bool(self.auto_connect))
+
+
+@dataclass(frozen=True, slots=True)
 class VideoShareConfig(Model):
     """One camera-feed rebroadcast target.
 
-    The source is deliberately not configurable: every target consumes the
-    decoded Video Link frames, so a desktop/screen source cannot be selected.
+    ``source_id`` selects a decoded camera profile. ``panel`` follows the
+    currently focused panel source. Desktop/screen capture is never accepted.
     """
 
     identifier: str
@@ -83,6 +141,7 @@ class VideoShareConfig(Model):
     timestamp_enabled: bool = True
     fixed_frame_rate: bool = True
     network_interface: str = ""
+    source_id: str = "panel"
 
     def __post_init__(self) -> None:
         identifier = str(self.identifier).strip()
@@ -91,6 +150,7 @@ class VideoShareConfig(Model):
         connection_type = str(self.connection_type).strip().lower()
         codec = str(self.codec).strip().lower()
         network_interface = str(self.network_interface).strip()
+        source_id = str(self.source_id).strip() or "panel"
         if not identifier or not name:
             raise ValueError("Video paylaşım adı ve kimliği boş olamaz")
         if not endpoint:
@@ -113,6 +173,7 @@ class VideoShareConfig(Model):
         object.__setattr__(self, "timestamp_enabled", bool(self.timestamp_enabled))
         object.__setattr__(self, "fixed_frame_rate", bool(self.fixed_frame_rate))
         object.__setattr__(self, "network_interface", network_interface)
+        object.__setattr__(self, "source_id", source_id)
 
 
 @dataclass(frozen=True, slots=True)

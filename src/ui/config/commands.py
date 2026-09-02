@@ -26,19 +26,6 @@ class AutonomousCommand:
     label_key: str
 
 
-# The default GCS aircraft is fixed-wing ArduPlane. QLAND is exclusive to
-# QuadPlane/VTOL; AUTOLAND is the direct landing mode for fixed-wing aircraft.
-FLIGHT_MODES = (
-    "GUIDED",
-    "AUTO",
-    "LOITER",
-    "RTL",
-    "FBWA",
-    "MANUAL",
-    "TAKEOFF",
-    "AUTOLAND",
-)
-
 PROFILE_FIELDS = (
     NumericCommandField(
         key="target_altitude",

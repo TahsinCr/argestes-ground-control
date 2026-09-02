@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -19,7 +20,7 @@ from src.ui.i18n import connection_status_text, t
 from src.models.settings import MavlinkConnectionConfig, SettingsModel
 from src.models.competition import CompetitionServerConfig
 from src.models.telemetry import TelemetrySnapshot
-from src.models.video import VideoShareConfig, VideoShareState, VideoStreamStats
+from src.models.video import VideoShareConfig, VideoShareState, VideoSourceConfig, VideoStreamStats
 from src.models.connections import ConnectionStatus
 from src.services.abstracts import CommandService, TelemetryService, VideoService
 from src.services.logging_service import LoggingService
@@ -45,6 +46,7 @@ from src.ui.widgets.parameters import ParametersPanel
 from src.ui.widgets.title_bar import AppTitleBar
 from src.ui.widgets.video import VideoPanel
 from src.ui.widgets.video_share_popup import VideoSharePopup
+from src.ui.widgets.video_connections_popup import VideoConnectionsPopup
 
 
 class MainWindow(QMainWindow):
@@ -117,6 +119,9 @@ class MainWindow(QMainWindow):
             self,
             language=self.language,
         )
+        self.video_connections_popup = VideoConnectionsPopup(
+            self.theme, self, language=self.language
+        )
         self.competition_servers_popup = CompetitionServersPopup(
             self.theme,
             self,
@@ -163,6 +168,7 @@ class MainWindow(QMainWindow):
         }
         for chip in self.bottom_status.values():
             chip.set_theme(self.theme)
+            chip.set_state("danger")
             status_layout.addWidget(chip)
         for channel, chip in self.bottom_status.items():
             chip.clicked.connect(
@@ -202,33 +208,47 @@ class MainWindow(QMainWindow):
         self.main_splitter = self._smooth_splitter(Qt.Orientation.Horizontal)
         self.main_splitter.addWidget(self._build_sidebar())
         self.main_splitter.addWidget(self._build_workspace())
-        self.main_splitter.setStretchFactor(0, 26)
-        self.main_splitter.setStretchFactor(1, 74)
-        self.main_splitter.setSizes([330, 1270])
+        # The sidebar deliberately has no stretch: window growth belongs to
+        # the workspace.  The operator can still widen the sidebar with the
+        # splitter handle when they need more room.
+        self.main_splitter.setStretchFactor(0, 0)
+        self.main_splitter.setStretchFactor(1, 1)
+        # Start the always-visible sidebar at its content minimum, leaving
+        # maximum room for the map/video workspace.  It remains resizable.
+        self.main_splitter.setSizes([320, 1280])
         return self.main_splitter
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget(self)
-        sidebar.setMinimumWidth(310)
+        sidebar.setMinimumWidth(320)
         sidebar.setMaximumWidth(370)
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(0)
 
-        sidebar_layout.addWidget(self._build_flight_panel(), 4)
+        sidebar_layout.addWidget(self._build_flight_panel())
         self.telemetry_panel = TelemetryPanel("", "", theme=self.theme, parent=self)
         self.command_panel = CommandPanel(
             "",
             "",
             self,
             task_codes=self.command_service.available_tasks,
+            flight_modes=self.command_service.available_flight_modes,
+            command_codes=self.command_service.available_command_codes,
         )
-        sidebar_layout.addWidget(self.telemetry_panel, 4)
-        sidebar_layout.addWidget(self.command_panel, 6)
+        self.telemetry_panel.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        sidebar_layout.addWidget(self.telemetry_panel)
+        # The command panel already owns compact scroll areas for its tabs,
+        # so it absorbs any vertical pressure after flight and telemetry.
+        sidebar_layout.addWidget(self.command_panel, 1)
         return sidebar
 
     def _build_workspace(self) -> QSplitter:
         self.workspace_splitter = self._smooth_splitter(Qt.Orientation.Vertical)
+        self.workspace_splitter.setChildrenCollapsible(True)
         self.workspace_splitter.addWidget(self._build_visuals_splitter())
         self.workspace_splitter.addWidget(self._build_bottom_splitter())
         self.workspace_splitter.setStretchFactor(0, 8)
@@ -317,6 +337,7 @@ class MainWindow(QMainWindow):
     def _build_flight_panel(self) -> PanelFrame:
         self.flight_panel = PanelFrame("", "", self)
         self.flight_panel.setMinimumWidth(300)
+        self.flight_panel.setFixedHeight(205)
         self.attitude_indicator = AttitudeIndicator(self.theme, self.flight_panel)
         self.flight_panel.body_layout.addWidget(self.attitude_indicator, 1)
         return self.flight_panel
@@ -325,8 +346,15 @@ class MainWindow(QMainWindow):
         self.telemetry_service.telemetry_updated.connect(self._on_telemetry)
         self.video_service.frame_ready.connect(self.video_panel.set_frame)
         self.video_service.stats_updated.connect(self._on_video_stats)
+        self.video_service.source_frame_ready.connect(
+            self.video_panel.set_source_frame
+        )
+        self.video_service.source_stats_updated.connect(
+            self._on_video_source_stats
+        )
         self.video_service.share_states_changed.connect(self._on_video_share_states)
         self.video_panel.reconnect_requested.connect(self._reconnect_video_from_panel)
+        self.video_panel.source_selected.connect(self._select_video_source)
         self.video_panel.recording_requested.connect(self._set_onboard_video_recording)
         self.command_panel.command_requested.connect(self._request_command)
         self.command_panel.task_selected.connect(
@@ -364,6 +392,13 @@ class MainWindow(QMainWindow):
         self.connection_popup.back_requested.connect(self._return_to_connection_profiles)
         self.connection_popup.delete_requested.connect(self._delete_edited_connection_profile)
         self.video_share_popup.shares_saved.connect(self._save_video_shares)
+        self.video_connections_popup.sources_saved.connect(self._save_video_sources)
+        self.video_connections_popup.source_connect_requested.connect(
+            self._connect_video_source
+        )
+        self.video_service.reconnect_finished.connect(
+            self._on_video_reconnect_finished
+        )
         self.competition_servers_popup.servers_saved.connect(self._save_competition_servers)
         self.competition_servers_popup.server_edit_requested.connect(
             self._open_competition_server_editor
@@ -573,6 +608,17 @@ class MainWindow(QMainWindow):
         previous_settings = self._active_settings
         self._active_settings = settings
         if self._is_connection_profile_only_update(previous_settings, settings):
+            self.video_panel.set_sources(
+                tuple(settings.backend.video_sources),
+                settings.backend.active_video_source_id,
+            )
+            if self.video_connections_popup.isVisible():
+                self.video_connections_popup.show_sources(
+                    tuple(settings.backend.video_sources),
+                    active_identifier=settings.backend.active_video_source_id,
+                    connected=self.video_service.connected,
+                    source_stats=self.video_service.source_stats,
+                )
             # Popup profile/toggle writes are frequent and must not trigger a
             # full map, theme and panel refresh on the GUI thread.
             if self.video_share_popup.isVisible():
@@ -580,6 +626,9 @@ class MainWindow(QMainWindow):
                     tuple(settings.backend.video_shares),
                     self.video_service.share_states,
                     network_interfaces=active_ipv4_interfaces(),
+                    sources=tuple(settings.backend.video_sources),
+                    source_stats=self.video_service.source_stats,
+                    active_source_id=settings.backend.active_video_source_id,
                 )
             if self.competition_servers_popup.isVisible():
                 status = self.connection_service.status("server")
@@ -642,6 +691,20 @@ class MainWindow(QMainWindow):
             tuple(settings.backend.video_shares),
             self.video_service.share_states,
             network_interfaces=active_ipv4_interfaces(),
+            sources=tuple(settings.backend.video_sources),
+            source_stats=self.video_service.source_stats,
+            active_source_id=settings.backend.active_video_source_id,
+        )
+        self.video_connections_popup.set_theme(self.theme)
+        self.video_connections_popup.set_language(self.language)
+        self.video_connections_popup.show_sources(
+            tuple(settings.backend.video_sources),
+            active_identifier=settings.backend.active_video_source_id,
+            connected=self.video_service.connected,
+            source_stats=self.video_service.source_stats,
+        )
+        self.video_panel.set_sources(
+            tuple(settings.backend.video_sources), settings.backend.active_video_source_id
         )
         self._on_video_share_states(self.video_service.share_states)
         self.competition_servers_popup.set_theme(self.theme)
@@ -687,6 +750,14 @@ class MainWindow(QMainWindow):
             "competition",
             "competition_servers",
             "video_shares",
+            "video_sources",
+            "active_video_source_id",
+            "video_auto_connect",
+            "video_source_type",
+            "video_source_uri",
+            "video_codec",
+            "video_latency_ms",
+            "video_frame_timeout_s",
             "mavlink",
             "mavlink_connections",
             "active_mavlink_connection_id",
@@ -763,6 +834,12 @@ class MainWindow(QMainWindow):
         if self._shutdown_prepared:
             return
         self._last_snapshot = snapshot
+        self.command_panel.set_flight_modes(
+            self.command_service.available_flight_modes
+        )
+        self.command_panel.set_available_command_codes(
+            self.command_service.available_command_codes
+        )
         self.telemetry_panel.update_snapshot(snapshot)
         self.command_panel.update_snapshot(snapshot)
         self.map_panel.update_snapshot(snapshot)
@@ -796,6 +873,17 @@ class MainWindow(QMainWindow):
             return
         self._last_video_stats = stats
         self.video_panel.set_stats(stats)
+        chip = self.bottom_status["video"]
+        chip.set_state("success" if stats.connected else "danger")
+        active = next(
+            (source for source in self._active_settings.backend.video_sources if source.identifier == self._active_settings.backend.active_video_source_id),
+            None,
+        )
+        chip.setToolTip(
+            f"{active.name if active else 'Video Link'}\n"
+            f"{active.source_uri if active else ''}\n"
+            f"{t('connection.tooltip.open', self.language)}"
+        )
         self._update_video_link_meter(stats)
 
     def _on_video_share_states(self, states: tuple[VideoShareState, ...]) -> None:
@@ -813,6 +901,21 @@ class MainWindow(QMainWindow):
         )
         if self.video_share_popup.isVisible():
             self.video_share_popup.update_states(states)
+
+    def _on_video_source_stats(self, item) -> None:
+        if self._shutdown_prepared:
+            return
+        self.video_panel.set_source_stats(item)
+        if self.video_connections_popup.isVisible():
+            self.video_connections_popup.update_source_stats(
+                self.video_service.source_stats
+            )
+        if self.video_share_popup.isVisible():
+            self.video_share_popup.update_sources(
+                sources=tuple(self._active_settings.backend.video_sources),
+                source_stats=self.video_service.source_stats,
+                active_source_id=self._active_settings.backend.active_video_source_id,
+            )
 
     def _update_telemetry_link_meter(self, snapshot: TelemetrySnapshot) -> None:
         meter = self.link_meters["command"]
@@ -1108,6 +1211,9 @@ class MainWindow(QMainWindow):
         if channel == "video_share":
             self._open_video_share_popup(chip)
             return
+        if channel == "video":
+            self._open_video_connections_popup(chip)
+            return
         if channel == "server":
             self._open_competition_servers_popup(chip)
             return
@@ -1137,6 +1243,9 @@ class MainWindow(QMainWindow):
             tuple(self._active_settings.backend.video_shares),
             self.video_service.share_states,
             network_interfaces=active_ipv4_interfaces(),
+            sources=tuple(self._active_settings.backend.video_sources),
+            source_stats=self.video_service.source_stats,
+            active_source_id=self._active_settings.backend.active_video_source_id,
         )
         self.video_share_popup.adjustSize()
         origin = chip.mapToGlobal(QPoint(0, 0))
@@ -1146,6 +1255,52 @@ class MainWindow(QMainWindow):
         self.video_share_popup.move(x, y)
         self.video_share_popup.show()
         self.video_share_popup.raise_()
+
+    def _open_video_connections_popup(self, chip: StatusChip) -> None:
+        self.connection_popup.close()
+        self.battery_popup.close()
+        self.video_connections_popup.show_sources(
+            tuple(self._active_settings.backend.video_sources),
+            active_identifier=self._active_settings.backend.active_video_source_id,
+            connected=self.video_service.connected,
+            source_stats=self.video_service.source_stats,
+        )
+        self.video_connections_popup.adjustSize()
+        origin = chip.mapToGlobal(QPoint(0, 0)); screen = chip.screen().availableGeometry()
+        self.video_connections_popup.move(
+            min(max(screen.left() + 6, origin.x()), screen.right() - self.video_connections_popup.width() - 6),
+            max(screen.top() + 6, origin.y() - self.video_connections_popup.height() - 7),
+        )
+        self.video_connections_popup.show(); self.video_connections_popup.raise_()
+
+    def _save_video_sources(
+        self,
+        sources: tuple[VideoSourceConfig, ...],
+        active_identifier: str,
+    ) -> None:
+        if not sources:
+            return
+        active = next((item for item in sources if item.identifier == active_identifier), sources[0])
+        payload = self._active_settings.to_dict()
+        payload["backend"]["video_sources"] = [item.to_dict() for item in sources]
+        payload["backend"]["active_video_source_id"] = active.identifier
+        try:
+            updated = SettingsModel.from_dict(payload)
+        except (TypeError, ValueError) as exc:
+            self.ui_log.event("video.source_save_failed", f"Video bağlantısı kaydedilemedi: {exc}", severity="danger")
+            return
+        self._save_popup_settings(updated)
+
+    def _select_video_source(self, identifier: str) -> None:
+        self._save_video_sources(
+            tuple(self._active_settings.backend.video_sources), identifier
+        )
+
+    def _connect_video_source(self, identifier: str) -> None:
+        if identifier != self._active_settings.backend.active_video_source_id:
+            self._select_video_source(identifier)
+            return
+        self._reconnect_video_from_panel()
 
     def _open_competition_servers_popup(self, chip: StatusChip) -> None:
         self.connection_popup.close()
@@ -1514,17 +1669,17 @@ class MainWindow(QMainWindow):
         self.connection_service.reconnect(channel, options)
 
     def _reconnect_video_from_panel(self) -> None:
-        backend = self._active_settings.backend
-        self.connection_service.reconnect(
-            "video",
-            {
-                "endpoint": backend.video_source_uri,
-                "source_type": backend.video_source_type,
-                "codec": backend.video_codec,
-                "latency_ms": backend.video_latency_ms,
-                "frame_timeout_s": backend.video_frame_timeout_s,
-            },
-        )
+        self.video_panel.set_reconnect_busy(True)
+        self.video_service.reconnect()
+
+    def _on_video_reconnect_finished(self, success: bool, detail: str) -> None:
+        self.video_panel.set_reconnect_busy(False)
+        if not success:
+            self.ui_log.event(
+                "video.reconnect_failed",
+                f"Video bağlantısı yenilenemedi: {detail}",
+                severity="danger",
+            )
 
     def _disconnect_channel(self, channel: str) -> None:
         self.connection_popup.set_busy(
@@ -1534,6 +1689,9 @@ class MainWindow(QMainWindow):
         self.connection_service.disconnect(channel)
 
     def _on_connection_operation_started(self, channel: str) -> None:
+        chip = self.bottom_status.get(channel)
+        if chip is not None:
+            chip.set_state("warning")
         if channel == "video":
             self.video_panel.set_reconnect_busy(True)
         if self.connection_popup.isVisible() and self.connection_popup.channel == channel:
@@ -1630,6 +1788,7 @@ class MainWindow(QMainWindow):
         self.battery_meter.set_alarm(False)
         self.connection_popup.hide()
         self.video_share_popup.hide()
+        self.video_connections_popup.hide()
         self.competition_servers_popup.hide()
         self.battery_popup.hide()
         self.map_panel.shutdown()

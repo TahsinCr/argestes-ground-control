@@ -27,7 +27,6 @@ from PyQt6.QtWidgets import (
 from src.ui.i18n import t
 from src.ui.config.commands import (
     AUTONOMOUS_COMMANDS,
-    FLIGHT_MODES,
     NumericCommandField,
     PROFILE_FIELDS,
     TASK_LABEL_KEYS,
@@ -87,34 +86,20 @@ class TelemetryPanel(PanelFrame):
         self._theme = theme
         self._language = "tr"
 
-        self.scroll_area = QScrollArea(self)
-        self.scroll_area.setObjectName("TelemetryScrollArea")
-        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        self.scroll_area.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
-        self.scroll_area.setMinimumHeight(0)
-        self.scroll_area.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Expanding,
-        )
-
-        self.scroll_content = QWidget(self.scroll_area)
+        # Telemetry is a concise live instrument panel, not a scrollable
+        # document.  The bottom command panel owns the overflow scroll area
+        # when the sidebar becomes shorter.
+        self.scroll_content = QWidget(self.body)
         self.scroll_content.setObjectName("TelemetryScrollContent")
         self.scroll_content.setSizePolicy(
             QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Minimum,
+            QSizePolicy.Policy.Preferred,
         )
         self.content_layout = QVBoxLayout(self.scroll_content)
         self.content_layout.setContentsMargins(0, 0, 0, 0)
         self.content_layout.setSpacing(3)
         self.content_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
-        self.scroll_area.setWidget(self.scroll_content)
-        self.body_layout.addWidget(self.scroll_area)
+        self.body_layout.addWidget(self.scroll_content)
 
         self.readouts: dict[str, QLabel] = {}
         self.readout_labels: dict[str, QLabel] = {}
@@ -339,6 +324,8 @@ class CommandPanel(PanelFrame):
         parent=None,
         *,
         task_codes: Iterable[str] | None = None,
+        flight_modes: Iterable[str] = (),
+        command_codes: Iterable[str] = (),
     ) -> None:
         super().__init__(title, subtitle, parent)
         self._language = "tr"
@@ -350,6 +337,7 @@ class CommandPanel(PanelFrame):
         self._requested_armed: bool | None = None
         self._mode_selection_dirty = False
         self._arm_render_signature: tuple[object, ...] | None = None
+        self._available_command_codes: frozenset[str] = frozenset()
         self._onboard_state = OnboardMissionState()
         self.setMinimumWidth(300)
 
@@ -388,7 +376,9 @@ class CommandPanel(PanelFrame):
         quick_content.setObjectName("CommandTabContent")
         quick_layout = QVBoxLayout(quick_content)
         quick_layout.setContentsMargins(0, 0, 0, 0)
-        quick_layout.setSpacing(4)
+        # Keep the two quick-control groups visually distinct without adding
+        # another container or changing their command semantics.
+        quick_layout.setSpacing(8)
         quick_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         quick_scroll.setWidget(quick_content)
         quick_page_layout.addWidget(quick_scroll, 1)
@@ -433,14 +423,14 @@ class CommandPanel(PanelFrame):
         mode_layout.setHorizontalSpacing(4)
         mode_layout.setVerticalSpacing(4)
         self.mode_combo = QComboBox(self)
-        for mode in FLIGHT_MODES:
-            self.mode_combo.addItem("LAND" if mode == "AUTOLAND" else mode, mode)
         self.mode_combo.currentIndexChanged.connect(self._on_mode_selected)
         self.mode_apply_button = compact_button("APPLY", "primary")
         self.mode_apply_button.clicked.connect(self._emit_mode_update)
         mode_layout.addWidget(self.mode_combo, 0, 0)
         mode_layout.addWidget(self.mode_apply_button, 0, 1)
         quick_control_layout.addWidget(mode_row)
+        self.set_flight_modes(flight_modes)
+        self.set_available_command_codes(command_codes)
 
         self.arm_label = QLabel(self)
         self.arm_label.setProperty("role", "section-label")
@@ -699,7 +689,7 @@ class CommandPanel(PanelFrame):
         self._arm_render_signature = None
         self.tabs.setTabText(0, t("command.tab.quick", language))
         self.tabs.setTabText(1, t("command.tab.tasks", language))
-        self.mode_label.setText(t("command.flight_controls", language).upper())
+        self.mode_label.setText(t("command.target_control", language).upper())
         self.profile_label.setText(t("command.target_profile", language).upper())
         self.tasks_label.setText(t("command.tasks", language).upper())
         self.mode_apply_button.setText(t("command.apply", language).upper())
@@ -767,6 +757,11 @@ class CommandPanel(PanelFrame):
         self._vehicle_connected = bool(snapshot.autopilot_link)
         self._telemetry_mode = snapshot.flight_mode.strip().upper()
         self._armed = snapshot.armed
+        if self._requested_mode is not None and self._telemetry_mode == self._requested_mode:
+            self._requested_mode = None
+            self._mode_selection_dirty = False
+        elif not self._mode_selection_dirty:
+            self._sync_mode_combo(self._telemetry_mode)
         if not self._vehicle_connected:
             self._requested_armed = None
         elif self._requested_armed is not None and snapshot.armed is self._requested_armed:
@@ -781,6 +776,52 @@ class CommandPanel(PanelFrame):
                 ),
                 "neutral" if self._vehicle_connected else "warning",
             )
+        self._sync_command_availability()
+
+    def set_flight_modes(self, flight_modes: Iterable[str]) -> None:
+        """Populate modes from the connected autopilot, never from a vehicle family.
+
+        The same panel is used by Plane, Copter, Rover and SITL.  Rebuilding
+        only when the advertised set changes keeps telemetry updates cheap.
+        """
+
+        modes = tuple(
+            dict.fromkeys(
+                str(mode).strip().upper()
+                for mode in flight_modes
+                if str(mode).strip()
+            )
+        )
+        current = tuple(
+            str(self.mode_combo.itemData(index) or "").upper()
+            for index in range(self.mode_combo.count())
+        )
+        if modes == current:
+            return
+        selected = str(self.mode_combo.currentData() or "").upper()
+        self.mode_combo.blockSignals(True)
+        self.mode_combo.clear()
+        for mode in modes:
+            self.mode_combo.addItem("LAND" if mode == "AUTOLAND" else mode, mode)
+        index = self.mode_combo.findData(selected)
+        if index >= 0:
+            self.mode_combo.setCurrentIndex(index)
+        self.mode_combo.blockSignals(False)
+        self._mode_selection_dirty = False
+        self._sync_command_availability()
+
+    def set_available_command_codes(self, command_codes: Iterable[str]) -> None:
+        """Retain advertised capabilities without imposing a vehicle-specific UI.
+
+        The quick panel stays intentionally compact.  Command routing and
+        feature availability continue to be supplied by the connected vehicle
+        rather than a fixed aircraft-family button list.
+        """
+        self._available_command_codes = frozenset(
+            str(code).strip().upper()
+            for code in command_codes
+            if str(code).strip()
+        )
         self._sync_command_availability()
 
         if not self._vehicle_connected:
@@ -1210,6 +1251,7 @@ class CommandPanel(PanelFrame):
         )
         render_signature = (
             arm_label,
+            self._vehicle_connected,
             button_text,
             tooltip,
             button_role,
@@ -1221,6 +1263,9 @@ class CommandPanel(PanelFrame):
             return
         self._arm_render_signature = render_signature
         self.arm_label.setText(arm_label)
+        # Connection state is already shown once in the persistent status
+        # line below the panel.  Do not repeat it directly below the mode box.
+        self.arm_label.setVisible(self._vehicle_connected)
         self.arm_toggle_button.setText(button_text)
         self.arm_toggle_button.setToolTip(tooltip)
         self.arm_toggle_button.setProperty(
@@ -1350,8 +1395,11 @@ class CommandPanel(PanelFrame):
             self.task_apply_button.setProperty("role", button_role)
             self.task_apply_button.style().unpolish(self.task_apply_button)
             self.task_apply_button.style().polish(self.task_apply_button)
-        if self.mode_combo.isEnabled() != available:
-            self.mode_combo.setEnabled(available)
+        mode_available = available and self.mode_combo.count() > 0
+        if self.mode_combo.isEnabled() != mode_available:
+            self.mode_combo.setEnabled(mode_available)
+        if self.mode_apply_button.isEnabled() != mode_available:
+            self.mode_apply_button.setEnabled(mode_available)
         task_control_active = bool(
             self._onboard_state.phase
             in {

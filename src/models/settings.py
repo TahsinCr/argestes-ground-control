@@ -9,7 +9,7 @@ from uuid import uuid4
 from src.core.abstracts import Model
 from src.models.competition import CompetitionServerConfig
 from src.models.orin import OrinLinkConfig
-from src.models.video import VideoShareConfig
+from src.models.video import VideoShareConfig, VideoSourceConfig
 
 
 DEFAULT_RADII = {
@@ -304,6 +304,8 @@ class BackendSettings:
     video_codec: str = "h265"
     video_latency_ms: int = 100
     video_frame_timeout_s: int = 3
+    video_sources: list[VideoSourceConfig] = field(default_factory=list)
+    active_video_source_id: str = ""
     video_shares: list[VideoShareConfig] = field(default_factory=list)
     competition_servers: list[CompetitionServerConfig] = field(default_factory=list)
     cache: CacheSettings = field(default_factory=CacheSettings)
@@ -325,6 +327,38 @@ class BackendSettings:
         self.video_codec = self.video_codec.strip().lower()
         self.video_latency_ms = int(self.video_latency_ms)
         self.video_frame_timeout_s = int(self.video_frame_timeout_s)
+        self.video_sources = [
+            value if isinstance(value, VideoSourceConfig) else VideoSourceConfig(**value)
+            for value in self.video_sources
+        ]
+        if not self.video_sources:
+            self.video_sources = [
+                VideoSourceConfig(
+                    identifier="video-primary",
+                    name="Kamera 1",
+                    source_type=self.video_source_type,
+                    source_uri=self.video_source_uri,
+                    codec=self.video_codec,
+                    latency_ms=self.video_latency_ms,
+                    frame_timeout_s=self.video_frame_timeout_s,
+                    auto_connect=self.video_auto_connect,
+                )
+            ]
+        source_identifiers = [source.identifier for source in self.video_sources]
+        if len(source_identifiers) != len(set(source_identifiers)):
+            raise ValueError("Video bağlantı kimlikleri benzersiz olmalı")
+        active_source = next(
+            (source for source in self.video_sources if source.identifier == self.active_video_source_id),
+            self.video_sources[0],
+        )
+        self.active_video_source_id = active_source.identifier
+        # Legacy fields remain a backwards-compatible view of the active source.
+        self.video_auto_connect = active_source.auto_connect
+        self.video_source_type = active_source.source_type
+        self.video_source_uri = active_source.source_uri
+        self.video_codec = active_source.codec
+        self.video_latency_ms = active_source.latency_ms
+        self.video_frame_timeout_s = int(active_source.frame_timeout_s)
         self.video_shares = [
             value if isinstance(value, VideoShareConfig) else VideoShareConfig(**value)
             for value in self.video_shares
@@ -451,6 +485,13 @@ class SettingsModel(Model):
                 VideoShareConfig(**dict(item))
                 for item in backend_payload.pop("video_shares", ())
             ]
+            video_sources = [
+                VideoSourceConfig(**dict(item))
+                for item in backend_payload.pop("video_sources", ())
+            ]
+            active_video_source_id = str(
+                backend_payload.pop("active_video_source_id", "")
+            )
             competition_servers = [
                 CompetitionServerConfig(**dict(item))
                 for item in backend_payload.pop("competition_servers", ())
@@ -482,6 +523,8 @@ class SettingsModel(Model):
                 battery_alarm=battery_alarm,
                 battery_telemetry=battery_telemetry,
                 video_shares=video_shares,
+                video_sources=video_sources,
+                active_video_source_id=active_video_source_id,
                 mission=MissionDefaults(
                     radii=radii,
                     default_altitude_m=int(mission_payload.get("default_altitude_m", 100)),
@@ -556,6 +599,23 @@ class SettingsModel(Model):
                     if key in {"endpoint", "baud", "heartbeat_timeout", "auto_connect"}:
                         profile[key] = value
                     break
+        if path.startswith("backend.video_"):
+            backend = payload["backend"]
+            active_id = backend.get("active_video_source_id", "")
+            field_name = parts[-1]
+            source_field = {
+                "video_auto_connect": "auto_connect",
+                "video_source_type": "source_type",
+                "video_source_uri": "source_uri",
+                "video_codec": "codec",
+                "video_latency_ms": "latency_ms",
+                "video_frame_timeout_s": "frame_timeout_s",
+            }.get(field_name)
+            if source_field:
+                for source in backend.get("video_sources", []):
+                    if source.get("identifier") == active_id:
+                        source[source_field] = value
+                        break
         return self.from_dict(payload)
 
     def patch(self, **changes: Any) -> "SettingsModel":

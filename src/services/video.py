@@ -7,11 +7,19 @@ from pathlib import Path
 from urllib.parse import urlparse
 from typing import Any
 
-from src.core.events import EventBus
+from src.core.events import EventBus, Subscription
 from collections.abc import Callable
 from datetime import datetime
 
-from src.models.video import VideoFrame, VideoShareConfig, VideoShareState, VideoStreamStats
+from src.models.video import (
+    VideoFrame,
+    VideoShareConfig,
+    VideoShareState,
+    VideoSourceConfig,
+    VideoSourceFrame,
+    VideoSourceStats,
+    VideoStreamStats,
+)
 from src.services.abstracts.video import VideoService
 from src.services.logging_service import ServiceLogger
 from src.services.video_share import VideoSharePublisher
@@ -21,6 +29,8 @@ class MutableVideoService(VideoService):
     def __init__(self, logger: ServiceLogger | None = None) -> None:
         self._frames = EventBus[VideoFrame]()
         self._stats_changed = EventBus[VideoStreamStats]()
+        self._source_frames = EventBus[VideoSourceFrame]()
+        self._source_stats_changed = EventBus[VideoSourceStats]()
         self._connection_changed = EventBus[bool]()
         self._logger = logger
         self._connected = False
@@ -28,6 +38,7 @@ class MutableVideoService(VideoService):
         self._stats = VideoStreamStats()
         self._stats_lock = threading.RLock()
         self._share_publisher = VideoSharePublisher(self._frames, logger)
+        self._source_identifier = "active"
 
     @property
     def connected(self) -> bool:
@@ -52,6 +63,18 @@ class MutableVideoService(VideoService):
         return self._stats_changed
 
     @property
+    def source_frames(self) -> EventBus[VideoSourceFrame]:
+        return self._source_frames
+
+    @property
+    def source_stats_changed(self) -> EventBus[VideoSourceStats]:
+        return self._source_stats_changed
+
+    @property
+    def source_stats(self) -> tuple[VideoSourceStats, ...]:
+        return (VideoSourceStats(self._source_identifier, self.stats),)
+
+    @property
     def share_states_changed(self) -> EventBus[tuple[VideoShareState, ...]]:
         return self._share_publisher.states_changed
 
@@ -61,6 +84,27 @@ class MutableVideoService(VideoService):
 
     def configure_shares(self, configs: tuple[VideoShareConfig, ...]) -> None:
         self._share_publisher.configure(configs)
+
+    def configure_sources(
+        self,
+        configs: tuple[VideoSourceConfig, ...],
+        active_identifier: str,
+    ) -> None:
+        selected = next(
+            (item for item in configs if item.identifier == active_identifier),
+            configs[0],
+        )
+        self._source_identifier = selected.identifier
+        self.configure(
+            source_type=selected.source_type,
+            source_uri=selected.source_uri,
+            latency_ms=selected.latency_ms,
+            codec=selected.codec,
+            frame_timeout_s=selected.frame_timeout_s,
+        )
+
+    def set_active_source(self, identifier: str) -> None:
+        self._source_identifier = str(identifier)
 
     def set_server_time_provider(self, provider: Callable[[], datetime | None]) -> None:
         self._share_publisher.set_server_time_provider(provider)
@@ -90,6 +134,7 @@ class MutableVideoService(VideoService):
     def push(self, frame: VideoFrame) -> None:
         self._set_connected(True)
         self._frames.publish(frame)
+        self._source_frames.publish(VideoSourceFrame(self._source_identifier, frame))
         previous = self.stats
         self._publish_stats(
             VideoStreamStats(
@@ -129,6 +174,9 @@ class MutableVideoService(VideoService):
                 return
             self._stats = stats
         self._stats_changed.publish(stats)
+        self._source_stats_changed.publish(
+            VideoSourceStats(self._source_identifier, stats)
+        )
 
 
 class GStreamerVideoService(MutableVideoService):
@@ -348,6 +396,9 @@ class GStreamerVideoService(MutableVideoService):
             )
             self._set_connected(True)
             self._frames.publish(frame)
+            self._source_frames.publish(
+                VideoSourceFrame(self._source_identifier, frame)
+            )
             self._frame_count += 1
             self._record_frame_stats(
                 width,
@@ -704,3 +755,286 @@ class GStreamerVideoService(MutableVideoService):
     ) -> None:
         if self._logger:
             self._logger.event(action, message, severity=severity, details=details)
+
+
+class MultiVideoService(VideoService):
+    """Own one capture pipeline per configured input and expose one focused feed.
+
+    Legacy consumers keep receiving ``frames`` and ``stats`` for the focused
+    source. Multi-camera consumers use the source-tagged event channels.
+    """
+
+    def __init__(
+        self,
+        configs: tuple[VideoSourceConfig, ...],
+        active_identifier: str,
+        logger: ServiceLogger | None = None,
+    ) -> None:
+        self._logger = logger
+        self._frames = EventBus[VideoFrame]()
+        self._stats_changed = EventBus[VideoStreamStats]()
+        self._connection_changed = EventBus[bool]()
+        self._source_frames = EventBus[VideoSourceFrame]()
+        self._source_stats_changed = EventBus[VideoSourceStats]()
+        self._configs: dict[str, VideoSourceConfig] = {}
+        self._share_configs: tuple[VideoShareConfig, ...] = ()
+        self._sources: dict[str, MutableVideoService] = {}
+        self._source_subscriptions: dict[str, list[Subscription]] = {}
+        self._active_identifier = str(active_identifier)
+        self._started = False
+        self._lock = threading.RLock()
+        self._share_publisher = VideoSharePublisher(
+            self._frames,
+            logger,
+            source_frames=self._source_frames,
+        )
+        self._share_publisher.set_active_source_provider(
+            lambda: self._active_identifier
+        )
+        self.configure_sources(configs, active_identifier)
+
+    @property
+    def connected(self) -> bool:
+        source = self._sources.get(self._active_identifier)
+        return bool(source and source.connected)
+
+    @property
+    def connection_changed(self) -> EventBus[bool]:
+        return self._connection_changed
+
+    @property
+    def frames(self) -> EventBus[VideoFrame]:
+        return self._frames
+
+    @property
+    def stats(self) -> VideoStreamStats:
+        source = self._sources.get(self._active_identifier)
+        return source.stats if source is not None else VideoStreamStats()
+
+    @property
+    def stats_changed(self) -> EventBus[VideoStreamStats]:
+        return self._stats_changed
+
+    @property
+    def source_frames(self) -> EventBus[VideoSourceFrame]:
+        return self._source_frames
+
+    @property
+    def source_stats_changed(self) -> EventBus[VideoSourceStats]:
+        return self._source_stats_changed
+
+    @property
+    def source_stats(self) -> tuple[VideoSourceStats, ...]:
+        return tuple(
+            VideoSourceStats(identifier, source.stats)
+            for identifier, source in self._sources.items()
+        )
+
+    @property
+    def share_states_changed(self) -> EventBus[tuple[VideoShareState, ...]]:
+        return self._share_publisher.states_changed
+
+    @property
+    def share_states(self) -> tuple[VideoShareState, ...]:
+        return self._share_publisher.states
+
+    def configure_shares(self, configs: tuple[VideoShareConfig, ...]) -> None:
+        self._share_configs = tuple(configs)
+        self._share_publisher.configure(configs)
+        if self._started:
+            with self._lock:
+                self._reconcile_running_sources()
+
+    def set_server_time_provider(self, provider: Callable[[], datetime | None]) -> None:
+        self._share_publisher.set_server_time_provider(provider)
+
+    def configure_sources(
+        self,
+        configs: tuple[VideoSourceConfig, ...],
+        active_identifier: str,
+    ) -> None:
+        if not configs:
+            raise ValueError("En az bir video bağlantısı gerekli")
+        next_configs = {item.identifier: item for item in configs}
+        selected = (
+            active_identifier
+            if active_identifier in next_configs
+            else configs[0].identifier
+        )
+        with self._lock:
+            previous_active = self._active_identifier
+            removed_or_changed = {
+                identifier
+                for identifier, old in self._configs.items()
+                if identifier not in next_configs
+                or self._capture_signature(next_configs[identifier])
+                != self._capture_signature(old)
+            }
+            for identifier in removed_or_changed:
+                self._remove_source(identifier)
+            self._configs = next_configs
+            for config in configs:
+                if config.identifier not in self._sources:
+                    self._add_source(config)
+            self._active_identifier = selected
+            if self._started:
+                self._reconcile_running_sources()
+        self._publish_focused_state()
+        if previous_active != selected:
+            self._share_publisher.restart()
+
+    def set_active_source(self, identifier: str) -> None:
+        if identifier not in self._sources:
+            raise ValueError(f"Bilinmeyen video bağlantısı: {identifier}")
+        with self._lock:
+            previous = self.connected
+            self._active_identifier = identifier
+            if self._started:
+                self._start_source(identifier)
+            current = self.connected
+        self._stats_changed.publish(self.stats)
+        if previous != current:
+            self._connection_changed.publish(current)
+
+    def configure(
+        self,
+        *,
+        source_type: str,
+        source_uri: str,
+        latency_ms: int,
+        codec: str,
+        frame_timeout_s: float,
+    ) -> None:
+        current = self._configs[self._active_identifier]
+        updated = VideoSourceConfig(
+            identifier=current.identifier,
+            name=current.name,
+            source_type=source_type,
+            source_uri=source_uri,
+            latency_ms=latency_ms,
+            codec=codec,
+            frame_timeout_s=frame_timeout_s,
+            auto_connect=current.auto_connect,
+        )
+        configs = tuple(
+            updated if item.identifier == updated.identifier else item
+            for item in self._configs.values()
+        )
+        self.configure_sources(configs, updated.identifier)
+
+    def start(self) -> None:
+        with self._lock:
+            self._started = True
+            self._reconcile_running_sources()
+
+    def stop(self) -> None:
+        with self._lock:
+            self._started = False
+            for source in self._sources.values():
+                source.stop()
+        self._share_publisher.stop()
+        self._publish_focused_state()
+
+    def reconnect(self) -> None:
+        source = self._sources.get(self._active_identifier)
+        if source is None:
+            return
+        self._started = True
+        source.reconnect()
+        with self._lock:
+            self._reconcile_running_sources()
+
+    def push(self, frame: VideoFrame) -> None:
+        source = self._sources.get(self._active_identifier)
+        if source is not None:
+            source.push(frame)
+
+    def _add_source(self, config: VideoSourceConfig) -> None:
+        if config.source_type == "mock":
+            source: MutableVideoService = MutableVideoService(self._logger)
+        else:
+            source = GStreamerVideoService(
+                config.source_type,
+                config.source_uri,
+                self._logger,
+                latency_ms=config.latency_ms,
+                codec=config.codec,
+                frame_timeout_s=config.frame_timeout_s,
+            )
+        source.set_active_source(config.identifier)
+        subscriptions = [
+            source.frames.subscribe(
+                lambda frame, source_id=config.identifier: self._on_source_frame(
+                    source_id, frame
+                )
+            ),
+            source.stats_changed.subscribe(
+                lambda stats, source_id=config.identifier: self._on_source_stats(
+                    source_id, stats
+                )
+            ),
+        ]
+        self._sources[config.identifier] = source
+        self._source_subscriptions[config.identifier] = subscriptions
+
+    def _remove_source(self, identifier: str) -> None:
+        source = self._sources.pop(identifier, None)
+        if source is not None:
+            source.stop()
+        for subscription in self._source_subscriptions.pop(identifier, ()):
+            subscription.cancel()
+
+    def _reconcile_running_sources(self) -> None:
+        desired = {
+            identifier
+            for identifier, config in self._configs.items()
+            if config.auto_connect or identifier == self._active_identifier
+        }
+        desired.update(
+            config.source_id
+            for config in self._share_configs
+            if config.enabled and config.source_id != "panel"
+        )
+        for identifier, source in self._sources.items():
+            if identifier in desired:
+                self._start_source(identifier)
+            else:
+                source.stop()
+
+    def _start_source(self, identifier: str) -> None:
+        source = self._sources[identifier]
+        try:
+            source.start()
+        except Exception as exc:
+            if self._logger:
+                self._logger.event(
+                    "video.source_start_failed",
+                    f"Video bağlantısı başlatılamadı: {self._configs[identifier].name}: {exc}",
+                    severity="danger",
+                    details={"source_id": identifier},
+                )
+
+    def _on_source_frame(self, identifier: str, frame: VideoFrame) -> None:
+        self._source_frames.publish(VideoSourceFrame(identifier, frame))
+        if identifier == self._active_identifier:
+            self._frames.publish(frame)
+
+    def _on_source_stats(self, identifier: str, stats: VideoStreamStats) -> None:
+        self._source_stats_changed.publish(VideoSourceStats(identifier, stats))
+        if identifier == self._active_identifier:
+            self._stats_changed.publish(stats)
+            self._connection_changed.publish(stats.connected)
+
+    def _publish_focused_state(self) -> None:
+        self._stats_changed.publish(self.stats)
+        self._connection_changed.publish(self.connected)
+
+    @staticmethod
+    def _capture_signature(config: VideoSourceConfig) -> tuple[object, ...]:
+        return (
+            config.source_type,
+            config.source_uri,
+            config.codec,
+            config.latency_ms,
+            config.frame_timeout_s,
+        )

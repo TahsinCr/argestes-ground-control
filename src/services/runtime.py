@@ -3,18 +3,11 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 
 from src.core.dependency import DependencyContainer
 from src.core.events import Subscription
-from src.models.logs import LogEntry
-from src.models.orin import OrinLogRecord
 from src.services.abstracts.commands import CommandService
-from src.services.abstracts.competition import CompetitionService
-from src.services.abstracts.connections import ConnectionControlService
-from src.services.abstracts.orin import OrinService
-from src.services.abstracts.onboard import OnboardMissionServiceContract
 from src.services.abstracts.parameters import ParameterService
 from src.services.abstracts.telemetry import TelemetryService
 from src.services.abstracts.vehicle import VehicleService
@@ -26,9 +19,6 @@ from src.services.mission_archive import MissionArchiveService
 from src.services.planner import PlannerService
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
-from src.services.kamikaze_approach import KamikazeApproachService
-from src.services.target_selection import TargetSelectionService
-from src.services.teknofest_archive import TeknofestSessionArchiveService
 
 
 @dataclass(slots=True)
@@ -40,17 +30,10 @@ class RuntimeServices:
     vehicle_service: VehicleService
     telemetry_service: TelemetryService
     planner_service: PlannerService
-    orin_service: OrinService
-    onboard_service: OnboardMissionServiceContract
     command_service: CommandService
     parameter_service: ParameterService
     video_service: VideoService
     tile_cache_service: TileCacheServer
-    competition_service: CompetitionService
-    teknofest_archive_service: TeknofestSessionArchiveService
-    kamikaze_approach_service: KamikazeApproachService
-    target_selection_service: TargetSelectionService
-    connection_service: ConnectionControlService
     archive_service: MissionArchiveService
     facade: BackendFacade
     _subscriptions: list[Subscription] = field(default_factory=list, repr=False)
@@ -69,61 +52,20 @@ class RuntimeServices:
         default_factory=threading.Lock,
         repr=False,
     )
+    _video_switch_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _video_switch_revision: int = field(default=0, repr=False)
+    _video_configuration: tuple[object, ...] = field(default_factory=tuple, repr=False)
 
     def __post_init__(self) -> None:
-        self.video_service.set_server_time_provider(
-            self.competition_service.estimated_server_time
+        backend = self.settings_service.current.backend
+        self.video_service.configure_shares(tuple(backend.video_shares))
+        self._video_configuration = (
+            tuple(backend.video_sources),
+            backend.active_video_source_id,
         )
-        self.video_service.configure_shares(tuple(self.settings_service.current.backend.video_shares))
-        configure_servers = getattr(self.competition_service, "configure_servers", None)
-        if callable(configure_servers):
-            configure_servers(tuple(self.settings_service.current.backend.competition_servers))
         self._subscriptions.append(
             self.settings_service.changed.subscribe(self._apply_settings)
         )
-        self._subscriptions.append(
-            self.orin_service.remote_log_batches.subscribe(self._ingest_orin_logs)
-        )
-
-    def _ingest_orin_logs(self, records: tuple[OrinLogRecord, ...]) -> None:
-        self.log_service.emit_entries([self._orin_log_entry(record) for record in records])
-
-    def _orin_log_entry(self, record: OrinLogRecord) -> LogEntry:
-        try:
-            timestamp = datetime.fromtimestamp(record.emitted_at, UTC)
-        except (OverflowError, OSError, ValueError):
-            timestamp = datetime.now(UTC)
-        details = self._redact_remote_details(dict(record.details))
-        details.update(
-            {
-                "remote_source": record.source,
-                "remote_sequence": record.sequence,
-                "remote_device_id": record.device_id,
-                "remote_session": record.session_id,
-            }
-        )
-        return LogEntry(
-                source="ORIN",
-                message=f"[{record.source}] {record.message}",
-                severity=record.yki_severity,
-                action=f"orin.remote.{record.action}",
-                details=details,
-                device_id=record.device_id or self.orin_service.state.device_id,
-                correlation_id=record.correlation_id,
-                timestamp=timestamp,
-        )
-
-    @classmethod
-    def _redact_remote_details(cls, value):
-        sensitive = {"password", "passwd", "token", "secret", "api_key", "authorization"}
-        if isinstance(value, dict):
-            return {
-                str(key): "***" if str(key).lower() in sensitive else cls._redact_remote_details(item)
-                for key, item in value.items()
-            }
-        if isinstance(value, list):
-            return [cls._redact_remote_details(item) for item in value]
-        return value
 
     def _apply_settings(self, updated) -> None:
         self.planner_service.set_default_radii(updated.backend.mission.radii)
@@ -135,12 +77,52 @@ class RuntimeServices:
             enabled=updated.backend.cache.enabled,
             limit_mb=updated.backend.cache.limit_mb,
         )
-        self.competition_service.configure(updated.backend.competition)
-        configure_servers = getattr(self.competition_service, "configure_servers", None)
-        if callable(configure_servers):
-            configure_servers(tuple(updated.backend.competition_servers))
-        self.orin_service.configure(updated.backend.orin)
         self.video_service.configure_shares(tuple(updated.backend.video_shares))
+        configuration = (
+            tuple(updated.backend.video_sources),
+            updated.backend.active_video_source_id,
+        )
+        if configuration != self._video_configuration:
+            self._queue_video_switch(configuration)
+
+    def _queue_video_switch(self, configuration: tuple[object, ...]) -> None:
+        """Reconfigure capture off the publisher/UI thread; keep only latest intent."""
+
+        with self._lifecycle_lock:
+            self._video_switch_revision += 1
+            revision = self._video_switch_revision
+
+        def switch() -> None:
+            with self._video_switch_lock:
+                with self._lifecycle_lock:
+                    if revision != self._video_switch_revision or self._stop_requested.is_set():
+                        return
+                sources, active_identifier = configuration
+                try:
+                    self.video_service.configure_sources(
+                        tuple(sources),
+                        str(active_identifier),
+                    )
+                    if self._started and not self._stop_requested.is_set():
+                        self.video_service.start()
+                    self._video_configuration = configuration
+                    self.log_service.event(
+                        "VIDEO",
+                        "video.source_switched",
+                        "Aktif video bağlantısı değiştirildi",
+                        severity="success",
+                        details={"source_id": active_identifier},
+                    )
+                except Exception as exc:
+                    self.log_service.event(
+                        "VIDEO",
+                        "video.source_switch_failed",
+                        f"Video bağlantısı değiştirilemedi: {exc}",
+                        severity="danger",
+                        details={"source_id": active_identifier},
+                    )
+
+        threading.Thread(target=switch, name="VideoSourceSwitch", daemon=True).start()
 
     def start(self) -> None:
         with self._lifecycle_lock:
@@ -239,26 +221,12 @@ class RuntimeServices:
             ("tile_cache", self.tile_cache_service),
             ("planner", self.planner_service),
             ("telemetry", self.telemetry_service),
-            ("teknofest_archive", self.teknofest_archive_service),
-            ("competition", self.competition_service),
-            ("kamikaze_approach", self.kamikaze_approach_service),
-            ("target_selection", self.target_selection_service),
             ("parameters", self.parameter_service),
-            ("onboard", self.onboard_service),
-            ("orin", self.orin_service),
-            ("connections", self.connection_service),
         )
 
     def _service_stop_order(self):
         return (
-            ("connections", self.connection_service),
-            ("target_selection", self.target_selection_service),
-            ("kamikaze_approach", self.kamikaze_approach_service),
-            ("competition", self.competition_service),
-            ("teknofest_archive", self.teknofest_archive_service),
             ("parameters", self.parameter_service),
-            ("onboard", self.onboard_service),
-            ("orin", self.orin_service),
             ("telemetry", self.telemetry_service),
             ("vehicle", self.vehicle_service),
             ("planner", self.planner_service),

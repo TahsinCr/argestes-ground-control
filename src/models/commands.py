@@ -46,3 +46,37 @@ class CommandResult(Model):
             "message": self.message,
             "details": dict(self.details),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class CommandDefinition(Model):
+    """Transport-neutral description of an operator command.
+
+    A definition describes *what* the GCS can ask a vehicle to do.  An
+    adapter's :class:`VehicleCapabilities` decides whether that request is
+    available for the currently connected vehicle/autopilot combination.
+    Keeping this data outside Qt and MAVLink avoids a fixed-wing-only command
+    panel becoming the de-facto backend API.
+    """
+
+    code: str
+    category: str
+    required_parameters: tuple[str, ...] = ()
+    supersedes_navigation: bool = False
+    requires_confirmation: bool = False
+
+    def __post_init__(self) -> None:
+        code = self.code.strip().upper()
+        category = self.category.strip().lower()
+        required = tuple(
+            dict.fromkeys(parameter.strip() for parameter in self.required_parameters)
+        )
+        if not code:
+            raise ValueError("Komut tanım kodu boş olamaz")
+        if not category:
+            raise ValueError("Komut tanım kategorisi boş olamaz")
+        if any(not parameter for parameter in required):
+            raise ValueError("Zorunlu komut parametresi boş olamaz")
+        object.__setattr__(self, "code", code)
+        object.__setattr__(self, "category", category)
+        object.__setattr__(self, "required_parameters", required)

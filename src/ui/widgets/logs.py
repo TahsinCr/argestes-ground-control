@@ -91,7 +91,7 @@ class EventLogPanel(PanelFrame):
         self.search_input.setMinimumWidth(170)
         self.search_input.setMaximumWidth(300)
         self.search_input.textChanged.connect(self._rebuild_table)
-        self.add_header_widget(self.search_input)
+        self.add_header_leading_widget(self.search_input)
 
         self.level_filter = QComboBox(self)
         self.level_filter.setObjectName("LogLevelFilter")

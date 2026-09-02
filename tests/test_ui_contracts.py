@@ -33,8 +33,8 @@ from src.models.parameters import Parameter
 from src.models.settings import SettingsModel
 from src.models.target_selection import TargetCandidateScore, TargetSelectionResult
 from src.models.telemetry import TelemetrySnapshot
-from src.models.video import VideoStreamStats
-from src.ui.config.commands import AUTONOMOUS_COMMANDS, FLIGHT_MODES, PROFILE_FIELDS
+from src.models.video import VideoSourceConfig, VideoStreamStats
+from src.ui.config.commands import AUTONOMOUS_COMMANDS, PROFILE_FIELDS
 from src.ui.i18n import t
 from src.ui.config.map import MAP_TOOLS
 from src.ui.config.settings_schema import iter_fields
@@ -470,6 +470,38 @@ class UiContractTests(unittest.TestCase):
         panel.deleteLater()
         self.app.processEvents()
 
+    def test_video_tile_source_selection_swaps_existing_viewports(self) -> None:
+        panel = VideoPanel("", "", theme=DARK, language="tr")
+        sources = tuple(
+            VideoSourceConfig(
+                identifier=identifier,
+                name=name,
+                source_type="mock",
+                source_uri=identifier,
+            )
+            for identifier, name in (
+                ("front", "Ön Kamera"),
+                ("down", "Alt Kamera"),
+                ("thermal", "Termal Kamera"),
+            )
+        )
+        selected: list[str] = []
+        panel.source_selected.connect(selected.append)
+        panel.set_sources(sources, "front")
+        panel.set_split_count(3)
+
+        panel._select_source_for_viewport(1, "thermal")
+
+        self.assertEqual(panel._display_identifiers, ["front", "thermal", "down"])
+        self.assertEqual(
+            [viewport._source_name for viewport in panel._viewports[:3]],
+            ["Ön Kamera", "Termal Kamera", "Alt Kamera"],
+        )
+        self.assertEqual(selected, ["thermal"])
+        panel.close()
+        panel.deleteLater()
+        self.app.processEvents()
+
     def test_map_bridge_ignores_malformed_web_payloads(self) -> None:
         bridge = MapWebBridge()
         actions: list[dict] = []
@@ -535,10 +567,14 @@ class UiContractTests(unittest.TestCase):
 
     def test_command_panel_is_built_from_command_definitions(self) -> None:
         panel = CommandPanel("", "")
-        self.assertEqual(panel.mode_combo.count(), len(FLIGHT_MODES))
-        self.assertIn("AUTOLAND", FLIGHT_MODES)
-        self.assertIn("RTL", FLIGHT_MODES)
-        self.assertNotIn("QLAND", FLIGHT_MODES)
+        self.assertEqual(panel.mode_combo.count(), 0)
+        panel.set_flight_modes(("GUIDED", "AUTO", "RTL", "QLAND"))
+        self.assertEqual(panel.mode_combo.count(), 4)
+        self.assertEqual(
+            tuple(panel.mode_combo.itemData(index) for index in range(4)),
+            ("GUIDED", "AUTO", "RTL", "QLAND"),
+        )
+        panel.set_flight_modes(("GUIDED", "AUTOLAND"))
         self.assertEqual(panel.mode_combo.itemText(panel.mode_combo.findData("AUTOLAND")), "LAND")
         self.assertEqual(set(panel.profile_inputs), {field.key for field in PROFILE_FIELDS})
         self.assertEqual(panel.task_list.count(), len(AUTONOMOUS_COMMANDS))
@@ -1202,11 +1238,10 @@ class UiContractTests(unittest.TestCase):
         panel.resize(320, 240)
         panel.show()
         self.app.processEvents()
-        self.assertGreater(panel.scroll_area.verticalScrollBar().maximum(), 0)
-        self.assertEqual(panel.scroll_area.horizontalScrollBar().maximum(), 0)
+        self.assertFalse(hasattr(panel, "scroll_area"))
         panel.resize(320, 900)
         self.app.processEvents()
-        self.assertEqual(panel.scroll_area.verticalScrollBar().maximum(), 0)
+        self.assertTrue(panel.scroll_content.isVisible())
         panel.close()
         panel.deleteLater()
         self.app.processEvents()
@@ -1492,6 +1527,7 @@ class UiContractTests(unittest.TestCase):
 
     def test_mode_selection_is_not_overwritten_by_old_telemetry(self) -> None:
         panel = CommandPanel("", "")
+        panel.set_flight_modes(("MANUAL", "AUTO", "GUIDED"))
         manual = TelemetrySnapshot.zero().copy(
             telemetry_link=True,
             autopilot_link=True,

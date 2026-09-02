@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from typing import Any
 
 from src.core.events import EventBus, Subscription
-from src.models.video import VideoFrame, VideoShareConfig, VideoShareState
+from src.models.video import VideoFrame, VideoShareConfig, VideoShareState, VideoSourceFrame
 from src.services.logging_service import ServiceLogger
 
 
@@ -52,6 +52,8 @@ class VideoSharePublisher:
         self,
         frames: EventBus[VideoFrame],
         logger: ServiceLogger | None = None,
+        *,
+        source_frames: EventBus[VideoSourceFrame] | None = None,
     ) -> None:
         self._logger = logger
         self._configs: tuple[VideoShareConfig, ...] = ()
@@ -59,11 +61,18 @@ class VideoSharePublisher:
         self._states_changed = EventBus[tuple[VideoShareState, ...]]()
         self._frames_lock = threading.RLock()
         self._latest_frame: VideoFrame | None = None
+        self._latest_source_frames: dict[str, VideoFrame] = {}
+        self._active_source: Callable[[], str] = lambda: ""
         self._frame_event = threading.Event()
         self._stop = threading.Event()
         self._workers: dict[str, threading.Thread] = {}
         self._server_time: Callable[[], datetime | None] = lambda: None
         self._subscription: Subscription = frames.subscribe(self._on_frame)
+        self._source_subscription = (
+            source_frames.subscribe(self._on_source_frame)
+            if source_frames is not None
+            else None
+        )
 
     @property
     def states_changed(self) -> EventBus[tuple[VideoShareState, ...]]:
@@ -75,6 +84,9 @@ class VideoSharePublisher:
 
     def set_server_time_provider(self, provider: Callable[[], datetime | None]) -> None:
         self._server_time = provider
+
+    def set_active_source_provider(self, provider: Callable[[], str]) -> None:
+        self._active_source = provider
 
     def configure(self, configs: tuple[VideoShareConfig, ...]) -> None:
         if configs == self._configs:
@@ -104,6 +116,15 @@ class VideoSharePublisher:
             self._workers[config.identifier] = worker
             worker.start()
 
+    def restart(self) -> None:
+        """Restart configured targets after their dynamic panel source changes."""
+
+        configs = self._configs
+        if not configs:
+            return
+        self._configs = ()
+        self.configure(configs)
+
     def stop(self) -> None:
         self._stop.set()
         self._frame_event.set()
@@ -121,22 +142,23 @@ class VideoSharePublisher:
     def close(self) -> None:
         self.stop()
         self._subscription.cancel()
+        if self._source_subscription is not None:
+            self._source_subscription.cancel()
 
     def _on_frame(self, frame: VideoFrame) -> None:
         with self._frames_lock:
             self._latest_frame = frame
         self._frame_event.set()
 
+    def _on_source_frame(self, item: VideoSourceFrame) -> None:
+        with self._frames_lock:
+            self._latest_source_frames[item.source_id] = item.frame
+        self._frame_event.set()
+
     def _run_target(self, config: VideoShareConfig) -> None:
         pipeline: Any | None = None
         try:
-            if not self._frame_event.wait(10.0):
-                self._set_state(config.identifier, "waiting", "Kamera karesi bekleniyor")
-                while not self._stop.is_set() and not self._frame_event.wait(1.0):
-                    pass
-            if self._stop.is_set():
-                return
-            frame = self._current_frame()
+            frame = self._wait_for_frame(config)
             if frame is None:
                 return
             if frame.width < 640 or frame.height < 480:
@@ -185,7 +207,7 @@ class VideoSharePublisher:
                 else:
                     self._frame_event.wait(0.5)
                     self._frame_event.clear()
-                frame = self._current_frame() or previous
+                frame = self._current_frame(config) or previous
                 if frame is None:
                     continue
                 if (frame.width, frame.height) != (previous.width, previous.height) if previous else False:
@@ -216,9 +238,33 @@ class VideoSharePublisher:
                 except Exception:
                     pass
 
-    def _current_frame(self) -> VideoFrame | None:
+    def _current_frame(self, config: VideoShareConfig) -> VideoFrame | None:
         with self._frames_lock:
-            return self._latest_frame
+            if config.source_id == "panel":
+                return self._latest_source_frames.get(
+                    self._active_source(),
+                    self._latest_frame,
+                )
+            return self._latest_source_frames.get(config.source_id)
+
+    def _wait_for_frame(self, config: VideoShareConfig) -> VideoFrame | None:
+        while not self._stop.is_set():
+            frame = self._current_frame(config)
+            if frame is not None:
+                return frame
+            source_name = (
+                "panel"
+                if config.source_id == "panel"
+                else config.source_id[:12]
+            )
+            self._set_state(
+                config.identifier,
+                "waiting",
+                f"Kamera karesi bekleniyor: {source_name}",
+            )
+            self._frame_event.wait(0.5)
+            self._frame_event.clear()
+        return None
 
     def _wait_for_clock_reference(
         self,

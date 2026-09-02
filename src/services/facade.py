@@ -1,18 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from src.models.commands import CommandRequest, CommandResult
-from src.models.competition import CompetitionConnectionState, KamikazeEvent, LockEvent
 from src.models.mission import MapContact, MapOverlay, MissionState
-from src.models.orin import OrinMessage
 from src.models.settings import SettingsModel
 from src.models.telemetry import TelemetrySnapshot
 from src.models.parameters import Parameter
 from src.services.abstracts.commands import CommandService
-from src.services.abstracts.competition import CompetitionService
 from src.services.planner import PlannerService
-from src.services.abstracts.orin import OrinMessageHandler, OrinService
 from src.services.abstracts.parameters import ParameterService
 from src.services.abstracts.telemetry import TelemetryService
 from src.services.abstracts.settings import SettingsRepository
@@ -25,17 +19,13 @@ class BackendFacade:
         self,
         *,
         telemetry: TelemetryService,
-        competition: CompetitionService,
         planner: PlannerService,
-        orin: OrinService,
         commands: CommandService,
         parameters: ParameterService,
         settings: SettingsRepository,
     ) -> None:
         self.telemetry = telemetry
-        self.competition = competition
         self.planner = planner
-        self.orin = orin
         self.commands = commands
         self.parameters = parameters
         self.settings = settings
@@ -46,39 +36,8 @@ class BackendFacade:
     def push_telemetry(self, snapshot: TelemetrySnapshot) -> None:
         self.telemetry.push(snapshot)
 
-    def competition_snapshot(self) -> CompetitionConnectionState:
-        return self.competition.state
-
-    def refresh_competition_map_data(self) -> None:
-        self.competition.refresh_reference_data()
-
-    def submit_vehicle_lock_event(self, event: LockEvent) -> None:
-        self.competition.submit_lock_event(event)
-
-    def submit_vehicle_kamikaze_event(self, event: KamikazeEvent) -> None:
-        self.competition.submit_kamikaze_event(event)
-
     def mission_snapshot(self) -> MissionState:
         return self.planner.state
-
-    def orin_snapshot(self):
-        return self.orin.state
-
-    def issue_orin(self, packet_type: str, payload: dict | None = None):
-        return self.orin.issue(packet_type, payload or {})
-
-    def send_orin(self, packet_type: str, payload: dict | None = None):
-        return self.orin.send(packet_type, payload or {})
-
-    def subscribe_orin(self, callback: Callable[[OrinMessage], None]):
-        return self.orin.received.subscribe(callback)
-
-    def handle_orin(
-        self,
-        packet_type: str,
-        handler: OrinMessageHandler,
-    ):
-        return self.orin.register_handler(packet_type, handler)
 
     def upsert_mission_item(self, item: MapOverlay) -> None:
         self.planner.upsert_overlay(item)

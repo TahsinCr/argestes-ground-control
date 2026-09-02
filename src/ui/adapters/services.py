@@ -29,7 +29,7 @@ from src.services.abstracts.onboard import OnboardMissionServiceContract
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
-from src.services.target_selection import TargetSelectionService
+from src.services.ui_compatibility import TargetSelectionService
 
 
 class _QtAdapter(QObject):
@@ -451,6 +451,14 @@ class QtCommandService(_QtAdapter):
     def available_tasks(self) -> tuple[str, ...]:
         return self.backend.available_tasks
 
+    @property
+    def available_flight_modes(self) -> tuple[str, ...]:
+        return self.backend.available_flight_modes
+
+    @property
+    def available_command_codes(self) -> tuple[str, ...]:
+        return self.backend.available_command_codes
+
     def issue_command(
         self,
         command: str,
@@ -651,6 +659,9 @@ class QtParameterService(_QtAdapter):
 class QtVideoService(_QtAdapter):
     frame_ready = pyqtSignal(QImage)
     stats_updated = pyqtSignal(object)
+    source_frame_ready = pyqtSignal(str, QImage)
+    source_stats_updated = pyqtSignal(object)
+    reconnect_finished = pyqtSignal(bool, str)
     share_states_changed = pyqtSignal(object)
     _UI_FRAME_INTERVAL_MS = 33
 
@@ -670,6 +681,7 @@ class QtVideoService(_QtAdapter):
         self._timer.timeout.connect(self._emit_mock_frame)
         self._latest_frame_lock = threading.Lock()
         self._latest_frame: VideoFrame | None = None
+        self._latest_source_frames: dict[str, VideoFrame] = {}
         self._video_frame_scheduled = False
         self._video_frame_timer = QTimer(self)
         self._video_frame_timer.setSingleShot(True)
@@ -682,7 +694,18 @@ class QtVideoService(_QtAdapter):
         self._subscriptions.append(
             backend.frames.subscribe(self._capture_latest_frame)
         )
+        source_frames = getattr(backend, "source_frames", None)
+        if source_frames is not None:
+            self._subscriptions.append(
+                source_frames.subscribe(self._capture_latest_source_frame)
+            )
         self._subscribe(backend.stats_changed, self.stats_updated.emit)
+        source_stats_changed = getattr(backend, "source_stats_changed", None)
+        if source_stats_changed is not None:
+            self._subscribe(
+                source_stats_changed,
+                self.source_stats_updated.emit,
+            )
         share_states_changed = getattr(backend, "share_states_changed", None)
         if share_states_changed is not None:
             self._subscribe(share_states_changed, self.share_states_changed.emit)
@@ -699,10 +722,25 @@ class QtVideoService(_QtAdapter):
     def share_states(self):
         return getattr(self.backend, "share_states", ())
 
+    @property
+    def source_stats(self):
+        return getattr(self.backend, "source_stats", ())
+
     def configure_shares(self, configs: tuple[VideoShareConfig, ...]) -> None:
         configure = getattr(self.backend, "configure_shares", None)
         if configure is not None:
             configure(configs)
+
+    def reconnect(self) -> threading.Thread:
+        return self._start_worker(self._reconnect, name="QtVideoReconnect")
+
+    def _reconnect(self) -> None:
+        try:
+            self.backend.reconnect()
+        except Exception as exc:
+            self.reconnect_finished.emit(False, str(exc))
+            return
+        self.reconnect_finished.emit(True, "")
 
     def start(self) -> None:
         if self._mock_mode:
@@ -713,6 +751,7 @@ class QtVideoService(_QtAdapter):
         self._video_frame_timer.stop()
         with self._latest_frame_lock:
             self._latest_frame = None
+            self._latest_source_frames.clear()
             self._video_frame_scheduled = False
 
     @pyqtSlot(object)
@@ -729,6 +768,16 @@ class QtVideoService(_QtAdapter):
         if should_schedule:
             self._post(self._start_video_frame_timer)
 
+    def _capture_latest_source_frame(self, item) -> None:
+        should_schedule = False
+        with self._latest_frame_lock:
+            self._latest_source_frames[item.source_id] = item.frame
+            if not self._video_frame_scheduled:
+                self._video_frame_scheduled = True
+                should_schedule = True
+        if should_schedule:
+            self._post(self._start_video_frame_timer)
+
     @pyqtSlot()
     def _start_video_frame_timer(self) -> None:
         if not self._closed and not self._video_frame_timer.isActive():
@@ -738,16 +787,23 @@ class QtVideoService(_QtAdapter):
     def _emit_latest_frame(self) -> None:
         with self._latest_frame_lock:
             frame = self._latest_frame
+            source_frames = self._latest_source_frames
             self._latest_frame = None
+            self._latest_source_frames = {}
             self._video_frame_scheduled = False
         if frame is not None:
             self.frame_ready.emit(self._image_from_frame(frame))
+        for source_id, source_frame in source_frames.items():
+            self.source_frame_ready.emit(
+                source_id,
+                self._image_from_frame(source_frame),
+            )
 
         should_schedule = False
         with self._latest_frame_lock:
             if (
                 not self._closed
-                and self._latest_frame is not None
+                and (self._latest_frame is not None or self._latest_source_frames)
                 and not self._video_frame_scheduled
             ):
                 self._video_frame_scheduled = True
@@ -778,6 +834,7 @@ class QtVideoService(_QtAdapter):
         self._video_frame_timer.stop()
         with self._latest_frame_lock:
             self._latest_frame = None
+            self._latest_source_frames.clear()
             self._video_frame_scheduled = False
         super().close()
 

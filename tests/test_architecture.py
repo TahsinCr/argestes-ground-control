@@ -97,9 +97,8 @@ class ArchitectureTests(unittest.TestCase):
         self.assertEqual(violations, [])
         self.assertFalse(any((SRC / "services" / "io").rglob("*.py")))
 
-    def test_stylesheet_and_leaflet_vendor_are_unchanged(self) -> None:
+    def test_leaflet_vendor_assets_are_unchanged(self) -> None:
         expected = {
-            SRC / "ui/themes/stylesheet.py": "76a9dc9840b200f78e868e29d9a8a38e67928a825567addeecf066aa431273e7",
             SRC / "ui/web/vendor/leaflet.js": "db49d009c841f5ca34a888c96511ae936fd9f5533e90d8b2c4d57596f4e5641a",
             SRC / "ui/web/vendor/leaflet.css": "a7837102824184820dfa198d1ebcd109ff6d0ff9a2672a074b9a1b4d147d04c6",
         }

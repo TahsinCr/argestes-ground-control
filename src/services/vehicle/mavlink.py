@@ -17,6 +17,7 @@ from src.core.mavlink.filter import (
 from src.models.commands import CommandRequest
 from src.models.mission import MapOverlay
 from src.models.vehicle import (
+    VehicleCapabilities,
     VehicleConnectionConfig,
     VehicleConnectionState,
     VehicleTransportStats,
@@ -47,6 +48,10 @@ class NullVehicleService(VehicleService):
     @property
     def transport_stats(self) -> VehicleTransportStats:
         return VehicleTransportStats()
+
+    @property
+    def capabilities(self) -> VehicleCapabilities:
+        return VehicleCapabilities()
 
     def start(self) -> None:
         return
@@ -210,6 +215,55 @@ class MavlinkVehicleService(VehicleService):
             estimated_dropped_packets=router_stats.estimated_dropped_messages,
             delivery_quality=router_stats.delivery_quality,
             round_trip_ms=round_trip_ms,
+        )
+
+    @property
+    def capabilities(self) -> VehicleCapabilities:
+        """Return live MAVLink capabilities without guessing vehicle family.
+
+        MAVLink command support is adapter-level; individual flight modes are
+        queried from the connected autopilot's own mode mapping.  This works
+        for Plane, Copter, Rover, VTOL and simulator dialects without a UI
+        maintaining a brittle list of vehicle-specific modes.
+        """
+
+        if not self.connected:
+            return VehicleCapabilities()
+        mode_mapping = getattr(self._client, "call_raw", None)
+        mapping = mode_mapping("mode_mapping") if callable(mode_mapping) else {}
+        mapping = mapping or {}
+        modes = tuple(str(mode).upper() for mode in mapping)
+        mavlink = self._client.mavlink
+        required = {
+            "ARM": "MAV_CMD_COMPONENT_ARM_DISARM",
+            "DISARM": "MAV_CMD_COMPONENT_ARM_DISARM",
+            "FORCE_ARM": "MAV_CMD_COMPONENT_ARM_DISARM",
+            "GOTO": "MAV_FRAME_GLOBAL_RELATIVE_ALT_INT",
+            "SET_HOME": "MAV_CMD_DO_SET_HOME",
+            "LAND": "MAV_CMD_NAV_LAND",
+            "MISSION_UPLOAD": "MAV_MISSION_TYPE_MISSION",
+        }
+        commands = [
+            code for code, constant in required.items() if hasattr(mavlink, constant)
+        ]
+        if mapping:
+            commands.append("SET_MODE")
+        optional = {
+            "TAKEOFF": "MAV_CMD_NAV_TAKEOFF",
+            "MISSION_START": "MAV_CMD_MISSION_START",
+            "MISSION_PAUSE": "MAV_CMD_DO_PAUSE_CONTINUE",
+            "MISSION_RESUME": "MAV_CMD_DO_PAUSE_CONTINUE",
+        }
+        commands.extend(code for code, constant in optional.items() if hasattr(mavlink, constant))
+        if "RTL" in modes:
+            commands.append("RTL")
+        if "LOITER" in modes or "BRAKE" in modes:
+            commands.append("HOLD")
+        return VehicleCapabilities(
+            command_codes=tuple(commands),
+            flight_modes=modes,
+            vehicle_type=self._state.vehicle_type,
+            autopilot_type=self._state.autopilot_type,
         )
 
     def configure_connection(self, config: VehicleConnectionConfig) -> None:
@@ -470,7 +524,13 @@ class MavlinkVehicleService(VehicleService):
             "SET_MODE": lambda: self._set_mode(str(request.parameters["mode"])),
             "GOTO": lambda: self._goto(request.parameters),
             "SET_HOME": lambda: self._set_home(request.parameters),
+            "TAKEOFF": lambda: self._takeoff(request.parameters),
             "LAND": lambda: self._land(request.parameters),
+            "RTL": lambda: self._set_mode("RTL"),
+            "HOLD": self._hold,
+            "MISSION_START": lambda: self._mission_start(request.parameters),
+            "MISSION_PAUSE": lambda: self._set_mission_paused(True),
+            "MISSION_RESUME": lambda: self._set_mission_paused(False),
             "MISSION_UPLOAD": lambda: bool(
                 self.upload_mission(
                     (
@@ -875,6 +935,63 @@ class MavlinkVehicleService(VehicleService):
             self._client.mavlink.MAV_CMD_NAV_LAND,
             0, 0, 0, 0, latitude, longitude, altitude,
         )
+        return True
+
+    def _takeoff(self, parameters: dict[str, Any]) -> bool:
+        """Issue the portable MAVLink takeoff command.
+
+        The connected autopilot decides the vehicle-specific takeoff behavior.
+        Supplying a position is optional; a zero coordinate deliberately means
+        "use the current position" as defined by MAV_CMD_NAV_TAKEOFF.
+        """
+
+        mavlink = self._client.mavlink
+        command = getattr(mavlink, "MAV_CMD_NAV_TAKEOFF", None)
+        if command is None:
+            raise NotImplementedError("Bağlı MAVLink dialect TAKEOFF desteklemiyor")
+        altitude = float(parameters.get("altitude", self._default_mission_altitude))
+        if not math.isfinite(altitude) or altitude <= 0.0:
+            raise ValueError("TAKEOFF irtifası pozitif ve sonlu olmalı")
+        latitude = float(parameters.get("latitude", 0.0))
+        longitude = float(parameters.get("longitude", 0.0))
+        if (latitude or longitude) and (
+            not math.isfinite(latitude)
+            or not math.isfinite(longitude)
+            or not -90.0 <= latitude <= 90.0
+            or not -180.0 <= longitude <= 180.0
+        ):
+            raise ValueError("TAKEOFF koordinatları geçerli enlem/boylam olmalı")
+        pitch = float(parameters.get("pitch", 0.0))
+        if not math.isfinite(pitch):
+            raise ValueError("TAKEOFF pitch değeri sonlu olmalı")
+        self._command_long(command, pitch, 0.0, 0.0, 0.0, latitude, longitude, altitude)
+        return True
+
+    def _hold(self) -> bool:
+        """Hold at the vehicle's native safe-hold mode when one exists."""
+
+        mapping = self._client.call_raw("mode_mapping") or {}
+        for mode in ("LOITER", "BRAKE"):
+            if mode in mapping:
+                return self._set_mode(mode)
+        raise NotImplementedError("Bağlı araç HOLD için LOITER veya BRAKE modu sunmuyor")
+
+    def _mission_start(self, parameters: dict[str, Any]) -> bool:
+        command = getattr(self._client.mavlink, "MAV_CMD_MISSION_START", None)
+        if command is None:
+            raise NotImplementedError("Bağlı MAVLink dialect MISSION_START desteklemiyor")
+        first_item = int(parameters.get("first_item", 0))
+        last_item = int(parameters.get("last_item", 0))
+        if first_item < 0 or last_item < 0:
+            raise ValueError("Görev sıra numaraları negatif olamaz")
+        self._command_long(command, first_item, last_item)
+        return True
+
+    def _set_mission_paused(self, paused: bool) -> bool:
+        command = getattr(self._client.mavlink, "MAV_CMD_DO_PAUSE_CONTINUE", None)
+        if command is None:
+            raise NotImplementedError("Bağlı MAVLink dialect görev duraklatmayı desteklemiyor")
+        self._command_long(command, 0.0 if paused else 1.0)
         return True
 
     def _command_long(self, command: int, *parameters: float | int) -> None:

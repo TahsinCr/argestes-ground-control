@@ -4,16 +4,13 @@ from dataclasses import dataclass
 
 from src.core.dependency import BaseDependencyContainer
 from src.core.mavlink import MavlinkClient, MavlinkEndpoint
-from src.services.abstracts.orin import OrinService
 from src.services.abstracts.parameters import ParameterService
 from src.services.abstracts.telemetry import TelemetryService
 from src.services.abstracts.vehicle import VehicleService
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
 from src.services.vehicle import (
-    MavlinkOrinService,
     MavlinkVehicleService,
-    NullOrinService,
     NullVehicleService,
 )
 from src.services.vehicle.parameters import (
@@ -36,7 +33,6 @@ class VehicleStack:
     vehicle: VehicleService
     telemetry: TelemetryService
     parameters: ParameterService
-    orin: OrinService
 
 
 def _create_vehicle_stack(
@@ -50,7 +46,6 @@ def _create_vehicle_stack(
             vehicle=NullVehicleService(),
             telemetry=MockTelemetryService(logging.child("TELEMETRY")),
             parameters=MutableParameterService(),
-            orin=NullOrinService(),
         )
 
     mavlink = settings.backend.mavlink
@@ -90,12 +85,6 @@ def _create_vehicle_stack(
             refresh_on_connect=mavlink.sync_parameters_on_connect,
             default_loader=parameter_defaults.load,
         ),
-        orin=MavlinkOrinService(
-            client,
-            vehicle,
-            settings.backend.orin,
-            logging.child("ORIN"),
-        ),
     )
 
 
@@ -115,10 +104,6 @@ def _telemetry(stack: VehicleStack) -> TelemetryService:
 
 def _parameters(stack: VehicleStack) -> ParameterService:
     return stack.parameters
-
-
-def _orin(stack: VehicleStack) -> OrinService:
-    return stack.orin
 
 
 def register_vehicle_dependencies(
@@ -146,7 +131,6 @@ def register_vehicle_dependencies(
         (VehicleService, _vehicle),
         (TelemetryService, _telemetry),
         (ParameterService, _parameters),
-        (OrinService, _orin),
     ):
         container.singleton(
             token,

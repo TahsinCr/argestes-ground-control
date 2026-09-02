@@ -19,7 +19,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from src.models.video import VideoShareConfig, VideoShareState
+from src.models.video import (
+    VideoShareConfig,
+    VideoShareState,
+    VideoSourceConfig,
+    VideoSourceStats,
+)
 from src.ui.i18n import t
 from src.ui.themes.style import ThemePalette
 
@@ -41,6 +46,9 @@ class VideoSharePopup(QDialog):
         self._shares: list[VideoShareConfig] = []
         self._states: dict[str, VideoShareState] = {}
         self._network_interfaces: tuple[tuple[str, str], ...] = ()
+        self._sources: tuple[VideoSourceConfig, ...] = ()
+        self._connected_source_ids: frozenset[str] = frozenset()
+        self._active_source_id = ""
         self._editing = False
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
@@ -72,10 +80,18 @@ class VideoSharePopup(QDialog):
         states: tuple[VideoShareState, ...],
         *,
         network_interfaces: tuple[tuple[str, str], ...] = (),
+        sources: tuple[VideoSourceConfig, ...] = (),
+        source_stats: tuple[VideoSourceStats, ...] = (),
+        active_source_id: str = "",
     ) -> None:
         self._shares = list(shares)
         self._states = {state.identifier: state for state in states}
         self._network_interfaces = network_interfaces
+        self._sources = sources
+        self._connected_source_ids = frozenset(
+            item.source_id for item in source_stats if item.stats.connected
+        )
+        self._active_source_id = active_source_id
         self._render()
 
     def update_states(self, states: tuple[VideoShareState, ...]) -> None:
@@ -84,6 +100,26 @@ class VideoSharePopup(QDialog):
             return
         self._states = updated
         self._render()
+
+    def update_sources(
+        self,
+        sources: tuple[VideoSourceConfig, ...],
+        source_stats: tuple[VideoSourceStats, ...],
+        active_source_id: str,
+    ) -> None:
+        connected = frozenset(
+            item.source_id for item in source_stats if item.stats.connected
+        )
+        changed = (
+            sources != self._sources
+            or connected != self._connected_source_ids
+            or active_source_id != self._active_source_id
+        )
+        self._sources = sources
+        self._connected_source_ids = connected
+        self._active_source_id = active_source_id
+        if changed and not self._editing:
+            self._render()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -160,6 +196,13 @@ class VideoSharePopup(QDialog):
             address.setProperty("role", "detail")
             address.setWordWrap(True)
             layout.addWidget(address)
+            source_name = self._share_source_name(share.source_id)
+            source = QLabel(
+                f"{t('video.share.source', self._language)}: {source_name}",
+                card,
+            )
+            source.setProperty("role", "detail")
+            layout.addWidget(source)
             flags = "Sabit FPS" if share.fixed_frame_rate else "Değişken FPS"
             flags += " · Sunucu saati" if share.timestamp_enabled else " · Zaman damgası kapalı"
             status = QLabel(f"{flags} · {share.fps} FPS · {state.detail}", card)
@@ -222,6 +265,7 @@ class VideoSharePopup(QDialog):
                 timestamp_enabled=share.timestamp_enabled,
                 fixed_frame_rate=share.fixed_frame_rate,
                 network_interface=interface,
+                source_id=share.source_id,
             )
             for share in self._shares
         ]
@@ -260,11 +304,25 @@ class VideoSharePopup(QDialog):
         fps = QSpinBox(editor)
         fps.setRange(15, 120)
         fps.setValue(current.fps if current else 30)
+        source = QComboBox(editor)
+        source.addItem(t("video.share.source.panel", self._language), "panel")
+        for item in self._sources:
+            if item.identifier in self._connected_source_ids:
+                source.addItem(item.name, item.identifier)
+        selected_source = current.source_id if current else "panel"
+        if source.findData(selected_source) < 0:
+            unavailable = self._share_source_name(selected_source)
+            source.addItem(
+                f"{unavailable} ({t('video.share.source.disconnected', self._language)})",
+                selected_source,
+            )
+        source.setCurrentIndex(max(0, source.findData(selected_source)))
         form.addRow("Ad", name)
         form.addRow("Bağlantı", endpoint)
         form.addRow("Bağlantı tipi", connection_type)
         form.addRow("Codec", codec)
         form.addRow("FPS", fps)
+        form.addRow(t("video.share.source.label", self._language), source)
         root.addLayout(form)
         timestamp = QCheckBox("Sağ üstte milisaniyeli sunucu saati", editor)
         timestamp.setChecked(current.timestamp_enabled if current else True)
@@ -297,6 +355,7 @@ class VideoSharePopup(QDialog):
                         current.network_interface
                         if current else str(self.interface_combo.currentData() or "")
                     ),
+                    source_id=str(source.currentData() or "panel"),
                 )
             except ValueError as exc:
                 error.setText(str(exc))
@@ -341,6 +400,7 @@ class VideoSharePopup(QDialog):
                 timestamp_enabled=share.timestamp_enabled,
                 fixed_frame_rate=share.fixed_frame_rate,
                 network_interface=share.network_interface,
+                source_id=share.source_id,
             )
             for share in self._shares
         ]
@@ -352,3 +412,16 @@ class VideoSharePopup(QDialog):
             self._render_timer.start()
             return
         self._render()
+
+    def _share_source_name(self, source_id: str) -> str:
+        if source_id == "panel":
+            active = next(
+                (item.name for item in self._sources if item.identifier == self._active_source_id),
+                "",
+            )
+            panel = t("video.share.source.panel", self._language)
+            return f"{panel}{f' · {active}' if active else ''}"
+        return next(
+            (item.name for item in self._sources if item.identifier == source_id),
+            source_id,
+        )

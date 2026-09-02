@@ -3,10 +3,81 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
-- Connected onboard `target.lock.status` to the official target fields in the
-  periodic TEKNOFEST telemetry packet, with automatic stale-target clearing.
-- Connected reliable `target.lock.report` requests to one deduplicated
-  `/api/kilitlenme_bilgisi` POST using the onboard server-time result.
+## **[1.6-beta] - 02.09.2026**
+
+The **"Common Vehicle Platform and Multi-Camera Update"** turns `main` into a
+clean, vehicle-agnostic ground-control foundation. SIHA-specific automation is
+removed from the common runtime while MAVLink, planning, video and operator
+workflows become more reusable.
+
+### Added
+
+* **Capability-aware vehicle control**:
+  * Added transport-neutral command definitions and vehicle capability models.
+    The UI now derives available commands and flight modes from the connected
+    vehicle instead of assuming one airframe or autopilot workflow.
+  * Added serialized command dispatch and latest-wins navigation revisions, so
+    a superseded GOTO cannot be sent after a newer target has been selected.
+* **Multi-camera operation**:
+  * Added named camera input profiles, source-tagged frames/statistics and one
+    capture service per required source.
+  * Added 1, 2, 3 and 4 pane camera-wall layouts, fixed floating controls and
+    direct source swapping from the camera-name menu. One source cannot appear
+    in more than one pane.
+  * Added multi-target video sharing with selectable camera/panel source,
+    codec, transport, network interface, fixed-FPS and timestamp settings.
+* **Composition and compatibility**:
+  * Centralized application composition in `src/container.py` with explicit
+    infrastructure, vehicle, application and runtime registration order.
+  * Added passive UI compatibility adapters while the common UI is redesigned;
+    they preserve visual construction without opening legacy connections.
+
+### Changed
+
+* **Common backend boundary**:
+  * Removed SIHA-specific Onboard/Orin execution, TEKNOFEST competition,
+    target-selection, Kamikaze approach and archive runtime ownership from
+    `main`.
+  * Kept the shared MAVLink vehicle stack, camera services, planner,
+    parameters, logs, map cache, mission archive and battery safety features
+    as common infrastructure.
+* **Settings and models**:
+  * Migrated legacy single-camera and single-telemetry settings into validated
+    profile collections while retaining backwards-compatible active views.
+  * Added battery percentage-source selection between Pixhawk reporting and
+    voltage estimation.
+* **Operator interface**:
+  * Reworked the video panel for compact split-screen operation, source names,
+    stable bottom toolbars and non-blocking source switching.
+  * Simplified panel chrome, compacted the left sidebar, restored clear
+    ARM/DISARM quick actions and improved log-search placement, status colors
+    and translated labels.
+  * Updated the map, telemetry and command panels to consume generic vehicle
+    capabilities without binding their presentation to SIHA automation.
+* **Repository maintenance**:
+  * Removed the fake TEKNOFEST server, performance monitor and tests that only
+    exercised removed competition/onboard automation.
+  * Replaced obsolete application/infrastructure dependency modules with the
+    single composition root and focused hardware-free contract coverage.
+
+### Fixed
+
+* Prevented large window sizes from expanding the left sidebar until the
+  operator explicitly drags its splitter.
+* Kept camera controls attached to the video wall rather than individual tiles
+  while changing layouts.
+* Kept video source reconfiguration outside the UI thread and coalesced rapid
+  profile updates to the latest requested configuration.
+
+### Documentation
+
+* Rewrote the README for the common GCS architecture, current command/video
+  model, development boundaries and platform requirements.
+
+### Testing
+
+* `python run_tests.py` passes **345/345** YKİ, Communication Contracts and
+  Vehicle Autonomy Core tests.
 
 ## **[1.5.0-beta] - 22.08.2026**
 The **"Shared Onboard Contracts and Mission Planning Update"** brings the

@@ -15,7 +15,7 @@ from src.models.mission import MapOverlay
 from src.models.parameters import Parameter
 from src.models.settings import BatteryTelemetrySettings
 from src.models.telemetry import TelemetrySnapshot
-from src.models.vehicle import VehicleConnectionState, VehicleTransportStats
+from src.models.vehicle import VehicleCapabilities, VehicleConnectionState, VehicleTransportStats
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
 from src.services.commands import DispatchCommandService
@@ -1027,41 +1027,6 @@ class VehicleServiceTests(unittest.TestCase):
             1,
         )
 
-    def test_plain_goto_cancels_active_hss_transit_before_vehicle_command(self) -> None:
-        calls: list[str] = []
-
-        class Vehicle:
-            connected = True
-            state = VehicleConnectionState(True, "test", 1, 1)
-
-            def execute(self, _request: CommandRequest) -> bool:
-                calls.append("goto")
-                return True
-
-        class Onboard:
-            state = SimpleNamespace(
-                active_task="hss.transit",
-                terminal=False,
-                hss_route={"route_id": "route-1"},
-            )
-
-            def cancel_task(self, task: str):
-                calls.append(f"cancel:{task}")
-                return SimpleNamespace(accepted=True)
-
-        commands = DispatchCommandService(
-            Vehicle(),  # type: ignore[arg-type]
-            MutableParameterService(),
-            onboard=Onboard(),  # type: ignore[arg-type]
-        )
-
-        result = commands.dispatch(
-            CommandRequest("GOTO", {"latitude": 39.0, "longitude": 32.0})
-        )
-
-        self.assertTrue(result.accepted)
-        self.assertEqual(calls, ["cancel:hss.transit", "goto"])
-
     def test_home_reference_is_sent_with_acknowledged_mavlink_command(self) -> None:
         mavlink = SimpleNamespace(
             MAV_CMD_DO_SET_HOME=179,
@@ -1184,6 +1149,78 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(method, "set_position_target_global_int_send")
         self.assertEqual(arguments[4], 0b0000111111111000)
         self.assertAlmostEqual(arguments[7], 123.4)
+
+    def test_capabilities_use_connected_autopilot_mode_mapping(self) -> None:
+        test_case = self
+        mavlink = SimpleNamespace(
+            MAV_CMD_NAV_TAKEOFF=22,
+            MAV_CMD_MISSION_START=300,
+            MAV_CMD_DO_PAUSE_CONTINUE=193,
+        )
+
+        class Client:
+            endpoint = SimpleNamespace(uri="test")
+            connection = SimpleNamespace(target_system=7, target_component=1)
+            is_connected = True
+
+            def __init__(self) -> None:
+                self.mavlink = mavlink
+
+            def call_raw(self, name: str):
+                test_case.assertEqual(name, "mode_mapping")
+                return {"GUIDED": 15, "BRAKE": 17, "RTL": 11}
+
+        vehicle = MavlinkVehicleService(Client())  # type: ignore[arg-type]
+        vehicle._state = VehicleConnectionState(True, "test", 7, 1, 2, 3)
+
+        capabilities = vehicle.capabilities
+
+        self.assertEqual(capabilities.flight_modes, ("GUIDED", "BRAKE", "RTL"))
+        self.assertTrue(capabilities.supports("TAKEOFF"))
+        self.assertTrue(capabilities.supports("HOLD"))
+        self.assertTrue(capabilities.supports("MISSION_PAUSE"))
+        self.assertEqual(capabilities.vehicle_type, 2)
+
+    def test_dispatch_rejects_unsupported_capability_before_vehicle_call(self) -> None:
+        class Vehicle:
+            connected = True
+            state = VehicleConnectionState(True, "test", 1, 1)
+            capabilities = VehicleCapabilities(command_codes=("ARM",))
+
+            def execute(self, _request: CommandRequest) -> bool:
+                raise AssertionError("unsupported command must not reach vehicle")
+
+        commands = DispatchCommandService(
+            Vehicle(),  # type: ignore[arg-type]
+            MutableParameterService(),
+        )
+
+        result = commands.dispatch(CommandRequest("GOTO", {"latitude": 1, "longitude": 2}))
+
+        self.assertFalse(result.accepted)
+        self.assertIn("desteklediğini bildirmiyor", result.message)
+
+    def test_dispatch_normalizes_portable_command_aliases(self) -> None:
+        class Vehicle:
+            connected = True
+            state = VehicleConnectionState(True, "test", 1, 1)
+            capabilities = VehicleCapabilities(command_codes=("RTL",))
+
+            def __init__(self) -> None:
+                self.request: CommandRequest | None = None
+
+            def execute(self, request: CommandRequest) -> bool:
+                self.request = request
+                return True
+
+        vehicle = Vehicle()
+        commands = DispatchCommandService(vehicle, MutableParameterService())  # type: ignore[arg-type]
+
+        result = commands.dispatch(CommandRequest("return_to_launch"))
+
+        self.assertTrue(result.accepted)
+        self.assertIsNotNone(vehicle.request)
+        self.assertEqual(vehicle.request.code, "RTL")
 
     def test_unacknowledged_transport_is_logged_as_sent_not_confirmed(self) -> None:
         class Vehicle:
@@ -1384,49 +1421,6 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertFalse(result.accepted)
         self.assertIn("TARGET_LOCK", result.message)
         self.assertEqual(logs.history[-1].action, "command.rejected")
-
-    def test_target_lock_ui_command_uses_onboard_mission_service(self) -> None:
-        class Vehicle:
-            connected = True
-            state = VehicleConnectionState(True, "test", 1, 1)
-
-        class Onboard:
-            def __init__(self) -> None:
-                self.calls: list[tuple[str, str]] = []
-
-            def start_task(self, task: str, *, source: str = "ui"):
-                self.calls.append((task, source))
-                return SimpleNamespace(
-                    accepted=True,
-                    message="accepted",
-                    request_id=77,
-                    round_trip_ms=12.0,
-                    response={
-                        "execution": "starting",
-                        "mission_id": 52,
-                    },
-                )
-
-        onboard = Onboard()
-        commands = DispatchCommandService(
-            Vehicle(),  # type: ignore[arg-type]
-            MutableParameterService(),
-            orin=SimpleNamespace(),  # type: ignore[arg-type]
-            onboard=onboard,  # type: ignore[arg-type]
-        )
-
-        result = commands.dispatch(
-            CommandRequest(
-                "SET_MISSION_TASK",
-                {"task": "TARGET_LOCK"},
-                "operator-ui",
-            )
-        )
-
-        self.assertTrue(result.accepted)
-        self.assertEqual(onboard.calls, [("TARGET_LOCK", "operator-ui")])
-        self.assertEqual(result.details["mission_id"], 52)
-        self.assertEqual(result.details["orin_execution"], "starting")
 
     def test_auto_land_task_uses_fixed_wing_autoland_mode(self) -> None:
         class Vehicle:

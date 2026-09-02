@@ -91,7 +91,9 @@ class AttitudeIndicator(QWidget):
         self._animation_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._animation_timer.setInterval(self._ANIMATION_INTERVAL_MS)
         self._animation_timer.timeout.connect(self._advance_animation)
-        self.setMinimumHeight(205)
+        # The panel is intentionally compact now that repeated panel chrome
+        # is gone; the horizon still has enough vertical room at this size.
+        self.setMinimumHeight(175)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def set_theme(self, theme: ThemePalette) -> None:

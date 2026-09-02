@@ -9,6 +9,7 @@ from src.core.events import EventBus, Subscription
 from src.models.commands import CommandRequest
 from src.models.mission import MapOverlay
 from src.models.vehicle import (
+    VehicleCapabilities,
     VehicleConnectionConfig,
     VehicleConnectionState,
     VehicleTransportStats,
@@ -37,6 +38,12 @@ class VehicleService(Service):
     @property
     @abstractmethod
     def transport_stats(self) -> VehicleTransportStats: ...
+
+    @property
+    @abstractmethod
+    def capabilities(self) -> VehicleCapabilities:
+        """Commands and modes usable by the current vehicle connection."""
+        ...
 
     @abstractmethod
     def configure_connection(self, config: VehicleConnectionConfig) -> None: ...

@@ -7,7 +7,15 @@ from src.core.events import EventBus
 from collections.abc import Callable
 from datetime import datetime
 
-from src.models.video import VideoFrame, VideoShareConfig, VideoShareState, VideoStreamStats
+from src.models.video import (
+    VideoFrame,
+    VideoShareConfig,
+    VideoShareState,
+    VideoSourceConfig,
+    VideoSourceFrame,
+    VideoSourceStats,
+    VideoStreamStats,
+)
 
 
 class VideoService(Service):
@@ -33,6 +41,18 @@ class VideoService(Service):
 
     @property
     @abstractmethod
+    def source_frames(self) -> EventBus[VideoSourceFrame]: ...
+
+    @property
+    @abstractmethod
+    def source_stats_changed(self) -> EventBus[VideoSourceStats]: ...
+
+    @property
+    @abstractmethod
+    def source_stats(self) -> tuple[VideoSourceStats, ...]: ...
+
+    @property
+    @abstractmethod
     def share_states_changed(self) -> EventBus[tuple[VideoShareState, ...]]: ...
 
     @property
@@ -41,6 +61,16 @@ class VideoService(Service):
 
     @abstractmethod
     def configure_shares(self, configs: tuple[VideoShareConfig, ...]) -> None: ...
+
+    @abstractmethod
+    def configure_sources(
+        self,
+        configs: tuple[VideoSourceConfig, ...],
+        active_identifier: str,
+    ) -> None: ...
+
+    @abstractmethod
+    def set_active_source(self, identifier: str) -> None: ...
 
     @abstractmethod
     def set_server_time_provider(self, provider: Callable[[], datetime | None]) -> None: ...

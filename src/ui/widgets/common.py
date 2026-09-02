@@ -31,10 +31,13 @@ class PanelFrame(QFrame):
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(0)
 
+        # Panel content is self-describing through its controls.  Reserve no
+        # vertical space for repeated panel names/subtitles; the small header
+        # is revived only when a panel contributes actual utility controls.
         self.header = QWidget(self)
         self.header.setObjectName("PanelHeader")
         header_layout = QVBoxLayout(self.header)
-        header_layout.setContentsMargins(8, 6, 8, 6)
+        header_layout.setContentsMargins(8, 4, 8, 2)
         header_layout.setSpacing(1)
 
         header_row = QWidget(self.header)
@@ -42,23 +45,30 @@ class PanelFrame(QFrame):
         row_layout.setContentsMargins(0, 0, 0, 0)
         row_layout.setSpacing(8)
 
+        self.leading_box = QWidget(header_row)
+        self.leading_layout = QHBoxLayout(self.leading_box)
+        self.leading_layout.setContentsMargins(0, 0, 0, 0)
+        self.leading_layout.setSpacing(6)
         self.title_label = QLabel(title, header_row)
         self.title_label.setObjectName("PanelTitle")
+        self.title_label.hide()
         self.trailing_box = QWidget(header_row)
         self.trailing_layout = QHBoxLayout(self.trailing_box)
         self.trailing_layout.setContentsMargins(0, 0, 0, 0)
         self.trailing_layout.setSpacing(6)
-        row_layout.addWidget(self.title_label)
+        row_layout.addWidget(self.leading_box)
         row_layout.addStretch(1)
         row_layout.addWidget(self.trailing_box)
 
         self.subtitle_label = QLabel(subtitle, self.header)
         self.subtitle_label.setObjectName("PanelSubtitle")
         self.subtitle_label.setWordWrap(True)
+        self.subtitle_label.hide()
 
         header_layout.addWidget(header_row)
         header_layout.addWidget(self.subtitle_label)
         self._layout.addWidget(self.header)
+        self.header.hide()
 
         self.body = QWidget(self)
         self.body.setObjectName("PanelBody")
@@ -68,12 +78,20 @@ class PanelFrame(QFrame):
         self._layout.addWidget(self.body)
 
     def set_title(self, title: str, subtitle: str) -> None:
+        """Keep the public API while intentionally omitting panel chrome."""
         self.title_label.setText(title)
         self.subtitle_label.setText(subtitle)
-        self.subtitle_label.setVisible(bool(subtitle))
+        self.title_label.hide()
+        self.subtitle_label.hide()
 
     def add_header_widget(self, widget: QWidget) -> None:
         self.trailing_layout.addWidget(widget)
+        self.header.show()
+
+    def add_header_leading_widget(self, widget: QWidget) -> None:
+        """Add a utility control to the left side of a panel tool row."""
+        self.leading_layout.addWidget(widget)
+        self.header.show()
 
 
 class MetricCard(QFrame):

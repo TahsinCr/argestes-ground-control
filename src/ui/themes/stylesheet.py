@@ -358,6 +358,14 @@ def build_stylesheet(theme: ThemePalette) -> str:
         font-size: 10px;
         font-weight: 800;
     }}
+    QLineEdit#LogSearchInput {{
+        background: {theme.surface_alt};
+        border-color: {theme.border};
+    }}
+    QLineEdit#LogSearchInput:hover {{
+        background: {theme.surface_hover};
+        border-color: {theme.border_strong};
+    }}
     #LogLevelFilter:hover {{
         background: {theme.surface_hover};
         border-color: {theme.border_strong};
