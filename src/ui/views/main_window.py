@@ -67,7 +67,6 @@ class MainWindow(QMainWindow):
         archive_service: MissionArchiveService,
         battery_alarm_service: BatteryAlarmService,
         onboard_service,
-        target_selection_service,
         base_dir: Path,
         theme: ThemePalette,
     ) -> None:
@@ -89,7 +88,6 @@ class MainWindow(QMainWindow):
         self.battery_alarm_service = battery_alarm_service
         self.archive_service = archive_service
         self.onboard_service = onboard_service
-        self.target_selection_service = target_selection_service
         self._last_warning_signature = ""
         self._last_snapshot = telemetry_service.current
         self._last_video_stats = video_service.stats
@@ -417,18 +415,6 @@ class MainWindow(QMainWindow):
         self.onboard_service.state_changed.connect(self.map_panel.update_onboard_state)
         self.command_panel.update_onboard_state(self.onboard_service.state)
         self.map_panel.update_onboard_state(self.onboard_service.state)
-        self.target_selection_service.updated.connect(
-            self.parameters_panel.update_target_selection
-        )
-        self.parameters_panel.target_selector_visibility_changed.connect(
-            self.target_selection_service.set_ranking_enabled
-        )
-        self.target_selection_service.set_ranking_enabled(
-            self.parameters_panel.target_selector_active
-        )
-        self.parameters_panel.update_target_selection(
-            self.target_selection_service.last_result
-        )
 
     def _request_command(self, code: str, parameters: dict) -> None:
         task = str(parameters.get("task", "")).strip().upper()

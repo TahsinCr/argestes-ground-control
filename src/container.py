@@ -30,7 +30,6 @@ from src.services.tile_cache import TileCacheServer
 from src.services.ui_compatibility import (
     DormantConnectionControlService,
     DormantOnboardMissionService,
-    TargetSelectionService,
 )
 from src.services.vehicle.dependencies import (
     VehicleStack,
@@ -234,7 +233,6 @@ def _register_application(container: BaseDependencyContainer) -> None:
         priority=priority,
     )
     container.singleton(OnboardMissionServiceContract, concrete=DormantOnboardMissionService, priority=priority)
-    container.singleton(TargetSelectionService, concrete=TargetSelectionService, priority=priority)
     container.singleton(ConnectionControlService, concrete=DormantConnectionControlService, priority=priority)
     container.singleton(
         BatteryAlarmService,

@@ -16,7 +16,6 @@ from src.models.logs import LogEntry
 from src.models.connections import ConnectionStatus
 from src.models.mission import MapContact, MapOverlay, MissionState
 from src.models.settings import SettingsModel
-from src.models.target_selection import TargetSelectionResult
 from src.models.telemetry import TelemetrySnapshot
 from src.models.video import VideoFrame, VideoShareConfig
 from src.services.abstracts.commands import CommandService
@@ -29,7 +28,6 @@ from src.services.abstracts.onboard import OnboardMissionServiceContract
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
-from src.services.ui_compatibility import TargetSelectionService
 
 
 class _QtAdapter(QObject):
@@ -475,28 +473,6 @@ class QtCommandService(_QtAdapter):
             lambda: self.backend.issue_command(normalized, parameters, source=source),
             name=f"QtCommand-{normalized}",
         )
-
-
-class QtTargetSelectionService(_QtAdapter):
-    """Deliver selector updates to Qt on the GUI thread."""
-
-    updated = pyqtSignal(object)
-
-    def __init__(
-        self,
-        backend: TargetSelectionService,
-        parent: QObject | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.backend = backend
-        self._subscribe(backend.updated, self.updated.emit)
-
-    @property
-    def last_result(self) -> TargetSelectionResult:
-        return self.backend.last_result
-
-    def set_ranking_enabled(self, enabled: bool) -> None:
-        self.backend.set_ranking_enabled(enabled)
 
 
 class QtOnboardMissionService(_QtAdapter):

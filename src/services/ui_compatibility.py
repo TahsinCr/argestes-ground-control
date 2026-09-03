@@ -13,26 +13,8 @@ from src.core.events import EventBus, Subscription
 from src.models.connections import ConnectionStatus
 from src.models.onboard import OnboardMissionEvent, OnboardMissionState
 from src.models.orin import OrinCommandReceipt
-from src.models.target_selection import TargetSelectionResult
 from src.services.abstracts.connections import ConnectionControlService
 from src.services.abstracts.onboard import OnboardMissionServiceContract
-
-
-class TargetSelectionService:
-    """Empty presentation source; target-ranking automation has been removed."""
-
-    def __init__(self) -> None:
-        self.updated = EventBus[TargetSelectionResult]()
-        self.last_result = TargetSelectionResult()
-
-    def set_ranking_enabled(self, _enabled: bool) -> None:
-        return
-
-    def start(self) -> None:
-        return
-
-    def stop(self) -> None:
-        return
 
 
 class DormantOnboardMissionService(OnboardMissionServiceContract):
@@ -148,5 +130,4 @@ class DormantConnectionControlService(ConnectionControlService):
 __all__ = [
     "DormantConnectionControlService",
     "DormantOnboardMissionService",
-    "TargetSelectionService",
 ]

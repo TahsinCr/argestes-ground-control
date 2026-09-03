@@ -31,7 +31,6 @@ from src.models.mission import MapContact
 from src.models.onboard import ACTUATOR_TEST_TASK, OnboardMissionState
 from src.models.parameters import Parameter
 from src.models.settings import SettingsModel
-from src.models.target_selection import TargetCandidateScore, TargetSelectionResult
 from src.models.telemetry import TelemetrySnapshot
 from src.models.video import VideoSourceConfig, VideoStreamStats
 from src.ui.config.commands import AUTONOMOUS_COMMANDS, PROFILE_FIELDS
@@ -387,7 +386,7 @@ class UiContractTests(unittest.TestCase):
 
     def test_parameter_panel_tracks_selected_task_on_mission_commands_tab(self) -> None:
         panel = ParametersPanel("", "", "")
-        self.assertEqual(panel.tabs.count(), 3)
+        self.assertEqual(panel.tabs.count(), 2)
         self.assertEqual(panel.tabs.tabText(0), "Parametreler")
         self.assertEqual(panel.tabs.tabText(1), "Görev Aksiyonları")
 
@@ -624,46 +623,6 @@ class UiContractTests(unittest.TestCase):
         self.assertEqual(panel.arm_toggle_button.property("role"), "danger")
         self.assertFalse(hasattr(panel, "rtl_button"))
         self.assertFalse(hasattr(panel, "start_stop_toggle"))
-        panel.close()
-        panel.deleteLater()
-        self.app.processEvents()
-
-    def test_target_selector_table_defaults_to_score_and_allows_column_sorting(self) -> None:
-        panel = ParametersPanel("", "", "")
-        panel.tabs.setCurrentWidget(panel.target_selector_tab)
-        candidates = (
-            TargetCandidateScore(
-                team_number=7, final_score=72.5, lock_probability=68.0,
-                pre_score=70.0, tail_access_score=66.0, data_confidence=94.0,
-                distance_m=120.0, altitude_delta_m=8.0, data_age_ms=4,
-                merge_eta_s=2.0, best_lock_start_s=4.2,
-                best_lock_duration_s=12.0, heading_alignment_deg=16.0,
-                turn_required_deg=20.0, simulation_quality=75.0, reason="uygun",
-            ),
-            TargetCandidateScore(
-                team_number=3, final_score=91.0, lock_probability=81.0,
-                pre_score=89.0, tail_access_score=78.0, data_confidence=97.0,
-                distance_m=90.0, altitude_delta_m=6.0, data_age_ms=3,
-                merge_eta_s=1.2, best_lock_start_s=4.8,
-                best_lock_duration_s=8.0, heading_alignment_deg=10.0,
-                turn_required_deg=12.0, simulation_quality=88.0, reason="en uygun",
-            ),
-        )
-
-        panel.update_target_selection(
-            TargetSelectionResult(
-                candidates=candidates,
-                considered_count=4,
-                valid_count=2,
-                simulated_count=2,
-                elapsed_ms=12.0,
-            )
-        )
-
-        self.assertEqual(panel.tabs.count(), 3)
-        self.assertEqual(panel.target_selector_table.item(0, 0).data(Qt.ItemDataRole.UserRole), 3.0)
-        panel.target_selector_table.sortItems(0, Qt.SortOrder.DescendingOrder)
-        self.assertEqual(panel.target_selector_table.item(0, 0).data(Qt.ItemDataRole.UserRole), 7.0)
         panel.close()
         panel.deleteLater()
         self.app.processEvents()
