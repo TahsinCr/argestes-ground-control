@@ -48,6 +48,7 @@ class ConnectionPopup(QDialog):
         self._status: ConnectionStatus | None = None
         self._busy = False
         self._can_disconnect = False
+        self._available = True
         self._back_navigation = False
         self._server_profile_editor = False
         self._telemetry_profile_editor = False
@@ -150,6 +151,7 @@ class ConnectionPopup(QDialog):
             self.video_latency_input.setValue(int(status.options.get("latency_ms", 100)))
 
         self._can_disconnect = status.can_disconnect
+        self._available = bool(status.options.get("available", True))
         self._sync_reconnect_label(status)
         self.set_busy(False)
 
@@ -193,8 +195,10 @@ class ConnectionPopup(QDialog):
         self._status = status
         self._apply_status(status)
         self._can_disconnect = status.can_disconnect
+        self._available = bool(status.options.get("available", True))
         if not self._busy:
             self.disconnect_button.setEnabled(self._can_disconnect)
+            self.reconnect_button.setEnabled(self._available)
         self._sync_reconnect_label(status)
 
     def set_theme(self, theme: ThemePalette) -> None:
@@ -219,7 +223,7 @@ class ConnectionPopup(QDialog):
 
     def set_busy(self, busy: bool, message: str | None = None) -> None:
         self._busy = bool(busy)
-        self.reconnect_button.setDisabled(busy)
+        self.reconnect_button.setDisabled(busy or not self._available)
         self.disconnect_button.setDisabled(busy or not self._can_disconnect)
         if busy:
             self.result_label.setText(

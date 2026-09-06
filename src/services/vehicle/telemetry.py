@@ -55,6 +55,17 @@ class MutableTelemetryService(TelemetryService):
             self._current = value
         self._updated.publish(clone_snapshot(value))
 
+    def _current_for_decoder(self) -> TelemetrySnapshot:
+        """Borrow the private snapshot for a read-only decoder pass.
+
+        ``TelemetryDecoder.apply`` always returns a new snapshot; avoiding a
+        public defensive clone here removes one full model copy per MAVLink
+        packet while preserving copies at the public service boundaries.
+        """
+
+        with self._lock:
+            return self._current
+
     def patch(self, **changes: Any) -> None:
         with self._lock:
             self._current = self._current.copy(**changes)
@@ -558,7 +569,7 @@ class VehicleTelemetryService(MutableTelemetryService):
     def _consume_message(self, message: Any) -> None:
         try:
             message_type = str(message.get_type()).upper()
-            snapshot = self._decoder.apply(self.current, message)
+            snapshot = self._decoder.apply(self._current_for_decoder(), message)
             if message_type == "HEARTBEAT":
                 snapshot = snapshot.copy(
                     flight_mode=self._vehicle.mode_name(message, snapshot.flight_mode)

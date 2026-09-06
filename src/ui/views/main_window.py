@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, QPoint, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QPoint, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QApplication,
@@ -1241,6 +1241,23 @@ class MainWindow(QMainWindow):
         self.video_share_popup.move(x, y)
         self.video_share_popup.show()
         self.video_share_popup.raise_()
+        # The interface catalogue is refreshed off the GUI thread.  A short
+        # follow-up render fills an initially cold cache without blocking this
+        # popup's opening animation.
+        QTimer.singleShot(180, self._refresh_open_video_share_interfaces)
+
+    def _refresh_open_video_share_interfaces(self) -> None:
+        if not self.video_share_popup.isVisible():
+            return
+        interfaces = active_ipv4_interfaces()
+        self.video_share_popup.show_shares(
+            tuple(self._active_settings.backend.video_shares),
+            self.video_service.share_states,
+            network_interfaces=interfaces,
+            sources=tuple(self._active_settings.backend.video_sources),
+            source_stats=self.video_service.source_stats,
+            active_source_id=self._active_settings.backend.active_video_source_id,
+        )
 
     def _open_video_connections_popup(self, chip: StatusChip) -> None:
         self.connection_popup.close()
@@ -1301,6 +1318,7 @@ class MainWindow(QMainWindow):
             connected=status.connected,
             running=bool(status.options.get("running", False)),
             detail=status.detail,
+            available=bool(status.options.get("available", True)),
         )
         self.competition_servers_popup.adjustSize()
         origin = chip.mapToGlobal(QPoint(0, 0))

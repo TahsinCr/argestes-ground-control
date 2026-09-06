@@ -8,6 +8,7 @@ from pathlib import Path
 from src.core.dependency import DependencyContainer
 from src.core.events import Subscription
 from src.services.abstracts.commands import CommandService
+from src.services.abstracts.connections import ConnectionControlService
 from src.services.abstracts.parameters import ParameterService
 from src.services.abstracts.telemetry import TelemetryService
 from src.services.abstracts.vehicle import VehicleService
@@ -35,6 +36,7 @@ class RuntimeServices:
     video_service: VideoService
     tile_cache_service: TileCacheServer
     archive_service: MissionArchiveService
+    connection_service: ConnectionControlService
     facade: BackendFacade
     _subscriptions: list[Subscription] = field(default_factory=list, repr=False)
     _python_handler: ServiceLogHandler | None = field(default=None, repr=False)
@@ -176,22 +178,6 @@ class RuntimeServices:
                         "source_uri": settings.backend.video_source_uri,
                     },
                 )
-        if (
-            not self._stop_requested.is_set()
-            and not settings.backend.mock_mode
-            and settings.backend.mavlink.auto_connect
-        ):
-            try:
-                self.vehicle_service.start()
-            except Exception as exc:
-                self.log_service.event(
-                    "VEHICLE",
-                    "vehicle.connect_failed",
-                    f"Uçuş cihazı bağlantısı kurulamadı: {exc}",
-                    severity="danger",
-                    details={"endpoint": settings.backend.mavlink.endpoint},
-                )
-
     def stop(self) -> None:
         with self._lifecycle_lock:
             if not self._started and not self._starting:
@@ -219,6 +205,7 @@ class RuntimeServices:
         return (
             ("async_runtime", self.async_runtime),
             ("tile_cache", self.tile_cache_service),
+            ("connections", self.connection_service),
             ("planner", self.planner_service),
             ("telemetry", self.telemetry_service),
             ("parameters", self.parameter_service),
@@ -228,6 +215,9 @@ class RuntimeServices:
         return (
             ("parameters", self.parameter_service),
             ("telemetry", self.telemetry_service),
+            # Stop recovery before closing the single MAVLink transport.  This
+            # prevents the retry worker from reopening it during shutdown.
+            ("connections", self.connection_service),
             ("vehicle", self.vehicle_service),
             ("planner", self.planner_service),
             ("video", self.video_service),

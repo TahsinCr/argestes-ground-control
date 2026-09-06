@@ -1,7 +1,51 @@
 # **Change Log**
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## **[1.6.1-beta] - 06.09.2026**
+
+### Added
+
+* Added an application-owned MAVLink connection controller. It owns the
+  initial automatic connection and bounded heartbeat recovery without creating
+  another MAVLink reader, router or transport.
+* Added focused regression coverage for initial connection policy, recovery
+  backoff, manual-disconnect suppression, connection cancellation and video
+  share worker generations.
+
+### Changed
+
+* Automatic MAVLink connection now has explicit settings semantics:
+  `auto_connect` permits only the initial application-start attempt and
+  `autoreconnect` permits retries after an established connection is lost.
+  When both are disabled, the application makes no automatic connection
+  attempt.
+* Runtime startup and shutdown now own the connection controller lifecycle so
+  recovery work cannot reopen a transport while the application is stopping.
+* Connection UI operations are coalesced per channel and profile editing is
+  temporarily disabled while a connection operation is pending.
+* Video-share interface discovery is cached and refreshed outside the UI
+  thread. Publisher pipelines use bounded leaky queues so a slow receiver
+  cannot accumulate frames or memory indefinitely.
+* Telemetry decoding now updates its internal snapshot without an unnecessary
+  public defensive-copy round trip for every MAVLink packet.
+* Connection menus distinguish unavailable optional backends from failed
+  connections, preventing inactive compatibility surfaces from starting
+  meaningless reconnect attempts.
+
+### Fixed
+
+* Stopping MAVLink now interrupts an in-progress heartbeat wait. This prevents
+  a late connection from appearing after shutdown or after an operator has
+  explicitly disconnected.
+* Recovery backoff remains stable across the transport's internal stop event,
+  and an operator disconnect immediately cancels any recovery attempt.
+* Reconfiguring a video share invalidates and stops the previous publisher
+  generation; an old worker can no longer overwrite the state of a newer one.
+
+### Verification
+
+* `python run_tests.py` passes **352/352** tests.
+* `python -m compileall -q src tests` and `git diff --check` pass.
 
 ## **[1.6-beta] - 02.09.2026**
 

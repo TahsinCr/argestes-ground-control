@@ -14,8 +14,15 @@ from src.models.video import VideoFrame, VideoShareConfig, VideoShareState, Vide
 from src.services.logging_service import ServiceLogger
 
 
-def active_ipv4_interfaces() -> tuple[tuple[str, str], ...]:
-    """Return usable local IPv4 interfaces as ``(name, address)`` pairs."""
+_INTERFACE_CACHE_TTL_S = 5.0
+_interface_cache_lock = threading.Lock()
+_interface_cache: tuple[tuple[str, str], ...] = ()
+_interface_cache_at = 0.0
+_interface_refreshing = False
+
+
+def _read_active_ipv4_interfaces() -> tuple[tuple[str, str], ...]:
+    """Read usable local IPv4 interfaces; call only off the GUI thread."""
 
     try:
         result = subprocess.run(
@@ -37,6 +44,35 @@ def active_ipv4_interfaces() -> tuple[tuple[str, str], ...]:
         if name != "lo" and (name, address) not in interfaces:
             interfaces.append((name, address))
     return tuple(interfaces)
+
+
+def refresh_active_ipv4_interfaces() -> tuple[tuple[str, str], ...]:
+    """Refresh the local interface catalogue for transport workers."""
+
+    global _interface_cache, _interface_cache_at, _interface_refreshing
+    interfaces = _read_active_ipv4_interfaces()
+    with _interface_cache_lock:
+        _interface_cache = interfaces
+        _interface_cache_at = time.monotonic()
+        _interface_refreshing = False
+        return _interface_cache
+
+
+def active_ipv4_interfaces() -> tuple[tuple[str, str], ...]:
+    """Return cached interfaces immediately and refresh stale data in background."""
+
+    global _interface_refreshing
+    with _interface_cache_lock:
+        interfaces = _interface_cache
+        stale = time.monotonic() - _interface_cache_at >= _INTERFACE_CACHE_TTL_S
+        if stale and not _interface_refreshing:
+            _interface_refreshing = True
+            threading.Thread(
+                target=refresh_active_ipv4_interfaces,
+                name="ActiveIpv4Interfaces",
+                daemon=True,
+            ).start()
+        return interfaces
 
 
 class VideoSharePublisher:
@@ -102,14 +138,15 @@ class VideoSharePublisher:
             for config in self._configs
         }
         self._publish_states()
-        self._stop.clear()
+        self._stop = threading.Event()
+        stop_event = self._stop
         self._frame_event.clear()
         for config in self._configs:
             if not config.enabled:
                 continue
             worker = threading.Thread(
                 target=self._run_target,
-                args=(config,),
+                args=(config, stop_event),
                 name=f"VideoShare[{config.identifier[:8]}]",
                 daemon=True,
             )
@@ -155,10 +192,10 @@ class VideoSharePublisher:
             self._latest_source_frames[item.source_id] = item.frame
         self._frame_event.set()
 
-    def _run_target(self, config: VideoShareConfig) -> None:
+    def _run_target(self, config: VideoShareConfig, stop_event: threading.Event) -> None:
         pipeline: Any | None = None
         try:
-            frame = self._wait_for_frame(config)
+            frame = self._wait_for_frame(config, stop_event)
             if frame is None:
                 return
             if frame.width < 640 or frame.height < 480:
@@ -173,7 +210,8 @@ class VideoSharePublisher:
                 # with monotonic time; do not transform it through the GCS
                 # machine's local clock or timezone.
                 clock_reference, clock_started_at = self._wait_for_clock_reference(
-                    config.identifier
+                    config.identifier,
+                    stop_event,
                 )
                 if clock_reference is None or clock_started_at is None:
                     return
@@ -193,12 +231,12 @@ class VideoSharePublisher:
             detail = f"{config.codec.upper()} · {config.fps} FPS"
             if compliance:
                 detail += " · " + ", ".join(compliance)
-            self._set_state(config.identifier, "active", detail)
+            self._set_state(config.identifier, "active", detail, stop_event=stop_event)
             frame_duration = int(Gst.SECOND / config.fps)
             next_at = time.monotonic()
             sequence = 0
             previous: VideoFrame | None = None
-            while not self._stop.is_set():
+            while not stop_event.is_set():
                 if config.fixed_frame_rate:
                     next_at += 1.0 / config.fps
                     delay = max(0.0, next_at - time.monotonic())
@@ -229,7 +267,7 @@ class VideoSharePublisher:
                 previous = frame
                 sequence += 1
         except Exception as exc:
-            self._set_state(config.identifier, "error", str(exc))
+            self._set_state(config.identifier, "error", str(exc), stop_event=stop_event)
             self._event("video.share_failed", f"Video paylaşımı başlatılamadı: {config.name}: {exc}", "danger", {"share_id": config.identifier})
         finally:
             if pipeline is not None:
@@ -247,8 +285,8 @@ class VideoSharePublisher:
                 )
             return self._latest_source_frames.get(config.source_id)
 
-    def _wait_for_frame(self, config: VideoShareConfig) -> VideoFrame | None:
-        while not self._stop.is_set():
+    def _wait_for_frame(self, config: VideoShareConfig, stop_event: threading.Event) -> VideoFrame | None:
+        while not stop_event.is_set():
             frame = self._current_frame(config)
             if frame is not None:
                 return frame
@@ -261,6 +299,7 @@ class VideoSharePublisher:
                 config.identifier,
                 "waiting",
                 f"Kamera karesi bekleniyor: {source_name}",
+                stop_event=stop_event,
             )
             self._frame_event.wait(0.5)
             self._frame_event.clear()
@@ -269,15 +308,21 @@ class VideoSharePublisher:
     def _wait_for_clock_reference(
         self,
         identifier: str,
+        stop_event: threading.Event,
     ) -> tuple[datetime | None, float | None]:
         """Wait for the newest competition-clock sample before publishing."""
 
-        while not self._stop.is_set():
+        while not stop_event.is_set():
             timestamp = self._server_time()
             if timestamp is not None:
                 return timestamp, time.monotonic()
-            self._set_state(identifier, "waiting", "TEKNOFEST sunucu saati bekleniyor")
-            self._stop.wait(0.2)
+            self._set_state(
+                identifier,
+                "waiting",
+                "TEKNOFEST sunucu saati bekleniyor",
+                stop_event=stop_event,
+            )
+            stop_event.wait(0.2)
         return None, None
 
     def _pipeline_description(self, config: VideoShareConfig, frame: VideoFrame) -> str:
@@ -297,8 +342,9 @@ class VideoSharePublisher:
             rtp_payloader = "rtph265pay pt=96 config-interval=1"
         sink = self._sink_description(config, rtp_payloader)
         return (
-            f"appsrc name=yki_share_src is-live=true block=true format=time "
+            f"appsrc name=yki_share_src is-live=true block=false max-bytes={max(1, frame.width * frame.height * 4)} format=time "
             f"caps=video/x-raw,format=RGBA,width={frame.width},height={frame.height},framerate={config.fps}/1 "
+            "! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 "
             "! videoconvert ! video/x-raw,format=I420 ! textoverlay name=yki_share_clock valignment=top halignment=right "
             "font-desc=Sans\\ 18 shaded-background=true ! "
             f"{encoder} ! {sink}"
@@ -316,7 +362,7 @@ class VideoSharePublisher:
             except ValueError:
                 is_multicast = False
             if is_multicast and config.network_interface:
-                address = dict(active_ipv4_interfaces()).get(config.network_interface)
+                address = dict(refresh_active_ipv4_interfaces()).get(config.network_interface)
                 if address is None:
                     raise RuntimeError(
                         f"Seçilen multicast ağ arayüzü aktif değil: {config.network_interface}"
@@ -354,7 +400,16 @@ class VideoSharePublisher:
         value = reference + timedelta(seconds=max(0.0, time.monotonic() - started_at))
         return value.strftime("%H:%M:%S.") + f"{value.microsecond // 1000:03d}"
 
-    def _set_state(self, identifier: str, status: str, detail: str) -> None:
+    def _set_state(
+        self,
+        identifier: str,
+        status: str,
+        detail: str,
+        *,
+        stop_event: threading.Event | None = None,
+    ) -> None:
+        if stop_event is not None and stop_event is not self._stop:
+            return
         active = status == "active"
         state = VideoShareState(identifier, active=active, status=status, detail=detail)
         if self._states.get(identifier) == state:

@@ -506,6 +506,8 @@ class QtConnectionControlService(_QtAdapter):
     ) -> None:
         super().__init__(parent)
         self.backend = backend
+        self._operations_lock = threading.Lock()
+        self._operations: dict[str, threading.Thread] = {}
         self._subscribe(backend.changed, self.status_changed.emit)
 
     def status(self, channel: str) -> ConnectionStatus:
@@ -526,12 +528,26 @@ class QtConnectionControlService(_QtAdapter):
         channel: str,
         options: dict[str, object],
     ) -> threading.Thread:
+        with self._operations_lock:
+            active = self._operations.get(channel)
+            if active is not None and active.is_alive():
+                return active
         self.operation_started.emit(channel)
-        return self._start_worker(
-            self._execute,
+
+        def execute() -> None:
+            try:
+                self._execute(action, channel, dict(options))
+            finally:
+                with self._operations_lock:
+                    self._operations.pop(channel, None)
+
+        worker = self._start_worker(
+            execute,
             name=f"QtConnection-{action}-{channel}",
-            args=(action, channel, dict(options)),
         )
+        with self._operations_lock:
+            self._operations[channel] = worker
+        return worker
 
     def _execute(self, action: str, channel: str, options: dict[str, object]) -> None:
         try:

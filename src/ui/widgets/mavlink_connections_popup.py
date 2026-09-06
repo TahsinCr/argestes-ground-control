@@ -118,19 +118,20 @@ class MavlinkConnectionsPopup(QDialog):
         color = self._theme.success if active and self._connected else self._theme.warning if active and self._running else self._theme.danger
         card = QFrame(self.host); card.setProperty("role", "card")
         layout = QVBoxLayout(card); layout.setContentsMargins(8, 7, 8, 7); layout.setSpacing(3)
+        operation_active = bool(self._connecting_identifier)
         row = QHBoxLayout(); dot = QLabel("●", card); dot.setStyleSheet(f"color: {color};"); row.addWidget(dot)
         name = QLabel(profile.name, card); name.setStyleSheet("font-weight: 700;"); row.addWidget(name, 1)
-        edit = QPushButton("Düzenle", card); edit.setProperty("compact", "true"); edit.clicked.connect(lambda _=False, p=profile: self.profile_edit_requested.emit(p)); row.addWidget(edit); layout.addLayout(row)
+        edit = QPushButton("Düzenle", card); edit.setProperty("compact", "true"); edit.setEnabled(not operation_active); edit.clicked.connect(lambda _=False, p=profile: self.profile_edit_requested.emit(p)); row.addWidget(edit); layout.addLayout(row)
         endpoint = QLabel(profile.endpoint, card); endpoint.setProperty("role", "detail"); endpoint.setWordWrap(True); layout.addWidget(endpoint)
         is_connecting = profile.identifier == self._connecting_identifier
         state = "Bağlı" if active and self._connected else "Bağlanıyor" if is_connecting else "Beklemede"
         info = QLabel(f"{profile.baud} baud · {profile.heartbeat_timeout} sn · {self._detail if active and self._detail else state}", card); info.setProperty("role", "detail"); info.setWordWrap(True); layout.addWidget(info)
         actions = QHBoxLayout()
-        auto = QPushButton("OTO: AÇIK" if profile.auto_connect else "OTO: KAPALI", card); auto.setCheckable(True); auto.setChecked(profile.auto_connect); auto.setProperty("compact", "true"); auto.setProperty("role", "primary" if profile.auto_connect else "secondary")
+        auto = QPushButton("OTO: AÇIK" if profile.auto_connect else "OTO: KAPALI", card); auto.setCheckable(True); auto.setChecked(profile.auto_connect); auto.setEnabled(not operation_active); auto.setProperty("compact", "true"); auto.setProperty("role", "primary" if profile.auto_connect else "secondary")
         auto.clicked.connect(lambda checked, ident=profile.identifier: self._set_auto(ident, checked)); actions.addWidget(auto)
         busy = is_connecting
-        connect = QPushButton("Bağlantıyı Kes" if active and self._connected else "Bağlanıyor" if busy else "Bağlan", card); connect.setProperty("compact", "true"); connect.setProperty("role", "danger" if active and self._connected else "primary"); connect.setEnabled(not busy); connect.clicked.connect(lambda _=False, p=profile: self.profile_connect_requested.emit(p)); actions.addWidget(connect)
-        delete = QPushButton("Sil", card); delete.setProperty("compact", "true"); delete.setProperty("role", "danger"); delete.setEnabled(len(self._profiles) > 1); delete.clicked.connect(lambda _=False, ident=profile.identifier: self._delete(ident)); actions.addWidget(delete)
+        connect = QPushButton("Bağlantıyı Kes" if active and self._connected else "Bağlanıyor" if busy else "Bağlan", card); connect.setProperty("compact", "true"); connect.setProperty("role", "danger" if active and self._connected else "primary"); connect.setEnabled(not operation_active); connect.clicked.connect(lambda _=False, p=profile: self.profile_connect_requested.emit(p)); actions.addWidget(connect)
+        delete = QPushButton("Sil", card); delete.setProperty("compact", "true"); delete.setProperty("role", "danger"); delete.setEnabled(len(self._profiles) > 1 and not operation_active); delete.clicked.connect(lambda _=False, ident=profile.identifier: self._delete(ident)); actions.addWidget(delete)
         layout.addLayout(actions); self.layout.addWidget(card)
 
     def _set_auto(self, identifier: str, enabled: bool) -> None:

@@ -3,58 +3,44 @@
 
 **English** | [Türkçe][lang-tr-url]
 
-# Kırlangıç Team Ground Control Station
+# Kırlangıç Ground Control Station
 
-Kırlangıç Team Ground Control Station (YKİ) is a common ground-control
-application for MAVLink-compatible vehicles. It brings flight-controller
-connectivity, telemetry, mission planning, vehicle commands, parameters, maps
-and camera streams into one desktop interface.
+Kırlangıç Ground Control Station is a desktop application for operating
+MAVLink-compatible vehicles. It combines vehicle connectivity, live telemetry,
+mission planning, parameters, operator commands, maps and camera streams in
+one interface.
 
-The `main` branch is the common GCS layer and is not coupled to a specific
-product or mission algorithm. SIHA-specific behavior such as kamikaze,
-target selection, competition-server integration and onboard task automation
-does not execute in this runtime; it belongs to a separate integration layer.
-This keeps the application usable with fixed-wing, multirotor and other
-MAVLink vehicles.
+The `main` branch is intentionally vehicle- and product-neutral. It provides
+the shared ground-control foundation; product-specific automation belongs in a
+separate integration layer rather than in this runtime.
 
 ## Features
 
-- Single-reader MAVLink connectivity over serial, UDP and TCP
-- Live telemetry, GPS, battery, packet-health and RFD/radio-link information
-- ARM/DISARM, mode changes, GOTO, TAKEOFF, LAND, RTL, HOLD and mission
-  upload/start/pause/resume controls
-- Command and flight-mode UI adapted to the capabilities learned from the
-  connected vehicle
-- Takeoff, waypoint, loiter, RTL, land and safe-area planning with undo/redo
-  and vehicle mission synchronization
-- Parameter catalogue, default-parameter source and verified parameter writes
+- One MAVLink transport reader for serial, UDP and TCP connections
+- Live telemetry, GPS, battery, packet-health and radio-link presentation
+- Capability-aware ARM/DISARM, mode, GOTO, TAKEOFF, LAND, RTL, HOLD and
+  mission controls
+- Mission planning, undo/redo, vehicle mission synchronization and parameters
+- Named camera profiles and 1, 2, 3 or 4-pane video-wall layouts
 - RTSP, HTTP/MJPEG, RTP/UDP, V4L2, file and custom GStreamer video sources
-- Multiple camera profiles, 1/2/3/4-pane video wall and immediate source swaps
-- Multiple video-share targets that publish a camera or focused-panel source,
-  with fixed-FPS and timestamp settings
-- Map cache, structured JSONL logs and Turkish/English UI translation
-- Voltage-estimated or Pixhawk-reported battery percentage with independent
-  warning and failsafe thresholds
+- Multiple video-share targets with source, transport, codec, FPS, timestamp
+  and network-interface configuration
+- Structured logs, map cache, archives and Turkish/English UI translation
+- Pixhawk-reported or voltage-estimated battery percentage
 
 ## Quick start
 
-Clone the repository together with its two shared submodules:
+Clone the project and its pinned shared submodules:
 
 ```bash
 git clone --recurse-submodules \
   https://github.com/Kirlangic-Team/ground-control-station.git
 cd ground-control-station
-```
-
-For an existing checkout:
-
-```bash
 git submodule sync --recursive
 git submodule update --init --recursive
 ```
 
-On Linux, create a virtual environment that can also see the system GStreamer
-bindings:
+On Linux, create an environment that can access system GStreamer bindings:
 
 ```bash
 python3 -m venv --system-site-packages .venv
@@ -64,19 +50,11 @@ pip install -r requirements.txt
 python main.py
 ```
 
-YKİ requires Python 3.11 or newer, Qt 6 and GStreamer plugins suitable for the
-selected camera type. It is designed for a desktop ground-control computer;
-algorithm and stream services should remain separate on resource-constrained
-onboard computers.
+The application requires Python 3.11+, Qt 6 and the dependencies in
+`requirements.txt`. Camera sources additionally require GStreamer plugins
+appropriate for their transport and codec.
 
-## Platform and video dependencies
-
-| Platform | Recommendation |
-|---|---|
-| Arch Linux | Current Python, Qt 6 and GStreamer packages |
-| Ubuntu | 24.04 LTS or an equivalent Python 3.11+ environment |
-| Windows | Python 3.11+ and same-architecture MSVC GStreamer |
-| macOS | Native-architecture Python, Qt and GStreamer |
+## Video dependencies
 
 Arch Linux:
 
@@ -98,7 +76,7 @@ sudo apt install -y \
   gstreamer1.0-plugins-ugly gstreamer1.0-libav
 ```
 
-Verify the installation with:
+Verify a camera installation with:
 
 ```bash
 gst-inspect-1.0 --version
@@ -106,13 +84,10 @@ gst-inspect-1.0 rtspsrc
 gst-inspect-1.0 avdec_h264
 ```
 
-USB sources use `v4l2src` on Linux. On Windows, use a network source or an
-appropriate custom GStreamer pipeline.
+## Connection behaviour
 
-## Connection and runtime principles
-
-Configure the MAVLink endpoint from Settings or the telemetry menu in the
-bottom status bar. Typical endpoints are:
+Configure MAVLink profiles in Settings or from the telemetry menu. Typical
+endpoints are:
 
 ```text
 Serial: /dev/ttyUSB0     baud: 57600
@@ -120,130 +95,84 @@ UDP:    udpin:0.0.0.0:14550
 TCP:    tcp:127.0.0.1:5762
 ```
 
-Opening a transport does not prove a healthy vehicle connection. Vehicle state
-requires the target heartbeat, video requires fresh frames, and GPS requires a
-recent valid fix. The interface uses yellow while attempting a connection, red
-for an unavailable or failed connection and green only for a verified live
-state.
+An open endpoint is not considered healthy until the target heartbeat is
+received. The status UI uses yellow while connecting, red when unavailable or
+failed and green after health is verified.
 
-Only `MavlinkClient` and its router read the MAVLink transport in one
-application session. New services must not add a second `recv_match()` loop,
-serial reader or independent ACK consumer.
+The connection controller owns automatic behaviour:
+
+- `auto_connect` allows one initial connection attempt at application start.
+- `autoreconnect` allows bounded retry after a previously live connection is
+  lost.
+- If both are disabled, no background connection attempt is made.
+- An explicit operator disconnect cancels any pending recovery and keeps the
+  transport closed until the operator connects again.
+
+Only the shared `MavlinkClient` and router may read a MAVLink transport. New
+services must consume its events and must not create a second reader, serial
+connection or ACK consumer.
 
 ## Cameras and video sharing
 
-Camera connections are saved as profiles. A profile contains its source type,
-address, codec, latency, timeout and auto-connect setting. A source can appear
-in only one split-screen pane at a time. Left- or right-click a camera name to
-select another source; if it is already shown in another pane, the two panes
-swap sources.
+Camera connections are saved as named profiles. A source can appear in only
+one video-wall pane; selecting a source already displayed in another pane swaps
+the two panes. The video wall supports one, two, three and four views.
 
-The video panel supports 1, 2, 3 and 4 views. Panel tools remain fixed while
-the camera wall changes: recording is at the lower left, layout selection is
-at the lower centre, and display mode/reconnect controls are at the lower
-right.
-
-Video sharing publishes camera frames only; desktop or screen capture is not a
-valid source. Each share target can select a source, transport, codec, FPS,
-fixed-frame-rate option, timestamp option and network interface. Fixed frame
-rate and timestamps are enabled by default for specification compliance, and
-FPS must be at least 15.
+Video sharing always publishes camera frames, not a desktop capture. Each
+target selects a source, transport, codec, FPS, fixed-frame-rate setting,
+timestamp setting and network interface. Frames are sent through a bounded
+pipeline so a slow receiver does not degrade the capture or UI path.
 
 ## Architecture
 
 ```text
-Qt UI → UI adapters → services → models → core
-                         │
-                         ├── vehicle: MAVLink, telemetry, parameters
-                         ├── planner: plan state and vehicle mission sync
-                         ├── video: GStreamer sources and shares
-                         ├── settings / logs / tile cache / archive
-                         └── commands: capability-aware dispatch
+Qt UI → UI adapters → application services → vehicle adapters → core
+                                  │
+                                  ├── MAVLink connection / telemetry / parameters
+                                  ├── planner and capability-aware commands
+                                  ├── camera capture and video sharing
+                                  └── settings / logs / cache / archives
 ```
 
-`src/container.py` is the single composition root. It registers
-infrastructure, vehicle adapters, application services and runtime lifecycle
-in order. Services receive dependencies through constructors and never resolve
-a global container themselves.
+`src/container.py` is the composition root. It wires infrastructure, vehicle
+adapters, application services and runtime lifecycle in a single explicit
+place. Services receive constructor dependencies and do not resolve a global
+container themselves.
 
-- `src/core`: shared events, dependency management and MAVLink infrastructure
-- `src/communication`: transport-neutral communication contracts; it does not
-  own a connection in the `main` runtime
+- `src/core`: events, dependency primitives and MAVLink infrastructure
+- `src/communication`: shared, transport-neutral contract models
 - `src/models`: validated data models independent from the UI
-- `src/services/vehicle`: MAVLink, telemetry and parameter adapters
-- `src/services`: planner, commands, video, settings, archive, logs and cache
-- `src/ui`: Qt, Leaflet and presentation/interaction code only
+- `src/services/vehicle`: connection control, MAVLink, telemetry and parameters
+- `src/services`: commands, planner, settings, video, logs, cache and archives
+- `src/ui`: Qt views, widgets and presentation adapters
 
-The command catalogue is transport- and vehicle-type-neutral. The connected
-adapter's `VehicleCapabilities` determines which commands and flight modes are
-available. For navigation requests such as `GOTO`, the newest request
-supersedes an older pending request so that a stale destination cannot be sent
-late.
+UI code does not construct raw MAVLink packets or run blocking work. Vehicle
+actions are defined in service-level command definitions and reported to the
+operator only after acknowledgement or verified state change.
 
-Legacy SIHA connection, competition, target-selection and onboard-task
-surfaces are inactive in the common backend. Passive compatibility adapters
-keep the UI constructible during the transition, but they do not send network
-requests or vehicle commands.
+## Settings, logs and tests
 
-## Map, telemetry and battery
+Persistent settings are stored in `data/settings.json`. When adding a setting,
+update the validated model, settings UI and both language files together.
+Structured events are stored in `data/logs/yki.jsonl`; plans and session data
+are stored under `data/`.
 
-Telemetry ingestion is separate from UI rendering. The backend processes every
-MAVLink packet while the Qt layer draws only the most recent presentation
-state. Map and parameter updates are coalesced so high-rate input cannot build
-up a UI queue.
-
-The planner separates operator-owned routes from externally supplied layers.
-Safe areas, forbidden areas and vehicle-downloaded missions cannot erase each
-other's owned data. Home updates and mission transfers are not reported as
-successful without vehicle confirmation.
-
-The battery display can use the Pixhawk percentage or estimate one from cell
-count, full voltage and reserve voltage. Display, warning and failsafe
-thresholds are independent; Pixhawk remains the final authority for flight
-safety.
-
-## Settings, logs and archives
-
-Persistent settings are stored in `data/settings.json`. Models validate input
-and migrate legacy single-camera/single-MAVLink settings to compatible profile
-collections. When adding a setting, update its model validation, settings UI
-schema and both language files together.
-
-Structured events are written to `data/logs/yki.jsonl`. The log panel supports
-text search and level filtering without interrupting an operator reviewing
-older entries. Mission plans and session data are stored under `data/`.
-
-## Development rules
-
-1. Define a vehicle action through `CommandDefinition` and `VehicleService`
-   before adding a UI control; never construct raw MAVLink packets in Qt.
-2. Keep MAVLink constants, target IDs and ACK filters in `services/vehicle`.
-3. The UI consumes models and service events only; business rules, network I/O
-   and blocking work do not run on the UI thread.
-4. Use `VideoSourceConfig` and `VideoShareConfig` validation for new camera
-   sources and publishing targets.
-5. A real vehicle action creates a structured log. Report success to the
-   operator only after an ACK or verified vehicle-state change.
-
-## Testing
+Run the complete test suite with:
 
 ```bash
 python run_tests.py
 ```
 
-The runner executes YKİ and both shared-submodule suites as one result. Qt
-tests use the offscreen platform; real hardware still requires a MAVLink
-endpoint, camera-source and mission-transfer smoke test.
+Qt tests use the offscreen platform. Before field use, also perform a hardware
+smoke test with the intended MAVLink endpoint, camera source and mission
+transfer path.
 
 ## License
 
 Copyright © 2026 TahsinCr.
 
-This project is licensed under GNU General Public License version 3
-(`GPL-3.0-only`). See [LICENSE](LICENSE) and [COPYRIGHT](COPYRIGHT) for the
-full terms.
-
-<!-- Badge images -->
+Licensed under GNU General Public License version 3 (`GPL-3.0-only`). See
+[LICENSE](LICENSE) and [COPYRIGHT](COPYRIGHT).
 
 [python-shield]: https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white
 [python-url]: https://www.python.org/

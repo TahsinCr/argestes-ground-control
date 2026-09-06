@@ -389,6 +389,11 @@ class MavlinkVehicleService(VehicleService):
 
     def stop(self) -> None:
         if not self._started:
+            # ``MavlinkConnection.connect`` can be waiting for its first
+            # heartbeat before this service marks itself started.  Cancelling
+            # the client here prevents a late, post-shutdown connection.
+            self._client.connection.stop()
+            self._cancel_subscriptions()
             return
         previous = self._state
         self._watchdog_stop.set()

@@ -38,6 +38,7 @@ class CompetitionServersPopup(QDialog):
         self._connected = False
         self._running = False
         self._detail = ""
+        self._available = True
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
         self._render_timer.setInterval(40)
@@ -101,12 +102,14 @@ class CompetitionServersPopup(QDialog):
         connected: bool,
         running: bool,
         detail: str = "",
+        available: bool = True,
     ) -> None:
         self._servers = list(servers)
         self._active_identifier = active_identifier
         self._connected = connected
         self._running = running
         self._detail = detail
+        self._available = bool(available)
         self._render()
 
     def _build_ui(self) -> None:
@@ -166,6 +169,7 @@ class CompetitionServersPopup(QDialog):
         row.addWidget(name, 1)
         edit = QPushButton("Düzenle", card)
         edit.setProperty("compact", "true")
+        edit.setEnabled(self._available)
         edit.clicked.connect(lambda _checked=False, item=server: self.server_edit_requested.emit(item))
         row.addWidget(edit)
         layout.addLayout(row)
@@ -185,6 +189,7 @@ class CompetitionServersPopup(QDialog):
         auto.setChecked(server.auto_connect)
         auto.setProperty("role", "primary" if server.auto_connect else "secondary")
         auto.setProperty("compact", "true")
+        auto.setEnabled(self._available)
         auto.clicked.connect(lambda checked, identifier=server.identifier: self._set_auto_connect(identifier, checked))
         actions.addWidget(auto)
         is_connecting = active and self._running and not self._connected
@@ -198,13 +203,13 @@ class CompetitionServersPopup(QDialog):
         )
         connect.setProperty("role", "danger" if active and self._connected else "primary")
         connect.setProperty("compact", "true")
-        connect.setEnabled(not is_connecting)
+        connect.setEnabled(self._available and not is_connecting)
         connect.clicked.connect(lambda _checked=False, item=server: self.server_connect_requested.emit(item))
         actions.addWidget(connect)
         delete = QPushButton("Sil", card)
         delete.setProperty("role", "danger")
         delete.setProperty("compact", "true")
-        delete.setEnabled(len(self._servers) > 1)
+        delete.setEnabled(self._available and len(self._servers) > 1)
         delete.clicked.connect(lambda _checked=False, identifier=server.identifier: self._delete_server(identifier))
         actions.addWidget(delete)
         layout.addLayout(actions)

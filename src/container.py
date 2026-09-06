@@ -28,9 +28,9 @@ from src.services.runtime import RuntimeServices
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
 from src.services.ui_compatibility import (
-    DormantConnectionControlService,
     DormantOnboardMissionService,
 )
+from src.services.vehicle.connection_control import VehicleConnectionControlService
 from src.services.vehicle.dependencies import (
     VehicleStack,
     register_vehicle_dependencies,
@@ -233,7 +233,17 @@ def _register_application(container: BaseDependencyContainer) -> None:
         priority=priority,
     )
     container.singleton(OnboardMissionServiceContract, concrete=DormantOnboardMissionService, priority=priority)
-    container.singleton(ConnectionControlService, concrete=DormantConnectionControlService, priority=priority)
+    container.singleton(
+        ConnectionControlService,
+        concrete=VehicleConnectionControlService,
+        dependencies={
+            "settings": SettingsRepository,
+            "vehicle": VehicleService,
+            "telemetry": TelemetryService,
+            "logger": LoggingService,
+        },
+        priority=priority,
+    )
     container.singleton(
         BatteryAlarmService,
         factory=_battery_alarm,
@@ -268,6 +278,7 @@ def _register_application(container: BaseDependencyContainer) -> None:
             "video_service": VideoService,
             "tile_cache_service": TileCacheServer,
             "archive_service": MissionArchiveService,
+            "connection_service": ConnectionControlService,
             "facade": BackendFacade,
         },
         priority=runtime_priority,
