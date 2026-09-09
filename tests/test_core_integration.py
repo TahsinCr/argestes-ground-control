@@ -10,6 +10,8 @@ from src.container import ApplicationContainer, VehicleStack, create_container
 from src.core import DependencyContainer, EventBus
 from src.core.mavlink import MavlinkClient, MavlinkConnection, MavlinkEndpoint
 from src.services.runtime import RuntimeServices
+from src.services.abstracts.connections import ConnectionControlService
+from src.services.logging_service import ServiceLogger
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +66,16 @@ class CoreIntegrationTests(unittest.TestCase):
                 self.assertIsInstance(application.container, DependencyContainer)
                 self.assertIs(runtime.container, application.container)
                 self.assertIs(application.resolve(RuntimeServices), runtime)
+            finally:
+                application.shutdown()
+
+    def test_connection_controller_receives_a_source_scoped_logger(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_container(Path(directory))
+            try:
+                controller = application.resolve(ConnectionControlService)
+                self.assertIsInstance(controller._logger, ServiceLogger)
+                self.assertEqual(controller._logger._source, "CONNECTION")
             finally:
                 application.shutdown()
 

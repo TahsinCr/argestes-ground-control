@@ -1,6 +1,14 @@
 # **Change Log**
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Fixed
+
+* Wired the MAVLink connection controller to its `CONNECTION` child logger.
+  Recovery attempts no longer terminate because a raw logging service receives
+  the child-logger event signature.
+
 ## **[1.6.1-beta] - 06.09.2026**
 
 ### Added

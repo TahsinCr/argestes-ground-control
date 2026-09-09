@@ -137,6 +137,20 @@ def _battery_alarm(commands: CommandService, logging: LoggingService) -> Battery
     )
 
 
+def _connection_control(
+    settings: SettingsRepository,
+    vehicle: VehicleService,
+    telemetry: TelemetryService,
+    logging: LoggingService,
+) -> ConnectionControlService:
+    return VehicleConnectionControlService(
+        settings=settings,
+        vehicle=vehicle,
+        telemetry=telemetry,
+        logger=logging.child("CONNECTION"),
+    )
+
+
 def _facade(
     telemetry: TelemetryService,
     planner: PlannerService,
@@ -235,12 +249,12 @@ def _register_application(container: BaseDependencyContainer) -> None:
     container.singleton(OnboardMissionServiceContract, concrete=DormantOnboardMissionService, priority=priority)
     container.singleton(
         ConnectionControlService,
-        concrete=VehicleConnectionControlService,
+        factory=_connection_control,
         dependencies={
             "settings": SettingsRepository,
             "vehicle": VehicleService,
             "telemetry": TelemetryService,
-            "logger": LoggingService,
+            "logging": LoggingService,
         },
         priority=priority,
     )
