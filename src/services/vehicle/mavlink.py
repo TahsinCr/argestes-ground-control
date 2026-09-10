@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from typing import Any
 
@@ -88,6 +88,13 @@ class NullVehicleService(VehicleService):
 
     def execute(self, request: CommandRequest) -> bool:
         self._unavailable(request.code)
+
+    def send_rc_override(self, channels: Iterable[int | None]) -> None:
+        del channels
+        self._unavailable("RC_CHANNELS_OVERRIDE")
+
+    def release_rc_override(self) -> None:
+        return
 
     def upload_mission(
         self,
@@ -483,6 +490,42 @@ class MavlinkVehicleService(VehicleService):
             "Araç parametre kataloğu istendi",
         )
 
+    def send_rc_override(self, channels: Iterable[int | None]) -> None:
+        if not self.connected:
+            raise ConnectionError("Uçuş cihazı bağlantısı hazır değil: RC_CHANNELS_OVERRIDE")
+        source = tuple(channels)
+        if len(source) > 18:
+            raise ValueError("En fazla 18 RC kanalı gönderilebilir")
+        encoded: list[int] = []
+        for index in range(18):
+            value = source[index] if index < len(source) else None
+            if value is None:
+                encoded.append(65535 if index < 8 else 65534)
+                continue
+            pwm = int(value)
+            if not 800 <= pwm <= 2200:
+                raise ValueError("RC override PWM değeri 800..2200 aralığında olmalı")
+            encoded.append(pwm)
+        system, component = self._target
+        self._client.call_mav(
+            "rc_channels_override_send",
+            system,
+            component,
+            *encoded,
+        )
+
+    def release_rc_override(self) -> None:
+        if not self.connected:
+            return
+        system, component = self._target
+        self._client.call_mav(
+            "rc_channels_override_send",
+            system,
+            component,
+            *([0] * 8),
+            *([65534] * 10),
+        )
+
     def set_parameter(self, name: str, value: object, value_type: int | None = None) -> None:
         normalized_name = name.strip()
         if not normalized_name or len(normalized_name.encode("ascii")) > 16:
@@ -527,6 +570,7 @@ class MavlinkVehicleService(VehicleService):
             "FORCE_ARM": lambda: self._force_arm(request),
             "DISARM": lambda: self._arm(False),
             "SET_MODE": lambda: self._set_mode(str(request.parameters["mode"])),
+            "SET_SERVO": lambda: self._set_servo(request.parameters),
             "GOTO": lambda: self._goto(request.parameters),
             "SET_HOME": lambda: self._set_home(request.parameters),
             "TAKEOFF": lambda: self._takeoff(request.parameters),
@@ -782,6 +826,16 @@ class MavlinkVehicleService(VehicleService):
         assert last_error is not None
         raise last_error
 
+    def _set_servo(self, parameters: Mapping[str, object]) -> bool:
+        servo = int(str(parameters["servo"]))
+        pwm = int(str(parameters["pwm"]))
+        if not 1 <= servo <= 16:
+            raise ValueError("Servo numarası 1..16 aralığında olmalı")
+        if not 800 <= pwm <= 2200:
+            raise ValueError("Servo PWM değeri 800..2200 aralığında olmalı")
+        self._command_long(self._client.mavlink.MAV_CMD_DO_SET_SERVO, servo, pwm)
+        return True
+
     def _goto(self, parameters: dict[str, Any]) -> bool:
         system, component = self._target
         mavlink = self._client.mavlink
@@ -833,7 +887,6 @@ class MavlinkVehicleService(VehicleService):
                 "frame": "GLOBAL_RELATIVE_ALT_INT",
             },
         )
-        return False
 
     def _guided_hold_altitude(self) -> float:
         """Return current relative altitude for a map-click GOTO.

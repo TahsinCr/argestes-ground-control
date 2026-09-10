@@ -18,7 +18,7 @@ from src.ui.config.settings_schema import iter_fields
 class SettingsTests(unittest.TestCase):
     def test_video_source_profiles_preserve_the_active_legacy_view(self) -> None:
         first = VideoSourceConfig(identifier="cam-1", name="Burun", source_type="udp", source_uri="5000", codec="h264")
-        second = VideoSourceConfig(identifier="cam-2", name="Alt", source_type="rtsp", source_uri="rtsp://camera/stream", codec="h265", auto_connect=True)
+        second = VideoSourceConfig(identifier="cam-2", name="Alt", source_type="rtsp", source_uri="rtsp://camera/stream", codec="h265", auto_connect=True, aim_enabled=True, aim_x=0.25, aim_y=0.75)
         model = SettingsModel.from_dict({"backend": {"video_sources": [first.to_dict(), second.to_dict()], "active_video_source_id": "cam-2"}})
 
         self.assertEqual(model.backend.video_source_uri, second.source_uri)
@@ -27,6 +27,9 @@ class SettingsTests(unittest.TestCase):
         restored = SettingsModel.from_dict(model.to_dict())
         self.assertEqual(restored.backend.active_video_source_id, "cam-2")
         self.assertEqual(len(restored.backend.video_sources), 2)
+        self.assertTrue(restored.backend.video_sources[1].aim_enabled)
+        self.assertEqual(restored.backend.video_sources[1].aim_x, 0.25)
+        self.assertEqual(restored.backend.video_sources[1].aim_y, 0.75)
     def test_competition_server_profiles_round_trip_and_preserve_legacy_profile(self) -> None:
         primary = CompetitionServerConfig(name="Ana", base_url="http://10.0.0.10:10001")
         backup = CompetitionServerConfig(name="Yedek", base_url="http://10.0.0.11:10001", auto_connect=True)

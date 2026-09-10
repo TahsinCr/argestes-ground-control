@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from src.core.abstracts import Model
 from src.models.competition import CompetitionServerConfig
+from src.models.joystick import JoystickSettings
 from src.models.orin import OrinLinkConfig
 from src.models.video import VideoShareConfig, VideoSourceConfig
 
@@ -319,6 +320,7 @@ class BackendSettings:
     battery_telemetry: BatteryTelemetrySettings = field(
         default_factory=BatteryTelemetrySettings
     )
+    joystick: JoystickSettings = field(default_factory=JoystickSettings)
 
     def __post_init__(self) -> None:
         self.video_auto_connect = bool(self.video_auto_connect)
@@ -481,6 +483,12 @@ class SettingsModel(Model):
             battery_telemetry = BatteryTelemetrySettings(
                 **_known(BatteryTelemetrySettings, battery_telemetry_payload)
             )
+            joystick = JoystickSettings(
+                **_known(
+                    JoystickSettings,
+                    dict(backend_payload.pop("joystick", {})),
+                )
+            )
             video_shares = [
                 VideoShareConfig(**dict(item))
                 for item in backend_payload.pop("video_shares", ())
@@ -522,6 +530,7 @@ class SettingsModel(Model):
                 competition_servers=competition_servers,
                 battery_alarm=battery_alarm,
                 battery_telemetry=battery_telemetry,
+                joystick=joystick,
                 video_shares=video_shares,
                 video_sources=video_sources,
                 active_video_source_id=active_video_source_id,

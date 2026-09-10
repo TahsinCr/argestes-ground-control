@@ -1,13 +1,55 @@
 # **Change Log**
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## **[1.7-beta] - 10.09.2026**
+
+### Added
+
+* Moved camera recording to the ground-station video-output pipeline. The
+  Video Share editor now supports network stream and local recording targets;
+  each camera is recorded to its own MP4 at a fixed 30 FPS using an available
+  NVIDIA or VA-API hardware encoder. The camera-panel record action controls
+  every camera together, while each recording remains independently switchable.
+* Recording pauses when its camera feed becomes stale, resumes in the same
+  timeline when frames return, and finalizes MP4 output with EOS on stop.
+* Added a persistent, per-camera aim crosshair selector to the video panel. Its
+  compact CS 1.6-style four-arm reticle uses a vivid green core, dark contrast
+  outline and narrow center gap for visibility in sunlight. The preview is
+  clipped to the rendered frame, and saved selections survive camera switching
+  and application restarts without restarting capture.
+* Added Linux joystick selection and a dedicated RC configuration dialog with
+  RC1–RC16 axis, momentary-button and toggle-button assignments.
+* Added per-channel live PWM output, 800–2200 µs min/trim/max calibration,
+  deadzone, expo, reversal and automatic input detection.
+* Added a fixed-rate, latest-sample joystick worker that sends
+  `RC_CHANNELS_OVERRIDE` through the existing vehicle adapter and explicitly
+  releases all overrides when deactivated, disconnected or stopped.
+* Added configurable joystick button actions for ARM, DISARM, flight-mode
+  changes and servo PWM commands. Physical button selection, automatic
+  detection and action-specific settings remain editable and persistent.
+  Command execution is isolated from the fixed-rate RC sampling loop.
+* Added persistent joystick button-row identities so Mission Planner-style
+  button layouts, including currently unassigned actions, round-trip through
+  configuration without being reordered.
 
 ### Fixed
 
+* Prevented joystick-only settings saves from synchronously reloading the map
+  cache and reconfiguring unrelated video, sharing and mission services on the
+  UI thread.
+* Fixed MAVLink connection-profile saves failing because the connection
+  controller called a serialization method that `MavlinkSettings` does not
+  provide.
 * Wired the MAVLink connection controller to its `CONNECTION` child logger.
   Recovery attempts no longer terminate because a raw logging service receives
   the child-logger event signature.
+
+### Verification
+
+* `python run_tests.py` passes **361/361** tests.
+* `python -m compileall -q src tests`, `git diff --check` and a real NVIDIA
+  hardware-encoder MP4 smoke test pass. The generated recording reports a
+  constant `30/1` frame rate through `ffprobe`.
 
 ## **[1.6.1-beta] - 06.09.2026**
 

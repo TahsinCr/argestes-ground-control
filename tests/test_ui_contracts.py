@@ -501,6 +501,49 @@ class UiContractTests(unittest.TestCase):
         panel.deleteLater()
         self.app.processEvents()
 
+    def test_video_aim_is_scoped_to_focused_camera_and_can_be_disabled(self) -> None:
+        panel = VideoPanel("", "", theme=DARK, language="tr")
+        sources = (
+            VideoSourceConfig(
+                identifier="front", name="Ön Kamera", source_type="mock"
+            ),
+            VideoSourceConfig(
+                identifier="down", name="Alt Kamera", source_type="mock"
+            ),
+        )
+        changes: list[tuple[str, bool, float, float]] = []
+        panel.aim_changed.connect(
+            lambda identifier, enabled, x, y: changes.append(
+                (identifier, enabled, x, y)
+            )
+        )
+        panel.resize(800, 600)
+        panel.show()
+        panel.set_sources(sources, "front")
+        panel.set_source_frame(
+            "front", QImage(400, 300, QImage.Format.Format_RGB32)
+        )
+        self.app.processEvents()
+
+        panel.viewport._request_aim_toggle()
+        geometry = panel.viewport._visible_frame_geometry()
+        self.assertTrue(
+            panel.viewport._capture_aim(geometry.center().x(), geometry.center().y())
+        )
+
+        self.assertEqual(changes[-1][0:2], ("front", True))
+        self.assertTrue(panel._sources[0].aim_enabled)
+        self.assertFalse(panel._sources[1].aim_enabled)
+        self.assertAlmostEqual(panel._sources[0].aim_x, 0.5, places=2)
+        self.assertAlmostEqual(panel._sources[0].aim_y, 0.5, places=2)
+
+        panel.viewport._request_aim_toggle()
+        self.assertEqual(changes[-1][0:2], ("front", False))
+        self.assertFalse(panel._sources[0].aim_enabled)
+        panel.close()
+        panel.deleteLater()
+        self.app.processEvents()
+
     def test_map_bridge_ignores_malformed_web_payloads(self) -> None:
         bridge = MapWebBridge()
         actions: list[dict] = []

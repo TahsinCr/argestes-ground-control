@@ -20,11 +20,16 @@ separate integration layer rather than in this runtime.
 - Live telemetry, GPS, battery, packet-health and radio-link presentation
 - Capability-aware ARM/DISARM, mode, GOTO, TAKEOFF, LAND, RTL, HOLD and
   mission controls
+- Selectable Linux joysticks with RC1–RC16 PWM calibration, deadzone, expo,
+  reversal, button modes and safe override release
 - Mission planning, undo/redo, vehicle mission synchronization and parameters
 - Named camera profiles and 1, 2, 3 or 4-pane video-wall layouts
 - RTSP, HTTP/MJPEG, RTP/UDP, V4L2, file and custom GStreamer video sources
 - Multiple video-share targets with source, transport, codec, FPS, timestamp
   and network-interface configuration
+- Independent per-camera MP4 recording at a fixed 30 FPS through supported
+  hardware encoders, with same-file pause/resume across temporary feed loss
+- Persistent per-camera aiming reticles that remain scoped to visible frames
 - Structured logs, map cache, archives and Turkish/English UI translation
 - Pixhawk-reported or voltage-estimated battery percentage
 
@@ -123,6 +128,17 @@ target selects a source, transport, codec, FPS, fixed-frame-rate setting,
 timestamp setting and network interface. Frames are sent through a bounded
 pipeline so a slow receiver does not degrade the capture or UI path.
 
+The same output editor can create local recording targets. Recordings are
+camera-specific MP4 files at a constant 30 FPS and require a supported NVIDIA
+or VA-API hardware encoder. A temporary camera interruption pauses that
+camera's timeline; when frames return, writing resumes in the same file. The
+camera-panel record control starts or stops all configured camera recordings,
+while each target can also be enabled independently in Video Share.
+
+Each camera profile can retain its own aiming point. The reticle is drawn only
+inside the rendered frame and survives camera switching and application
+restarts.
+
 ## Architecture
 
 ```text
@@ -143,6 +159,7 @@ container themselves.
 - `src/communication`: shared, transport-neutral contract models
 - `src/models`: validated data models independent from the UI
 - `src/services/vehicle`: connection control, MAVLink, telemetry and parameters
+- `src/services/joystick`: physical controller discovery and RC PWM translation
 - `src/services`: commands, planner, settings, video, logs, cache and archives
 - `src/ui`: Qt views, widgets and presentation adapters
 

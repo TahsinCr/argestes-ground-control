@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import asdict
 from typing import Any
 
 from src.core.events import EventBus, Subscription
@@ -370,7 +371,7 @@ class VehicleConnectionControlService(ConnectionControlService):
         if existing is None:
             profiles.append(profile)
         payload = current.to_dict()
-        payload["backend"]["mavlink"] = profile.to_mavlink(mavlink).to_dict()
+        payload["backend"]["mavlink"] = asdict(profile.to_mavlink(mavlink))
         payload["backend"]["mavlink_connections"] = [item.to_dict() for item in profiles]
         payload["backend"]["active_mavlink_connection_id"] = profile.identifier
         self._settings.save(SettingsModel.from_dict(payload))

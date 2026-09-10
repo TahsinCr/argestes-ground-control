@@ -1,5 +1,6 @@
 from src.services.abstracts.commands import CommandService
 from src.services.abstracts.connections import ConnectionControlService
+from src.services.abstracts.joystick import JoystickService
 from src.services.abstracts.competition import CompetitionService
 from src.services.abstracts.archive import MissionArchiveRepository
 from src.services.abstracts.logging import LogService
@@ -15,6 +16,7 @@ from src.services.abstracts.vehicle import MissionTransferInterrupted, VehicleSe
 __all__ = [
     "CommandService",
     "ConnectionControlService",
+    "JoystickService",
     "CompetitionService",
     "LogService",
     "MissionTransferInterrupted",

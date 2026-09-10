@@ -915,6 +915,9 @@ class MultiVideoService(VideoService):
             codec=codec,
             frame_timeout_s=frame_timeout_s,
             auto_connect=current.auto_connect,
+            aim_enabled=current.aim_enabled,
+            aim_x=current.aim_x,
+            aim_y=current.aim_y,
         )
         configs = tuple(
             updated if item.identifier == updated.identifier else item

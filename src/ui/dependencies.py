@@ -7,6 +7,7 @@ from src.core.dependency import BaseDependencyContainer
 from src.services.battery_alarm import BatteryAlarmService
 from src.services.abstracts.commands import CommandService
 from src.services.abstracts.connections import ConnectionControlService
+from src.services.abstracts.joystick import JoystickService
 from src.services.abstracts.parameters import ParameterService
 from src.services.abstracts.telemetry import TelemetryService
 from src.services.abstracts.video import VideoService
@@ -94,6 +95,7 @@ def _main_window(
     parameter_service: QtParameterService,
     video_service: QtVideoService,
     connection_service: QtConnectionControlService,
+    joystick_service: JoystickService,
     tile_cache_service: QtTileCacheService,
     archive_service: MissionArchiveService,
     battery_alarm_service: BatteryAlarmService,
@@ -110,6 +112,7 @@ def _main_window(
         parameter_service=parameter_service,
         video_service=video_service,
         connection_service=connection_service,
+        joystick_service=joystick_service,
         tile_cache_service=tile_cache_service,
         archive_service=archive_service,
         battery_alarm_service=battery_alarm_service,
@@ -182,6 +185,7 @@ def register_ui_dependencies(
                 "parameter_service": QtParameterService,
                 "video_service": QtVideoService,
                 "connection_service": QtConnectionControlService,
+                "joystick_service": JoystickService,
                 "tile_cache_service": QtTileCacheService,
                 "archive_service": MissionArchiveService,
                 "battery_alarm_service": BatteryAlarmService,

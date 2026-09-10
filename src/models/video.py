@@ -93,6 +93,9 @@ class VideoSourceConfig(Model):
     latency_ms: int = 100
     frame_timeout_s: float = 3.0
     auto_connect: bool = False
+    aim_enabled: bool = False
+    aim_x: float = 0.5
+    aim_y: float = 0.5
     identifier: str = field(default_factory=lambda: uuid4().hex)
 
     def __post_init__(self) -> None:
@@ -113,6 +116,8 @@ class VideoSourceConfig(Model):
             raise ValueError("Video gecikmesi 0..10000 ms aralığında olmalı")
         if not 1 <= float(self.frame_timeout_s) <= 60:
             raise ValueError("Video kare zaman aşımı 1..60 saniye aralığında olmalı")
+        if not 0.0 <= float(self.aim_x) <= 1.0 or not 0.0 <= float(self.aim_y) <= 1.0:
+            raise ValueError("Video nişangâh koordinatları 0..1 aralığında olmalı")
         object.__setattr__(self, "identifier", identifier)
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "source_type", source_type)
@@ -121,11 +126,14 @@ class VideoSourceConfig(Model):
         object.__setattr__(self, "latency_ms", int(self.latency_ms))
         object.__setattr__(self, "frame_timeout_s", float(self.frame_timeout_s))
         object.__setattr__(self, "auto_connect", bool(self.auto_connect))
+        object.__setattr__(self, "aim_enabled", bool(self.aim_enabled))
+        object.__setattr__(self, "aim_x", float(self.aim_x))
+        object.__setattr__(self, "aim_y", float(self.aim_y))
 
 
 @dataclass(frozen=True, slots=True)
 class VideoShareConfig(Model):
-    """One camera-feed rebroadcast target.
+    """One camera-feed stream or local recording target.
 
     ``source_id`` selects a decoded camera profile. ``panel`` follows the
     currently focused panel source. Desktop/screen capture is never accepted.
@@ -142,6 +150,7 @@ class VideoShareConfig(Model):
     fixed_frame_rate: bool = True
     network_interface: str = ""
     source_id: str = "panel"
+    output_type: str = "stream"
 
     def __post_init__(self) -> None:
         identifier = str(self.identifier).strip()
@@ -151,9 +160,12 @@ class VideoShareConfig(Model):
         codec = str(self.codec).strip().lower()
         network_interface = str(self.network_interface).strip()
         source_id = str(self.source_id).strip() or "panel"
+        output_type = str(self.output_type).strip().lower()
         if not identifier or not name:
             raise ValueError("Video paylaşım adı ve kimliği boş olamaz")
-        if not endpoint:
+        if output_type not in {"stream", "record"}:
+            raise ValueError(f"Desteklenmeyen video çıkış türü: {output_type}")
+        if output_type == "stream" and not endpoint:
             raise ValueError("Video paylaşım bağlantı adresi boş olamaz")
         if connection_type not in {"udp", "srt", "rtmp", "rtsp"}:
             raise ValueError(f"Desteklenmeyen video paylaşım türü: {connection_type}")
@@ -161,6 +173,8 @@ class VideoShareConfig(Model):
             raise ValueError(f"Desteklenmeyen video paylaşım codec'i: {codec}")
         if not 15 <= int(self.fps) <= 120:
             raise ValueError("Video paylaşım FPS değeri 15..120 aralığında olmalı")
+        if output_type == "record" and source_id == "panel":
+            raise ValueError("Kayıt çıkışı belirli bir kameraya bağlanmalı")
         if network_interface and not re.fullmatch(r"[A-Za-z0-9_.:-]+", network_interface):
             raise ValueError("Video paylaşım ağ arayüzü geçersiz")
         object.__setattr__(self, "identifier", identifier)
@@ -174,6 +188,10 @@ class VideoShareConfig(Model):
         object.__setattr__(self, "fixed_frame_rate", bool(self.fixed_frame_rate))
         object.__setattr__(self, "network_interface", network_interface)
         object.__setattr__(self, "source_id", source_id)
+        object.__setattr__(self, "output_type", output_type)
+        if output_type == "record":
+            object.__setattr__(self, "fps", 30)
+            object.__setattr__(self, "fixed_frame_rate", True)
 
 
 @dataclass(frozen=True, slots=True)

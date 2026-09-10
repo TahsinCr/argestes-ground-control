@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
+from uuid import uuid4
 
 from PyQt6.QtCore import QEvent, QPoint, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QCloseEvent
@@ -23,6 +25,7 @@ from src.models.telemetry import TelemetrySnapshot
 from src.models.video import VideoShareConfig, VideoShareState, VideoSourceConfig, VideoStreamStats
 from src.models.connections import ConnectionStatus
 from src.services.abstracts import CommandService, TelemetryService, VideoService
+from src.services.abstracts.joystick import JoystickService
 from src.services.logging_service import LoggingService
 from src.services.battery_alarm import BatteryAlarmService
 from src.services.mission_archive import MissionArchiveService
@@ -33,6 +36,7 @@ from src.ui.assets import application_icon
 from src.ui.themes.style import ThemePalette, apply_theme
 from src.ui.views.archive_dialog import MissionArchiveDialog
 from src.ui.views.settings_dialog import SettingsDialog
+from src.ui.views.joystick_dialog import JoystickDialog
 from src.ui.widgets.attitude import AttitudeIndicator
 from src.ui.widgets.battery_popup import BatterySettingsPopup
 from src.ui.widgets.common import BatteryMeter, PanelFrame, SignalMeter, StatusChip
@@ -63,6 +67,7 @@ class MainWindow(QMainWindow):
         parameter_service,
         video_service: VideoService,
         connection_service,
+        joystick_service: JoystickService,
         tile_cache_service,
         archive_service: MissionArchiveService,
         battery_alarm_service: BatteryAlarmService,
@@ -79,6 +84,7 @@ class MainWindow(QMainWindow):
         self.parameter_service = parameter_service
         self.video_service = video_service
         self.connection_service = connection_service
+        self.joystick_service = joystick_service
         self.tile_cache_service = tile_cache_service
         self.base_dir = base_dir
         self.theme = theme
@@ -199,6 +205,13 @@ class MainWindow(QMainWindow):
         self.settings_button.setProperty("compact", "true")
         self.settings_button.setFixedWidth(42)
         self.settings_button.clicked.connect(self.open_settings)
+        self.joystick_button = QPushButton("🎮", self)
+        self.joystick_button.setObjectName("SettingsIconButton")
+        self.joystick_button.setToolTip(t("joystick.open", self.language))
+        self.joystick_button.setProperty("compact", "true")
+        self.joystick_button.setFixedWidth(42)
+        self.joystick_button.clicked.connect(self.open_joystick_settings)
+        status_layout.addWidget(self.joystick_button)
         status_layout.addWidget(self.settings_button)
         return status_bar
 
@@ -353,7 +366,8 @@ class MainWindow(QMainWindow):
         self.video_service.share_states_changed.connect(self._on_video_share_states)
         self.video_panel.reconnect_requested.connect(self._reconnect_video_from_panel)
         self.video_panel.source_selected.connect(self._select_video_source)
-        self.video_panel.recording_requested.connect(self._set_onboard_video_recording)
+        self.video_panel.recording_requested.connect(self._set_local_video_recording)
+        self.video_panel.aim_changed.connect(self._save_video_aim)
         self.command_panel.command_requested.connect(self._request_command)
         self.command_panel.task_selected.connect(
             self.parameters_panel.set_selected_task
@@ -510,12 +524,6 @@ class MainWindow(QMainWindow):
         self.map_panel.command_started(code, parameters)
 
     def _on_command_completed(self, result) -> None:
-        if result.request.code == "ONBOARD_VIDEO_RECORDING":
-            self.video_panel.set_recording_busy(False)
-            if result.accepted:
-                self.video_panel.set_recording_enabled(
-                    bool(result.details.get("video", result.request.parameters.get("enabled")))
-                )
         if result.request.source == "battery-failsafe":
             self.battery_log.event(
                 (
@@ -558,12 +566,49 @@ class MainWindow(QMainWindow):
                 },
             )
 
-    def _set_onboard_video_recording(self, enabled: bool) -> None:
+    def _set_local_video_recording(self, enabled: bool) -> None:
         self.video_panel.set_recording_busy(True)
-        self.command_service.issue_command(
-            "ONBOARD_VIDEO_RECORDING",
-            {"enabled": bool(enabled)},
-            source="qt-ui",
+        shares = list(self._active_settings.backend.video_shares)
+        if enabled:
+            recorded_sources = {
+                item.source_id for item in shares if item.output_type == "record"
+            }
+            for source in self._active_settings.backend.video_sources:
+                if source.identifier in recorded_sources:
+                    continue
+                shares.append(
+                    VideoShareConfig(
+                        identifier=uuid4().hex,
+                        name=f"{source.name} Kaydı",
+                        endpoint="data/recordings",
+                        connection_type="udp",
+                        codec="h264",
+                        fps=30,
+                        enabled=True,
+                        timestamp_enabled=False,
+                        fixed_frame_rate=True,
+                        source_id=source.identifier,
+                        output_type="record",
+                    )
+                )
+        shares = [
+            replace(item, enabled=bool(enabled))
+            if item.output_type == "record"
+            else item
+            for item in shares
+        ]
+        self._save_video_shares(tuple(shares))
+        self.video_panel.set_recording_enabled(bool(enabled))
+        self.video_panel.set_recording_busy(False)
+        self.ui_log.event(
+            "video.recording.started" if enabled else "video.recording.stopped",
+            "Tüm kamera kayıtları başlatıldı" if enabled else "Tüm kamera kayıtları durduruldu",
+            severity="success",
+            details={
+                "recording_count": sum(
+                    item.output_type == "record" for item in shares
+                )
+            },
         )
 
     def _confirm_force_arm(self, result) -> bool:
@@ -593,6 +638,12 @@ class MainWindow(QMainWindow):
         # happen for every high-rate telemetry frame.
         previous_settings = self._active_settings
         self._active_settings = settings
+        self.video_panel.set_recording_enabled(
+            any(
+                item.output_type == "record" and item.enabled
+                for item in settings.backend.video_shares
+            )
+        )
         if self._is_connection_profile_only_update(previous_settings, settings):
             self.video_panel.set_sources(
                 tuple(settings.backend.video_sources),
@@ -756,6 +807,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(t("app.title", self.language))
         self.title_bar.set_title(t("app.title", self.language))
         self.settings_button.setToolTip(t("status.settings", self.language))
+        self.joystick_button.setToolTip(t("joystick.open", self.language))
 
         self.telemetry_panel.set_title(
             t("panel.telemetry", self.language),
@@ -1299,6 +1351,23 @@ class MainWindow(QMainWindow):
             tuple(self._active_settings.backend.video_sources), identifier
         )
 
+    def _save_video_aim(
+        self,
+        identifier: str,
+        enabled: bool,
+        x: float,
+        y: float,
+    ) -> None:
+        sources = [
+            replace(source, aim_enabled=enabled, aim_x=x, aim_y=y)
+            if source.identifier == identifier
+            else source
+            for source in self._active_settings.backend.video_sources
+        ]
+        self._save_video_sources(
+            tuple(sources), self._active_settings.backend.active_video_source_id
+        )
+
     def _connect_video_source(self, identifier: str) -> None:
         if identifier != self._active_settings.backend.active_video_source_id:
             self._select_video_source(identifier)
@@ -1783,6 +1852,15 @@ class MainWindow(QMainWindow):
                 "Ayarlar güncellendi",
                 severity="success",
             )
+
+    def open_joystick_settings(self) -> None:
+        JoystickDialog(
+            self.settings_service,
+            self.joystick_service,
+            self.language,
+            self.theme,
+            self,
+        ).exec()
 
     def prepare_shutdown(self) -> None:
         if self._shutdown_prepared:

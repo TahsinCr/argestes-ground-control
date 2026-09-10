@@ -76,6 +76,16 @@ class VehicleService(Service):
         ...
 
     @abstractmethod
+    def send_rc_override(self, channels: Iterable[int | None]) -> None:
+        """Send one latest RC override sample; ``None`` leaves a channel unchanged."""
+        ...
+
+    @abstractmethod
+    def release_rc_override(self) -> None:
+        """Return every overridden RC channel to the flight controller."""
+        ...
+
+    @abstractmethod
     def upload_mission(
         self,
         overlays: Iterable[MapOverlay],

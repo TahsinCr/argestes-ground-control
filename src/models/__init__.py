@@ -10,6 +10,13 @@ from src.models.competition import (
     QrCoordinate,
 )
 from src.models.geometry import Point
+from src.models.joystick import (
+    JoystickButtonConfig,
+    JoystickChannelConfig,
+    JoystickDevice,
+    JoystickSettings,
+    JoystickState,
+)
 from src.models.logs import LogEntry
 from src.models.mission import MapContact, MapOverlay, MissionState
 from src.models.orin import OrinCommandReceipt, OrinConnectionState, OrinLinkConfig, OrinMessage
@@ -44,6 +51,11 @@ __all__ = [
     "QrCoordinate",
     "LogEntry",
     "Point",
+    "JoystickChannelConfig",
+    "JoystickButtonConfig",
+    "JoystickDevice",
+    "JoystickSettings",
+    "JoystickState",
     "MapContact",
     "MapOverlay",
     "MissionState",

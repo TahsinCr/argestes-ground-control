@@ -20,11 +20,16 @@ entegrasyon katmanına aittir.
 - Canlı telemetri, GPS, batarya, paket sağlığı ve radyo bağlantısı gösterimi
 - Yeteneklere göre ARM/DISARM, mod, GOTO, TAKEOFF, LAND, RTL, HOLD ve görev
   kontrolleri
+- Seçilebilir Linux joystick'leri için RC1–RC16 PWM kalibrasyonu, deadzone,
+  expo, tersleme, buton modları ve güvenli override bırakma
 - Uçuş planlama, geri al/ileri al, araç görevi eşitleme ve parametre yönetimi
 - İsimlendirilmiş kamera profilleri ile 1, 2, 3 veya 4 bölmeli video duvarı
 - RTSP, HTTP/MJPEG, RTP/UDP, V4L2, dosya ve özel GStreamer video kaynakları
 - Kaynak, taşıma türü, codec, FPS, zaman damgası ve ağ arayüzü seçilebilen
   birden fazla video paylaşım hedefi
+- Desteklenen donanım kodlayıcılarıyla kamera başına sabit 30 FPS MP4 kaydı ve
+  geçici görüntü kaybında aynı dosyada duraklatıp devam etme
+- Yalnız görünür kare içinde çizilen, kamera başına kalıcı nişangâh
 - Yapılandırılmış loglar, harita önbelleği, arşivler ve Türkçe/İngilizce arayüz
 - Pixhawk yüzdesi veya voltaj hesabıyla batarya yüzdesi
 
@@ -124,6 +129,18 @@ Her hedef için kaynak, taşıma türü, codec, FPS, sabit kare hızı, zaman da
 ve ağ arayüzü seçilir. Sınırlı yayın hattı sayesinde yavaş bir alıcı kamera
 yakalama veya arayüz yolunu yavaşlatamaz.
 
+Aynı çıkış düzenleyicisi yerel kayıt hedefleri de oluşturabilir. Kayıtlar
+kamera başına ayrı, sabit 30 FPS MP4 dosyalarıdır ve desteklenen bir NVIDIA
+veya VA-API donanım kodlayıcısı gerektirir. Geçici kamera kesintisi yalnız o
+kameranın zaman çizelgesini duraklatır; görüntü dönünce aynı dosyaya yazım
+devam eder. Kamera panelindeki kayıt düğmesi yapılandırılmış tüm kamera
+kayıtlarını birlikte yönetirken her hedef Video Share içinden bağımsız olarak
+açılıp kapatılabilir.
+
+Her kamera profili kendi nişan noktasını saklayabilir. Nişangâh yalnız işlenen
+görüntü sınırları içinde çizilir; kamera geçişleri ve uygulama yeniden
+başlatmaları boyunca korunur.
+
 ## Mimari
 
 ```text
@@ -144,6 +161,7 @@ bağlar. Servisler bağımlılıklarını constructor üzerinden alır; global c
 - `src/communication`: ortak, taşıma-bağımsız sözleşme modelleri
 - `src/models`: arayüzden bağımsız doğrulanmış veri modelleri
 - `src/services/vehicle`: bağlantı denetimi, MAVLink, telemetri ve parametreler
+- `src/services/joystick`: fiziksel kumanda keşfi ve RC PWM dönüşümü
 - `src/services`: komutlar, planlayıcı, ayarlar, video, loglar, önbellek ve arşivler
 - `src/ui`: Qt görünümleri, bileşenleri ve sunum adaptörleri
 

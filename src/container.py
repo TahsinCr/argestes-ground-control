@@ -10,6 +10,7 @@ from src.services.abstracts.archive import MissionArchiveRepository
 from src.services.abstracts.commands import CommandService
 from src.services.abstracts.connections import ConnectionControlService
 from src.services.abstracts.logging import LogService
+from src.services.abstracts.joystick import JoystickService
 from src.services.abstracts.onboard import OnboardMissionServiceContract
 from src.services.abstracts.parameters import ParameterService
 from src.services.abstracts.settings import SettingsRepository
@@ -22,6 +23,7 @@ from src.services.battery_alarm import BatteryAlarmService
 from src.services.commands import DispatchCommandService
 from src.services.facade import BackendFacade
 from src.services.logging_service import LoggingService
+from src.services.joystick import LinuxRcJoystickService
 from src.services.mission_archive import MissionArchiveService
 from src.services.planner import PlannerService
 from src.services.runtime import RuntimeServices
@@ -151,6 +153,18 @@ def _connection_control(
     )
 
 
+def _joystick(
+    settings: SettingsRepository,
+    vehicle: VehicleService,
+    logging: LoggingService,
+) -> JoystickService:
+    return LinuxRcJoystickService(
+        settings=settings,
+        vehicle=vehicle,
+        logger=logging.child("JOYSTICK"),
+    )
+
+
 def _facade(
     telemetry: TelemetryService,
     planner: PlannerService,
@@ -259,6 +273,16 @@ def _register_application(container: BaseDependencyContainer) -> None:
         priority=priority,
     )
     container.singleton(
+        JoystickService,
+        factory=_joystick,
+        dependencies={
+            "settings": SettingsRepository,
+            "vehicle": VehicleService,
+            "logging": LoggingService,
+        },
+        priority=priority,
+    )
+    container.singleton(
         BatteryAlarmService,
         factory=_battery_alarm,
         dependencies={"commands": CommandService, "logging": LoggingService},
@@ -293,6 +317,7 @@ def _register_application(container: BaseDependencyContainer) -> None:
             "tile_cache_service": TileCacheServer,
             "archive_service": MissionArchiveService,
             "connection_service": ConnectionControlService,
+            "joystick_service": JoystickService,
             "facade": BackendFacade,
         },
         priority=runtime_priority,

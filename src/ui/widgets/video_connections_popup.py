@@ -115,7 +115,7 @@ class VideoConnectionsPopup(QDialog):
         cancel.clicked.connect(dialog.reject)
         def commit() -> None:
             try:
-                value = VideoSourceConfig(identifier=current.identifier if current else VideoSourceConfig().identifier, name=name.text(), source_type=kind.currentText(), source_uri=uri.text(), codec=codec.currentText(), latency_ms=latency.value(), frame_timeout_s=timeout.value(), auto_connect=auto.isChecked())
+                value = VideoSourceConfig(identifier=current.identifier if current else VideoSourceConfig().identifier, name=name.text(), source_type=kind.currentText(), source_uri=uri.text(), codec=codec.currentText(), latency_ms=latency.value(), frame_timeout_s=timeout.value(), auto_connect=auto.isChecked(), aim_enabled=current.aim_enabled if current else False, aim_x=current.aim_x if current else 0.5, aim_y=current.aim_y if current else 0.5)
             except ValueError: return
             self._sources = [value if item.identifier == value.identifier else item for item in self._sources]
             if current is None: self._sources.append(value)
