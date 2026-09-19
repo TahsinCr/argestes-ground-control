@@ -478,6 +478,8 @@ class QtCommandService(_QtAdapter):
 class QtOnboardMissionService(_QtAdapter):
     state_changed = pyqtSignal(object)
     event_received = pyqtSignal(object)
+    operation_started = pyqtSignal(str)
+    operation_finished = pyqtSignal(str, bool, str, object)
 
     def __init__(
         self,
@@ -492,6 +494,27 @@ class QtOnboardMissionService(_QtAdapter):
     @property
     def state(self):
         return self.backend.state
+
+    def start_calibration(self):
+        return self._run_operation("calibration", self.backend.start_calibration)
+
+    def start_course(self):
+        return self._run_operation("course", self.backend.start_course)
+
+    def _run_operation(self, name: str, operation):
+        self.operation_started.emit(name)
+
+        def execute():
+            receipt = operation()
+            self._post(
+                self.operation_finished.emit,
+                name,
+                receipt.accepted,
+                receipt.message,
+                receipt,
+            )
+
+        return self._start_worker(execute, name=f"QtIka-{name}")
 
 
 class QtConnectionControlService(_QtAdapter):

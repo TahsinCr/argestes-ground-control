@@ -32,6 +32,7 @@ from src.services.tile_cache import TileCacheServer
 from src.services.ui_compatibility import (
     DormantOnboardMissionService,
 )
+from src.services.vehicle.onboard_ika import IkaOnboardMissionService
 from src.services.vehicle.connection_control import VehicleConnectionControlService
 from src.services.vehicle.dependencies import (
     VehicleStack,
@@ -165,6 +166,16 @@ def _joystick(
     )
 
 
+def _onboard(
+    stack: VehicleStack,
+    settings_service: SettingsService,
+) -> OnboardMissionServiceContract:
+    config = settings_service.current.backend.orin
+    if not config.enabled or stack.client is None:
+        return DormantOnboardMissionService()
+    return IkaOnboardMissionService(stack.client, config)
+
+
 def _facade(
     telemetry: TelemetryService,
     planner: PlannerService,
@@ -260,7 +271,12 @@ def _register_application(container: BaseDependencyContainer) -> None:
         dependencies={"service": MissionArchiveService},
         priority=priority,
     )
-    container.singleton(OnboardMissionServiceContract, concrete=DormantOnboardMissionService, priority=priority)
+    container.singleton(
+        OnboardMissionServiceContract,
+        factory=_onboard,
+        dependencies={"stack": VehicleStack, "settings_service": SettingsService},
+        priority=priority,
+    )
     container.singleton(
         ConnectionControlService,
         factory=_connection_control,
@@ -318,6 +334,7 @@ def _register_application(container: BaseDependencyContainer) -> None:
             "archive_service": MissionArchiveService,
             "connection_service": ConnectionControlService,
             "joystick_service": JoystickService,
+            "onboard_service": OnboardMissionServiceContract,
             "facade": BackendFacade,
         },
         priority=runtime_priority,

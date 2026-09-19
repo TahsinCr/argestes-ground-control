@@ -29,6 +29,12 @@ class OnboardMissionServiceContract(Service):
     def start_task(self, task: str, *, source: str = "ui") -> OrinCommandReceipt: ...
 
     @abstractmethod
+    def start_calibration(self) -> OrinCommandReceipt: ...
+
+    @abstractmethod
+    def start_course(self) -> OrinCommandReceipt: ...
+
+    @abstractmethod
     def start_kamikaze_transit(
         self,
         plan: KamikazeApproachPlan,

@@ -14,6 +14,7 @@ from src.services.abstracts.joystick import JoystickService
 from src.services.abstracts.parameters import ParameterService
 from src.services.abstracts.telemetry import TelemetryService
 from src.services.abstracts.vehicle import VehicleService
+from src.services.abstracts.onboard import OnboardMissionServiceContract
 from src.services.abstracts.video import VideoService
 from src.services.async_runtime import AsyncRuntime
 from src.services.facade import BackendFacade
@@ -60,6 +61,7 @@ class RuntimeServices:
     archive_service: MissionArchiveService
     connection_service: ConnectionControlService
     joystick_service: JoystickService
+    onboard_service: OnboardMissionServiceContract
     facade: BackendFacade
     _subscriptions: list[Subscription] = field(default_factory=list, repr=False)
     _python_handler: ServiceLogHandler | None = field(default=None, repr=False)
@@ -284,10 +286,12 @@ class RuntimeServices:
             ("telemetry", self.telemetry_service),
             ("joystick", self.joystick_service),
             ("parameters", self.parameter_service),
+            ("onboard", self.onboard_service),
         )
 
     def _service_stop_order(self):
         return (
+            ("onboard", self.onboard_service),
             ("parameters", self.parameter_service),
             ("joystick", self.joystick_service),
             ("telemetry", self.telemetry_service),

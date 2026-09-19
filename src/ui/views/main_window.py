@@ -427,10 +427,29 @@ class MainWindow(QMainWindow):
         )
         self.onboard_service.state_changed.connect(self.command_panel.update_onboard_state)
         self.onboard_service.state_changed.connect(self.map_panel.update_onboard_state)
+        self.onboard_service.operation_started.connect(self._on_ika_operation_started)
+        self.onboard_service.operation_finished.connect(self._on_ika_operation_finished)
         self.command_panel.update_onboard_state(self.onboard_service.state)
         self.map_panel.update_onboard_state(self.onboard_service.state)
 
     def _request_command(self, code: str, parameters: dict) -> None:
+        if code == "IKA_CALIBRATION_START":
+            dialog = QMessageBox(self)
+            dialog.setIcon(QMessageBox.Icon.Warning)
+            dialog.setWindowTitle(t("ika.calibration.confirm.title", self.language))
+            dialog.setText(t("ika.calibration.confirm.message", self.language))
+            dialog.setInformativeText(t("ika.calibration.confirm.detail", self.language))
+            dialog.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            dialog.setDefaultButton(QMessageBox.StandardButton.No)
+            if dialog.exec() != QMessageBox.StandardButton.Yes:
+                return
+            self.onboard_service.start_calibration()
+            return
+        if code == "IKA_COURSE_START":
+            self.onboard_service.start_course()
+            return
         task = str(parameters.get("task", "")).strip().upper()
         if code == "ONBOARD_TASK_CANCEL":
             self.ui_log.event(
@@ -488,6 +507,20 @@ class MainWindow(QMainWindow):
             code,
             parameters,
             source="operator-ui" if task == "ACTUATOR_TEST" else "qt-ui",
+        )
+
+    def _on_ika_operation_started(self, operation: str) -> None:
+        self.command_panel.set_ika_operation(
+            True, t(f"ika.{operation}.running", self.language)
+        )
+
+    def _on_ika_operation_finished(
+        self, operation: str, accepted: bool, message: str, _receipt: object
+    ) -> None:
+        self.command_panel.set_ika_operation(False, message, accepted)
+        self.ui_log.event(
+            f"ika.{operation}", message,
+            severity="success" if accepted else "danger",
         )
 
     def _confirm_actuator_test(self) -> bool:

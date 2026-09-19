@@ -17,7 +17,7 @@ class OrinLinkConfig(Model):
     network_id: int = 77
     message_type: int = 42_000
     heartbeat_timeout_s: float = 10.0
-    command_timeout_s: float = 5.0
+    command_timeout_s: float = 50.0
 
     def __post_init__(self) -> None:
         if not 1 <= int(self.system_id) <= 255:

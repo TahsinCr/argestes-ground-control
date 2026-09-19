@@ -339,6 +339,7 @@ class CommandPanel(PanelFrame):
         self._arm_render_signature: tuple[object, ...] | None = None
         self._available_command_codes: frozenset[str] = frozenset()
         self._onboard_state = OnboardMissionState()
+        self._ika_operation_pending = False
         self.setMinimumWidth(300)
 
         self.tabs = QTabWidget(self)
@@ -657,8 +658,18 @@ class CommandPanel(PanelFrame):
         self.task_cancel_button.clicked.connect(
             lambda: self._emit_active_task_control("ONBOARD_TASK_CANCEL")
         )
-        task_control_layout.addWidget(self.task_apply_button, 0, 0, 1, 2)
-        task_control_layout.addWidget(self.task_cancel_button, 0, 2)
+        self.ika_calibration_button = compact_button("CALIBRATION", "warning")
+        self.ika_calibration_button.clicked.connect(
+            lambda: self.command_requested.emit("IKA_CALIBRATION_START", {})
+        )
+        self.ika_course_button = compact_button("COURSE", "primary")
+        self.ika_course_button.clicked.connect(
+            lambda: self.command_requested.emit("IKA_COURSE_START", {})
+        )
+        task_control_layout.addWidget(self.ika_calibration_button, 0, 0)
+        task_control_layout.addWidget(self.ika_course_button, 0, 1, 1, 2)
+        task_control_layout.addWidget(self.task_apply_button, 1, 0, 1, 2)
+        task_control_layout.addWidget(self.task_cancel_button, 1, 2)
         task_control_layout.setColumnStretch(0, 1)
         task_control_layout.setColumnStretch(1, 1)
         task_page_layout.addWidget(task_control_row)
@@ -700,6 +711,8 @@ class CommandPanel(PanelFrame):
         self.actuator_title.setText(t("onboard.actuator.title", language).upper())
         self.kamikaze_title.setText(t("onboard.kamikaze.title", language).upper())
         self.task_cancel_button.setText(t("onboard.task.cancel", language).upper())
+        self.ika_calibration_button.setText(t("ika.calibration", language).upper())
+        self.ika_course_button.setText(t("ika.course", language).upper())
         self.update_onboard_state(self._onboard_state)
         self._sync_arm_controls()
         self.mode_apply_button.setToolTip(t("command.mode_apply.tooltip", language))
@@ -1385,6 +1398,9 @@ class CommandPanel(PanelFrame):
             and self._onboard_state.pending_command != "cancel"
         )
         self.task_apply_button.setEnabled(task_available)
+        ika_available = self._onboard_state.connected and not self._ika_operation_pending
+        self.ika_calibration_button.setEnabled(ika_available)
+        self.ika_course_button.setEnabled(ika_available)
         button_key = "command.task_restart" if same_task_active else "command.task_start"
         button_role = "warning" if same_task_active else "primary"
         button_text = t(button_key, self._language)
@@ -1426,6 +1442,12 @@ class CommandPanel(PanelFrame):
         self._update_actuator_card()
         self._update_kamikaze_card()
         self._update_task_progress()
+
+    def set_ika_operation(self, pending: bool, message: str, accepted: bool | None = None) -> None:
+        self._ika_operation_pending = bool(pending)
+        state = "warning" if pending else ("success" if accepted else "danger")
+        self._set_task_status(message, state)
+        self._sync_command_availability()
 
     def _set_command_status(self, message: str, state: str) -> None:
         self.command_status.setText(message)

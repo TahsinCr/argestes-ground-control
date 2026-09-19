@@ -44,6 +44,12 @@ class DormantOnboardMissionService(OnboardMissionServiceContract):
     def start_task(self, task: str, *, source: str = "ui") -> OrinCommandReceipt:
         return self._unavailable()
 
+    def start_calibration(self) -> OrinCommandReceipt:
+        return self._unavailable()
+
+    def start_course(self) -> OrinCommandReceipt:
+        return self._unavailable()
+
     def start_kamikaze_transit(self, plan: Any, *, source: str = "ui") -> OrinCommandReceipt:
         return self._unavailable()
 
