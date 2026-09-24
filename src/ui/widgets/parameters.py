@@ -6,23 +6,19 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QComboBox,
-    QFrame,
     QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QSizePolicy,
-    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from src.ui.i18n import t
 from src.models.parameters import Parameter
-from src.ui.config.commands import TASK_LABEL_KEYS
 from src.ui.widgets.common import PanelFrame, compact_button, horizontal_row
 
 
@@ -37,25 +33,15 @@ class ParametersPanel(PanelFrame):
         self._original_values: dict[str, object] = {}
         self._dirty_values: dict[str, object] = {}
         self._language = "tr"
-        self._selected_task = ""
-        self._task_pages: dict[str, QWidget] = {}
         self.setMinimumWidth(0)
 
-        self.tabs = QTabWidget(self)
-        self.tabs.setObjectName("CommandTabs")
-        self.tabs.tabBar().setExpanding(True)
-        self.tabs.tabBar().setDrawBase(False)
-        self.tabs.setSizePolicy(
+        self.parameters_tab = QWidget(self)
+        self.parameters_tab.setObjectName("CommandTabPage")
+        self.parameters_tab.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Expanding,
         )
-        self.parameters_tab = QWidget(self.tabs)
-        self.parameters_tab.setObjectName("CommandTabPage")
-        self.mission_commands_tab = QWidget(self.tabs)
-        self.mission_commands_tab.setObjectName("CommandTabPage")
-        self.tabs.addTab(self.parameters_tab, "")
-        self.tabs.addTab(self.mission_commands_tab, "")
-        self.body_layout.addWidget(self.tabs, 1)
+        self.body_layout.addWidget(self.parameters_tab, 1)
 
         parameters_layout = QVBoxLayout(self.parameters_tab)
         parameters_layout.setContentsMargins(6, 6, 6, 6)
@@ -98,79 +84,11 @@ class ParametersPanel(PanelFrame):
         footer_layout.addWidget(self.apply_button)
         parameters_layout.addWidget(footer)
 
-        self.mission_layout = QVBoxLayout(self.mission_commands_tab)
-        # The task-specific page may use the full tab surface. Its persistent
-        # feedback strip intentionally reaches both panel edges.
-        self.mission_layout.setContentsMargins(0, 8, 0, 0)
-        self.mission_layout.setSpacing(6)
-        self.mission_command_stack = QStackedWidget(self.mission_commands_tab)
-        self.mission_command_stack.setObjectName("MissionCommandStack")
-        self.mission_layout.addWidget(self.mission_command_stack, 1)
-
-        self.mission_empty_page = QWidget(self.mission_command_stack)
-        empty_layout = QVBoxLayout(self.mission_empty_page)
-        empty_layout.setContentsMargins(12, 12, 12, 12)
-        empty_layout.addStretch(1)
-        self.mission_empty_card = QFrame(self.mission_empty_page)
-        self.mission_empty_card.setObjectName("MetricCard")
-        card_layout = QVBoxLayout(self.mission_empty_card)
-        card_layout.setContentsMargins(18, 18, 18, 18)
-        card_layout.setSpacing(8)
-        self.mission_empty_marker = QLabel("◇", self.mission_empty_card)
-        self.mission_empty_marker.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.mission_empty_marker.setProperty("role", "section-label")
-        self.mission_empty_title = QLabel(self.mission_empty_card)
-        self.mission_empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.mission_empty_title.setObjectName("MetricTitle")
-        self.mission_empty_description = QLabel(self.mission_empty_card)
-        self.mission_empty_description.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.mission_empty_description.setWordWrap(True)
-        self.mission_empty_description.setProperty("role", "readout-label")
-        card_layout.addWidget(self.mission_empty_marker)
-        card_layout.addWidget(self.mission_empty_title)
-        card_layout.addWidget(self.mission_empty_description)
-        empty_layout.addWidget(self.mission_empty_card)
-        empty_layout.addStretch(1)
-        self.mission_command_stack.addWidget(self.mission_empty_page)
-
         self._update_footer()
         self.set_language(self._language)
 
-    def attach_task_feedback(
-        self,
-        progress: QWidget,
-        status: QWidget,
-        task_cards: Iterable[QWidget],
-    ) -> None:
-        """Host compact task-specific feedback at the bottom of this tab."""
-
-        del status  # The compact operation message remains in Autonomous Control.
-        self.task_feedback_strip = QWidget(self.mission_commands_tab)
-        self.task_feedback_strip.setObjectName("TaskFeedbackStrip")
-        self.task_feedback_strip.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
-        self.task_feedback_strip.setMaximumHeight(57)
-        feedback_layout = QVBoxLayout(self.task_feedback_strip)
-        feedback_layout.setContentsMargins(0, 0, 0, 0)
-        feedback_layout.setSpacing(3)
-        for card in task_cards:
-            card.setParent(self.task_feedback_strip)
-            feedback_layout.addWidget(card)
-        progress.setParent(self.task_feedback_strip)
-        progress.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
-        progress.setFixedHeight(6)
-        feedback_layout.addWidget(progress)
-        self.mission_layout.addWidget(self.task_feedback_strip)
-
     def set_language(self, language: str) -> None:
         self._language = language
-        self.tabs.setTabText(0, t("tab.parameters", language))
-        self.tabs.setTabText(1, t("tab.mission_commands", language))
         self.apply_button.setText(t("parameters.apply", language).upper())
         self.reset_button.setText(t("parameters.reset", language).upper())
         self.table.setHorizontalHeaderLabels(
@@ -186,47 +104,7 @@ class ParametersPanel(PanelFrame):
             self.category_combo.setItemText(
                 0, t("table.parameters.all", language)
             )
-        self._update_mission_command_placeholder()
         self._update_footer()
-
-    def set_selected_task(self, task_code: str | None) -> None:
-        self._selected_task = str(task_code or "").strip().upper()
-        page = self._task_pages.get(self._selected_task)
-        self.mission_command_stack.setCurrentWidget(page or self.mission_empty_page)
-        self._update_mission_command_placeholder()
-
-    def register_task_page(self, task_code: str, page: QWidget) -> None:
-        """Register a task-specific command page without coupling it to MAVLink."""
-        code = str(task_code).strip().upper()
-        if not code:
-            raise ValueError("Task code cannot be empty")
-        previous = self._task_pages.get(code)
-        if previous is not None:
-            self.mission_command_stack.removeWidget(previous)
-        self._task_pages[code] = page
-        self.mission_command_stack.addWidget(page)
-        if code == self._selected_task:
-            self.mission_command_stack.setCurrentWidget(page)
-
-    def _update_mission_command_placeholder(self) -> None:
-        code = self._selected_task
-        if not code:
-            title = t("mission_commands.empty.title", self._language)
-            description = t("mission_commands.empty.description", self._language)
-            marker = "◇"
-        else:
-            label_key = TASK_LABEL_KEYS.get(code)
-            task = t(label_key, self._language) if label_key else code.replace("_", " ").title()
-            title = task
-            description = t(
-                "mission_commands.pending.description",
-                self._language,
-                task=task,
-            )
-            marker = "◈"
-        self.mission_empty_marker.setText(marker)
-        self.mission_empty_title.setText(title)
-        self.mission_empty_description.setText(description)
 
     def set_parameters(self, parameters: Iterable[Parameter]) -> None:
         incoming = list(parameters)

@@ -1004,7 +1004,6 @@
       </div>
       <div id="context-menu" class="context-menu">
         <button data-action="goto"></button>
-        <button data-action="hss_goto"></button>
         <button data-action="center"></button>
         <button data-action="set_home"></button>
         <div id="context-point-editor" class="context-point-editor">
@@ -1071,7 +1070,7 @@
   <script>
     const BLANK_TILE = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="%230d1116"/></svg>';
     const PRIMARY_TOOLS = ['pan', 'takeoff', 'waypoint', 'loiter', 'rtl', 'no_fly', 'safe_zone', 'land', 'mission_list', 'clear'];
-    const TRANSFER_TOOLS = ['archive', 'send', 'download'];
+    const TRANSFER_TOOLS = ['send', 'download'];
     const TOOL_ORDER = [...PRIMARY_TOOLS, ...TRANSFER_TOOLS];
     const TOOL_DEFAULTS = {
       pan: 'Select',
@@ -1081,17 +1080,14 @@
       rtl: 'RTL',
       no_fly: 'No-Fly',
       safe_zone: 'Safe Zone',
-      hss: 'HSS',
       land: 'Land',
       mission_list: 'Point List',
-      archive: 'Archive',
       send: 'Send',
       download: 'Get Mission',
       clear: 'Clear',
     };
     const CONTEXT_DEFAULTS = {
       goto: 'Send GOTO',
-      hss_goto: 'HSS GOTO',
       center: 'Center vehicle',
       set_home: 'Set home/reference here',
       delete: 'Delete selected',
@@ -1103,17 +1099,15 @@
       rtl: '#f4b942',
       no_fly: '#eb6464',
       safe_zone: '#73a95b',
-      hss: '#eb6464',
-      target: '#f4b942',
       land: '#2f7ed8',
       goto: '#61a8ff',
     };
     const ROUTE_TYPES = new Set(['takeoff', 'waypoint', 'loiter', 'rtl', 'land']);
-    const POINT_TYPES = new Set(['takeoff', 'waypoint', 'loiter', 'rtl', 'land', 'hss', 'target']);
+    const POINT_TYPES = new Set(['takeoff', 'waypoint', 'loiter', 'rtl', 'land']);
     const ALTITUDE_TYPES = new Set(['takeoff', 'waypoint', 'loiter', 'land']);
     const POLYGON_TYPES = new Set(['no_fly', 'safe_zone']);
     const EDITABLE_POINT_TYPES = ['takeoff', 'waypoint', 'loiter', 'rtl', 'land'];
-    const DEFAULT_RADII = { takeoff: 35, waypoint: 35, loiter: 75, rtl: 75, land: 35, hss: 100, target: 20 };
+    const DEFAULT_RADII = { takeoff: 35, waypoint: 35, loiter: 75, rtl: 75, land: 35 };
     const TOOL_DOCK_MIN_GAP_PX = 4;
     const TOOL_DOCK_MAX_GAP_PX = 32;
     const TOOL_DOCK_SIDE_CLEARANCE_PX = 12;
@@ -1223,11 +1217,8 @@
         survey: '<svg viewBox="0 0 24 24"><path d="M4 7l7-3 9 4-7 3z"/><path d="M4 7v9l9 4 7-4V8"/><path d="M13 10v10"/></svg>',
         no_fly: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M7 17l10-10"/></svg>',
         safe_zone: '<svg viewBox="0 0 24 24"><path d="M12 3l7 4v5c0 4-3 7-7 9-4-2-7-5-7-9V7z"/><path d="M8.5 12l2.3 2.3L16 9"/></svg>',
-        hss: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/></svg>',
-        target: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/></svg>',
         land: '<svg viewBox="0 0 24 24"><path d="M12 6v12"/><path d="M7 13l5 5 5-5"/><path d="M4 20h16"/></svg>',
         mission_list: '<svg viewBox="0 0 24 24"><path d="M8 6h12"/><path d="M8 12h12"/><path d="M8 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg>',
-        archive: '<svg viewBox="0 0 24 24"><path d="M4 7h6l2 2h8v10H4z"/><path d="M8 14h8"/><path d="M12 10v8"/></svg>',
         send: '<svg viewBox="0 0 24 24"><path d="M4 12l16-8-5 16-3-6z"/><path d="M12 14l-3 5"/></svg>',
         download: '<svg viewBox="0 0 24 24"><path d="M12 4v11"/><path d="M8 11l4 4 4-4"/><path d="M5 20h14"/></svg>',
         clear: '<svg viewBox="0 0 24 24"><path d="M4 8h16"/><path d="M8 8V5h8v3"/><path d="M6 8l1 11h10l1-11"/></svg>',
@@ -1375,9 +1366,6 @@
         if (tool === 'mission_list') {
           button.classList.add('is-utility');
         }
-        if (tool === 'archive') {
-          button.classList.add('is-utility');
-        }
         if (tool === 'send' || tool === 'download') {
           button.classList.add(tool === 'send' ? 'is-send' : 'is-download');
           button.disabled = !state.commandAvailable;
@@ -1392,10 +1380,6 @@
         button.addEventListener('click', () => {
           if (tool === 'mission_list') {
             toggleMissionDialog();
-            return;
-          }
-          if (tool === 'archive') {
-            emitAction({ type: 'storage_request', action: 'archive' });
             return;
           }
           if (tool === 'send') {
@@ -1552,13 +1536,8 @@
     }
 
     function isSourceManagedLayer(layer) {
-      const type = normalizeType(layer?.overlayData?.overlay_type || '');
       const metadata = layer?.overlayData?.metadata || {};
-      const source = String(metadata.source || '').trim().toLowerCase();
-      return metadata.read_only === true
-        || source.startsWith('teknofest-')
-        || type === 'hss'
-        || type === 'target';
+      return metadata.read_only === true;
     }
 
     function isEditableLayer(layer) {
@@ -1628,8 +1607,6 @@
         survey: `ALN ${count}`,
         no_fly: `NFZ ${count}`,
         safe_zone: `SAFE ${count}`,
-        hss: `HSS ${count}`,
-        target: `HDF ${count}`,
         land: 'LND',
         goto: 'GOTO',
       };
@@ -1647,9 +1624,6 @@
       };
       if (ROUTE_TYPES.has(normalized)) {
         return `${routeLabels[normalized] || normalized.toUpperCase()} ${order || routeLayers().length + 1}`;
-      }
-      if (normalized === 'hss') {
-        return `HSS ${freeLayers().filter((layer) => layer.overlayData.overlay_type === 'hss').length + 1}`;
       }
       return inferLabel(normalized);
     }
@@ -1673,27 +1647,10 @@
         return { ...base, fillOpacity: selected ? 0.12 : 0.07, dashArray: '10 5' };
       }
       if (normalized === 'safe_zone') {
-        if (String(metadata.source || '').trim().toLowerCase() === 'settings-safe-area') {
-          return {
-            ...base,
-            color: '#73d06b',
-            opacity: 1.0,
-            fill: false,
-            fillOpacity: 0.0,
-            dashArray: '9 5',
-            weight: selected ? 3.0 : 2.6,
-          };
-        }
         return { ...base, color: '#73d06b', fillOpacity: 0.0, dashArray: '12 4', weight: selected ? 3.2 : 2.4 };
-      }
-      if (normalized === 'hss') {
-        return { ...base, fillOpacity: selected ? 0.12 : 0.06, dashArray: '2 4', weight: selected ? 3.0 : 2.2 };
       }
       if (normalized === 'loiter') {
         return { ...base, fillOpacity: selected ? 0.10 : 0.04, dashArray: '4 4' };
-      }
-      if (normalized === 'target') {
-        return { ...base, fillOpacity: selected ? 0.10 : 0.05, dashArray: '2 5' };
       }
       return base;
     }
@@ -2309,7 +2266,7 @@
         return;
       }
       guidedGotoDistanceLabelGroup.clearLayers();
-      const target = payload && (payload.hssGoto || payload.guidedGoto);
+      const target = payload && payload.guidedGoto;
       const latitude = Number(target && target.lat);
       const longitude = Number(target && target.lon);
       if (!target || !target.active || !vehiclePosition || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
@@ -2720,20 +2677,6 @@
       }, 6000);
     }
 
-    function addHssGotoCommand(latlng) {
-      emitAction({ type: 'hss_goto_request', lat: latlng.lat, lon: latlng.lng });
-      const marker = L.circleMarker(latlng, {
-        radius: 7,
-        color: '#f3c64d',
-        fillColor: '#f3c64d',
-        fillOpacity: 0.35,
-        weight: 2,
-      }).addTo(overlayGroup);
-      setTimeout(() => {
-        overlayGroup.removeLayer(marker);
-      }, 6000);
-    }
-
     function startShapeTool(tool) {
       map.editTools.stopDrawing();
       const normalized = normalizeType(tool);
@@ -2774,7 +2717,7 @@
           ? 'none'
           : 'flex';
       });
-      ['goto', 'hss_goto'].forEach((action) => {
+      ['goto'].forEach((action) => {
         menu.querySelector(`[data-action="${action}"]`).style.display = (
           !deletable && state.flightMode === 'GUIDED'
         ) ? 'flex' : 'none';
@@ -3230,10 +3173,6 @@
       if (vehicleMarker && map.hasLayer(vehicleMarker)) {
         return vehicleMarker.getLatLng();
       }
-      const own = state.contacts.get('own-siha');
-      if (own) {
-        return own.marker.getLatLng();
-      }
       return null;
     }
 
@@ -3443,7 +3382,7 @@
         const altitude = altitudeForLayer(layer);
         const choices = routeRows
           ? typeOptions([...ROUTE_TYPES], type)
-          : typeOptions(layer instanceof L.Circle ? ['hss'] : ['no_fly', 'safe_zone'], type);
+          : typeOptions(layer instanceof L.Circle ? ['safe_zone'] : ['no_fly', 'safe_zone'], type);
         return `
           <div class="point-list-row" data-overlay-id="${layer.overlayData.overlay_id}">
             <span class="point-drag-handle" draggable="true" role="button" tabindex="0">
@@ -3822,8 +3761,6 @@
         hideContextMenu(action !== 'delete');
         if (action === 'goto') {
           addGotoCommand(actionPoint);
-        } else if (action === 'hss_goto') {
-          addHssGotoCommand(actionPoint);
         } else if (action === 'center') {
           const ownLatLng = ownVehicleLatLng();
           if (ownLatLng) {

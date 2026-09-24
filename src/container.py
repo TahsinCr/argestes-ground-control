@@ -6,39 +6,28 @@ from pathlib import Path
 
 from src.core.dependency import BaseDependencyContainer, DependencyContainer
 from src.models.mission import MissionState
-from src.services.abstracts.archive import MissionArchiveRepository
 from src.services.abstracts.commands import CommandService
 from src.services.abstracts.connections import ConnectionControlService
 from src.services.abstracts.logging import LogService
-from src.services.abstracts.joystick import JoystickService
-from src.services.abstracts.onboard import OnboardMissionServiceContract
 from src.services.abstracts.parameters import ParameterService
 from src.services.abstracts.settings import SettingsRepository
 from src.services.abstracts.telemetry import TelemetryService
 from src.services.abstracts.tile_cache import TileCacheService
 from src.services.abstracts.vehicle import VehicleService
-from src.services.abstracts.video import VideoService
 from src.services.async_runtime import AsyncRuntime
 from src.services.battery_alarm import BatteryAlarmService
 from src.services.commands import DispatchCommandService
 from src.services.facade import BackendFacade
 from src.services.logging_service import LoggingService
-from src.services.joystick import LinuxRcJoystickService
-from src.services.mission_archive import MissionArchiveService
 from src.services.planner import PlannerService
 from src.services.runtime import RuntimeServices
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
-from src.services.ui_compatibility import (
-    DormantOnboardMissionService,
-)
-from src.services.vehicle.onboard_ika import IkaOnboardMissionService
 from src.services.vehicle.connection_control import VehicleConnectionControlService
 from src.services.vehicle.dependencies import (
     VehicleStack,
     register_vehicle_dependencies,
 )
-from src.services.video import MultiVideoService
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,17 +82,6 @@ def _commands(stack: VehicleStack, logging: LoggingService) -> CommandService:
     return DispatchCommandService(stack.vehicle, stack.parameters, logging.child("COMMAND"))
 
 
-def _video(settings_service: SettingsService, logging: LoggingService) -> VideoService:
-    backend = settings_service.current.backend
-    service: VideoService = MultiVideoService(
-        tuple(backend.video_sources),
-        backend.active_video_source_id,
-        logging.child("VIDEO"),
-    )
-    service.configure_shares(tuple(backend.video_shares))
-    return service
-
-
 def _tile_cache(
     settings_service: SettingsService,
     async_runtime: AsyncRuntime,
@@ -118,14 +96,6 @@ def _tile_cache(
 
 
 def _tile_cache_contract(service: TileCacheServer) -> TileCacheService:
-    return service
-
-
-def _archive(context: ApplicationContext) -> MissionArchiveService:
-    return MissionArchiveService(context.base_dir)
-
-
-def _archive_contract(service: MissionArchiveService) -> MissionArchiveRepository:
     return service
 
 
@@ -152,28 +122,6 @@ def _connection_control(
         telemetry=telemetry,
         logger=logging.child("CONNECTION"),
     )
-
-
-def _joystick(
-    settings: SettingsRepository,
-    vehicle: VehicleService,
-    logging: LoggingService,
-) -> JoystickService:
-    return LinuxRcJoystickService(
-        settings=settings,
-        vehicle=vehicle,
-        logger=logging.child("JOYSTICK"),
-    )
-
-
-def _onboard(
-    stack: VehicleStack,
-    settings_service: SettingsService,
-) -> OnboardMissionServiceContract:
-    config = settings_service.current.backend.orin
-    if not config.enabled or stack.client is None:
-        return DormantOnboardMissionService()
-    return IkaOnboardMissionService(stack.client, config)
 
 
 def _facade(
@@ -242,12 +190,6 @@ def _register_application(container: BaseDependencyContainer) -> None:
         priority=priority,
     )
     container.singleton(
-        VideoService,
-        factory=_video,
-        dependencies={"settings_service": SettingsService, "logging": LoggingService},
-        priority=priority,
-    )
-    container.singleton(
         TileCacheServer,
         factory=_tile_cache,
         dependencies={"settings_service": SettingsService, "async_runtime": AsyncRuntime},
@@ -260,40 +202,12 @@ def _register_application(container: BaseDependencyContainer) -> None:
         priority=priority,
     )
     container.singleton(
-        MissionArchiveService,
-        factory=_archive,
-        dependencies={"context": ApplicationContext},
-        priority=priority,
-    )
-    container.singleton(
-        MissionArchiveRepository,
-        factory=_archive_contract,
-        dependencies={"service": MissionArchiveService},
-        priority=priority,
-    )
-    container.singleton(
-        OnboardMissionServiceContract,
-        factory=_onboard,
-        dependencies={"stack": VehicleStack, "settings_service": SettingsService},
-        priority=priority,
-    )
-    container.singleton(
         ConnectionControlService,
         factory=_connection_control,
         dependencies={
             "settings": SettingsRepository,
             "vehicle": VehicleService,
             "telemetry": TelemetryService,
-            "logging": LoggingService,
-        },
-        priority=priority,
-    )
-    container.singleton(
-        JoystickService,
-        factory=_joystick,
-        dependencies={
-            "settings": SettingsRepository,
-            "vehicle": VehicleService,
             "logging": LoggingService,
         },
         priority=priority,
@@ -329,12 +243,8 @@ def _register_application(container: BaseDependencyContainer) -> None:
             "planner_service": PlannerService,
             "command_service": CommandService,
             "parameter_service": ParameterService,
-            "video_service": VideoService,
             "tile_cache_service": TileCacheServer,
-            "archive_service": MissionArchiveService,
             "connection_service": ConnectionControlService,
-            "joystick_service": JoystickService,
-            "onboard_service": OnboardMissionServiceContract,
             "facade": BackendFacade,
         },
         priority=runtime_priority,

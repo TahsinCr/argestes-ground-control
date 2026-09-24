@@ -1,16 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, fields
-import math
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from src.core.abstracts import Model
-from src.models.competition import CompetitionServerConfig
-from src.models.joystick import JoystickSettings
-from src.models.orin import OrinLinkConfig
-from src.models.video import VideoShareConfig, VideoSourceConfig
 
 
 DEFAULT_RADII = {
@@ -19,9 +14,7 @@ DEFAULT_RADII = {
     "loiter": 75,
     "rtl": 75,
     "land": 35,
-    "hss": 100,
 }
-SAFE_AREA_POINT_KEYS = ("point_1", "point_2", "point_3", "point_4")
 
 
 @dataclass(slots=True)
@@ -130,64 +123,9 @@ class MavlinkConnectionConfig(Model):
 
 
 @dataclass(slots=True)
-class SafeAreaPoint:
-    """One two-dimensional safe-area corner; altitude is intentionally absent."""
-
-    latitude: float = 0.0
-    longitude: float = 0.0
-
-    def __post_init__(self) -> None:
-        self.latitude = float(self.latitude)
-        self.longitude = float(self.longitude)
-        if not -90.0 <= self.latitude <= 90.0:
-            raise ValueError("Güvenli alan enlemi -90..90 aralığında olmalı")
-        if not -180.0 <= self.longitude <= 180.0:
-            raise ValueError("Güvenli alan boylamı -180..180 aralığında olmalı")
-
-
-@dataclass(slots=True)
-class SafeAreaSettings:
-    point_1: SafeAreaPoint = field(default_factory=SafeAreaPoint)
-    point_2: SafeAreaPoint = field(default_factory=SafeAreaPoint)
-    point_3: SafeAreaPoint = field(default_factory=SafeAreaPoint)
-    point_4: SafeAreaPoint = field(default_factory=SafeAreaPoint)
-
-    @property
-    def corners(self) -> tuple[SafeAreaPoint, ...]:
-        return tuple(getattr(self, key) for key in SAFE_AREA_POINT_KEYS)
-
-    def ordered_corners(self) -> tuple[SafeAreaPoint, ...]:
-        """Return the four corners in perimeter order without changing their labels.
-
-        Settings intentionally keep the operator's Point 1..4 inputs intact.
-        The map receives a centroid-angle ordering instead, so a rectangle is
-        rendered as a simple polygon even when its corners were entered in an
-        arbitrary order.
-        """
-
-        corners = self.corners
-        coordinates = {(corner.latitude, corner.longitude) for corner in corners}
-        if len(coordinates) != len(corners):
-            return ()
-        center_latitude = sum(corner.latitude for corner in corners) / len(corners)
-        center_longitude = sum(corner.longitude for corner in corners) / len(corners)
-        longitude_scale = math.cos(math.radians(center_latitude))
-        return tuple(
-            sorted(
-                corners,
-                key=lambda corner: math.atan2(
-                    corner.latitude - center_latitude,
-                    (corner.longitude - center_longitude) * longitude_scale,
-                ),
-            )
-        )
-
-
-@dataclass(slots=True)
 class MissionDefaults:
     radii: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_RADII))
     default_altitude_m: int = 100
-    safe_area: SafeAreaSettings = field(default_factory=SafeAreaSettings)
 
     def __post_init__(self) -> None:
         self.radii = {key: int(value) for key, value in self.radii.items()}
@@ -299,72 +237,17 @@ class BatteryTelemetrySettings:
 @dataclass(slots=True)
 class BackendSettings:
     mock_mode: bool = False
-    video_auto_connect: bool = False
-    video_source_type: str = "udp"
-    video_source_uri: str = ""
-    video_codec: str = "h265"
-    video_latency_ms: int = 100
-    video_frame_timeout_s: int = 3
-    video_sources: list[VideoSourceConfig] = field(default_factory=list)
-    active_video_source_id: str = ""
-    video_shares: list[VideoShareConfig] = field(default_factory=list)
-    competition_servers: list[CompetitionServerConfig] = field(default_factory=list)
     cache: CacheSettings = field(default_factory=CacheSettings)
     mavlink: MavlinkSettings = field(default_factory=MavlinkSettings)
     mavlink_connections: list[MavlinkConnectionConfig] = field(default_factory=list)
     active_mavlink_connection_id: str = ""
-    orin: OrinLinkConfig = field(default_factory=OrinLinkConfig)
-    competition: CompetitionServerConfig = field(default_factory=CompetitionServerConfig)
     mission: MissionDefaults = field(default_factory=MissionDefaults)
     battery_alarm: BatteryAlarmSettings = field(default_factory=BatteryAlarmSettings)
     battery_telemetry: BatteryTelemetrySettings = field(
         default_factory=BatteryTelemetrySettings
     )
-    joystick: JoystickSettings = field(default_factory=JoystickSettings)
 
     def __post_init__(self) -> None:
-        self.video_auto_connect = bool(self.video_auto_connect)
-        self.video_source_type = self.video_source_type.strip().lower()
-        self.video_source_uri = self.video_source_uri.strip()
-        self.video_codec = self.video_codec.strip().lower()
-        self.video_latency_ms = int(self.video_latency_ms)
-        self.video_frame_timeout_s = int(self.video_frame_timeout_s)
-        self.video_sources = [
-            value if isinstance(value, VideoSourceConfig) else VideoSourceConfig(**value)
-            for value in self.video_sources
-        ]
-        if not self.video_sources:
-            self.video_sources = [
-                VideoSourceConfig(
-                    identifier="video-primary",
-                    name="Kamera 1",
-                    source_type=self.video_source_type,
-                    source_uri=self.video_source_uri,
-                    codec=self.video_codec,
-                    latency_ms=self.video_latency_ms,
-                    frame_timeout_s=self.video_frame_timeout_s,
-                    auto_connect=self.video_auto_connect,
-                )
-            ]
-        source_identifiers = [source.identifier for source in self.video_sources]
-        if len(source_identifiers) != len(set(source_identifiers)):
-            raise ValueError("Video bağlantı kimlikleri benzersiz olmalı")
-        active_source = next(
-            (source for source in self.video_sources if source.identifier == self.active_video_source_id),
-            self.video_sources[0],
-        )
-        self.active_video_source_id = active_source.identifier
-        # Legacy fields remain a backwards-compatible view of the active source.
-        self.video_auto_connect = active_source.auto_connect
-        self.video_source_type = active_source.source_type
-        self.video_source_uri = active_source.source_uri
-        self.video_codec = active_source.codec
-        self.video_latency_ms = active_source.latency_ms
-        self.video_frame_timeout_s = int(active_source.frame_timeout_s)
-        self.video_shares = [
-            value if isinstance(value, VideoShareConfig) else VideoShareConfig(**value)
-            for value in self.video_shares
-        ]
         self.mavlink_connections = [
             value if isinstance(value, MavlinkConnectionConfig) else MavlinkConnectionConfig(**value)
             for value in self.mavlink_connections
@@ -375,35 +258,15 @@ class BackendSettings:
         if len(identifiers) != len(set(identifiers)):
             raise ValueError("Telemetri profil kimlikleri benzersiz olmalı")
         selected = next(
-            (profile for profile in self.mavlink_connections if profile.identifier == self.active_mavlink_connection_id),
+            (
+                profile
+                for profile in self.mavlink_connections
+                if profile.identifier == self.active_mavlink_connection_id
+            ),
             self.mavlink_connections[0],
         )
         self.active_mavlink_connection_id = selected.identifier
         self.mavlink = selected.to_mavlink(self.mavlink)
-        identifiers = [share.identifier for share in self.video_shares]
-        if len(identifiers) != len(set(identifiers)):
-            raise ValueError("Video paylaşım kimlikleri benzersiz olmalı")
-        self.competition_servers = [
-            value if isinstance(value, CompetitionServerConfig) else CompetitionServerConfig(**value)
-            for value in self.competition_servers
-        ]
-        if not self.competition_servers:
-            self.competition_servers = [self.competition]
-        server_identifiers = [server.identifier for server in self.competition_servers]
-        if len(server_identifiers) != len(set(server_identifiers)):
-            raise ValueError("TEKNOFEST sunucu kimlikleri benzersiz olmalı")
-        if not any(server.identifier == self.competition.identifier for server in self.competition_servers):
-            self.competition = self.competition_servers[0]
-        if self.video_source_type not in {
-            "mock", "http", "rtsp", "udp", "usb", "file", "pipeline"
-        }:
-            raise ValueError(f"Desteklenmeyen video kaynağı: {self.video_source_type}")
-        if self.video_codec not in {"h264", "h265", "mjpeg"}:
-            raise ValueError(f"Desteklenmeyen video codec: {self.video_codec}")
-        if not 0 <= self.video_latency_ms <= 10_000:
-            raise ValueError("Video gecikmesi 0..10000 ms aralığında olmalı")
-        if not 1 <= self.video_frame_timeout_s <= 60:
-            raise ValueError("Video kare zaman aşımı 1..60 saniye aralığında olmalı")
 
 
 @dataclass(slots=True)
@@ -450,10 +313,6 @@ class SettingsModel(Model):
                 for item in backend_payload.pop("mavlink_connections", ())
             ]
             active_mavlink_connection_id = str(backend_payload.pop("active_mavlink_connection_id", ""))
-            orin = OrinLinkConfig(**_known(OrinLinkConfig, backend_payload.pop("orin", {})))
-            competition = CompetitionServerConfig(
-                **_known(CompetitionServerConfig, backend_payload.pop("competition", {}))
-            )
             battery_payload = dict(backend_payload.pop("battery_alarm", {}))
             legacy_mode = battery_payload.pop("mode", None)
             legacy_threshold = battery_payload.pop("threshold", None)
@@ -483,61 +342,20 @@ class SettingsModel(Model):
             battery_telemetry = BatteryTelemetrySettings(
                 **_known(BatteryTelemetrySettings, battery_telemetry_payload)
             )
-            joystick = JoystickSettings(
-                **_known(
-                    JoystickSettings,
-                    dict(backend_payload.pop("joystick", {})),
-                )
-            )
-            video_shares = [
-                VideoShareConfig(**dict(item))
-                for item in backend_payload.pop("video_shares", ())
-            ]
-            video_sources = [
-                VideoSourceConfig(**dict(item))
-                for item in backend_payload.pop("video_sources", ())
-            ]
-            active_video_source_id = str(
-                backend_payload.pop("active_video_source_id", "")
-            )
-            competition_servers = [
-                CompetitionServerConfig(**dict(item))
-                for item in backend_payload.pop("competition_servers", ())
-            ]
             mission_payload = dict(backend_payload.pop("mission", {}))
             radii = dict(DEFAULT_RADII)
             radii.update({key: int(value) for key, value in mission_payload.get("radii", {}).items()})
-            safe_area_payload = dict(mission_payload.get("safe_area", {}))
-            safe_area = SafeAreaSettings(
-                **{
-                    key: SafeAreaPoint(
-                        **_known(
-                            SafeAreaPoint,
-                            dict(safe_area_payload.get(key, {})),
-                        )
-                    )
-                    for key in SAFE_AREA_POINT_KEYS
-                }
-            )
             backend = BackendSettings(
                 **_known(BackendSettings, backend_payload),
                 cache=cache,
                 mavlink=mavlink,
                 mavlink_connections=mavlink_connections,
                 active_mavlink_connection_id=active_mavlink_connection_id,
-                orin=orin,
-                competition=competition,
-                competition_servers=competition_servers,
                 battery_alarm=battery_alarm,
                 battery_telemetry=battery_telemetry,
-                joystick=joystick,
-                video_shares=video_shares,
-                video_sources=video_sources,
-                active_video_source_id=active_video_source_id,
                 mission=MissionDefaults(
                     radii=radii,
                     default_altitude_m=int(mission_payload.get("default_altitude_m", 100)),
-                    safe_area=safe_area,
                 ),
             )
             return cls(backend=backend, ui=UiSettings(**_known(UiSettings, ui_payload)))
@@ -553,13 +371,6 @@ class SettingsModel(Model):
         return cls(
             backend=BackendSettings(
                 mock_mode=bool(payload.get("mock_mode", False)),
-                video_auto_connect=bool(payload.get("video_auto_connect", False)),
-                video_source_type=str(payload.get("video_source_type", "udp")),
-                video_source_uri=str(payload.get("video_source_uri", "")),
-                video_codec=str(payload.get("video_codec", "h265")),
-                video_latency_ms=int(payload.get("video_latency_ms", 100)),
-                video_frame_timeout_s=int(payload.get("video_frame_timeout_s", 3)),
-                video_shares=[],
                 cache=CacheSettings(
                     enabled=bool(payload.get("cache_enabled", True)),
                     limit_mb=int(payload.get("cache_limit_mb", 2048)),
@@ -608,23 +419,6 @@ class SettingsModel(Model):
                     if key in {"endpoint", "baud", "heartbeat_timeout", "auto_connect"}:
                         profile[key] = value
                     break
-        if path.startswith("backend.video_"):
-            backend = payload["backend"]
-            active_id = backend.get("active_video_source_id", "")
-            field_name = parts[-1]
-            source_field = {
-                "video_auto_connect": "auto_connect",
-                "video_source_type": "source_type",
-                "video_source_uri": "source_uri",
-                "video_codec": "codec",
-                "video_latency_ms": "latency_ms",
-                "video_frame_timeout_s": "frame_timeout_s",
-            }.get(field_name)
-            if source_field:
-                for source in backend.get("video_sources", []):
-                    if source.get("identifier") == active_id:
-                        source[source_field] = value
-                        break
         return self.from_dict(payload)
 
     def patch(self, **changes: Any) -> "SettingsModel":
@@ -648,18 +442,6 @@ class SettingsModel(Model):
     @property
     def mock_mode(self) -> bool: return self.backend.mock_mode
     @property
-    def video_auto_connect(self) -> bool: return self.backend.video_auto_connect
-    @property
-    def video_source_type(self) -> str: return self.backend.video_source_type
-    @property
-    def video_source_uri(self) -> str: return self.backend.video_source_uri
-    @property
-    def video_codec(self) -> str: return self.backend.video_codec
-    @property
-    def video_latency_ms(self) -> int: return self.backend.video_latency_ms
-    @property
-    def video_frame_timeout_s(self) -> int: return self.backend.video_frame_timeout_s
-    @property
     def cache_enabled(self) -> bool: return self.backend.cache.enabled
     @property
     def cache_limit_mb(self) -> int: return self.backend.cache.limit_mb
@@ -675,8 +457,6 @@ class SettingsModel(Model):
     def default_radius_rtl(self) -> int: return self.backend.mission.radius_for("rtl")
     @property
     def default_radius_land(self) -> int: return self.backend.mission.radius_for("land")
-    @property
-    def default_radius_hss(self) -> int: return self.backend.mission.radius_for("hss")
 
 
 def _known(model_type: type, payload: dict[str, Any]) -> dict[str, Any]:
@@ -692,12 +472,6 @@ _LEGACY_PATHS = {
     "vehicle_trail_limit": "ui.vehicle_trail_limit",
     "contact_trail_limit": "ui.contact_trail_limit",
     "mock_mode": "backend.mock_mode",
-    "video_auto_connect": "backend.video_auto_connect",
-    "video_source_type": "backend.video_source_type",
-    "video_source_uri": "backend.video_source_uri",
-    "video_codec": "backend.video_codec",
-    "video_latency_ms": "backend.video_latency_ms",
-    "video_frame_timeout_s": "backend.video_frame_timeout_s",
     "cache_enabled": "backend.cache.enabled",
     "cache_limit_mb": "backend.cache.limit_mb",
     "cache_path": "backend.cache.path",

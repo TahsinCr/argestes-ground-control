@@ -8,7 +8,19 @@ All notable changes to this project will be documented in this file.
 * Added a compact, Visual Studio-style menu row to the main title bar. File,
   Edit, Selection, View, Go, Run, Terminal, and Help menus have localized
   labels; their actions remain intentionally empty for now.
-
+* Removed video capture/sharing, joystick RC input, SIHA/Onboard/Orin,
+  TEKNOFEST, mission archive and SIHA task-command modules from the active
+  application, including their runtime composition, UI, adapters, settings
+  schema, MAVLink side-channel state, feature-only dependencies and tests.
+* Kept the shared MAVLink/ArduPilot vehicle path, telemetry and GPS, battery,
+  parameter and log panels, map and mission planner, plus generic connection
+  and device health reporting.
+* Preserved the existing common-screen layout while removing feature-specific
+  panels: flight dynamics, telemetry and generic flight controls remain in the
+  left rail; the map fills the main workspace above logs and parameters.
+* Removed the communication-contracts submodule from this common build; the
+  historical implementation remains available in the untouched `.archive`
+  snapshot.
 
 ## **[1.7-beta] - 10.09.2026**
 

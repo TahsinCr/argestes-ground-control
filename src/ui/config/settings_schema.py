@@ -12,7 +12,7 @@ class ChoiceSpec:
 
 @dataclass(frozen=True, slots=True)
 class FieldSpec:
-    """Describe a supported field without changing dialog code."""
+    """Describe a supported user setting field."""
 
     path: str
     label_key: str
@@ -65,17 +65,6 @@ SETTINGS_SECTIONS = (
         ),
     ),
     SectionSpec(
-        "dialog.settings.section.competition",
-        (
-            FieldSpec("backend.competition.base_url", "dialog.settings.competition_url", "text"),
-            FieldSpec("backend.competition.username", "dialog.settings.competition_username", "text"),
-            FieldSpec("backend.competition.password", "dialog.settings.competition_password", "text"),
-            FieldSpec("backend.competition.team_number", "dialog.settings.competition_team", "spin", minimum=1, maximum=9999),
-            FieldSpec("backend.competition.timeout_s", "dialog.settings.competition_timeout", "spin", minimum=1, maximum=120, suffix=" s"),
-            FieldSpec("backend.competition.auto_connect", "dialog.settings.competition_auto_connect", "check"),
-        ),
-    ),
-    SectionSpec(
         "dialog.settings.section.mavlink",
         (
             FieldSpec("backend.mavlink.endpoint", "dialog.settings.mavlink_endpoint", "text"),
@@ -97,170 +86,15 @@ SETTINGS_SECTIONS = (
     SectionSpec(
         "dialog.settings.section.battery_alarm",
         (
-            FieldSpec(
-                "backend.battery_telemetry.use_pixhawk_percent",
-                "dialog.settings.battery_use_pixhawk_percent",
-                "check",
-            ),
-            FieldSpec(
-                "backend.battery_telemetry.full_voltage",
-                "dialog.settings.battery_estimate_full_voltage",
-                "double",
-                minimum=1.0,
-                maximum=100.0,
-                suffix=" V",
-                decimals=2,
-                single_step=0.1,
-            ),
-            FieldSpec(
-                "backend.battery_telemetry.reserve_voltage",
-                "dialog.settings.battery_estimate_min_voltage",
-                "double",
-                minimum=1.0,
-                maximum=100.0,
-                suffix=" V",
-                decimals=2,
-                single_step=0.1,
-            ),
-            FieldSpec(
-                "backend.battery_telemetry.reserve_percent",
-                "dialog.settings.battery_estimate_min_percent",
-                "double",
-                minimum=0.1,
-                maximum=99.0,
-                suffix=" %",
-                decimals=1,
-                single_step=1.0,
-            ),
-            FieldSpec(
-                "backend.battery_alarm.warning_mode",
-                "dialog.settings.battery_warning_mode",
-                "combo",
-                (
-                    ChoiceSpec("percent", "battery.alarm.mode.percent"),
-                    ChoiceSpec("voltage", "battery.alarm.mode.voltage"),
-                ),
-            ),
-            FieldSpec(
-                "backend.battery_alarm.warning_threshold",
-                "dialog.settings.battery_warning_threshold",
-                "double",
-                minimum=0.1,
-                maximum=100.0,
-                decimals=1,
-                single_step=0.1,
-            ),
-            FieldSpec(
-                "backend.battery_alarm.failsafe_enabled",
-                "dialog.settings.battery_failsafe_enabled",
-                "check",
-            ),
-            FieldSpec(
-                "backend.battery_alarm.failsafe_mode",
-                "dialog.settings.battery_failsafe_mode",
-                "combo",
-                (
-                    ChoiceSpec("percent", "battery.alarm.mode.percent"),
-                    ChoiceSpec("voltage", "battery.alarm.mode.voltage"),
-                ),
-            ),
-            FieldSpec(
-                "backend.battery_alarm.failsafe_threshold",
-                "dialog.settings.battery_failsafe_threshold",
-                "double",
-                minimum=0.1,
-                maximum=100.0,
-                decimals=1,
-                single_step=0.1,
-            ),
-        ),
-    ),
-    SectionSpec(
-        "dialog.settings.section.mission",
-        (
-            FieldSpec(
-                "backend.mission.default_altitude_m",
-                "dialog.settings.mission_altitude",
-                "spin",
-                minimum=10,
-                maximum=10000,
-                suffix=" m",
-            ),
-            *tuple(
-            FieldSpec(
-                f"backend.mission.radii.{item_type}",
-                f"dialog.settings.radius_{item_type}",
-                "spin",
-                minimum=5,
-                maximum=3000,
-                suffix=" m",
-            )
-            for item_type in ("takeoff", "waypoint", "loiter", "rtl", "land", "hss")
-            ),
-        ),
-    ),
-    SectionSpec(
-        "dialog.settings.section.safe_area",
-        tuple(
-            field
-            for point in range(1, 5)
-            for field in (
-                FieldSpec(
-                    f"backend.mission.safe_area.point_{point}.latitude",
-                    f"dialog.settings.safe_area_point_{point}_latitude",
-                    "double",
-                    minimum=-90.0,
-                    maximum=90.0,
-                    decimals=7,
-                    single_step=0.000001,
-                ),
-                FieldSpec(
-                    f"backend.mission.safe_area.point_{point}.longitude",
-                    f"dialog.settings.safe_area_point_{point}_longitude",
-                    "double",
-                    minimum=-180.0,
-                    maximum=180.0,
-                    decimals=7,
-                    single_step=0.000001,
-                ),
-            )
-        ),
-    ),
-    SectionSpec(
-        "dialog.settings.section.orin",
-        (
-            FieldSpec("backend.orin.enabled", "dialog.settings.orin_enabled", "check"),
-            FieldSpec("backend.orin.system_id", "dialog.settings.orin_system", "spin", minimum=1, maximum=255),
-            FieldSpec("backend.orin.component_id", "dialog.settings.orin_component", "spin", minimum=1, maximum=255),
-            FieldSpec("backend.orin.network_id", "dialog.settings.orin_network", "spin", minimum=0, maximum=255),
-            FieldSpec("backend.orin.message_type", "dialog.settings.orin_message_type", "spin", minimum=32768, maximum=65535),
-            FieldSpec("backend.orin.heartbeat_timeout_s", "dialog.settings.orin_heartbeat_timeout", "spin", minimum=3, maximum=120, suffix=" s"),
-            FieldSpec("backend.orin.command_timeout_s", "dialog.settings.orin_command_timeout", "spin", minimum=1, maximum=120, suffix=" s"),
-        ),
-    ),
-    SectionSpec(
-        "dialog.settings.section.video",
-        (
-            FieldSpec(
-                "backend.video_auto_connect",
-                "dialog.settings.video_auto_connect",
-                "check",
-            ),
-            FieldSpec("backend.video_source_type", "dialog.settings.video_type", "combo", (
-                ChoiceSpec("mock", "video.source.mock"),
-                ChoiceSpec("http", "video.source.http"),
-                ChoiceSpec("rtsp", "video.source.rtsp"),
-                ChoiceSpec("udp", "video.source.udp"),
-                ChoiceSpec("usb", "video.source.usb"),
-            )),
-            FieldSpec("backend.video_codec", "dialog.settings.video_codec", "combo", (
-                ChoiceSpec("h265", "video.codec.h265"),
-                ChoiceSpec("h264", "video.codec.h264"),
-                ChoiceSpec("mjpeg", "video.codec.mjpeg"),
-            )),
-            FieldSpec("backend.video_source_uri", "dialog.settings.video_uri", "text"),
-            FieldSpec("backend.video_latency_ms", "dialog.settings.video_latency", "spin", minimum=0, maximum=10000, suffix=" ms"),
-            FieldSpec("backend.video_frame_timeout_s", "dialog.settings.video_timeout", "spin", minimum=1, maximum=60, suffix=" s"),
+            FieldSpec("backend.battery_telemetry.use_pixhawk_percent", "dialog.settings.battery_use_pixhawk_percent", "check"),
+            FieldSpec("backend.battery_telemetry.full_voltage", "dialog.settings.battery_estimate_full_voltage", "double", minimum=1.0, maximum=100.0, suffix=" V", decimals=2),
+            FieldSpec("backend.battery_telemetry.reserve_voltage", "dialog.settings.battery_estimate_min_voltage", "double", minimum=1.0, maximum=100.0, suffix=" V", decimals=2),
+            FieldSpec("backend.battery_telemetry.reserve_percent", "dialog.settings.battery_estimate_min_percent", "double", minimum=0.1, maximum=99.0, suffix=" %", decimals=1, single_step=1.0),
+            FieldSpec("backend.battery_alarm.warning_mode", "dialog.settings.battery_warning_mode", "combo", (ChoiceSpec("percent", "battery.alarm.mode.percent"), ChoiceSpec("voltage", "battery.alarm.mode.voltage"))),
+            FieldSpec("backend.battery_alarm.warning_threshold", "dialog.settings.battery_warning_threshold", "double", minimum=0.1, maximum=100.0),
+            FieldSpec("backend.battery_alarm.failsafe_enabled", "dialog.settings.battery_failsafe_enabled", "check"),
+            FieldSpec("backend.battery_alarm.failsafe_mode", "dialog.settings.battery_failsafe_mode", "combo", (ChoiceSpec("percent", "battery.alarm.mode.percent"), ChoiceSpec("voltage", "battery.alarm.mode.voltage"))),
+            FieldSpec("backend.battery_alarm.failsafe_threshold", "dialog.settings.battery_failsafe_threshold", "double", minimum=0.1, maximum=100.0),
         ),
     ),
 )

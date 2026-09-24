@@ -4,6 +4,8 @@ __pycache__/
 *.so
 
 .pytest_cache/
+.archive/
+/MEMORY.md
 .coverage
 htmlcov/
 .mypy_cache/

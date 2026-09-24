@@ -2,4 +2,3 @@ PyQt6==6.10.0
 PyQt6-WebEngine==6.10.0
 pymavlink>=2.4.49,<3
 pyserial>=3.5,<4
-PyGObject>=3.50,<4

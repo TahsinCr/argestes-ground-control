@@ -12,10 +12,8 @@ from PyQt6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 from src.ui.i18n import t
 from src.models.commands import CommandResult
 from src.models.geometry import Point
-from src.models.settings import SafeAreaSettings
 from src.ui.config.map import TOOL_LABEL_KEYS, map_tool_config
 from src.models.mission import MapContact, MapOverlay, MissionState
-from src.models.onboard import OnboardMissionState
 from src.models.telemetry import TelemetrySnapshot
 from src.services.planner import PlannerService
 from src.services.settings import SettingsService
@@ -119,13 +117,10 @@ class MapWebBridge(QObject):
 class MapPanel(PanelFrame):
     command_requested = pyqtSignal(str, dict)
     info_generated = pyqtSignal(str, str)
-    storage_requested = pyqtSignal(str)
     _VEHICLE_MISSION_TYPES = {"takeoff", "waypoint", "loiter", "rtl", "land", "route"}
     _TELEMETRY_RENDER_INTERVAL_MS = 33
     _MAX_STARTUP_SCRIPTS = 256
     _MAX_HISTORY_ENTRIES = 100
-    _SAFE_AREA_SOURCE = "settings-safe-area"
-    _SAFE_AREA_OVERLAY_ID = "settings-safe-area"
     _GUIDED_GOTO_MIN_ARRIVAL_RADIUS_M = 5.0
 
     def __init__(
@@ -202,8 +197,6 @@ class MapPanel(PanelFrame):
         self._last_vehicle_timestamp = None
         self._guided_goto_target: Point | None = None
         self._guided_goto_arrival_radius_m = 0.0
-        self._hss_goto_route: dict[str, Any] = {}
-        self._hss_goto_pending_target: Point | None = None
         self._navigation_mode = ""
         self._flight_mode = ""
         self._last_telemetry_payload: dict[str, Any] | None = None
@@ -355,54 +348,6 @@ class MapPanel(PanelFrame):
                     "remainingDistanceM": remaining_distance_m,
                 }
 
-        hss_goto: dict[str, object] | None = None
-        if active and guided_mode_active and self._hss_goto_route:
-            destination = self._hss_goto_route.get("destination", {})
-            if isinstance(destination, dict):
-                try:
-                    target = Point(
-                        float(destination["latitude_deg"]),
-                        float(destination["longitude_deg"]),
-                    )
-                except (KeyError, TypeError, ValueError):
-                    target = None
-                if target is not None:
-                    remaining_distance_m = current_point.distance_to(target)
-                    if remaining_distance_m <= self._guided_goto_arrival_radius_m:
-                        self.info_generated.emit(
-                            "success",
-                            "HSS GOTO hedefine varış mesafesine ulaşıldı",
-                        )
-                        self._hss_goto_route = {}
-                        self._navigation_mode = ""
-                        target = None
-                if target is not None:
-                    steps: list[dict[str, object]] = []
-                    for raw_step in self._hss_goto_route.get("steps", []):
-                        if not isinstance(raw_step, dict):
-                            continue
-                        point = raw_step.get("point", {})
-                        if not isinstance(point, dict):
-                            continue
-                        try:
-                            steps.append(
-                                {
-                                    "kind": str(raw_step.get("kind", "goto")),
-                                    "lat": float(point["latitude_deg"]),
-                                    "lon": float(point["longitude_deg"]),
-                                    "radiusM": raw_step.get("radius_m"),
-                                }
-                            )
-                        except (KeyError, TypeError, ValueError):
-                            continue
-                    hss_goto = {
-                        "active": True,
-                        "lat": target.latitude,
-                        "lon": target.longitude,
-                        "remainingDistanceM": remaining_distance_m,
-                        "steps": steps,
-                    }
-
         home_latitude = snapshot.home_latitude
         home_longitude = snapshot.home_longitude
         home_position_available = bool(
@@ -449,7 +394,6 @@ class MapPanel(PanelFrame):
             "homeLat": home_latitude if home_position_available else None,
             "homeLon": home_longitude if home_position_available else None,
             "guidedGoto": guided_goto,
-            "hssGoto": hss_goto,
         }
         if payload == self._last_telemetry_payload:
             return
@@ -510,40 +454,6 @@ class MapPanel(PanelFrame):
             t("map.transfer.sending", self._language),
         )
 
-    def update_onboard_state(self, state: OnboardMissionState) -> None:
-        """Apply only the HSS route that belongs to the newest map request."""
-
-        route = dict(state.hss_route)
-        if self._navigation_mode == "goto":
-            # A late route notification from the HSS command that GOTO just
-            # replaced must never restore the forgotten HSS target.
-            if not route:
-                self._hss_goto_route = {}
-            return
-        pending = self._hss_goto_pending_target
-        if pending is not None and route:
-            destination = route.get("destination", {})
-            try:
-                route_target = Point(
-                    float(destination["latitude_deg"]),
-                    float(destination["longitude_deg"]),
-                )
-            except (KeyError, TypeError, ValueError):
-                return
-            if route_target.distance_to(pending) > 1.0:
-                return
-            self._hss_goto_pending_target = None
-        elif pending is not None and not route:
-            # Cancelling the previous route is an intermediate state while a
-            # newer HSS request is queued. Keep the newest optimistic target.
-            return
-        self._hss_goto_route = route
-        if route:
-            self._guided_goto_target = None
-            self._navigation_mode = "hss_goto"
-        elif self._navigation_mode == "hss_goto":
-            self._navigation_mode = ""
-
     @staticmethod
     def _request_target(result: CommandResult) -> Point | None:
         try:
@@ -564,18 +474,6 @@ class MapPanel(PanelFrame):
                 and target.distance_to(self._guided_goto_target) <= 1.0
             ):
                 self._guided_goto_target = None
-                self._navigation_mode = ""
-            return
-        if result.request.code == "HSS_GOTO":
-            target = self._request_target(result)
-            if (
-                not result.accepted
-                and target is not None
-                and self._hss_goto_pending_target is not None
-                and target.distance_to(self._hss_goto_pending_target) <= 1.0
-            ):
-                self._hss_goto_pending_target = None
-                self._hss_goto_route = {}
                 self._navigation_mode = ""
             return
         if result.request.code == "SET_HOME":
@@ -733,36 +631,6 @@ class MapPanel(PanelFrame):
         state = getattr(self._planner_service, "state", MissionState())
         self._sync_mission_state(state)
 
-    def sync_safe_area(self, safe_area: SafeAreaSettings) -> None:
-        """Render configured settings corners as one source-managed map polygon."""
-
-        corners = safe_area.ordered_corners()
-        overlays: list[MapOverlay] = []
-        if len(corners) == 4:
-            overlays.append(
-                MapOverlay(
-                    overlay_id=self._SAFE_AREA_OVERLAY_ID,
-                    overlay_type="safe_zone",
-                    label="SAFE",
-                    points=[[corner.latitude, corner.longitude] for corner in corners],
-                    color="#73a95b",
-                    metadata={
-                        "source": self._SAFE_AREA_SOURCE,
-                        "read_only": True,
-                        "persistent": False,
-                        "keep_inside": True,
-                        "mission_upload": False,
-                        "show_label": False,
-                        "map_interactive": False,
-                    },
-                )
-            )
-        if hasattr(self._planner_service, "replace_source_overlays"):
-            self._planner_service.replace_source_overlays(
-                self._SAFE_AREA_SOURCE,
-                overlays,
-            )
-
     def _on_js_ready(self) -> None:
         self._js_ready = True
         # Rebuild one authoritative map snapshot instead of replaying every
@@ -820,7 +688,6 @@ class MapPanel(PanelFrame):
             "missionTypes": tool_config["missionTypes"],
             "context": {
                 "goto": t("map.context.goto", self._language),
-                "hss_goto": t("map.context.hss_goto", self._language),
                 "center": t("map.context.center", self._language),
                 "set_home": t("map.context.set_home", self._language),
                 "delete": t("map.context.delete", self._language),
@@ -855,7 +722,6 @@ class MapPanel(PanelFrame):
                     "loiter": settings.default_radius_loiter,
                     "rtl": settings.default_radius_rtl,
                     "land": settings.default_radius_land,
-                    "hss": settings.default_radius_hss,
                 },
                 "centerMinZoom": settings.map_center_min_zoom,
                 "vehicleTrailLimit": settings.vehicle_trail_limit,
@@ -1136,10 +1002,6 @@ class MapPanel(PanelFrame):
             self._active_tool = tool
             if hasattr(self._planner_service, "set_active_tool"):
                 self._planner_service.set_active_tool(tool)
-        elif action == "storage_request":
-            request = payload.get("action")
-            if request in {"archive", "save", "load"}:
-                self.storage_requested.emit(request)
         elif action == "mission_send_request":
             self._mission_loop = bool(payload.get("loop", self._mission_loop))
             state = getattr(self._planner_service, "state", MissionState())
@@ -1210,8 +1072,6 @@ class MapPanel(PanelFrame):
                 self.info_generated.emit("warning", "GOTO yalnızca GUIDED modunda kullanılabilir")
                 return
             settings = self._settings_service.current
-            self._hss_goto_route = {}
-            self._hss_goto_pending_target = None
             self._guided_goto_target = Point(latitude, longitude)
             self._navigation_mode = "goto"
             self._guided_goto_arrival_radius_m = max(
@@ -1219,47 +1079,6 @@ class MapPanel(PanelFrame):
                 float(settings.backend.mission.radius_for("waypoint")),
             )
             self.command_requested.emit("GOTO", {"latitude": latitude, "longitude": longitude})
-        elif action == "hss_goto_request":
-            latitude = float(payload["lat"])
-            longitude = float(payload["lon"])
-            if not (-90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
-                self.info_generated.emit("warning", "HSS GOTO koordinatı geçersiz")
-                return
-            if self._flight_mode != "GUIDED":
-                self.info_generated.emit(
-                    "warning", "HSS GOTO yalnızca GUIDED modunda kullanılabilir"
-                )
-                return
-            altitude = (
-                self._last_vehicle_point.altitude
-                if self._last_vehicle_point is not None
-                else 0.0
-            )
-            self._guided_goto_target = None
-            self._navigation_mode = "hss_goto"
-            self._guided_goto_arrival_radius_m = max(
-                self._GUIDED_GOTO_MIN_ARRIVAL_RADIUS_M,
-                float(self._settings_service.current.backend.mission.radius_for("waypoint")),
-            )
-            self._hss_goto_pending_target = Point(latitude, longitude)
-            self._hss_goto_route = {
-                "route_id": "pending",
-                "phase": "transit",
-                "destination": {
-                    "latitude_deg": latitude,
-                    "longitude_deg": longitude,
-                    "altitude_m": altitude,
-                },
-                "steps": [],
-            }
-            self.command_requested.emit(
-                "HSS_GOTO",
-                {
-                    "latitude": latitude,
-                    "longitude": longitude,
-                    "altitude": altitude,
-                },
-            )
         elif action == "set_home_reference":
             previous = {
                 "latitude": float(payload.get("previous_lat", payload["lat"])),
@@ -1412,23 +1231,6 @@ class MapPanel(PanelFrame):
             getattr(self._planner_service.state, "revision", self._history_known_revision)
         )
         self._expect_local_plan_sync(self._history_known_plan)
-
-    def load_archived_plan(self, state: MissionState) -> None:
-        """Load an archive as one reversible map edit without touching the archive."""
-
-        before = self._capture_local_plan()
-        self._history_mutation_in_progress = True
-        try:
-            self._planner_service.load_state(state)
-        finally:
-            self._history_mutation_in_progress = False
-        after = self._capture_local_plan()
-        self._history_known_revision = int(
-            getattr(self._planner_service.state, "revision", self._history_known_revision)
-        )
-        self._history_known_plan = after
-        self._expect_local_plan_sync(after)
-        self._record_plan_history(before, after, label="archive-load")
 
     def _navigate_history(self, direction: str) -> None:
         if self._pending_home_navigation is not None or self._pending_home_record is not None:

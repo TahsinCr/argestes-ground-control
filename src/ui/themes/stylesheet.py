@@ -51,44 +51,6 @@ def build_stylesheet(theme: ThemePalette) -> str:
     #WindowControls {{
         background: transparent;
     }}
-    #ArchiveList {{
-        padding: 5px;
-    }}
-    #ArchiveList::item {{
-        padding: 0;
-        margin: 3px 0;
-        border-radius: 4px;
-    }}
-    #ArchiveList::item:selected {{
-        background: {theme.accent_dim};
-        color: {theme.text};
-    }}
-    #ArchiveRow {{
-        background: transparent;
-    }}
-    #ArchiveDeleteButton {{
-        min-width: 28px;
-        max-width: 28px;
-        min-height: 24px;
-        max-height: 24px;
-        padding: 0;
-        border-radius: 5px;
-        font-size: 16px;
-        font-weight: 700;
-        background: transparent;
-        border: 1px solid transparent;
-        color: {theme.muted_text};
-    }}
-    #ArchiveDeleteButton:hover {{
-        background: rgba(244, 71, 71, 0.14);
-        border-color: {theme.danger};
-        color: {theme.danger};
-    }}
-    QLabel[role="archive-name"] {{
-        color: {theme.text};
-        font-size: 12px;
-        font-weight: 650;
-    }}
     QMenuBar#MainMenuBar {{
         background: transparent;
         border: none;

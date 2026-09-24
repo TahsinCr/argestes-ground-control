@@ -91,7 +91,6 @@ class PlannerService(Service):
         "loiter": "#3f9f63",
         "rtl": "#f4b942",
         "land": "#2f7ed8",
-        "hss": "#eb6464",
         "safe_zone": "#73a95b",
         "no_fly": "#eb6464",
         "route": "#61a8ff",
@@ -122,7 +121,6 @@ class PlannerService(Service):
             "loiter": 75.0,
             "rtl": 75.0,
             "land": 35.0,
-            "hss": 100.0,
         }
         self.set_default_radii(default_radii or {})
         self.api = PlannerMapApi(self)
@@ -225,47 +223,6 @@ class PlannerService(Service):
             "info",
             "mission.external_updated",
             "Görev planı harici kaynaktan güncellendi",
-        )
-
-    def replace_source_overlays(
-        self,
-        source: str,
-        overlays: Iterable[MapOverlay],
-    ) -> None:
-        normalized_source = source.strip().lower()
-        if not normalized_source:
-            raise ValueError("Harita öğesi kaynağı boş olamaz")
-        snapshots = [MapOverlay.from_dict(item.to_dict()) for item in overlays]
-        identifiers = [item.overlay_id for item in snapshots]
-        if len(identifiers) != len(set(identifiers)):
-            raise ValueError("Kaynak harita öğesi kimlikleri benzersiz olmalı")
-        if any(str(item.metadata.get("source", "")).lower() != normalized_source for item in snapshots):
-            raise ValueError("Harita öğesi metadata kaynağı ile servis kaynağı eşleşmiyor")
-
-        state = self.state
-        replacement: list[MapOverlay] = []
-        source_inserted = False
-        for item in state.overlays:
-            item_source = str(item.metadata.get("source", "")).lower()
-            if item_source == normalized_source:
-                if not source_inserted:
-                    replacement.extend(snapshots)
-                    source_inserted = True
-                continue
-            replacement.append(item)
-        if not source_inserted:
-            replacement.extend(snapshots)
-        if [item.to_dict() for item in state.overlays] == [item.to_dict() for item in replacement]:
-            return
-        selected = state.selected_overlay_id
-        if selected and not any(item.overlay_id == selected for item in replacement):
-            selected = None
-        self._mutate(overlays=replacement, selected_overlay_id=selected)
-        self._log(
-            "info",
-            "mission.source_updated",
-            f"{normalized_source} harita verisi güncellendi ({len(snapshots)})",
-            {"source": normalized_source, "count": len(snapshots)},
         )
 
     def upsert_overlay(self, overlay: MapOverlay) -> None:
@@ -433,7 +390,7 @@ class PlannerService(Service):
         self._mutate(contacts=[])
 
     def load_state(self, state: MissionState) -> None:
-        archived = [
+        restorable = [
             MapOverlay.from_dict(item.to_dict())
             for item in state.overlays
             if item.is_archivable
@@ -442,7 +399,7 @@ class PlannerService(Service):
             lambda current: {
                 "overlays": [
                     *[item for item in current.overlays if item.is_source_managed],
-                    *archived,
+                    *restorable,
                 ],
                 "base_layer": state.base_layer,
                 "active_tool": "pan",
@@ -511,7 +468,7 @@ class PlannerService(Service):
             self._schedule_vehicle_sync()
 
     def request_vehicle_sync(self) -> bool:
-        """Fetch the flight-controller mission without changing local archives."""
+        """Fetch the flight-controller mission into the shared planner state."""
 
         if self._vehicle is None or not self._vehicle.connected:
             self._log(
@@ -585,8 +542,5 @@ class PlannerService(Service):
     def _initial_state() -> MissionState:
         return MissionState(
             contacts=[
-                MapContact("own-siha", "Ana SIHA", 39.8672, 32.7481, "#58a6ff", 38.0, source="ownship"),
-                MapContact("rakip-1", "Rakip 1", 39.8686, 32.7512, "#e05d5d", 218.0, source="backend"),
-                MapContact("rakip-2", "Rakip 2", 39.8655, 32.7448, "#e05d5d", 72.0, source="backend"),
             ]
         )

@@ -17,14 +17,11 @@ from src.models.connections import ConnectionStatus
 from src.models.mission import MapContact, MapOverlay, MissionState
 from src.models.settings import SettingsModel
 from src.models.telemetry import TelemetrySnapshot
-from src.models.video import VideoFrame, VideoShareConfig
 from src.services.abstracts.commands import CommandService
 from src.services.abstracts.connections import ConnectionControlService
 from src.services.planner import PlannerService
 from src.services.abstracts.parameters import ParameterService
 from src.services.abstracts.telemetry import TelemetryService
-from src.services.abstracts.video import VideoService
-from src.services.abstracts.onboard import OnboardMissionServiceContract
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
@@ -250,9 +247,8 @@ class QtSettingsService(_QtAdapter):
     def save_async(self, settings: SettingsModel) -> None:
         """Persist the latest popup change without blocking the Qt event loop.
 
-        Applying a video-share profile may stop GStreamer workers, which can
-        wait briefly for a blocked transport sink.  Coalescing avoids making a
-        burst of toggle clicks execute every intermediate configuration.
+        Coalescing avoids making a burst of popup edits execute every
+        intermediate configuration.
         """
 
         snapshot = SettingsModel.from_dict(settings.to_dict())
@@ -420,8 +416,6 @@ class QtPlannerService(_QtAdapter):
     def set_active_tool(self, tool: str) -> None: self.backend.set_active_tool(tool)
     def set_mission_loop(self, enabled: bool) -> None: self.backend.set_mission_loop(enabled)
     def set_overlays(self, overlays) -> None: self.backend.set_overlays(overlays)
-    def replace_source_overlays(self, source: str, overlays) -> None:
-        self.backend.replace_source_overlays(source, overlays)
     def upsert_overlay(self, overlay: MapOverlay) -> None: self.backend.upsert_overlay(overlay)
     def remove_overlay(self, overlay_id: str) -> None: self.backend.remove_overlay(overlay_id)
     def clear_dynamic_overlays(self) -> None: self.backend.clear_dynamic_overlays()
@@ -473,48 +467,6 @@ class QtCommandService(_QtAdapter):
             lambda: self.backend.issue_command(normalized, parameters, source=source),
             name=f"QtCommand-{normalized}",
         )
-
-
-class QtOnboardMissionService(_QtAdapter):
-    state_changed = pyqtSignal(object)
-    event_received = pyqtSignal(object)
-    operation_started = pyqtSignal(str)
-    operation_finished = pyqtSignal(str, bool, str, object)
-
-    def __init__(
-        self,
-        backend: OnboardMissionServiceContract,
-        parent: QObject | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.backend = backend
-        self._subscribe(backend.changed, self.state_changed.emit)
-        self._subscribe(backend.events, self.event_received.emit)
-
-    @property
-    def state(self):
-        return self.backend.state
-
-    def start_calibration(self):
-        return self._run_operation("calibration", self.backend.start_calibration)
-
-    def start_course(self):
-        return self._run_operation("course", self.backend.start_course)
-
-    def _run_operation(self, name: str, operation):
-        self.operation_started.emit(name)
-
-        def execute():
-            receipt = operation()
-            self._post(
-                self.operation_finished.emit,
-                name,
-                receipt.accepted,
-                receipt.message,
-                receipt,
-            )
-
-        return self._start_worker(execute, name=f"QtIka-{name}")
 
 
 class QtConnectionControlService(_QtAdapter):
@@ -670,235 +622,6 @@ class QtParameterService(_QtAdapter):
             self.backend.refresh()
         except Exception:
             return
-
-class QtVideoService(_QtAdapter):
-    frame_ready = pyqtSignal(QImage)
-    stats_updated = pyqtSignal(object)
-    source_frame_ready = pyqtSignal(str, QImage)
-    source_stats_updated = pyqtSignal(object)
-    reconnect_finished = pyqtSignal(bool, str)
-    share_states_changed = pyqtSignal(object)
-    _UI_FRAME_INTERVAL_MS = 33
-
-    def __init__(
-        self,
-        backend: VideoService,
-        *,
-        mock_mode: bool = False,
-        parent: QObject | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.backend = backend
-        self._mock_mode = mock_mode
-        self._last_snapshot: TelemetrySnapshot | None = None
-        self._frame_index = 0
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._emit_mock_frame)
-        self._latest_frame_lock = threading.Lock()
-        self._latest_frame: VideoFrame | None = None
-        self._latest_source_frames: dict[str, VideoFrame] = {}
-        self._video_frame_scheduled = False
-        self._video_frame_timer = QTimer(self)
-        self._video_frame_timer.setSingleShot(True)
-        self._video_frame_timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self._video_frame_timer.setInterval(self._UI_FRAME_INTERVAL_MS)
-        self._video_frame_timer.timeout.connect(self._emit_latest_frame)
-        # Do not enqueue every camera frame in Qt. A camera can outpace the GUI
-        # briefly; retaining only its newest frame keeps latency and memory
-        # bounded without throttling the capture pipeline.
-        self._subscriptions.append(
-            backend.frames.subscribe(self._capture_latest_frame)
-        )
-        source_frames = getattr(backend, "source_frames", None)
-        if source_frames is not None:
-            self._subscriptions.append(
-                source_frames.subscribe(self._capture_latest_source_frame)
-            )
-        self._subscribe(backend.stats_changed, self.stats_updated.emit)
-        source_stats_changed = getattr(backend, "source_stats_changed", None)
-        if source_stats_changed is not None:
-            self._subscribe(
-                source_stats_changed,
-                self.source_stats_updated.emit,
-            )
-        share_states_changed = getattr(backend, "share_states_changed", None)
-        if share_states_changed is not None:
-            self._subscribe(share_states_changed, self.share_states_changed.emit)
-
-    @property
-    def connected(self) -> bool:
-        return self.backend.connected
-
-    @property
-    def stats(self):
-        return self.backend.stats
-
-    @property
-    def share_states(self):
-        return getattr(self.backend, "share_states", ())
-
-    @property
-    def source_stats(self):
-        return getattr(self.backend, "source_stats", ())
-
-    def configure_shares(self, configs: tuple[VideoShareConfig, ...]) -> None:
-        configure = getattr(self.backend, "configure_shares", None)
-        if configure is not None:
-            configure(configs)
-
-    def reconnect(self) -> threading.Thread:
-        return self._start_worker(self._reconnect, name="QtVideoReconnect")
-
-    def _reconnect(self) -> None:
-        try:
-            self.backend.reconnect()
-        except Exception as exc:
-            self.reconnect_finished.emit(False, str(exc))
-            return
-        self.reconnect_finished.emit(True, "")
-
-    def start(self) -> None:
-        if self._mock_mode:
-            self._timer.start(66)
-
-    def stop(self) -> None:
-        self._timer.stop()
-        self._video_frame_timer.stop()
-        with self._latest_frame_lock:
-            self._latest_frame = None
-            self._latest_source_frames.clear()
-            self._video_frame_scheduled = False
-
-    @pyqtSlot(object)
-    def consume_snapshot(self, snapshot: TelemetrySnapshot) -> None:
-        self._last_snapshot = snapshot
-
-    def _capture_latest_frame(self, frame: VideoFrame) -> None:
-        should_schedule = False
-        with self._latest_frame_lock:
-            self._latest_frame = frame
-            if not self._video_frame_scheduled:
-                self._video_frame_scheduled = True
-                should_schedule = True
-        if should_schedule:
-            self._post(self._start_video_frame_timer)
-
-    def _capture_latest_source_frame(self, item) -> None:
-        should_schedule = False
-        with self._latest_frame_lock:
-            self._latest_source_frames[item.source_id] = item.frame
-            if not self._video_frame_scheduled:
-                self._video_frame_scheduled = True
-                should_schedule = True
-        if should_schedule:
-            self._post(self._start_video_frame_timer)
-
-    @pyqtSlot()
-    def _start_video_frame_timer(self) -> None:
-        if not self._closed and not self._video_frame_timer.isActive():
-            self._video_frame_timer.start()
-
-    @pyqtSlot()
-    def _emit_latest_frame(self) -> None:
-        with self._latest_frame_lock:
-            frame = self._latest_frame
-            source_frames = self._latest_source_frames
-            self._latest_frame = None
-            self._latest_source_frames = {}
-            self._video_frame_scheduled = False
-        if frame is not None:
-            self.frame_ready.emit(self._image_from_frame(frame))
-        for source_id, source_frame in source_frames.items():
-            self.source_frame_ready.emit(
-                source_id,
-                self._image_from_frame(source_frame),
-            )
-
-        should_schedule = False
-        with self._latest_frame_lock:
-            if (
-                not self._closed
-                and (self._latest_frame is not None or self._latest_source_frames)
-                and not self._video_frame_scheduled
-            ):
-                self._video_frame_scheduled = True
-                should_schedule = True
-        if should_schedule:
-            self._post(self._start_video_frame_timer)
-
-    @staticmethod
-    def _image_from_frame(frame: VideoFrame) -> QImage:
-        formats = {
-            "rgba8888": QImage.Format.Format_RGBA8888,
-            "rgb888": QImage.Format.Format_RGB888,
-            "bgr888": QImage.Format.Format_BGR888,
-            "gray8": QImage.Format.Format_Grayscale8,
-        }
-        bytes_per_pixel = {"rgba8888": 4, "rgb888": 3, "bgr888": 3, "gray8": 1}
-        stride = frame.stride or frame.width * bytes_per_pixel[frame.pixel_format]
-        return QImage(
-            frame.data,
-            frame.width,
-            frame.height,
-            stride,
-            formats[frame.pixel_format],
-        ).copy()
-
-    def close(self) -> None:
-        self._timer.stop()
-        self._video_frame_timer.stop()
-        with self._latest_frame_lock:
-            self._latest_frame = None
-            self._latest_source_frames.clear()
-            self._video_frame_scheduled = False
-        super().close()
-
-    def _emit_mock_frame(self) -> None:
-        width, height = 1280, 720
-        image = QImage(width, height, QImage.Format.Format_ARGB32)
-        image.fill(QColor("#05080c"))
-        painter = QPainter(image)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        snapshot = self._last_snapshot
-        horizon_shift = int(snapshot.pitch * 5.0) if snapshot else 0
-        heading = snapshot.heading if snapshot else 0.0
-        mode = snapshot.flight_mode if snapshot else "LINK WAIT"
-        battery = f"{snapshot.battery_percent}%" if snapshot else "--"
-        painter.fillRect(0, 0, width, height // 2 + horizon_shift, QColor("#23384d"))
-        painter.fillRect(0, height // 2 + horizon_shift, width, height // 2 - horizon_shift, QColor("#4a3624"))
-        painter.setOpacity(0.18)
-        for index in range(0, width, 80):
-            painter.fillRect(index, 0, 1, height, QColor("#94bde5"))
-        painter.setOpacity(1.0)
-        painter.setPen(QPen(QColor("#8cd2ff"), 2))
-        crosshair = QPainterPath()
-        crosshair.moveTo(width / 2 - 50, height / 2)
-        crosshair.lineTo(width / 2 + 50, height / 2)
-        crosshair.moveTo(width / 2, height / 2 - 50)
-        crosshair.lineTo(width / 2, height / 2 + 50)
-        painter.drawPath(crosshair)
-        painter.setPen(QPen(QColor("#f4b942"), 2))
-        for index in range(-3, 4):
-            y = height / 2 + horizon_shift + index * 40
-            painter.drawLine(int(width / 2 - 90), int(y), int(width / 2 - 40), int(y))
-            painter.drawLine(int(width / 2 + 40), int(y), int(width / 2 + 90), int(y))
-        painter.setPen(QPen(QColor("#dce8f4"), 1))
-        painter.setFont(QFont("Noto Sans", 10, QFont.Weight.Bold))
-        timestamp = datetime.now(UTC).strftime("%H:%M:%S.%f")[:-4]
-        painter.drawText(20, 28, f"Kirlangic Team / CAM-A / {timestamp}")
-        painter.drawText(20, 54, f"MODE {mode}")
-        painter.drawText(20, 80, f"BAT {battery}")
-        painter.drawText(20, 106, f"HDG {heading:05.1f}")
-        painter.drawText(width - 150, 28, "LOW-LATENCY")
-        painter.drawText(width - 150, 54, "H.265 / AUTO")
-        painter.drawText(width - 150, 80, "STREAM OK")
-        painter.setPen(QPen(QColor(255, 255, 255, 24), 1))
-        for row in range(self._frame_index % 12, height, 24):
-            painter.drawLine(0, row, width, row)
-        painter.end()
-        self._frame_index += 1
-        self.frame_ready.emit(image)
-
 
 class QtTileCacheService(_QtAdapter):
     cache_changed = pyqtSignal(int)

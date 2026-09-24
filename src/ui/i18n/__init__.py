@@ -141,7 +141,7 @@ def localized_log_message(entry: Any, language: str) -> str:
 
 
 def connection_status_text(status: Any, language: str) -> tuple[str, str]:
-    """Present structured connection status in the selected UI language."""
+    """Present vehicle connection health in the selected UI language."""
 
     channel = str(status.channel)
     options = dict(status.options)
@@ -153,93 +153,12 @@ def connection_status_text(status: Any, language: str) -> tuple[str, str]:
         summary_key = f"connection.status.{channel}.{summary_state}"
     summary = t(summary_key, language)
 
-    if channel == "server":
-        age = options.get("last_success_age_s")
-        if connected and age is not None:
-            detail = t(
-                "connection.detail.server.connected",
-                language,
-                competitors=int(options.get("competitor_count", 0)),
-                hss=int(options.get("hss_count", 0)),
-                qr=t(
-                    "connection.state.ready"
-                    if options.get("qr_available")
-                    else "connection.state.waiting",
-                    language,
-                ),
-                tx=t(
-                    "connection.state.active"
-                    if options.get("telemetry_tx_active")
-                    else "connection.state.waiting",
-                    language,
-                ),
-                age=float(age),
-            )
-        elif age is not None:
-            detail = t("connection.detail.server.stale", language, age=float(age))
-        else:
-            detail = t("connection.detail.server.closed", language)
-    elif channel == "video":
-        source = str(options.get("source_type", "")).upper()
-        codec = str(options.get("codec", "")).upper()
-        if int(options.get("frames_received", 0)) > 0:
-            detail = t(
-                "connection.detail.video.frames",
-                language,
-                source=source,
-                codec=codec,
-                width=int(options.get("width", 0)),
-                height=int(options.get("height", 0)),
-                fps=float(options.get("fps", 0.0)),
-                bitrate=float(options.get("bitrate_kbps", 0.0)),
-                quality=int(options.get("quality_percent", 0)),
-                age=float(options.get("frame_age_s", 0.0) or 0.0),
-            )
-        else:
-            detail = t(
-                "connection.detail.video.waiting",
-                language,
-                source=source,
-                codec=codec,
-            )
-    elif channel == "orin":
-        age = options.get("heartbeat_age_s")
-        if connected and age is not None:
-            latency_value = options.get("round_trip_ms")
-            latency = (
-                f" / {float(latency_value):.0f} ms"
-                if latency_value is not None
-                else ""
-            )
-            onboard_time = str(options.get("onboard_time_utc") or "")
-            clock = (
-                f" / UTC {onboard_time[11:19]}"
-                if len(onboard_time) >= 19
-                else ""
-            )
-            detail = t(
-                "connection.detail.orin.connected",
-                language,
-                health=str(options.get("health", "offline")).upper(),
-                task=str(options.get("active_task") or t("connection.state.idle", language)),
-                age=float(age),
-                latency=latency,
-                clock=clock,
-            )
-        elif not options.get("service_available", True):
-            detail = t("connection.detail.orin.unavailable", language)
-        elif age is not None:
-            detail = t("connection.detail.orin.age", language, age=float(age))
-        else:
-            detail = t("connection.detail.orin.waiting", language)
-    elif channel == "gps":
+    if channel == "gps":
         age = options.get("gps_age_s")
         raw_satellites = options.get("satellites")
         values = {
             "fix": str(options.get("gps_fix", "NO FIX")),
-            "satellites": (
-                int(raw_satellites) if raw_satellites is not None else "--"
-            ),
+            "satellites": int(raw_satellites) if raw_satellites is not None else "--",
         }
         detail = (
             t("connection.detail.gps.age", language, **values, age=float(age))
@@ -271,39 +190,25 @@ def connection_status_text(status: Any, language: str) -> tuple[str, str]:
                 quality = t("connection.detail.telemetry.quality_waiting", language)
             age = options.get("last_message_age_s")
             detail = (
-                t(
-                    "connection.detail.telemetry.age",
-                    language,
-                    age=float(age),
-                    quality=quality,
-                )
+                t("connection.detail.telemetry.age", language, age=float(age), quality=quality)
                 if age is not None
-                else t(
-                    "connection.detail.telemetry.waiting",
-                    language,
-                    quality=quality,
-                )
+                else t("connection.detail.telemetry.waiting", language, quality=quality)
             )
             round_trip_ms = options.get("round_trip_ms")
             latency = (
-                t(
-                    "connection.detail.telemetry.latency",
-                    language,
-                    latency=float(round_trip_ms),
-                )
+                t("connection.detail.telemetry.latency", language, latency=float(round_trip_ms))
                 if round_trip_ms is not None
                 else t("connection.detail.telemetry.latency_waiting", language)
             )
             detail = f"{detail} / {latency}"
+    elif connected:
+        detail = t(
+            "connection.detail.autopilot.connected",
+            language,
+            device=options.get("device_id", "-"),
+            system=options.get("system_id", 0),
+            component=options.get("component_id", 0),
+        )
     else:
-        if connected:
-            detail = t(
-                "connection.detail.autopilot.connected",
-                language,
-                device=options.get("device_id", "-"),
-                system=options.get("system_id", 0),
-                component=options.get("component_id", 0),
-            )
-        else:
-            detail = t("connection.detail.autopilot.disconnected", language)
+        detail = t("connection.detail.autopilot.disconnected", language)
     return summary, detail

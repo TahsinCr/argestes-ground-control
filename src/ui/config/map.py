@@ -23,14 +23,9 @@ MAP_TOOLS = (
     MapToolSpec("rtl", "map.tool.rtl", geometry="point", route_item=True, editable=True),
     MapToolSpec("no_fly", "map.tool.no_fly", geometry="polygon", editable=True),
     MapToolSpec("safe_zone", "map.tool.safe_zone", geometry="polygon", editable=True),
-    # HSS and QR targets come from the TEKNOFEST service. The map renders them,
-    # but the operator cannot create or edit them.
-    MapToolSpec("hss", "map.tool.hss", geometry="point", creatable=False),
-    MapToolSpec("target", "map.tool.target", geometry="point", creatable=False),
     MapToolSpec("land", "map.tool.land", geometry="point", route_item=True, editable=True),
     MapToolSpec("mission_list", "map.tool.mission_list"),
     MapToolSpec("clear", "map.tool.clear"),
-    MapToolSpec("archive", "map.tool.archive", group="transfer"),
     MapToolSpec("send", "map.tool.send", group="transfer"),
     MapToolSpec("download", "map.tool.download", group="transfer"),
 )

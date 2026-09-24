@@ -1,6 +1,3 @@
 [submodule "src/core"]
 	path = src/core
 	url = https://github.com/TahsinCr/vehicle-autonomy-core.git
-[submodule "src/communication"]
-	path = src/communication
-	url = https://github.com/Kirlangic-Team/siha-communication-contracts.git

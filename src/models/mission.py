@@ -15,7 +15,6 @@ class MissionItemType(StrEnum):
     LOITER = "loiter"
     RTL = "rtl"
     LAND = "land"
-    HSS = "hss"
     SAFE_ZONE = "safe_zone"
     NO_FLY = "no_fly"
     ROUTE = "route"
@@ -77,8 +76,6 @@ class MapOverlay(Model):
 
         return bool(
             self.metadata.get("read_only", False)
-            or self.source.startswith("teknofest-")
-            or self.overlay_type in {"hss", "target"}
         )
 
     @property

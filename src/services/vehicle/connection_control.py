@@ -24,7 +24,7 @@ from src.services.logging_service import ServiceLogger
 
 
 _VEHICLE_CHANNELS = frozenset({"telemetry", "autopilot", "gps"})
-_KNOWN_CHANNELS = frozenset({"server", "video", "video_share", "orin", *_VEHICLE_CHANNELS})
+_KNOWN_CHANNELS = frozenset(_VEHICLE_CHANNELS)
 
 
 class VehicleConnectionControlService(ConnectionControlService):

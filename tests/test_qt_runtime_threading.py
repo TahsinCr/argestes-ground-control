@@ -14,9 +14,8 @@ from PyQt6.QtWidgets import QApplication
 from src.core.events import EventBus
 from src.models.logs import LogEntry
 from src.models.telemetry import TelemetrySnapshot
-from src.models.video import VideoFrame, VideoStreamStats
 from src.ui.adapters.runtime import QtRuntimeServices
-from src.ui.adapters.services import QtLoggingService, QtTelemetryService, QtVideoService
+from src.ui.adapters.services import QtLoggingService, QtTelemetryService
 from src.services.logging_service import LoggingService
 
 
@@ -49,14 +48,6 @@ class _BlockingBackend:
     def stop(self) -> None:
         self.stopped.set()
         self.release.set()
-
-
-class _VideoBackend:
-    def __init__(self) -> None:
-        self.frames = EventBus[VideoFrame]()
-        self.stats_changed = EventBus[VideoStreamStats]()
-        self.connected = False
-        self.stats = VideoStreamStats()
 
 
 class _AdapterStub:
@@ -161,33 +152,6 @@ class QtRuntimeThreadingTests(unittest.TestCase):
         adapter.deleteLater()
         self.app.processEvents()
 
-    def test_video_burst_keeps_only_the_latest_ui_frame(self) -> None:
-        backend = _VideoBackend()
-        adapter = QtVideoService(backend)
-        received = []
-        adapter.frame_ready.connect(received.append)
-
-        for marker in range(5_000):
-            channel = marker % 256
-            backend.frames.publish(
-                VideoFrame(
-                    width=1,
-                    height=1,
-                    pixel_format="rgba8888",
-                    data=bytes((channel, 0, 0, 255)),
-                )
-            )
-
-        self.assertEqual(received, [])
-        QTest.qWait(80)
-        self.assertGreaterEqual(len(received), 1)
-        self.assertLessEqual(len(received), 2)
-        self.assertEqual(received[-1].pixelColor(0, 0).red(), 4_999 % 256)
-        self.assertFalse(adapter._video_frame_timer.isActive())
-        adapter.close()
-        adapter.deleteLater()
-        self.app.processEvents()
-
     def test_log_burst_is_delivered_to_ui_as_one_batch(self) -> None:
         backend = LoggingService()
         adapter = QtLoggingService(backend)
@@ -206,9 +170,9 @@ class QtRuntimeThreadingTests(unittest.TestCase):
         adapter.deleteLater()
         self.app.processEvents()
 
-    def test_backend_start_does_not_block_the_gui_thread(self) -> None:
+    def test_backend_start_does_not_block_gui(self) -> None:
         backend = _BlockingBackend()
-        adapters = [_AdapterStub() for _index in range(9)]
+        adapters = [_AdapterStub() for _index in range(8)]
         runtime = QtRuntimeServices(
             backend=backend,
             log_service=adapters[0],
@@ -217,9 +181,8 @@ class QtRuntimeThreadingTests(unittest.TestCase):
             planner_service=adapters[3],
             command_service=adapters[4],
             parameter_service=adapters[5],
-            video_service=adapters[6],
-            tile_cache_service=adapters[7],
-            connection_service=adapters[8],
+            tile_cache_service=adapters[6],
+            connection_service=adapters[7],
         )
         connection = self.app.aboutToQuit.connect(runtime.stop)
 
@@ -230,11 +193,8 @@ class QtRuntimeThreadingTests(unittest.TestCase):
 
             self.assertLess(elapsed, 0.25)
             self.assertTrue(backend.started.wait(timeout=1.0))
-            self.assertTrue(adapters[6].started)
-
             runtime.stop()
             self.assertTrue(backend.stopped.wait(timeout=1.0))
-            self.assertTrue(adapters[6].stopped)
             self.assertTrue(all(adapter.closed for adapter in adapters))
         finally:
             self.app.disconnect(connection)

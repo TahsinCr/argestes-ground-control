@@ -8,84 +8,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.models.settings import SettingsModel
-from src.models.competition import CompetitionServerConfig
-from src.models.video import VideoSourceConfig
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
 from src.ui.config.settings_schema import iter_fields
 
 
 class SettingsTests(unittest.TestCase):
-    def test_video_source_profiles_preserve_the_active_legacy_view(self) -> None:
-        first = VideoSourceConfig(identifier="cam-1", name="Burun", source_type="udp", source_uri="5000", codec="h264")
-        second = VideoSourceConfig(identifier="cam-2", name="Alt", source_type="rtsp", source_uri="rtsp://camera/stream", codec="h265", auto_connect=True, aim_enabled=True, aim_x=0.25, aim_y=0.75)
-        model = SettingsModel.from_dict({"backend": {"video_sources": [first.to_dict(), second.to_dict()], "active_video_source_id": "cam-2"}})
-
-        self.assertEqual(model.backend.video_source_uri, second.source_uri)
-        self.assertEqual(model.backend.video_codec, "h265")
-        self.assertTrue(model.backend.video_auto_connect)
-        restored = SettingsModel.from_dict(model.to_dict())
-        self.assertEqual(restored.backend.active_video_source_id, "cam-2")
-        self.assertEqual(len(restored.backend.video_sources), 2)
-        self.assertTrue(restored.backend.video_sources[1].aim_enabled)
-        self.assertEqual(restored.backend.video_sources[1].aim_x, 0.25)
-        self.assertEqual(restored.backend.video_sources[1].aim_y, 0.75)
-    def test_competition_server_profiles_round_trip_and_preserve_legacy_profile(self) -> None:
-        primary = CompetitionServerConfig(name="Ana", base_url="http://10.0.0.10:10001")
-        backup = CompetitionServerConfig(name="Yedek", base_url="http://10.0.0.11:10001", auto_connect=True)
-        model = SettingsModel.from_dict(
-            {
-                "backend": {
-                    "competition": primary.to_dict(),
-                    "competition_servers": [primary.to_dict(), backup.to_dict()],
-                }
-            }
-        )
-
-        restored = SettingsModel.from_dict(model.to_dict())
-
-        self.assertEqual([item.name for item in restored.backend.competition_servers], ["Ana", "Yedek"])
-        self.assertEqual(restored.backend.competition.identifier, primary.identifier)
-
-    def test_safe_area_keeps_four_two_dimensional_corners(self) -> None:
-        settings = SettingsModel.default(Path("."))
-        updated = settings.with_value(
-            "backend.mission.safe_area.point_1.latitude",
-            39.925533,
-        ).with_value(
-            "backend.mission.safe_area.point_1.longitude",
-            32.866287,
-        )
-
-        restored = SettingsModel.from_dict(updated.to_dict())
-        point = restored.backend.mission.safe_area.point_1
-        self.assertAlmostEqual(point.latitude, 39.925533)
-        self.assertAlmostEqual(point.longitude, 32.866287)
-
-    def test_safe_area_orders_unordered_corners_into_a_perimeter(self) -> None:
-        settings = SettingsModel.from_dict(
-            {
-                "backend": {
-                    "mission": {
-                        "safe_area": {
-                            "point_1": {"latitude": 1.0, "longitude": 1.0},
-                            "point_2": {"latitude": 0.0, "longitude": 0.0},
-                            "point_3": {"latitude": 1.0, "longitude": 0.0},
-                            "point_4": {"latitude": 0.0, "longitude": 1.0},
-                        }
-                    }
-                }
-            }
-        )
-
-        ordered = settings.backend.mission.safe_area.ordered_corners()
-
-        self.assertEqual(
-            {(corner.latitude, corner.longitude) for corner in ordered},
-            {(0.0, 0.0), (0.0, 1.0), (1.0, 0.0), (1.0, 1.0)},
-        )
-        self.assertEqual(len(ordered), 4)
-
     def test_concurrent_path_updates_are_one_read_modify_write_transaction(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             service = SettingsService(Path(directory))
@@ -127,7 +55,6 @@ class SettingsTests(unittest.TestCase):
     def test_every_schema_path_is_backed_by_the_settings_model(self) -> None:
         model = SettingsModel()
         self.assertFalse(model.backend.mavlink.auto_connect)
-        self.assertFalse(model.backend.video_auto_connect)
         for field in iter_fields():
             value = model.value_at(field.path)
             changed = model.with_value(field.path, value)
@@ -141,12 +68,10 @@ class SettingsTests(unittest.TestCase):
             service.changed.subscribe(received.append)
             service.set_value("ui.theme", "light")
             service.set_value("backend.mavlink.auto_connect", True)
-            service.set_value("backend.video_auto_connect", True)
             payload = json.loads((base_dir / "data/settings.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["ui"]["theme"], "light")
             self.assertTrue(payload["backend"]["mavlink"]["auto_connect"])
-            self.assertTrue(payload["backend"]["video_auto_connect"])
-            self.assertEqual(len(received), 3)
+            self.assertEqual(len(received), 2)
 
     def test_unchanged_patch_does_not_rewrite_or_notify_the_ui(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -184,11 +109,7 @@ class SettingsTests(unittest.TestCase):
                 payload["backend"]["battery_alarm"]["failsafe_threshold"],
                 10.0,
             )
-            self.assertEqual(payload["backend"]["video_source_type"], "udp")
-            self.assertFalse(payload["backend"]["video_auto_connect"])
             self.assertFalse(payload["backend"]["mavlink"]["auto_connect"])
-            self.assertFalse(payload["backend"]["competition"]["auto_connect"])
-            self.assertFalse(payload["backend"]["orin"]["enabled"])
 
     def test_invalid_settings_file_is_replaced_with_safe_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -234,8 +155,6 @@ class SettingsTests(unittest.TestCase):
         model = SettingsModel()
         with self.assertRaises(ValueError):
             model.with_value("backend.mavlink.heartbeat_timeout", 0)
-        with self.assertRaises(ValueError):
-            model.with_value("backend.video_frame_timeout_s", 0)
         with self.assertRaises(ValueError):
             model.with_value("backend.mission.radii.rtl", -1)
         with self.assertRaises(ValueError):
