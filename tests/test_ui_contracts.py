@@ -11,7 +11,7 @@ os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --no-sandbox")
 
 from PyQt6.QtCore import QPoint, Qt
-from PyQt6.QtGui import QImage
+from PyQt6.QtGui import QContextMenuEvent, QImage
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
     QApplication,
@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFrame,
     QLineEdit,
+    QMenu,
     QSpinBox,
     QWidget,
 )
@@ -97,29 +98,47 @@ class UiContractTests(unittest.TestCase):
         window.deleteLater()
         self.app.processEvents()
 
-    def test_activity_bar_is_a_compact_localized_left_rail(self) -> None:
+    def test_activity_bar_controls_sidebar_and_bottom_panels(self) -> None:
         bar = ActivityBar("tr")
-        requested: list[str] = []
-        settings_requested: list[bool] = []
-        bar.activity_requested.connect(requested.append)
-        bar.settings_requested.connect(lambda: settings_requested.append(True))
+        sidebar_visibility: list[bool] = []
+        panel_visibility: list[tuple[str, bool]] = []
+        side_by_side: list[str] = []
+        bar.flight_sidebar_toggled.connect(sidebar_visibility.append)
+        bar.bottom_panel_toggled.connect(
+            lambda panel, visible: panel_visibility.append((panel, visible))
+        )
+        bar.bottom_panel_side_by_side_requested.connect(side_by_side.append)
         bar.resize(48, 400)
         bar.show()
         self.app.processEvents()
 
         self.assertEqual(bar.width(), 48)
-        self.assertEqual(tuple(bar.buttons), ActivityBar._ACTIVITIES)
-        self.assertEqual(bar.buttons["explorer"].toolTip(), "Gezgin")
-        self.assertTrue(bar.buttons["explorer"].isChecked())
-        bar.buttons["extensions"].click()
-        self.assertEqual(requested, ["extensions"])
-        self.assertTrue(bar.buttons["extensions"].isChecked())
-        self.assertFalse(bar.settings_button.isCheckable())
+        self.assertEqual(tuple(bar.buttons), ("logs", "parameters"))
+        self.assertEqual(bar.sidebar_button.toolTip(), "Uçuş paneli")
+        self.assertTrue(bar.sidebar_button.isChecked())
+        self.assertTrue(bar.buttons["logs"].isChecked())
+        self.assertFalse(bar.buttons["parameters"].isChecked())
+        bar.sidebar_button.click()
+        self.assertEqual(sidebar_visibility, [False])
+        bar.buttons["parameters"].click()
+        self.assertEqual(panel_visibility, [("parameters", True)])
+        self.assertFalse(bar.buttons["logs"].isChecked())
+        bar.buttons["parameters"].click()
+        self.assertEqual(panel_visibility[-1], ("parameters", False))
+        with patch.object(
+            QMenu,
+            "exec",
+            new=lambda menu, _position: menu.actions()[0],
+        ):
+            context_event = QContextMenuEvent(
+                QContextMenuEvent.Reason.Mouse, QPoint(1, 1), QPoint(1, 1)
+            )
+            bar.buttons["parameters"].contextMenuEvent(context_event)
+        self.assertEqual(side_by_side, ["parameters"])
+        self.assertTrue(bar.buttons["parameters"].isChecked())
 
         bar.set_language("en")
-        self.assertEqual(bar.settings_button.toolTip(), "Settings")
-        bar.settings_button.click()
-        self.assertEqual(settings_requested, [True])
+        self.assertEqual(bar.buttons["parameters"].toolTip(), "Parameters")
         bar.close()
         bar.deleteLater()
         self.app.processEvents()

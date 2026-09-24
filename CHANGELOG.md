@@ -8,8 +8,10 @@ All notable changes to this project will be documented in this file.
 * Added a compact, Visual Studio-style menu row to the main title bar. File,
   Edit, Selection, View, Go, Run, Terminal, and Help menus have localized
   labels; their actions remain intentionally empty for now.
-* Added a narrow, localized activity bar at the far left of the workspace with
-  navigation placeholders and a working shortcut to application settings.
+* Replaced the activity-bar placeholders with localized controls for the flight
+  sidebar, Logs, and Parameters. The bottom panels open exclusively by default;
+  an inactive panel can be opened alongside the active one from its right-click
+  menu. Hiding both lets the map use the full workspace height.
 * Removed video capture/sharing, joystick RC input, SIHA/Onboard/Orin,
   TEKNOFEST, mission archive and SIHA task-command modules from the active
   application, including their runtime composition, UI, adapters, settings

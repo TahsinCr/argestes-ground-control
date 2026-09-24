@@ -124,11 +124,15 @@ class MainWindow(QMainWindow):
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
         self.activity_bar = ActivityBar(self.language, content)
-        self.activity_bar.settings_requested.connect(self.open_settings)
         content_layout.addWidget(self.activity_bar)
         self.main_splitter = self._make_splitter(Qt.Orientation.Horizontal)
         self.sidebar = self._build_sidebar()
         self.workspace = self._build_workspace()
+        self.activity_bar.flight_sidebar_toggled.connect(self.sidebar.setVisible)
+        self.activity_bar.bottom_panel_toggled.connect(self._on_bottom_panel_toggled)
+        self.activity_bar.bottom_panel_side_by_side_requested.connect(
+            self._open_bottom_panel_beside
+        )
         self.main_splitter.addWidget(self.sidebar)
         self.main_splitter.addWidget(self.workspace)
         self.main_splitter.setStretchFactor(0, 0)
@@ -230,6 +234,7 @@ class MainWindow(QMainWindow):
         self.parameters_panel.setMinimumWidth(320)
         self.bottom_splitter.addWidget(self.log_panel)
         self.bottom_splitter.addWidget(self.parameters_panel)
+        self.parameters_panel.hide()
         self.bottom_splitter.setStretchFactor(0, 64)
         self.bottom_splitter.setStretchFactor(1, 36)
         self.bottom_splitter.setSizes([900, 500])
@@ -238,6 +243,53 @@ class MainWindow(QMainWindow):
         workspace.setStretchFactor(1, 4)
         workspace.setSizes([590, 295])
         return workspace
+
+    def _on_bottom_panel_toggled(self, panel: str, checked: bool) -> None:
+        selected = {
+            "logs": self.log_panel,
+            "parameters": self.parameters_panel,
+        }.get(panel)
+        if selected is None:
+            return
+
+        if checked:
+            other_key = "parameters" if panel == "logs" else "logs"
+            other = self.parameters_panel if panel == "logs" else self.log_panel
+            self.activity_bar.set_bottom_panel_checked(other_key, False)
+            other.hide()
+            selected.show()
+            self.bottom_splitter.show()
+            self.workspace.setSizes([2, 1])
+            sizes = [max(1, self.bottom_splitter.width()), 1]
+            if panel == "parameters":
+                sizes.reverse()
+            self.bottom_splitter.setSizes(sizes)
+            return
+
+        selected.hide()
+        if not any(button.isChecked() for button in self.activity_bar.buttons.values()):
+            self.bottom_splitter.hide()
+
+    def _open_bottom_panel_beside(self, panel: str) -> None:
+        selected = {
+            "logs": self.log_panel,
+            "parameters": self.parameters_panel,
+        }.get(panel)
+        other = self.parameters_panel if panel == "logs" else self.log_panel
+        other_key = "parameters" if panel == "logs" else "logs"
+        if selected is None:
+            return
+
+        if not other.isVisible():
+            self._on_bottom_panel_toggled(panel, True)
+            return
+
+        self.activity_bar.set_bottom_panel_checked(panel, True)
+        self.activity_bar.set_bottom_panel_checked(other_key, True)
+        selected.show()
+        self.bottom_splitter.show()
+        self.workspace.setSizes([2, 1])
+        self.bottom_splitter.setSizes([1, 1])
 
     def _connect_signals(self) -> None:
         self.telemetry_service.telemetry_updated.connect(self._on_telemetry)

@@ -1,22 +1,40 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QPointF, QRectF, pyqtSignal, Qt
-from PyQt6.QtGui import QPainter, QPainterPath, QPalette, QPen
-from PyQt6.QtWidgets import QButtonGroup, QToolButton, QVBoxLayout, QWidget
+from PyQt6.QtGui import QContextMenuEvent, QPainter, QPalette, QPen
+from PyQt6.QtWidgets import QMenu, QToolButton, QVBoxLayout, QWidget
 
 from src.ui.i18n import t
 
 
 class _ActivityButton(QToolButton):
+    side_by_side_requested = pyqtSignal(str)
+
     def __init__(
-        self, key: str, parent: QWidget | None = None, *, checkable: bool = True
+        self,
+        key: str,
+        parent: QWidget | None = None,
+        *,
+        checkable: bool = True,
+        language: str = "tr",
     ) -> None:
         super().__init__(parent)
         self.key = key
+        self.language = language
         self.setObjectName("ActivityBarButton")
         self.setFixedSize(48, 46)
         self.setCheckable(checkable)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        if self.key not in {"logs", "parameters"} or self.isChecked():
+            event.ignore()
+            return
+        menu = QMenu(self)
+        action = menu.addAction(t("activity.open_beside", self.language))
+        if menu.exec(event.globalPos()) is action:
+            self.setChecked(True)
+            self.side_by_side_requested.emit(self.key)
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
@@ -27,53 +45,28 @@ class _ActivityButton(QToolButton):
         x = (self.width() - 20) / 2
         y = (self.height() - 20) / 2
 
-        if self.key == "explorer":
-            painter.drawRoundedRect(QRectF(x + 5, y + 2, 12, 16), 1.5, 1.5)
-            painter.drawRoundedRect(QRectF(x + 2, y + 5, 12, 15), 1.5, 1.5)
-        elif self.key == "search":
-            painter.drawEllipse(QPointF(x + 8, y + 8), 5.5, 5.5)
-            painter.drawLine(QPointF(x + 12, y + 12), QPointF(x + 18, y + 18))
-        elif self.key == "run":
-            path = QPainterPath()
-            path.moveTo(x + 5, y + 2)
-            path.lineTo(x + 18, y + 10)
-            path.lineTo(x + 5, y + 18)
-            path.closeSubpath()
-            painter.drawPath(path)
-            painter.drawRoundedRect(QRectF(x + 2, y + 1, 2, 18), 1, 1)
-        elif self.key == "source_control":
-            painter.drawLine(QPointF(x + 5, y + 4), QPointF(x + 5, y + 16))
-            painter.drawLine(QPointF(x + 5, y + 10), QPointF(x + 15, y + 4))
-            for cx, cy in ((5, 4), (5, 16), (15, 4)):
-                painter.drawEllipse(QPointF(x + cx, y + cy), 2.2, 2.2)
-        elif self.key == "extensions":
-            for cx, cy in ((3, 3), (11, 3), (3, 11), (11, 11)):
-                painter.drawRoundedRect(QRectF(x + cx, y + cy, 6, 6), 1, 1)
-        elif self.key == "account":
-            painter.drawEllipse(QPointF(x + 10, y + 6), 3.2, 3.2)
-            path = QPainterPath()
-            path.moveTo(x + 3, y + 19)
-            path.cubicTo(x + 3, y + 12, x + 17, y + 12, x + 17, y + 19)
-            painter.drawPath(path)
-        elif self.key == "settings":
-            painter.drawEllipse(QPointF(x + 10, y + 10), 6.5, 6.5)
-            painter.drawEllipse(QPointF(x + 10, y + 10), 2.2, 2.2)
-            for angle in range(0, 360, 45):
-                painter.save()
-                painter.translate(x + 10, y + 10)
-                painter.rotate(angle)
-                painter.drawLine(QPointF(0, -9), QPointF(0, -6.5))
-                painter.restore()
+        if self.key == "flight_panels":
+            painter.drawRoundedRect(QRectF(x + 2, y + 2, 16, 16), 1.5, 1.5)
+            painter.drawLine(QPointF(x + 8, y + 2), QPointF(x + 8, y + 18))
+        elif self.key == "logs":
+            for offset, width in ((4, 13), (9, 16), (14, 11)):
+                painter.drawEllipse(QPointF(x + 3, y + offset), 0.8, 0.8)
+                painter.drawLine(QPointF(x + 7, y + offset), QPointF(x + width, y + offset))
+        elif self.key == "parameters":
+            for offset, knob in ((4, 10), (10, 5), (16, 13)):
+                painter.drawLine(QPointF(x + 3, y + offset), QPointF(x + 17, y + offset))
+                painter.drawEllipse(QPointF(x + knob, y + offset), 2, 2)
         painter.end()
 
 
 class ActivityBar(QWidget):
-    """Compact left navigation rail; content views can be attached incrementally."""
+    """Compact activity rail for showing and arranging the main work panels."""
 
-    activity_requested = pyqtSignal(str)
-    settings_requested = pyqtSignal()
+    flight_sidebar_toggled = pyqtSignal(bool)
+    bottom_panel_toggled = pyqtSignal(str, bool)
+    bottom_panel_side_by_side_requested = pyqtSignal(str)
 
-    _ACTIVITIES = ("explorer", "search", "run", "source_control", "extensions")
+    _BOTTOM_PANELS = ("logs", "parameters")
 
     def __init__(self, language: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -84,41 +77,48 @@ class ActivityBar(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 4)
         layout.setSpacing(2)
-        self._group = QButtonGroup(self)
-        self._group.setExclusive(True)
-        self.buttons: dict[str, _ActivityButton] = {}
 
-        for key in self._ACTIVITIES:
-            button = self._make_button(key)
-            self._group.addButton(button)
-            layout.addWidget(button)
-            self.buttons[key] = button
-            button.clicked.connect(lambda checked=False, name=key: self.activity_requested.emit(name))
+        self.sidebar_button = self._make_button("flight_panels")
+        self.sidebar_button.setChecked(True)
+        layout.addWidget(self.sidebar_button)
+        self.sidebar_button.clicked.connect(self.flight_sidebar_toggled.emit)
 
-        self.buttons["explorer"].setChecked(True)
         layout.addStretch(1)
-        self.account_button = self._make_button("account")
-        self.settings_button = self._make_button("settings")
-        layout.addWidget(self.account_button)
-        layout.addWidget(self.settings_button)
-        self.account_button.clicked.connect(
-            lambda: self.activity_requested.emit("account")
-        )
-        self.settings_button.clicked.connect(self.settings_requested.emit)
+        self.buttons: dict[str, _ActivityButton] = {}
+        self.buttons["logs"] = self._make_button("logs")
+        self.buttons["parameters"] = self._make_button("parameters")
+        self.buttons["logs"].setChecked(True)
+        for key in self._BOTTOM_PANELS:
+            button = self.buttons[key]
+            button.side_by_side_requested.connect(
+                self.bottom_panel_side_by_side_requested.emit
+            )
+            button.clicked.connect(
+                lambda checked=False, name=key: self._on_panel_clicked(name, checked)
+            )
+            layout.addWidget(button)
 
     def _make_button(self, key: str) -> _ActivityButton:
-        button = _ActivityButton(key, self, checkable=key in self._ACTIVITIES)
-        button.setAccessibleName(t(f"activity.{key}", self.language))
-        button.setToolTip(t(f"activity.{key}", self.language))
+        button = _ActivityButton(key, self, language=self.language)
+        label = t(f"activity.{key}", self.language)
+        button.setAccessibleName(label)
+        button.setToolTip(label)
         return button
+
+    def _on_panel_clicked(self, key: str, checked: bool) -> None:
+        if checked:
+            other_key = "parameters" if key == "logs" else "logs"
+            self.buttons[other_key].setChecked(False)
+        self.bottom_panel_toggled.emit(key, checked)
+
+    def set_bottom_panel_checked(self, key: str, checked: bool) -> None:
+        if key in self.buttons:
+            self.buttons[key].setChecked(checked)
 
     def set_language(self, language: str) -> None:
         self.language = language
-        for key, button in self.buttons.items():
+        for key, button in (("flight_panels", self.sidebar_button), *self.buttons.items()):
             label = t(f"activity.{key}", language)
-            button.setAccessibleName(label)
-            button.setToolTip(label)
-        for key, button in (("account", self.account_button), ("settings", self.settings_button)):
-            label = t(f"activity.{key}", language)
+            button.language = language
             button.setAccessibleName(label)
             button.setToolTip(label)
