@@ -1,6 +1,13 @@
 {
   "app.subtitle": "Görev odaklı hibrit operasyon arayüzü",
   "app.title": "Kırlangıç Team Yer Kontrol İstasyonu",
+  "activity.explorer": "Gezgin",
+  "activity.search": "Ara",
+  "activity.run": "Çalıştır ve Hata Ayıkla",
+  "activity.source_control": "Kaynak Denetimi",
+  "activity.extensions": "Eklentiler",
+  "activity.account": "Hesap",
+  "activity.settings": "Ayarlar",
   "battery.alarm.mode.percent": "Yüzde (%)",
   "battery.alarm.mode.voltage": "Voltaj (V)",
   "battery.tooltip.consumed": "Tüketim: {mah} mAh",

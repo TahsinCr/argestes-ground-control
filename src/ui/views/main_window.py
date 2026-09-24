@@ -52,6 +52,7 @@ from src.ui.widgets.logs import EventLogPanel
 from src.ui.widgets.map_panel import MapPanel
 from src.ui.widgets.mavlink_connections_popup import MavlinkConnectionsPopup
 from src.ui.widgets.parameters import ParametersPanel
+from src.ui.widgets.activity_bar import ActivityBar
 from src.ui.widgets.title_bar import AppTitleBar
 
 
@@ -117,6 +118,14 @@ class MainWindow(QMainWindow):
         self.title_bar.set_title(self.windowTitle())
         self.title_bar.enable_main_menu(self.language)
         layout.addWidget(self.title_bar)
+
+        content = QWidget(central)
+        content_layout = QHBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        self.activity_bar = ActivityBar(self.language, content)
+        self.activity_bar.settings_requested.connect(self.open_settings)
+        content_layout.addWidget(self.activity_bar)
         self.main_splitter = self._make_splitter(Qt.Orientation.Horizontal)
         self.sidebar = self._build_sidebar()
         self.workspace = self._build_workspace()
@@ -125,7 +134,8 @@ class MainWindow(QMainWindow):
         self.main_splitter.setStretchFactor(0, 0)
         self.main_splitter.setStretchFactor(1, 1)
         self.main_splitter.setSizes([320, 1280])
-        layout.addWidget(self.main_splitter, 1)
+        content_layout.addWidget(self.main_splitter, 1)
+        layout.addWidget(content, 1)
 
         status_bar = QWidget(central)
         status_bar.setObjectName("BottomStatusBar")
@@ -434,6 +444,7 @@ class MainWindow(QMainWindow):
         self.title_bar.set_theme(self.theme)
         self.title_bar.set_title(self.windowTitle())
         self.title_bar.set_menu_language(self.language)
+        self.activity_bar.set_language(self.language)
         self.attitude_indicator.set_theme(self.theme)
         self.battery_meter.set_theme(self.theme)
         self.battery_meter.set_label(t("status.battery", self.language))

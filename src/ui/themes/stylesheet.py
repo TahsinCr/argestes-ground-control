@@ -42,6 +42,26 @@ def build_stylesheet(theme: ThemePalette) -> str:
         background: {theme.surface_alt};
         border-bottom: 1px solid {theme.border};
     }}
+    #ActivityBar {{
+        background: {theme.surface_alt};
+        border-right: 1px solid {theme.border};
+    }}
+    QToolButton#ActivityBarButton {{
+        background: transparent;
+        color: {theme.muted_text};
+        border: none;
+        border-left: 2px solid transparent;
+        border-radius: 0;
+        padding: 0;
+    }}
+    QToolButton#ActivityBarButton:hover {{
+        background: {theme.surface_hover};
+        color: {theme.text};
+    }}
+    QToolButton#ActivityBarButton:checked {{
+        color: {theme.text};
+        border-left: 2px solid {theme.accent};
+    }}
     #WindowTitleLabel {{
         color: {theme.text};
         font-size: 12px;

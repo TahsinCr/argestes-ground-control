@@ -1,6 +1,13 @@
 {
   "app.subtitle": "Mission-first hybrid operations interface",
   "app.title": "Kırlangıç Team Ground Control Station",
+  "activity.explorer": "Explorer",
+  "activity.search": "Search",
+  "activity.run": "Run and Debug",
+  "activity.source_control": "Source Control",
+  "activity.extensions": "Extensions",
+  "activity.account": "Account",
+  "activity.settings": "Settings",
   "battery.alarm.mode.percent": "Percentage (%)",
   "battery.alarm.mode.voltage": "Voltage (V)",
   "battery.tooltip.consumed": "Consumed: {mah} mAh",

@@ -43,6 +43,7 @@ from src.ui.widgets.battery_popup import BatterySettingsPopup
 from src.ui.widgets.logs import EventLogPanel
 from src.ui.widgets.parameters import ParametersPanel
 from src.ui.widgets.map_panel import MapPanel, MapWebBridge
+from src.ui.widgets.activity_bar import ActivityBar
 from src.ui.widgets.title_bar import AppTitleBar, FramelessResizeController
 
 
@@ -94,6 +95,33 @@ class UiContractTests(unittest.TestCase):
         window.close()
         title_bar.deleteLater()
         window.deleteLater()
+        self.app.processEvents()
+
+    def test_activity_bar_is_a_compact_localized_left_rail(self) -> None:
+        bar = ActivityBar("tr")
+        requested: list[str] = []
+        settings_requested: list[bool] = []
+        bar.activity_requested.connect(requested.append)
+        bar.settings_requested.connect(lambda: settings_requested.append(True))
+        bar.resize(48, 400)
+        bar.show()
+        self.app.processEvents()
+
+        self.assertEqual(bar.width(), 48)
+        self.assertEqual(tuple(bar.buttons), ActivityBar._ACTIVITIES)
+        self.assertEqual(bar.buttons["explorer"].toolTip(), "Gezgin")
+        self.assertTrue(bar.buttons["explorer"].isChecked())
+        bar.buttons["extensions"].click()
+        self.assertEqual(requested, ["extensions"])
+        self.assertTrue(bar.buttons["extensions"].isChecked())
+        self.assertFalse(bar.settings_button.isCheckable())
+
+        bar.set_language("en")
+        self.assertEqual(bar.settings_button.toolTip(), "Settings")
+        bar.settings_button.click()
+        self.assertEqual(settings_requested, [True])
+        bar.close()
+        bar.deleteLater()
         self.app.processEvents()
 
     def test_settings_dialog_validates_battery_voltage_fields_as_one_profile(self) -> None:
