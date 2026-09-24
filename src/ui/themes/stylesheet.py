@@ -89,6 +89,36 @@ def build_stylesheet(theme: ThemePalette) -> str:
         font-size: 12px;
         font-weight: 650;
     }}
+    QMenuBar#MainMenuBar {{
+        background: transparent;
+        border: none;
+        spacing: 2px;
+        padding: 0;
+    }}
+    QMenuBar#MainMenuBar::item {{
+        background: transparent;
+        color: {theme.muted_text};
+        padding: 5px 8px;
+        border-radius: 3px;
+    }}
+    QMenuBar#MainMenuBar::item:selected,
+    QMenuBar#MainMenuBar::item:pressed {{
+        background: {theme.surface_hover};
+        color: {theme.text};
+    }}
+    QMenu {{
+        background: {theme.surface};
+        color: {theme.text};
+        border: 1px solid {theme.border_strong};
+        padding: 4px;
+    }}
+    QMenu::item {{
+        padding: 5px 28px 5px 8px;
+        border-radius: 3px;
+    }}
+    QMenu::item:selected {{
+        background: {theme.surface_hover};
+    }}
     QPushButton[windowControl="true"] {{
         background: transparent;
         border: none;

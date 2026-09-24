@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer
 from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPen
-from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
+from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QMenuBar, QPushButton, QSizePolicy, QWidget
 
 from src.ui.themes.style import ThemePalette
 
@@ -357,10 +357,22 @@ class FramelessResizeController(QObject):
 
 
 class AppTitleBar(QWidget):
+    MAIN_MENU_KEYS = (
+        "menu.file",
+        "menu.edit",
+        "menu.selection",
+        "menu.view",
+        "menu.go",
+        "menu.run",
+        "menu.terminal",
+        "menu.help",
+    )
+
     def __init__(self, window: QWidget, theme: ThemePalette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._window = window
         self._theme = theme
+        self._menu_bar: QMenuBar | None = None
         self._drag_offset: QPoint | None = None
         self.setObjectName("AppTitleBar")
         self.setFixedHeight(36)
@@ -399,6 +411,32 @@ class AppTitleBar(QWidget):
         controls_layout.addWidget(self.maximize_button)
         controls_layout.addWidget(self.close_button)
         layout.addWidget(controls)
+
+    def enable_main_menu(self, language: str) -> None:
+        """Show the compact application menu; actions can be added later."""
+        from src.ui.i18n import t
+
+        if self._menu_bar is None:
+            self._menu_bar = QMenuBar(self)
+            self._menu_bar.setObjectName("MainMenuBar")
+            self._menu_bar.setNativeMenuBar(False)
+            self._menu_bar.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Fixed,
+            )
+            for key in self.MAIN_MENU_KEYS:
+                self._menu_bar.addMenu(t(key, language))
+            self.layout().insertWidget(1, self._menu_bar, 1)
+            self.title_label.hide()
+        self.set_menu_language(language)
+
+    def set_menu_language(self, language: str) -> None:
+        if self._menu_bar is None:
+            return
+        from src.ui.i18n import t
+
+        for action, key in zip(self._menu_bar.actions(), self.MAIN_MENU_KEYS):
+            action.setText(t(key, language))
 
     def _control_button(self, kind: str) -> WindowControlButton:
         return WindowControlButton(kind, self._theme, self)

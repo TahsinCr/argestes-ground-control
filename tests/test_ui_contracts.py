@@ -47,7 +47,7 @@ from src.ui.widgets.connection_popup import ConnectionPopup
 from src.ui.widgets.logs import EventLogPanel
 from src.ui.widgets.parameters import ParametersPanel
 from src.ui.widgets.map_panel import MapPanel, MapWebBridge
-from src.ui.widgets.title_bar import FramelessResizeController
+from src.ui.widgets.title_bar import AppTitleBar, FramelessResizeController
 from src.ui.widgets.video import VideoPanel
 
 
@@ -55,6 +55,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class UiContractTests(unittest.TestCase):
+    def test_main_title_bar_has_localized_empty_application_menus(self) -> None:
+        window = QWidget()
+        title_bar = AppTitleBar(window, DARK)
+        title_bar.enable_main_menu("en")
+
+        self.assertEqual(
+            [action.text() for action in title_bar._menu_bar.actions()],
+            ["File", "Edit", "Selection", "View", "Go", "Run", "Terminal", "Help"],
+        )
+        self.assertTrue(all(not action.menu().actions() for action in title_bar._menu_bar.actions()))
+
+        title_bar.set_menu_language("tr")
+        self.assertEqual(
+            [action.text() for action in title_bar._menu_bar.actions()],
+            ["Dosya", "Düzen", "Seçim", "Görünüm", "Git", "Çalıştır", "Terminal", "Yardım"],
+        )
+        title_bar.close()
+        window.close()
+        title_bar.deleteLater()
+        window.deleteLater()
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication(["yki-ui-tests"])

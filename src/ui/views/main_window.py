@@ -150,6 +150,7 @@ class MainWindow(QMainWindow):
         root.setSpacing(0)
         self.setCentralWidget(central)
         self.title_bar = AppTitleBar(self, self.theme, central)
+        self.title_bar.enable_main_menu(self.language)
         root.addWidget(self.title_bar)
         root.addWidget(self._build_main_splitter(), 1)
         root.addWidget(self._build_bottom_status_bar())
@@ -839,6 +840,7 @@ class MainWindow(QMainWindow):
             app.setApplicationName(t("app.title", self.language))
         self.setWindowTitle(t("app.title", self.language))
         self.title_bar.set_title(t("app.title", self.language))
+        self.title_bar.set_menu_language(self.language)
         self.settings_button.setToolTip(t("status.settings", self.language))
         self.joystick_button.setToolTip(t("joystick.open", self.language))
 

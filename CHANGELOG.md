@@ -1,6 +1,15 @@
 # **Change Log**
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Changed
+
+* Added a compact, Visual Studio-style menu row to the main title bar. File,
+  Edit, Selection, View, Go, Run, Terminal, and Help menus have localized
+  labels; their actions remain intentionally empty for now.
+
+
 ## **[1.7-beta] - 10.09.2026**
 
 ### Added
