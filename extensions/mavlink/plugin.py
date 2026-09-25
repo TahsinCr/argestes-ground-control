@@ -10,7 +10,6 @@ from src.services.abstracts.vehicle import VehicleService
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
 from .connection_control import VehicleConnectionControlService
-from src.services.vehicle.telemetry import MockTelemetryService, TelemetryDecoder, VehicleTelemetryService
 
 from .wiring import VehicleStack, _create_vehicle_stack, _mavlink_client, _parameters, _vehicle
 
@@ -26,6 +25,9 @@ class MavlinkTelemetrySource:
         self.vehicle = vehicle
 
     def create_telemetry(self, settings: SettingsService, logging: LoggingService) -> TelemetryService:
+        from src.services.vehicle.telemetry_base import MockTelemetryService
+        from .telemetry import TelemetryDecoder, VehicleTelemetryService
+
         if settings.current.backend.mock_mode:
             return MockTelemetryService(logging.child("TELEMETRY"))
         return VehicleTelemetryService(

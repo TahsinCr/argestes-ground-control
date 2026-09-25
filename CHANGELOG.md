@@ -20,6 +20,9 @@ All notable changes to this project will be documented in this file.
   panels in the existing left rail without coupling the API to Qt or Core.
 * Invalid saved extension switches or settings now fail explicitly instead of
   silently restoring defaults that could re-enable a connection.
+* Moved MAVLink telemetry decoding into the protocol extension while leaving
+  protocol-neutral telemetry state and simulation in the common services.
+  Legacy imports remain available without eagerly loading the adapter.
 * Added a compact, Visual Studio-style menu row to the main title bar. File,
   Edit, Selection, View, Go, Run, Terminal, and Help menus have localized
   labels; their actions remain intentionally empty for now.

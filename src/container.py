@@ -24,7 +24,7 @@ from src.services.planner import PlannerService
 from src.services.runtime import RuntimeServices
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
-from src.services.vehicle.telemetry import MutableTelemetryService
+from src.services.vehicle.telemetry_base import MutableTelemetryService
 from extensions.mavlink.wiring import VehicleStack  # Backward-compatible import only.
 
 
