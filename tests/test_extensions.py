@@ -50,6 +50,10 @@ class ExtensionTests(unittest.TestCase):
         registrar.singleton(str, str)
         with self.assertRaises(ValueError):
             registrar.singleton(str, str)
+        registrar.sidebar_view("dashboard", "Dashboard", lambda parent: parent)
+        self.assertEqual(registrar.sidebar_views[0].identifier, "dashboard")
+        with self.assertRaises(ValueError):
+            registrar.sidebar_view("dashboard", "Duplicate", lambda parent: parent)
 
     def test_extension_settings_are_scoped_and_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

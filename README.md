@@ -77,7 +77,11 @@ and `provides`/`requires` list capability identifiers. Its factory returns an
 object with `configure(registrar, context)` and optional `start(context)` and
 `stop()` hooks. `registrar.singleton(token, factory, dependencies=...)` supplies
 services to the application; duplicate service ownership is rejected. See the
-built-in extensions for working examples.
+built-in extensions for working examples. An extension can also call
+`registrar.sidebar_view(identifier, title, factory)` during configuration;
+the factory receives the Qt parent and creates a left-sidebar widget on the UI
+thread. This keeps presentation contributions out of Core and avoids importing
+disabled extension UI modules.
 
 ## Settings, logs and tests
 

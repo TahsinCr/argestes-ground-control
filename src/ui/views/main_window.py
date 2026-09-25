@@ -137,6 +137,14 @@ class MainWindow(QMainWindow):
         self.extension_panel = ExtensionPanel(self.extension_host, self.language, self.sidebar,
                                               open_application_settings=self.open_settings)
         self.sidebar.addWidget(self.extension_panel)
+        self._extension_sidebar_widgets: dict[str, QWidget] = {}
+        for contribution in self.extension_host.sidebar_views():
+            widget = contribution.factory(self.sidebar)
+            if not isinstance(widget, QWidget):
+                raise TypeError(f"Extension sidebar {contribution.identifier} must return QWidget")
+            self.sidebar.addWidget(widget)
+            self._extension_sidebar_widgets[contribution.identifier] = widget
+            self.activity_bar.add_extension_view(contribution.identifier, contribution.title)
         self.sidebar.setMinimumWidth(320)
         self.sidebar.setMaximumWidth(370)
         self.workspace = self._build_workspace()
@@ -232,7 +240,10 @@ class MainWindow(QMainWindow):
     def _show_sidebar_view(self, view: str) -> None:
         self.sidebar.setVisible(bool(view))
         if view:
-            self.sidebar.setCurrentWidget(self.extension_panel if view == "extensions" else self.flight_sidebar)
+            self.sidebar.setCurrentWidget(
+                self.extension_panel if view == "extensions" else
+                self._extension_sidebar_widgets.get(view, self.flight_sidebar)
+            )
 
     def _build_workspace(self) -> QWidget:
         workspace = self._make_splitter(Qt.Orientation.Vertical)

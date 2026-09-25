@@ -120,6 +120,11 @@ class UiContractTests(unittest.TestCase):
         bar.sidebar_button.click()
         self.assertEqual(views[-1], "flight")
         self.assertFalse(bar.extensions_button.isChecked())
+        bar.add_extension_view("example.dashboard", "Dashboard")
+        bar.extension_view_buttons["example.dashboard"].click()
+        self.assertEqual(views[-1], "example.dashboard")
+        self.assertFalse(bar.sidebar_button.isChecked())
+        bar.sidebar_button.click()
         sidebar_visibility.clear()
 
         self.assertEqual(bar.width(), 48)

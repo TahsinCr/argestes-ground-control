@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 from typing import Any, Callable
 from typing import Protocol
 
@@ -39,11 +40,19 @@ class ServiceBinding:
     dependencies: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class SidebarContribution:
+    identifier: str
+    title: str
+    factory: Callable[[Any], Any]
+
+
 class ExtensionRegistrar:
     """Collect registrations before applying them; reject duplicate ownership."""
 
     def __init__(self) -> None:
         self.bindings: list[ServiceBinding] = []
+        self.sidebar_views: list[SidebarContribution] = []
 
     def singleton(
         self,
@@ -55,6 +64,15 @@ class ExtensionRegistrar:
         if any(binding.token == token for binding in self.bindings):
             raise ValueError(f"Duplicate extension service: {token}")
         self.bindings.append(ServiceBinding(token, factory, dict(dependencies or {})))
+
+    def sidebar_view(self, identifier: str, title: str,
+                     factory: Callable[[Any], Any]) -> None:
+        """Contribute a lazily created left-sidebar QWidget without importing Qt here."""
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", identifier):
+            raise ValueError(f"Invalid sidebar identifier: {identifier}")
+        if any(view.identifier == identifier for view in self.sidebar_views):
+            raise ValueError(f"Duplicate sidebar view: {identifier}")
+        self.sidebar_views.append(SidebarContribution(identifier, title, factory))
 
 
 class TelemetrySource(Protocol):

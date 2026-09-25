@@ -16,6 +16,8 @@ All notable changes to this project will be documented in this file.
 * Added an extension browser to the existing left activity bar with search,
   status/category filters, enable/disable controls and settings access. Changes
   to enabled extensions take effect on restart without interrupting a live link.
+* Added a lazy sidebar-view contribution hook so extensions can place their own
+  panels in the existing left rail without coupling the API to Qt or Core.
 * Added a compact, Visual Studio-style menu row to the main title bar. File,
   Edit, Selection, View, Go, Run, Terminal, and Help menus have localized
   labels; their actions remain intentionally empty for now.

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from src.core.dependency import BaseDependencyContainer
-from src.extension.api import API_MAJOR, ExtensionContext, ExtensionManifest, ExtensionRegistrar
+from src.extension.api import API_MAJOR, ExtensionContext, ExtensionManifest, ExtensionRegistrar, SidebarContribution
 from src.services.storage import load_json_file, save_json_file
 
 
@@ -42,6 +42,7 @@ class ExtensionHost:
         self._started_plugins: list[Any] = []
         self._active_ids: set[str] = set()
         self._dirty_settings: set[str] = set()
+        self._sidebar_views: list[SidebarContribution] = []
         self._validate(self._enabled_ids())
 
     @staticmethod
@@ -116,6 +117,9 @@ class ExtensionHost:
                                (key in enabled) != (key in self._active_ids) or key in self._dirty_settings)
                 for key, manifest in sorted(self._manifests.items())]
 
+    def sidebar_views(self) -> tuple[SidebarContribution, ...]:
+        return tuple(self._sidebar_views)
+
     def set_enabled(self, identifier: str, enabled: bool) -> None:
         if identifier not in self._manifests:
             raise KeyError(identifier)
@@ -167,6 +171,11 @@ class ExtensionHost:
                 ownership[binding.token] = identifier
                 self.container.singleton(binding.token, factory=binding.factory,
                                          dependencies=binding.dependencies, priority=10)
+            for view in registrar.sidebar_views:
+                full_identifier = f"{identifier}.{view.identifier}"
+                if any(existing.identifier == full_identifier for existing in self._sidebar_views):
+                    raise ExtensionError(f"Duplicate sidebar view: {full_identifier}")
+                self._sidebar_views.append(SidebarContribution(full_identifier, view.title, view.factory))
             self._running.append((plugin, context))
             self._active_ids.add(identifier)
 

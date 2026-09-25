@@ -74,7 +74,10 @@ tanımlanır. Fabrika `configure(registrar, context)` ve isteğe bağlı
 `start(context)`/`stop()` metotlarına sahip nesne döndürür.
 `registrar.singleton(token, factory, dependencies=...)` ile servis sağlanır;
 aynı servisin birden fazla eklenti tarafından kaydedilmesi reddedilir. Dahili
-eklentiler çalışan örnek olarak kullanılabilir.
+eklentiler çalışan örnek olarak kullanılabilir. Eklenti ayrıca
+`registrar.sidebar_view(kimlik, başlık, factory)` ile sol yan panel katkısı
+ekleyebilir. `factory`, Qt üst widget'ını alır ve paneli UI iş parçacığında
+oluşturur; devre dışı eklentinin arayüz kodu içe aktarılmaz.
 
 ## Ayarlar, loglar ve testler
 

@@ -51,6 +51,9 @@ class _ActivityButton(QToolButton):
         elif self.key == "extensions":
             for left, top in ((3, 3), (12, 3), (3, 12), (12, 12)):
                 painter.drawRoundedRect(QRectF(x + left, y + top, 6, 6), 1, 1)
+        elif self.key.startswith("extension:"):
+            painter.drawRoundedRect(QRectF(x + 2, y + 2, 16, 16), 2, 2)
+            painter.drawLine(QPointF(x + 5, y + 7), QPointF(x + 15, y + 7))
         elif self.key == "logs":
             for offset, width in ((4, 13), (9, 16), (14, 11)):
                 painter.drawEllipse(QPointF(x + 3, y + offset), 0.8, 0.8)
@@ -81,6 +84,8 @@ class ActivityBar(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 4)
         layout.setSpacing(2)
+        self._layout = layout
+        self.extension_view_buttons: dict[str, _ActivityButton] = {}
 
         self.sidebar_button = self._make_button("flight_panels")
         self.sidebar_button.setChecked(True)
@@ -122,12 +127,33 @@ class ActivityBar(QWidget):
     def _on_extensions_clicked(self, checked: bool) -> None:
         if checked:
             self.sidebar_button.setChecked(False)
+            for button in self.extension_view_buttons.values():
+                button.setChecked(False)
         self.sidebar_view_requested.emit("extensions" if checked else "")
 
     def _on_flight_clicked(self, checked: bool) -> None:
         if checked:
             self.extensions_button.setChecked(False)
+            for button in self.extension_view_buttons.values():
+                button.setChecked(False)
         self.sidebar_view_requested.emit("flight" if checked else "")
+
+    def add_extension_view(self, identifier: str, title: str) -> None:
+        button = _ActivityButton(f"extension:{identifier}", self, language=self.language)
+        button.setAccessibleName(title)
+        button.setToolTip(title)
+        self.extension_view_buttons[identifier] = button
+        self._layout.insertWidget(2 + len(self.extension_view_buttons) - 1, button)
+        button.clicked.connect(lambda checked, key=identifier: self._on_extension_view_clicked(key, checked))
+
+    def _on_extension_view_clicked(self, identifier: str, checked: bool) -> None:
+        if checked:
+            self.sidebar_button.setChecked(False)
+            self.extensions_button.setChecked(False)
+            for key, button in self.extension_view_buttons.items():
+                if key != identifier:
+                    button.setChecked(False)
+        self.sidebar_view_requested.emit(identifier if checked else "")
 
     def set_bottom_panel_checked(self, key: str, checked: bool) -> None:
         if key in self.buttons:
