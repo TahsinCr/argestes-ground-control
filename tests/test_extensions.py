@@ -74,6 +74,15 @@ class ExtensionTests(unittest.TestCase):
             finally:
                 container.shutdown()
 
+    def test_corrupt_extension_state_does_not_restore_automatic_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "data/extensions/state.json"
+            path.parent.mkdir(parents=True)
+            path.write_text('{"mavlink": "false"}', encoding="utf-8")
+            with self.assertRaises(ExtensionError):
+                create_container(root)
+
 
 if __name__ == "__main__":
     unittest.main()

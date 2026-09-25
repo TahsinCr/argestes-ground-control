@@ -136,7 +136,7 @@ class ExtensionHost:
         manifest = self._manifests[identifier]
         defaults = {key: spec.get("default") for key, spec in manifest.settings.items()}
         path = self.base_dir / "data" / "extensions" / identifier / "settings.json"
-        return {**defaults, **load_json_file(path, {})}
+        return {**defaults, **load_json_file(path)}
 
     def save_settings(self, identifier: str, values: dict[str, Any]) -> None:
         manifest = self._manifests[identifier]
