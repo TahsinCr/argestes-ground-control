@@ -5,10 +5,10 @@
 
 # Kırlangıç Ground Control Station
 
-A desktop ground-control application for MAVLink-compatible vehicles. The
-current common application provides telemetry and GPS, ArduPilot/MAVLink
-connection management, mission planning, parameter management, maps, logs,
-battery status and device/connection health.
+A desktop ground-control application with an extension host. The built-in
+MAVLink protocol extension and optional telemetry extension provide the current
+vehicle connection, telemetry/GPS, autopilot and parameter behavior. The common
+application retains mission planning, maps, logs and battery/device status.
 
 The application is maintained as a vehicle-neutral ground-control foundation.
 
@@ -53,16 +53,31 @@ its events; UI code does not create a second reader or encode raw packets.
 ## Architecture
 
 ```text
-Qt UI → UI adapters → application services → vehicle adapter → Core
-                                  ├── MAVLink, telemetry and parameters
-                                  ├── planner and vehicle commands
-                                  └── settings, logs, map cache and battery
+Qt UI → UI adapters → application contracts → extension host → extensions/
+                            │                                  ├── mavlink/
+                            │                                  └── telemetry/
+                            └── settings, logs, planner, map cache and battery
 ```
 
-`src/container.py` is the composition root. Dependencies are passed through
-constructors. `src/core` contains shared event, dependency and MAVLink
-infrastructure; `src/models` contains UI-independent models; `src/services`
-contains application and vehicle behavior; `src/ui` contains Qt presentation.
+`src/container.py` is the composition root. `src/extension/api` defines the
+versioned extension contract; `src/extension/host` discovers static manifests,
+checks capabilities and composes enabled extensions. An extension may use the
+public `src.core` packages directly. Protocol adapters provide the common
+vehicle contracts and a telemetry-source factory; the separate telemetry
+extension consumes that factory, so it can be disabled without removing the
+protocol. One protocol provider must remain enabled. Enabling/disabling an
+extension takes effect after restart. The left activity bar provides search,
+category/status filters and extension controls. Existing MAVLink configuration
+remains in `data/settings.json`; extension state and extension-owned settings
+are stored under `data/extensions/` and are not erased when disabled.
+
+An extension lives at `extensions/<identifier>/` with a `manifest.json` whose
+`api_major` is `1`, `entry_point` is `extensions.<identifier>.plugin:create_extension`,
+and `provides`/`requires` list capability identifiers. Its factory returns an
+object with `configure(registrar, context)` and optional `start(context)` and
+`stop()` hooks. `registrar.singleton(token, factory, dependencies=...)` supplies
+services to the application; duplicate service ownership is rejected. See the
+built-in extensions for working examples.
 
 ## Settings, logs and tests
 

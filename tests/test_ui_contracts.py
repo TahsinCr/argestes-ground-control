@@ -100,6 +100,8 @@ class UiContractTests(unittest.TestCase):
 
     def test_activity_bar_controls_sidebar_and_bottom_panels(self) -> None:
         bar = ActivityBar("tr")
+        views: list[str] = []
+        bar.sidebar_view_requested.connect(views.append)
         sidebar_visibility: list[bool] = []
         panel_visibility: list[tuple[str, bool]] = []
         side_by_side: list[str] = []
@@ -111,6 +113,14 @@ class UiContractTests(unittest.TestCase):
         bar.resize(48, 400)
         bar.show()
         self.app.processEvents()
+
+        bar.extensions_button.click()
+        self.assertEqual(views[-1], "extensions")
+        self.assertFalse(bar.sidebar_button.isChecked())
+        bar.sidebar_button.click()
+        self.assertEqual(views[-1], "flight")
+        self.assertFalse(bar.extensions_button.isChecked())
+        sidebar_visibility.clear()
 
         self.assertEqual(bar.width(), 48)
         self.assertEqual(tuple(bar.buttons), ("logs", "parameters"))

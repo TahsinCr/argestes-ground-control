@@ -5,10 +5,10 @@
 
 # Kırlangıç Yer Kontrol İstasyonu
 
-MAVLink uyumlu araçlar için masaüstü yer kontrol uygulaması. Mevcut ortak
-uygulama; telemetri ve GPS'i, ArduPilot/MAVLink bağlantı yönetimini, görev
-planlamayı, parametreleri, haritayı, logları, batarya durumunu ve bağlantı/cihaz
-sağlığını sağlar.
+Eklenti ana makinesine sahip masaüstü yer kontrol uygulaması. Dahili MAVLink
+protokol eklentisi ve isteğe bağlı telemetri eklentisi mevcut araç bağlantısı,
+telemetri/GPS, otopilot ve parametre işlevlerini sağlar. Ortak uygulamada görev
+planlama, harita, loglar, batarya ve cihaz durumu korunur.
 
 Uygulama araçtan bağımsız ortak bir yer kontrol temeli olarak geliştirilmektedir.
 
@@ -52,16 +52,29 @@ arayüz ikinci bir okuyucu oluşturmaz ve ham paket kodlamaz.
 ## Mimari
 
 ```text
-Qt arayüzü → UI adaptörleri → uygulama servisleri → araç adaptörü → Core
-                                      ├── MAVLink, telemetri ve parametreler
-                                      ├── planlayıcı ve araç komutları
-                                      └── ayarlar, loglar, harita önbelleği, batarya
+Qt arayüzü → UI adaptörleri → uygulama sözleşmeleri → eklenti ana makinesi
+                         │                              └── extensions/
+                         └── ayarlar, loglar, planlayıcı, harita ve batarya
 ```
 
-`src/container.py` composition root'tur. Bağımlılıklar constructor üzerinden
-aktarılır. `src/core` ortak olay, bağımlılık ve MAVLink altyapısını;
-`src/models` arayüzden bağımsız modelleri; `src/services` uygulama ve araç
-davranışlarını; `src/ui` Qt sunum katmanını içerir.
+`src/container.py` composition root'tur. `src/extension/api` sürümlü eklenti
+sözleşmesini, `src/extension/host` statik manifest keşfini, yetenek kontrolünü
+ve etkin eklentilerin kurulumunu sağlar. Eklentiler `src.core` herkese açık
+paketlerini doğrudan kullanabilir. Protokol eklentisi ortak araç sözleşmelerini
+ve telemetri kaynağı fabrikasını sağlar; telemetri eklentisi bunu kullanır ve
+protokolden bağımsız olarak kapatılabilir. En az bir protokol sağlayıcısı etkin
+kalmalıdır. Eklenti açma/kapama yeniden başlatınca uygulanır. Sol etkinlik
+çubuğunda arama, kategori/durum filtresi ve eklenti kontrolleri vardır. Mevcut
+MAVLink ayarları `data/settings.json` içinde korunur; eklenti durumu ve kendi
+ayarları `data/extensions/` altında tutulur, devre dışı bırakılınca silinmez.
+
+Yeni eklenti `extensions/<kimlik>/` altında bulunur. `manifest.json` dosyasında
+`api_major: 1`, `entry_point` ve `provides`/`requires` yetenek listeleri
+tanımlanır. Fabrika `configure(registrar, context)` ve isteğe bağlı
+`start(context)`/`stop()` metotlarına sahip nesne döndürür.
+`registrar.singleton(token, factory, dependencies=...)` ile servis sağlanır;
+aynı servisin birden fazla eklenti tarafından kaydedilmesi reddedilir. Dahili
+eklentiler çalışan örnek olarak kullanılabilir.
 
 ## Ayarlar, loglar ve testler
 

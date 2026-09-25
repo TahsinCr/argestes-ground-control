@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.core.dependency import BaseDependencyContainer
+from src.extension.host import ExtensionHost
 from src.services.abstracts.commands import CommandService
 from src.services.abstracts.connections import ConnectionControlService
 from src.services.abstracts.parameters import ParameterService
@@ -71,6 +72,7 @@ def _main_window(
     parameter_service: QtParameterService,
     connection_service: QtConnectionControlService,
     tile_cache_service: QtTileCacheService,
+    extension_host: ExtensionHost,
 ) -> MainWindow:
     if context.theme is None:
         raise RuntimeError("A UI theme is required to construct MainWindow")
@@ -85,6 +87,7 @@ def _main_window(
         tile_cache_service=tile_cache_service,
         base_dir=context.base_dir,
         theme=context.theme,
+        extension_host=extension_host,
     )
 
 
@@ -142,6 +145,7 @@ def register_ui_dependencies(
                 "parameter_service": QtParameterService,
                 "connection_service": QtConnectionControlService,
                 "tile_cache_service": QtTileCacheService,
+                "extension_host": ExtensionHost,
             },
             priority=priority,
         )

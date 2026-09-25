@@ -15,12 +15,14 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QStackedWidget,
     QSplitter,
     QVBoxLayout,
     QWidget,
 )
 
 from src.models.connections import ConnectionStatus
+from src.extension.host import ExtensionHost
 from src.models.settings import MavlinkConnectionConfig, SettingsModel
 from src.services.abstracts.commands import CommandService
 from src.services.abstracts.connections import ConnectionControlService
@@ -53,6 +55,7 @@ from src.ui.widgets.map_panel import MapPanel
 from src.ui.widgets.mavlink_connections_popup import MavlinkConnectionsPopup
 from src.ui.widgets.parameters import ParametersPanel
 from src.ui.widgets.activity_bar import ActivityBar
+from src.ui.widgets.extension_panel import ExtensionPanel
 from src.ui.widgets.title_bar import AppTitleBar
 
 
@@ -72,6 +75,7 @@ class MainWindow(QMainWindow):
         tile_cache_service: QtTileCacheService,
         base_dir: Path,
         theme: ThemePalette,
+        extension_host: ExtensionHost,
     ) -> None:
         super().__init__()
         self.log_service = log_service
@@ -83,6 +87,7 @@ class MainWindow(QMainWindow):
         self.connection_service = connection_service
         self.tile_cache_service = tile_cache_service
         self.base_dir = base_dir
+        self.extension_host = extension_host
         self.theme = theme
         self._settings = settings_service.current
         self.language = self._settings.language
@@ -126,9 +131,16 @@ class MainWindow(QMainWindow):
         self.activity_bar = ActivityBar(self.language, content)
         content_layout.addWidget(self.activity_bar)
         self.main_splitter = self._make_splitter(Qt.Orientation.Horizontal)
-        self.sidebar = self._build_sidebar()
+        self.sidebar = QStackedWidget(self.main_splitter)
+        self.flight_sidebar = self._build_sidebar()
+        self.sidebar.addWidget(self.flight_sidebar)
+        self.extension_panel = ExtensionPanel(self.extension_host, self.language, self.sidebar,
+                                              open_application_settings=self.open_settings)
+        self.sidebar.addWidget(self.extension_panel)
+        self.sidebar.setMinimumWidth(320)
+        self.sidebar.setMaximumWidth(370)
         self.workspace = self._build_workspace()
-        self.activity_bar.flight_sidebar_toggled.connect(self.sidebar.setVisible)
+        self.activity_bar.sidebar_view_requested.connect(self._show_sidebar_view)
         self.activity_bar.bottom_panel_toggled.connect(self._on_bottom_panel_toggled)
         self.activity_bar.bottom_panel_side_by_side_requested.connect(
             self._open_bottom_panel_beside
@@ -216,6 +228,11 @@ class MainWindow(QMainWindow):
         self.vehicle_controls.command_requested.connect(self.command_service.issue_command)
         layout.addWidget(self.vehicle_controls, 1)
         return sidebar
+
+    def _show_sidebar_view(self, view: str) -> None:
+        self.sidebar.setVisible(bool(view))
+        if view:
+            self.sidebar.setCurrentWidget(self.extension_panel if view == "extensions" else self.flight_sidebar)
 
     def _build_workspace(self) -> QWidget:
         workspace = self._make_splitter(Qt.Orientation.Vertical)
@@ -497,6 +514,7 @@ class MainWindow(QMainWindow):
         self.title_bar.set_title(self.windowTitle())
         self.title_bar.set_menu_language(self.language)
         self.activity_bar.set_language(self.language)
+        self.extension_panel.set_language(self.language)
         self.attitude_indicator.set_theme(self.theme)
         self.battery_meter.set_theme(self.theme)
         self.battery_meter.set_label(t("status.battery", self.language))

@@ -48,6 +48,9 @@ class _ActivityButton(QToolButton):
         if self.key == "flight_panels":
             painter.drawRoundedRect(QRectF(x + 2, y + 2, 16, 16), 1.5, 1.5)
             painter.drawLine(QPointF(x + 8, y + 2), QPointF(x + 8, y + 18))
+        elif self.key == "extensions":
+            for left, top in ((3, 3), (12, 3), (3, 12), (12, 12)):
+                painter.drawRoundedRect(QRectF(x + left, y + top, 6, 6), 1, 1)
         elif self.key == "logs":
             for offset, width in ((4, 13), (9, 16), (14, 11)):
                 painter.drawEllipse(QPointF(x + 3, y + offset), 0.8, 0.8)
@@ -65,6 +68,7 @@ class ActivityBar(QWidget):
     flight_sidebar_toggled = pyqtSignal(bool)
     bottom_panel_toggled = pyqtSignal(str, bool)
     bottom_panel_side_by_side_requested = pyqtSignal(str)
+    sidebar_view_requested = pyqtSignal(str)
 
     _BOTTOM_PANELS = ("logs", "parameters")
 
@@ -82,6 +86,10 @@ class ActivityBar(QWidget):
         self.sidebar_button.setChecked(True)
         layout.addWidget(self.sidebar_button)
         self.sidebar_button.clicked.connect(self.flight_sidebar_toggled.emit)
+        self.sidebar_button.clicked.connect(self._on_flight_clicked)
+        self.extensions_button = self._make_button("extensions")
+        layout.addWidget(self.extensions_button)
+        self.extensions_button.clicked.connect(self._on_extensions_clicked)
 
         layout.addStretch(1)
         self.buttons: dict[str, _ActivityButton] = {}
@@ -111,13 +119,23 @@ class ActivityBar(QWidget):
             self.buttons[other_key].setChecked(False)
         self.bottom_panel_toggled.emit(key, checked)
 
+    def _on_extensions_clicked(self, checked: bool) -> None:
+        if checked:
+            self.sidebar_button.setChecked(False)
+        self.sidebar_view_requested.emit("extensions" if checked else "")
+
+    def _on_flight_clicked(self, checked: bool) -> None:
+        if checked:
+            self.extensions_button.setChecked(False)
+        self.sidebar_view_requested.emit("flight" if checked else "")
+
     def set_bottom_panel_checked(self, key: str, checked: bool) -> None:
         if key in self.buttons:
             self.buttons[key].setChecked(checked)
 
     def set_language(self, language: str) -> None:
         self.language = language
-        for key, button in (("flight_panels", self.sidebar_button), *self.buttons.items()):
+        for key, button in (("flight_panels", self.sidebar_button), ("extensions", self.extensions_button), *self.buttons.items()):
             label = t(f"activity.{key}", language)
             button.language = language
             button.setAccessibleName(label)
