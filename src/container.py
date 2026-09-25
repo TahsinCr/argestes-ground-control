@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.core.dependency import BaseDependencyContainer, DependencyContainer
+from src.extension.host import ExtensionHost
 from src.models.mission import MissionState
 from src.services.abstracts.commands import CommandService
 from src.services.abstracts.connections import ConnectionControlService
@@ -23,11 +24,8 @@ from src.services.planner import PlannerService
 from src.services.runtime import RuntimeServices
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
-from src.services.vehicle.connection_control import VehicleConnectionControlService
-from src.services.vehicle.dependencies import (
-    VehicleStack,
-    register_vehicle_dependencies,
-)
+from src.services.vehicle.telemetry import MutableTelemetryService
+from extensions.mavlink.wiring import VehicleStack  # Backward-compatible import only.
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +62,7 @@ def _settings_contract(service: SettingsService) -> SettingsRepository:
 
 
 def _planner(
-    stack: VehicleStack,
+    vehicle: VehicleService,
     settings_service: SettingsService,
     logging: LoggingService,
 ) -> PlannerService:
@@ -73,13 +71,14 @@ def _planner(
         logging.child("PLANNER"),
         initial_state=None if settings.backend.mock_mode else MissionState(),
         default_radii=settings.backend.mission.radii,
-        vehicle=stack.vehicle if stack.client is not None else None,
+        vehicle=None if settings.backend.mock_mode else vehicle,
         sync_from_vehicle_on_connect=settings.backend.mavlink.sync_mission_on_connect,
     )
 
 
-def _commands(stack: VehicleStack, logging: LoggingService) -> CommandService:
-    return DispatchCommandService(stack.vehicle, stack.parameters, logging.child("COMMAND"))
+def _commands(vehicle: VehicleService, parameters: ParameterService,
+              logging: LoggingService) -> CommandService:
+    return DispatchCommandService(vehicle, parameters, logging.child("COMMAND"))
 
 
 def _tile_cache(
@@ -107,20 +106,6 @@ def _battery_alarm(commands: CommandService, logging: LoggingService) -> Battery
             {"mode": mode, "battery_failsafe": True},
             source="battery-failsafe",
         ),
-    )
-
-
-def _connection_control(
-    settings: SettingsRepository,
-    vehicle: VehicleService,
-    telemetry: TelemetryService,
-    logging: LoggingService,
-) -> ConnectionControlService:
-    return VehicleConnectionControlService(
-        settings=settings,
-        vehicle=vehicle,
-        telemetry=telemetry,
-        logger=logging.child("CONNECTION"),
     )
 
 
@@ -180,13 +165,13 @@ def _register_application(container: BaseDependencyContainer) -> None:
     container.singleton(
         PlannerService,
         factory=_planner,
-        dependencies={"stack": VehicleStack, "settings_service": SettingsService, "logging": LoggingService},
+        dependencies={"vehicle": VehicleService, "settings_service": SettingsService, "logging": LoggingService},
         priority=priority,
     )
     container.singleton(
         CommandService,
         factory=_commands,
-        dependencies={"stack": VehicleStack, "logging": LoggingService},
+        dependencies={"vehicle": VehicleService, "parameters": ParameterService, "logging": LoggingService},
         priority=priority,
     )
     container.singleton(
@@ -199,17 +184,6 @@ def _register_application(container: BaseDependencyContainer) -> None:
         TileCacheService,
         factory=_tile_cache_contract,
         dependencies={"service": TileCacheServer},
-        priority=priority,
-    )
-    container.singleton(
-        ConnectionControlService,
-        factory=_connection_control,
-        dependencies={
-            "settings": SettingsRepository,
-            "vehicle": VehicleService,
-            "telemetry": TelemetryService,
-            "logging": LoggingService,
-        },
         priority=priority,
     )
     container.singleton(
@@ -246,6 +220,7 @@ def _register_application(container: BaseDependencyContainer) -> None:
             "tile_cache_service": TileCacheServer,
             "connection_service": ConnectionControlService,
             "facade": BackendFacade,
+            "extension_host": ExtensionHost,
         },
         priority=runtime_priority,
     )
@@ -260,10 +235,12 @@ class ApplicationContainer(BaseDependencyContainer):
 
     def configure(self) -> None:
         _register_infrastructure(self, self.context)
-        register_vehicle_dependencies(
-            self,
-            priority=int(DependencyPriority.VEHICLE),
-        )
+        host = ExtensionHost(self.context.base_dir, self)
+        self.instance(ExtensionHost, host, priority=int(DependencyPriority.VEHICLE))
+        host.configure()
+        if not self.container.has(TelemetryService):
+            self.singleton(TelemetryService, concrete=MutableTelemetryService,
+                           priority=int(DependencyPriority.VEHICLE))
         _register_application(self)
 
 

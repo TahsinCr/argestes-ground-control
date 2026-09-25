@@ -1,0 +1,1 @@
+"""MAVLink vehicle protocol extension."""

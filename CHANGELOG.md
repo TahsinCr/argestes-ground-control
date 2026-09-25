@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+* Added a versioned extension API and manifest-first host with capability and
+  dependency checks, lifecycle hooks, service ownership validation and
+  persistent enablement/settings. At least one vehicle protocol is required.
+* Moved MAVLink transport, connection recovery, parameter-default loading and
+  dependency wiring into the built-in MAVLink extension, retaining compatibility
+  imports for existing integrations. Telemetry is a separate optional extension
+  consuming a protocol-provided telemetry source; disabling it preserves its
+  configuration and leaves the common UI available.
 * Added a compact, Visual Studio-style menu row to the main title bar. File,
   Edit, Selection, View, Go, Run, Terminal, and Help menus have localized
   labels; their actions remain intentionally empty for now.

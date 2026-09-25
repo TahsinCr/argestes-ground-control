@@ -7,6 +7,7 @@ from pathlib import Path
 
 from src.core.dependency import DependencyContainer
 from src.core.events import Subscription
+from src.extension.host import ExtensionHost
 from src.services.abstracts.commands import CommandService
 from src.services.abstracts.connections import ConnectionControlService
 from src.services.abstracts.parameters import ParameterService
@@ -36,6 +37,7 @@ class RuntimeServices:
     tile_cache_service: TileCacheServer
     connection_service: ConnectionControlService
     facade: BackendFacade
+    extension_host: ExtensionHost
     _subscriptions: list[Subscription] = field(default_factory=list, repr=False)
     _python_handler: ServiceLogHandler | None = field(default=None, repr=False)
     _started: bool = field(default=False, repr=False)
@@ -113,6 +115,9 @@ class RuntimeServices:
                     f"{name} servisi başlatılamadı: {exc}",
                     severity="danger",
                 )
+                if name == "extensions":
+                    self._stop_requested.set()
+                    return
 
     def stop(self) -> None:
         with self._lifecycle_lock:
@@ -139,6 +144,7 @@ class RuntimeServices:
 
     def _service_start_order(self):
         return (
+            ("extensions", self.extension_host),
             ("async_runtime", self.async_runtime),
             ("tile_cache", self.tile_cache_service),
             ("connections", self.connection_service),
@@ -156,6 +162,7 @@ class RuntimeServices:
             ("planner", self.planner_service),
             ("tile_cache", self.tile_cache_service),
             ("async_runtime", self.async_runtime),
+            ("extensions", self.extension_host),
         )
 
     close = stop

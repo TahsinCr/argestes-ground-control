@@ -5,24 +5,15 @@ from dataclasses import dataclass
 from src.core.dependency import BaseDependencyContainer
 from src.core.mavlink import MavlinkClient, MavlinkEndpoint
 from src.services.abstracts.parameters import ParameterService
-from src.services.abstracts.telemetry import TelemetryService
 from src.services.abstracts.vehicle import VehicleService
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
-from src.services.vehicle import (
-    MavlinkVehicleService,
-    NullVehicleService,
-)
+from .vehicle import MavlinkVehicleService, NullVehicleService
 from src.services.vehicle.parameters import (
     MutableParameterService,
     VehicleParameterService,
 )
-from src.services.vehicle.parameter_defaults import MavlinkParameterDefaultSource
-from src.services.vehicle.telemetry import (
-    MockTelemetryService,
-    TelemetryDecoder,
-    VehicleTelemetryService,
-)
+from .parameter_defaults import MavlinkParameterDefaultSource
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +22,6 @@ class VehicleStack:
 
     client: MavlinkClient | None
     vehicle: VehicleService
-    telemetry: TelemetryService
     parameters: ParameterService
 
 
@@ -44,7 +34,6 @@ def _create_vehicle_stack(
         return VehicleStack(
             client=None,
             vehicle=NullVehicleService(),
-            telemetry=MockTelemetryService(logging.child("TELEMETRY")),
             parameters=MutableParameterService(),
         )
 
@@ -72,12 +61,6 @@ def _create_vehicle_stack(
     return VehicleStack(
         client=client,
         vehicle=vehicle,
-        telemetry=VehicleTelemetryService(
-            vehicle,
-            logging.child("TELEMETRY"),
-            decoder=TelemetryDecoder(settings.backend.battery_telemetry),
-            settings_service=settings_service,
-        ),
         parameters=VehicleParameterService(
             vehicle,
             logging.child("PARAMETER"),
@@ -96,10 +79,6 @@ def _mavlink_client(stack: VehicleStack) -> MavlinkClient:
 
 def _vehicle(stack: VehicleStack) -> VehicleService:
     return stack.vehicle
-
-
-def _telemetry(stack: VehicleStack) -> TelemetryService:
-    return stack.telemetry
 
 
 def _parameters(stack: VehicleStack) -> ParameterService:
@@ -129,7 +108,6 @@ def register_vehicle_dependencies(
         )
     for token, factory in (
         (VehicleService, _vehicle),
-        (TelemetryService, _telemetry),
         (ParameterService, _parameters),
     ):
         container.singleton(
