@@ -120,6 +120,10 @@ class ExtensionHost:
     def sidebar_views(self) -> tuple[SidebarContribution, ...]:
         return tuple(self._sidebar_views)
 
+    def is_active(self, identifier: str) -> bool:
+        """Report what was actually loaded at startup, not a pending toggle."""
+        return identifier in self._active_ids
+
     def set_enabled(self, identifier: str, enabled: bool) -> None:
         if identifier not in self._manifests:
             raise KeyError(identifier)

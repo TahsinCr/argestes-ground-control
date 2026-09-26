@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
 from unittest.mock import patch
 from datetime import UTC, datetime, timedelta
@@ -46,6 +47,10 @@ from src.ui.widgets.parameters import ParametersPanel
 from src.ui.widgets.map_panel import MapPanel, MapWebBridge
 from src.ui.widgets.activity_bar import ActivityBar
 from src.ui.widgets.title_bar import AppTitleBar, FramelessResizeController
+from src.container import create_container
+from src.extension.host import ExtensionHost
+from src.ui.container import UiContainer
+from src.ui.views.main_window import MainWindow
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,6 +80,25 @@ class UiContractTests(unittest.TestCase):
         dialog.close()
         dialog.deleteLater()
         self.app.processEvents()
+
+    def test_disabled_telemetry_removes_only_its_connection_chip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            backend = create_container(Path(directory))
+            try:
+                backend.resolve(ExtensionHost).set_enabled("telemetry", False)
+            finally:
+                backend.shutdown()
+            backend = create_container(Path(directory))
+            try:
+                ui = UiContainer(backend.container, base_dir=Path(directory), theme=DARK)
+                window = ui.resolve(MainWindow)
+                footer = window.telemetry_status.parentWidget().layout()
+                self.assertEqual(footer.indexOf(window.telemetry_status), -1)
+                self.assertGreaterEqual(footer.indexOf(window.autopilot_status), 0)
+                self.assertGreaterEqual(footer.indexOf(window.gps_status), 0)
+                window.close()
+            finally:
+                backend.shutdown()
 
     def test_main_title_bar_has_localized_empty_application_menus(self) -> None:
         window = QWidget()

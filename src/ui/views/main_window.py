@@ -169,10 +169,12 @@ class MainWindow(QMainWindow):
         self.telemetry_status = StatusChip(t("status.telemetry", self.language), status_bar)
         self.autopilot_status = StatusChip(t("status.autopilot", self.language), status_bar)
         self.gps_status = StatusChip(t("status.gps", self.language), status_bar)
+        self._telemetry_ui_enabled = self.extension_host.is_active("telemetry")
         for chip in (self.telemetry_status, self.autopilot_status, self.gps_status):
             chip.set_theme(self.theme)
             chip.set_state("danger")
-            footer.addWidget(chip)
+            if chip is not self.telemetry_status or self._telemetry_ui_enabled:
+                footer.addWidget(chip)
         footer.addStretch(1)
         self.command_link_meter = SignalMeter(t("status.command_link", self.language), status_bar)
         self.command_link_meter.set_theme(self.theme)
@@ -331,7 +333,8 @@ class MainWindow(QMainWindow):
         )
         self.log_service.entries_emitted.connect(self.log_panel.add_entries)
         self.connection_service.status_changed.connect(self._on_connection_status)
-        self.telemetry_status.clicked.connect(self._open_mavlink_profiles)
+        if self._telemetry_ui_enabled:
+            self.telemetry_status.clicked.connect(self._open_mavlink_profiles)
         self.autopilot_status.clicked.connect(self._open_mavlink_profiles)
         self.gps_status.clicked.connect(self._open_mavlink_profiles)
         self.mavlink_popup.profiles_saved.connect(self._save_mavlink_profiles)
@@ -419,7 +422,8 @@ class MainWindow(QMainWindow):
     def _open_mavlink_profiles(self) -> None:
         self._show_mavlink_profiles()
         self.mavlink_popup.adjustSize()
-        self.mavlink_popup.move(self.telemetry_status.mapToGlobal(self.telemetry_status.rect().topLeft()))
+        anchor = self.telemetry_status if self._telemetry_ui_enabled else self.autopilot_status
+        self.mavlink_popup.move(anchor.mapToGlobal(anchor.rect().topLeft()))
         self.mavlink_popup.show()
         self.mavlink_popup.raise_()
 

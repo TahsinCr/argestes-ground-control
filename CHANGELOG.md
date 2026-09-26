@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+* Hiding the optional telemetry extension now also removes its bottom-bar
+  connection chip. GPS and autopilot indicators remain visible and continue to
+  provide access to the vehicle connection profiles.
 * Added a versioned extension API and manifest-first host with capability and
   dependency checks, lifecycle hooks, service ownership validation and
   persistent enablement/settings. At least one vehicle protocol is required.
