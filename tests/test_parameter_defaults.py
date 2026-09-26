@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 
 from src.core.events import Subscription
-from src.services.vehicle.parameter_defaults import MavlinkParameterDefaultSource
+from extensions.mavlink.parameter_defaults import MavlinkParameterDefaultSource
 
 
 class _FtpMessage:

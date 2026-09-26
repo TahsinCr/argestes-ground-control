@@ -22,6 +22,16 @@ def imported_modules(path: Path) -> set[str]:
 
 
 class ArchitectureTests(unittest.TestCase):
+    def test_common_application_does_not_import_extension_implementations(self) -> None:
+        violations = [
+            f"{path.relative_to(ROOT)} -> {module}"
+            for path in SRC.rglob("*.py")
+            if "core" not in path.relative_to(SRC).parts
+            for module in imported_modules(path)
+            if module == "extensions" or module.startswith("extensions.")
+        ]
+        self.assertEqual(violations, [])
+
     def test_layer_dependencies_point_inward(self) -> None:
         rules = {
             "models": ("src.services", "src.ui", "PyQt6"),

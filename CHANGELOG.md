@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+* Camera and telemetry extensions now activate and deactivate in the running
+  application. Only their owned services and UI contributions are rebuilt;
+  MAVLink connection, map and shared controls remain in place. Telemetry uses a
+  stable service identity so existing consumers survive source replacement.
+* The extension browser can discover newly installed packages without
+  activating them automatically and can reload an isolated extension after a
+  settings change. A live protocol or a provider with active dependents cannot
+  be reloaded in isolation.
+* Removed obsolete MAVLink compatibility imports from the common application.
+  Protocol tests now import the implementation from its extension package,
+  and an architecture test guards against new `src` → `extensions` imports.
 * Restored the archived multi-camera wall as an optional camera extension.
   Camera profiles, per-camera recording and live video outputs now live in the
   extension package and its own settings file; its connection controls and
@@ -20,20 +31,17 @@ All notable changes to this project will be documented in this file.
   dependency checks, lifecycle hooks, service ownership validation and
   persistent enablement/settings. At least one vehicle protocol is required.
 * Moved MAVLink transport, connection recovery, parameter-default loading and
-  dependency wiring into the built-in MAVLink extension, retaining compatibility
-  imports for existing integrations. Telemetry is a separate optional extension
+  dependency wiring into the built-in MAVLink extension. Telemetry is a separate optional extension
   consuming a protocol-provided telemetry source; disabling it preserves its
   configuration and leaves the common UI available.
 * Added an extension browser to the existing left activity bar with search,
-  status/category filters, enable/disable controls and settings access. Changes
-  to enabled extensions take effect on restart without interrupting a live link.
+  status/category filters, enable/disable controls and settings access.
 * Added a lazy sidebar-view contribution hook so extensions can place their own
   panels in the existing left rail without coupling the API to Qt or Core.
 * Invalid saved extension switches or settings now fail explicitly instead of
   silently restoring defaults that could re-enable a connection.
 * Moved MAVLink telemetry decoding into the protocol extension while leaving
   protocol-neutral telemetry state and simulation in the common services.
-  Legacy imports remain available without eagerly loading the adapter.
 * Added a compact, Visual Studio-style menu row to the main title bar. File,
   Edit, Selection, View, Go, Run, Terminal, and Help menus have localized
   labels; their actions remain intentionally empty for now.

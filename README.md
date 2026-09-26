@@ -67,8 +67,9 @@ checks capabilities and composes enabled extensions. An extension may use the
 public `src.core` packages directly. Protocol adapters provide the common
 vehicle contracts and a telemetry-source factory; the separate telemetry
 extension consumes that factory, so it can be disabled without removing the
-protocol. One protocol provider must remain enabled. Enabling/disabling an
-extension takes effect after restart. The left activity bar provides search,
+protocol. One protocol provider must remain enabled. Camera and telemetry
+switches apply immediately without restarting the application; only their owned
+services and UI are rebuilt. The left activity bar provides search,
 category/status filters and extension controls. Existing MAVLink configuration
 remains in `data/settings.json`; extension state and extension-owned settings
 are stored under `data/extensions/` and are not erased when disabled.
@@ -76,8 +77,11 @@ The camera extension is disabled by default. Its source and output profiles are
 stored in `data/extensions/camera/settings.json`; on first use, legacy camera
 profiles in `data/settings.json` are imported without deleting that file.
 Camera connections, recording and live output controls are contributed by the
-extension and disappear from the common UI when it is disabled. Switching an
-extension on or off requires an application restart.
+extension and disappear from the common UI when it is disabled. Newly installed
+extensions can be discovered with Refresh; they remain off until explicitly
+enabled. Reload restarts only an isolated extension after settings changes.
+The active vehicle protocol cannot be reloaded in isolation while shared
+vehicle services use it.
 
 An extension lives at `extensions/<identifier>/` with a `manifest.json` whose
 `api_major` is `1`, `entry_point` is `extensions.<identifier>.plugin:create_extension`,

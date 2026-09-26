@@ -12,15 +12,22 @@ from src.extension.host import ExtensionError, ExtensionHost
 
 class ExtensionPanel(QWidget):
     def __init__(self, host: ExtensionHost, language: str, parent: QWidget | None = None,
-                 open_application_settings: Callable[[], None] | None = None) -> None:
+                 apply_change: Callable[[str, bool], None] | None = None,
+                 reload_extension: Callable[[str], None] | None = None) -> None:
         super().__init__(parent)
         self.host = host
         self.language = language
-        self.open_application_settings = open_application_settings
+        self.apply_change = apply_change
+        self.reload_extension = reload_extension
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         self.heading = QLabel("EXTENSIONS" if language == "en" else "EKLENTİLER")
-        layout.addWidget(self.heading)
+        heading_row = QHBoxLayout()
+        heading_row.addWidget(self.heading, 1)
+        self.discover_button = QPushButton("Refresh" if language == "en" else "Yenile", self)
+        self.discover_button.clicked.connect(self._refresh_discovery)
+        heading_row.addWidget(self.discover_button)
+        layout.addLayout(heading_row)
         self.search = QLineEdit(self)
         self.search.setPlaceholderText("Search extensions" if language == "en" else "Eklenti ara")
         self.search.textChanged.connect(self.refresh)
@@ -57,8 +64,8 @@ class ExtensionPanel(QWidget):
         query = self.search.text().casefold().strip()
         entries = self.host.list_extensions()
         self.restart_label.setText(
-            ("Restart required to apply changes" if self.language == "en"
-             else "Değişiklikler için yeniden başlatma gerekli")
+            ("Settings need extension reload" if self.language == "en"
+             else "Ayarlar için eklentiyi yeniden yükleyin")
             if any(item.pending_restart for item in entries) else ""
         )
         for item in entries:
@@ -87,9 +94,19 @@ class ExtensionPanel(QWidget):
                                    self._toggle(key, value))
             row.addWidget(toggle)
             settings = QPushButton("Settings" if self.language == "en" else "Ayarlar", card)
+            settings.setEnabled(item.enabled or bool(manifest.settings))
             settings.clicked.connect(lambda _checked=False, key=manifest.identifier, anchor=settings:
                                      self._settings(key, anchor))
             row.addWidget(settings)
+            if item.enabled and self.host.can_reload(manifest.identifier):
+                reload_button = QPushButton("↻", card)
+                reload_button.setFixedWidth(30)
+                reload_button.setToolTip("Reload extension" if self.language == "en"
+                                         else "Eklentiyi yeniden yükle")
+                reload_button.clicked.connect(
+                    lambda _checked=False, key=manifest.identifier: self._reload(key)
+                )
+                row.addWidget(reload_button)
             card_layout.addLayout(row)
             self.cards_layout.addWidget(card)
         self.cards_layout.addStretch(1)
@@ -97,6 +114,7 @@ class ExtensionPanel(QWidget):
     def set_language(self, language: str) -> None:
         self.language = language
         self.heading.setText("EXTENSIONS" if language == "en" else "EKLENTİLER")
+        self.discover_button.setText("Refresh" if language == "en" else "Yenile")
         self.search.setPlaceholderText("Search extensions" if language == "en" else "Eklenti ara")
         labels = ["All", "Enabled", "Disabled"] if language == "en" else ["Tümü", "Etkin", "Devre dışı"]
         for index, label in enumerate(labels):
@@ -106,9 +124,33 @@ class ExtensionPanel(QWidget):
 
     def _toggle(self, identifier: str, enabled: bool) -> None:
         try:
-            self.host.set_enabled(identifier, enabled)
-        except ExtensionError as exc:
+            if self.apply_change is not None:
+                self.apply_change(identifier, enabled)
+            else:
+                self.host.set_enabled(identifier, enabled)
+        except (ExtensionError, OSError, RuntimeError, ValueError) as exc:
             QMessageBox.warning(self, "Extension" if self.language == "en" else "Eklenti", str(exc))
+        self.refresh()
+
+    def _reload(self, identifier: str) -> None:
+        try:
+            if self.reload_extension is not None:
+                self.reload_extension(identifier)
+            else:
+                self.host.reload(identifier)
+        except (ExtensionError, OSError, RuntimeError, ValueError) as exc:
+            QMessageBox.warning(self, "Extension" if self.language == "en" else "Eklenti", str(exc))
+        self.refresh()
+
+    def _refresh_discovery(self) -> None:
+        try:
+            self.host.refresh_extensions()
+        except (ExtensionError, OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Extension" if self.language == "en" else "Eklenti", str(exc))
+            return
+        known = {self.category.itemData(index) for index in range(self.category.count())}
+        for name in sorted({entry.manifest.category for entry in self.host.list_extensions()} - known):
+            self.category.addItem(name, name)
         self.refresh()
 
     def _settings(self, identifier: str, anchor: QWidget | None = None) -> None:
@@ -118,9 +160,6 @@ class ExtensionPanel(QWidget):
             return
         manifest = next(item.manifest for item in self.host.list_extensions()
                         if item.manifest.identifier == identifier)
-        if not manifest.settings and self.open_application_settings is not None:
-            self.open_application_settings()
-            return
         dialog = QDialog(self)
         dialog.setWindowTitle(manifest.name)
         layout = QVBoxLayout(dialog)
@@ -154,6 +193,10 @@ class ExtensionPanel(QWidget):
                 updated[key] = (widget.isChecked() if kind == "boolean" else
                                 int(widget.text()) if kind == "integer" else widget.text())
             self.host.save_settings(identifier, updated)
-        except (ValueError, OSError) as exc:
+            if self.reload_extension is not None and self.host.is_active(identifier):
+                self.reload_extension(identifier)
+            elif self.host.is_active(identifier):
+                self.host.reload(identifier)
+        except (ExtensionError, RuntimeError, ValueError, OSError) as exc:
             QMessageBox.warning(self, manifest.name, str(exc))
         self.refresh()

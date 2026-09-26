@@ -40,6 +40,8 @@ class ExtensionHost:
                 raise ExtensionError(f"Invalid enabled state for {key}")
         self._running: list[Any] = []
         self._started_plugins: list[Any] = []
+        self._owned_tokens: dict[str, tuple[Any, ...]] = {}
+        self._lifecycle_started = False
         self._active_ids: set[str] = set()
         self._dirty_settings: set[str] = set()
         self._sidebar_views: list[SidebarContribution] = []
@@ -120,6 +122,19 @@ class ExtensionHost:
                                (key in enabled) != (key in self._active_ids) or key in self._dirty_settings)
                 for key, manifest in sorted(self._manifests.items())]
 
+    def refresh_extensions(self) -> None:
+        """Discover newly installed packages without activating them implicitly."""
+        found = self._discover(Path(__file__).resolve().parents[3] / "extensions")
+        missing = self._active_ids - set(found)
+        if missing:
+            raise ExtensionError(f"Active extension package missing: {', '.join(sorted(missing))}")
+        added = set(found) - set(self._manifests)
+        if added:
+            updated = {**self._stored, **{key: False for key in added}}
+            save_json_file(self._state_path, updated)
+            self._stored = updated
+        self._manifests = found
+
     def sidebar_views(self) -> tuple[SidebarContribution, ...]:
         return tuple(self._sidebar_views)
 
@@ -136,6 +151,16 @@ class ExtensionHost:
         """Report what was actually loaded at startup, not a pending toggle."""
         return identifier in self._active_ids
 
+    def can_reload(self, identifier: str) -> bool:
+        manifest = self._manifests[identifier]
+        if self.REQUIRED_CAPABILITY in manifest.provides:
+            return False
+        return not any(
+            key != identifier and key in self._active_ids
+            and set(other.requires).intersection(manifest.provides)
+            for key, other in self._manifests.items()
+        )
+
     def set_enabled(self, identifier: str, enabled: bool) -> None:
         if identifier not in self._manifests:
             raise KeyError(identifier)
@@ -145,8 +170,25 @@ class ExtensionHost:
         else:
             candidate.discard(identifier)
         self._validate(candidate)
+        if enabled == (identifier in self._active_ids) and self._stored.get(identifier) == enabled:
+            return
+        was_active = identifier in self._active_ids
+        if enabled and not was_active:
+            self._load_one(identifier)
+        elif not enabled and was_active:
+            self._unload_one(identifier)
+        previous = self._stored.get(identifier, self._manifests[identifier].default_enabled)
         self._stored[identifier] = enabled
-        save_json_file(self._state_path, self._stored)
+        try:
+            save_json_file(self._state_path, self._stored)
+        except Exception:
+            self._stored[identifier] = previous
+            if was_active != enabled:
+                if was_active:
+                    self._load_one(identifier)
+                else:
+                    self._unload_one(identifier)
+            raise
 
     def settings(self, identifier: str) -> dict[str, Any]:
         manifest = self._manifests[identifier]
@@ -171,41 +213,92 @@ class ExtensionHost:
         self._dirty_settings.add(identifier)
 
     def configure(self) -> None:
-        ownership: dict[Any, str] = {}
         for identifier in self._validate(self._enabled_ids()):
-            manifest = self._manifests[identifier]
-            module_name, separator, factory_name = manifest.entry_point.partition(":")
-            if not separator or not module_name.startswith(f"extensions.{identifier}."):
-                raise ExtensionError(f"Invalid entry point: {manifest.entry_point}")
-            plugin = getattr(importlib.import_module(module_name), factory_name)()
-            registrar = ExtensionRegistrar()
-            context = ExtensionContext(self.base_dir, self.settings(identifier), self.container)
-            plugin.configure(registrar, context)
+            self._load_one(identifier)
+
+    def _load_one(self, identifier: str) -> None:
+        manifest = self._manifests[identifier]
+        module_name, separator, factory_name = manifest.entry_point.partition(":")
+        if not separator or not module_name.startswith(f"extensions.{identifier}."):
+            raise ExtensionError(f"Invalid entry point: {manifest.entry_point}")
+        plugin = getattr(importlib.import_module(module_name), factory_name)()
+        registrar = ExtensionRegistrar()
+        context = ExtensionContext(self.base_dir, self.settings(identifier), self.container)
+        plugin.configure(registrar, context)
+        for binding in registrar.bindings:
+            if self.container.container.has(binding.token):
+                raise ExtensionError(f"Service conflict: {binding.token}")
+        registered: list[Any] = []
+        try:
             for binding in registrar.bindings:
-                if binding.token in ownership or self.container.container.has(binding.token):
-                    raise ExtensionError(f"Service conflict: {binding.token}")
-                ownership[binding.token] = identifier
                 self.container.singleton(binding.token, factory=binding.factory,
                                          dependencies=binding.dependencies, priority=10)
-            for view in registrar.sidebar_views:
-                full_identifier = f"{identifier}.{view.identifier}"
-                if any(existing.identifier == full_identifier for existing in self._sidebar_views):
-                    raise ExtensionError(f"Duplicate sidebar view: {full_identifier}")
-                self._sidebar_views.append(SidebarContribution(full_identifier, view.title, view.factory))
-            for view in registrar.visual_views:
-                self._visual_views.append(VisualContribution(f"{identifier}.{view.identifier}", view.factory))
-            for widget in registrar.status_widgets:
-                self._status_widgets.append(StatusContribution(f"{identifier}.{widget.identifier}", widget.factory))
-            if registrar.settings_action is not None:
-                self._settings_actions[identifier] = registrar.settings_action
-            self._running.append((plugin, context))
-            self._active_ids.add(identifier)
+                registered.append(binding.token)
+            if self._lifecycle_started and hasattr(plugin, "start"):
+                try:
+                    plugin.start(context)
+                except Exception:
+                    if hasattr(plugin, "stop"):
+                        plugin.stop()
+                    raise
+        except Exception:
+            for token in reversed(registered):
+                self.container.unregister(token)
+            raise
+        self._owned_tokens[identifier] = tuple(registered)
+        for view in registrar.sidebar_views:
+            key = f"{identifier}.{view.identifier}"
+            self._sidebar_views.append(SidebarContribution(key, view.title, view.factory))
+        for view in registrar.visual_views:
+            self._visual_views.append(VisualContribution(f"{identifier}.{view.identifier}", view.factory))
+        for widget in registrar.status_widgets:
+            self._status_widgets.append(StatusContribution(f"{identifier}.{widget.identifier}", widget.factory))
+        if registrar.settings_action is not None:
+            self._settings_actions[identifier] = registrar.settings_action
+        self._running.append((identifier, plugin, context))
+        self._active_ids.add(identifier)
+        if self._lifecycle_started:
+            self._started_plugins.append(plugin)
+
+    def _unload_one(self, identifier: str) -> None:
+        entry = next(item for item in self._running if item[0] == identifier)
+        _, plugin, _ = entry
+        if plugin in self._started_plugins:
+            if hasattr(plugin, "stop"):
+                plugin.stop()
+            self._started_plugins.remove(plugin)
+        for token in reversed(self._owned_tokens.pop(identifier, ())):
+            self.container.unregister(token)
+        prefix = identifier + "."
+        self._sidebar_views = [view for view in self._sidebar_views if not view.identifier.startswith(prefix)]
+        self._visual_views = [view for view in self._visual_views if not view.identifier.startswith(prefix)]
+        self._status_widgets = [widget for widget in self._status_widgets if not widget.identifier.startswith(prefix)]
+        self._settings_actions.pop(identifier, None)
+        self._running.remove(entry)
+        self._active_ids.remove(identifier)
+
+    def reload(self, identifier: str) -> None:
+        """Restart only this extension after its own settings change."""
+        if identifier not in self._active_ids:
+            return
+        if not self.can_reload(identifier):
+            raise ExtensionError(f"{identifier} has live protocol/dependents; cannot reload it in isolation")
+        self._unload_one(identifier)
+        try:
+            self._load_one(identifier)
+        except Exception:
+            # A rejected replacement must not remain advertised as enabled.
+            self._stored[identifier] = False
+            save_json_file(self._state_path, self._stored)
+            raise
+        self._dirty_settings.discard(identifier)
 
     def start(self) -> None:
-        if self._started_plugins:
+        if self._lifecycle_started:
             return
+        self._lifecycle_started = True
         try:
-            for plugin, context in self._running:
+            for _identifier, plugin, context in self._running:
                 if hasattr(plugin, "start"):
                     plugin.start(context)
                 self._started_plugins.append(plugin)
@@ -218,3 +311,4 @@ class ExtensionHost:
             if hasattr(plugin, "stop"):
                 plugin.stop()
         self._started_plugins.clear()
+        self._lifecycle_started = False

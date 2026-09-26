@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from src.core.events import EventBus
 from src.models.telemetry import TelemetrySnapshot
 from src.models.vehicle import VehicleConnectionState
-from src.services.vehicle.connection_control import VehicleConnectionControlService
+from extensions.mavlink.connection_control import VehicleConnectionControlService
 
 
 class _Settings:

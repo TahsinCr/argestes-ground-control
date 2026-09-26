@@ -64,15 +64,18 @@ ve etkin eklentilerin kurulumunu sağlar. Eklentiler `src.core` herkese açık
 paketlerini doğrudan kullanabilir. Protokol eklentisi ortak araç sözleşmelerini
 ve telemetri kaynağı fabrikasını sağlar; telemetri eklentisi bunu kullanır ve
 protokolden bağımsız olarak kapatılabilir. En az bir protokol sağlayıcısı etkin
-kalmalıdır. Eklenti açma/kapama yeniden başlatınca uygulanır. Sol etkinlik
+kalmalıdır. Kamera ve telemetri eklentileri uygulama kapanmadan açılıp
+kapatılabilir; yalnız kendi servisleri ve arayüz katkıları yeniden kurulur. Sol etkinlik
 çubuğunda arama, kategori/durum filtresi ve eklenti kontrolleri vardır. Mevcut
 MAVLink ayarları `data/settings.json` içinde korunur; eklenti durumu ve kendi
 ayarları `data/extensions/` altında tutulur, devre dışı bırakılınca silinmez.
 Kamera eklentisi varsayılan olarak kapalıdır. Kamera bağlantı ve çıkış profilleri
 `data/extensions/camera/settings.json` dosyasında saklanır; ilk açılışta eski
 `data/settings.json` kamera profilleri silinmeden içe alınır. Kamera paneli,
-bağlantı, kayıt ve yayın kontrolleri yalnız eklenti etkinse görünür. Eklenti
-açma/kapama uygulama yeniden başlatılınca uygulanır.
+bağlantı, kayıt ve yayın kontrolleri yalnız eklenti etkinse görünür. Yeni
+kurulan eklentiler Yenile ile bulunur ve kullanıcı etkinleştirmedikçe kapalı
+kalır. Yeniden yükle yalnız ilgili bağımsız eklentiyi başlatır. Etkin araç
+protokolü, ortak araç servisleri ona bağlıyken tek başına yeniden yüklenemez.
 
 Yeni eklenti `extensions/<kimlik>/` altında bulunur. `manifest.json` dosyasında
 `api_major: 1`, `entry_point` ve `provides`/`requires` yetenek listeleri

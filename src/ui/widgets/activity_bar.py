@@ -146,6 +146,13 @@ class ActivityBar(QWidget):
         self._layout.insertWidget(2 + len(self.extension_view_buttons) - 1, button)
         button.clicked.connect(lambda checked, key=identifier: self._on_extension_view_clicked(key, checked))
 
+    def remove_extension_view(self, identifier: str) -> None:
+        button = self.extension_view_buttons.pop(identifier, None)
+        if button is not None:
+            self._layout.removeWidget(button)
+            button.hide()
+            button.deleteLater()
+
     def _on_extension_view_clicked(self, identifier: str, checked: bool) -> None:
         if checked:
             self.sidebar_button.setChecked(False)

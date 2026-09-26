@@ -21,11 +21,11 @@ from src.services.settings import SettingsService
 from src.services.commands import DispatchCommandService
 from src.services.vehicle.parameters import MutableParameterService
 from src.services.vehicle.parameters import VehicleParameterService
-from src.services.vehicle.parameter_defaults import decode_parameter_defaults
+from extensions.mavlink.parameter_defaults import decode_parameter_defaults
 from src.services.vehicle.battery import VoltageBatteryEstimator
-from src.services.vehicle.telemetry import TelemetryDecoder, VehicleTelemetryService
+from extensions.mavlink.telemetry import TelemetryDecoder, VehicleTelemetryService
 from src.services.abstracts.vehicle import MissionTransferInterrupted
-from src.services.vehicle.mavlink import MavlinkVehicleService
+from extensions.mavlink.vehicle import MavlinkVehicleService
 from src.ui.i18n import localized_log_message
 
 

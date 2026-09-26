@@ -97,6 +97,9 @@ class UiContractTests(unittest.TestCase):
                 self.assertGreaterEqual(footer.indexOf(window.autopilot_status), 0)
                 self.assertGreaterEqual(footer.indexOf(window.gps_status), 0)
                 window.close()
+                ui.shutdown()
+                window.deleteLater()
+                self.app.processEvents()
             finally:
                 backend.shutdown()
 

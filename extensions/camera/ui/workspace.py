@@ -245,6 +245,8 @@ class CameraWorkspace(VideoPanel):
         if self._closed:
             return
         self._closed = True
+        self.sources_popup.hide()
+        self.shares_popup.hide()
         self.bridge.stop()
 
     def closeEvent(self, event) -> None:

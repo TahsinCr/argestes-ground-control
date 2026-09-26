@@ -24,8 +24,7 @@ from src.services.planner import PlannerService
 from src.services.runtime import RuntimeServices
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
-from src.services.vehicle.telemetry_base import MutableTelemetryService
-from extensions.mavlink.wiring import VehicleStack  # Backward-compatible import only.
+from src.services.vehicle.telemetry_base import SwitchableTelemetryService
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,12 +234,11 @@ class ApplicationContainer(BaseDependencyContainer):
 
     def configure(self) -> None:
         _register_infrastructure(self, self.context)
+        self.singleton(TelemetryService, concrete=SwitchableTelemetryService,
+                       priority=int(DependencyPriority.VEHICLE))
         host = ExtensionHost(self.context.base_dir, self)
         self.instance(ExtensionHost, host, priority=int(DependencyPriority.VEHICLE))
         host.configure()
-        if not self.container.has(TelemetryService):
-            self.singleton(TelemetryService, concrete=MutableTelemetryService,
-                           priority=int(DependencyPriority.VEHICLE))
         _register_application(self)
 
 
@@ -255,6 +253,5 @@ __all__ = [
     "ApplicationContainer",
     "ApplicationContext",
     "DependencyPriority",
-    "VehicleStack",
     "create_container",
 ]

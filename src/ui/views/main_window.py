@@ -135,7 +135,8 @@ class MainWindow(QMainWindow):
         self.flight_sidebar = self._build_sidebar()
         self.sidebar.addWidget(self.flight_sidebar)
         self.extension_panel = ExtensionPanel(self.extension_host, self.language, self.sidebar,
-                                              open_application_settings=self.open_settings)
+                                              apply_change=self._apply_extension_change,
+                                              reload_extension=self._reload_extension)
         self.sidebar.addWidget(self.extension_panel)
         self._extension_sidebar_widgets: dict[str, QWidget] = {}
         for contribution in self.extension_host.sidebar_views():
@@ -176,12 +177,14 @@ class MainWindow(QMainWindow):
             if chip is not self.telemetry_status or self._telemetry_ui_enabled:
                 footer.addWidget(chip)
         self._extension_status_widgets: list[QWidget] = []
+        self._extension_status_by_id: dict[str, QWidget] = {}
         for contribution in self.extension_host.status_widgets():
             widget = contribution.factory(status_bar, self.theme, self.language)
             if not isinstance(widget, QWidget):
                 raise TypeError(f"Extension status {contribution.identifier} must return QWidget")
             footer.addWidget(widget)
             self._extension_status_widgets.append(widget)
+            self._extension_status_by_id[contribution.identifier] = widget
         footer.addStretch(1)
         self.command_link_meter = SignalMeter(t("status.command_link", self.language), status_bar)
         self.command_link_meter.set_theme(self.theme)
@@ -254,6 +257,100 @@ class MainWindow(QMainWindow):
                 self._extension_sidebar_widgets.get(view, self.flight_sidebar)
             )
 
+    def _apply_extension_change(self, identifier: str, enabled: bool) -> None:
+        was_active = self.extension_host.is_active(identifier)
+        self.extension_host.set_enabled(identifier, enabled)
+        try:
+            self._sync_extension_ui(identifier)
+        except Exception:
+            self._remove_extension_ui(identifier)
+            self.extension_host.set_enabled(identifier, was_active)
+            self._sync_extension_ui(identifier)
+            raise
+
+    def _reload_extension(self, identifier: str) -> None:
+        self._remove_extension_ui(identifier)
+        self.extension_host.reload(identifier)
+        self._sync_extension_ui(identifier)
+
+    def _sync_extension_ui(self, identifier: str) -> None:
+        self._remove_extension_ui(identifier)
+        if not self.extension_host.is_active(identifier):
+            if identifier == "telemetry":
+                self._telemetry_ui_enabled = False
+                self.telemetry_status.hide()
+                self.telemetry_status.parentWidget().layout().removeWidget(self.telemetry_status)
+            return
+        if identifier == "telemetry" and not self._telemetry_ui_enabled:
+            self._telemetry_ui_enabled = True
+            self.telemetry_status.parentWidget().layout().insertWidget(0, self.telemetry_status)
+            self.telemetry_status.show()
+        prefix = identifier + "."
+        for contribution in self.extension_host.sidebar_views():
+            if contribution.identifier.startswith(prefix):
+                widget = contribution.factory(self.sidebar)
+                if not isinstance(widget, QWidget):
+                    raise TypeError("Extension sidebar must return QWidget")
+                self.sidebar.addWidget(widget)
+                self._extension_sidebar_widgets[contribution.identifier] = widget
+                self.activity_bar.add_extension_view(contribution.identifier, contribution.title)
+        for contribution in self.extension_host.visual_views():
+            if not contribution.identifier.startswith(prefix):
+                continue
+            if not hasattr(self, "visuals_splitter"):
+                self.visuals_splitter = self._make_splitter(Qt.Orientation.Horizontal)
+                self.visuals_splitter.addWidget(self.map_panel)
+                self.workspace.insertWidget(0, self.visuals_splitter)
+                self.workspace.setStretchFactor(0, 8)
+                self.workspace.setStretchFactor(1, 4)
+            widget = contribution.factory(self.visuals_splitter, self.theme, self.language)
+            if not isinstance(widget, QWidget):
+                raise TypeError("Extension visual must return QWidget")
+            self.visuals_splitter.addWidget(widget)
+            self._extension_visual_widgets.append(widget)
+            self._extension_visual_by_id[contribution.identifier] = widget
+            self.visuals_splitter.setSizes([1] * self.visuals_splitter.count())
+        footer = self.telemetry_status.parentWidget().layout()
+        for contribution in self.extension_host.status_widgets():
+            if not contribution.identifier.startswith(prefix):
+                continue
+            widget = contribution.factory(self.telemetry_status.parentWidget(), self.theme,
+                                          self.language)
+            if not isinstance(widget, QWidget):
+                raise TypeError("Extension status must return QWidget")
+            footer.insertWidget(footer.indexOf(self.battery_meter) - 1, widget)
+            self._extension_status_widgets.append(widget)
+            self._extension_status_by_id[contribution.identifier] = widget
+
+    def _remove_extension_ui(self, identifier: str) -> None:
+        prefix = identifier + "."
+        for key, widget in tuple(self._extension_status_by_id.items()):
+            if key.startswith(prefix):
+                widget.parentWidget().layout().removeWidget(widget)
+                widget.hide()
+                widget.deleteLater()
+                self._extension_status_widgets.remove(widget)
+                del self._extension_status_by_id[key]
+        for key, widget in tuple(self._extension_visual_by_id.items()):
+            if key.startswith(prefix):
+                shutdown = getattr(widget, "prepare_shutdown", None)
+                if callable(shutdown):
+                    shutdown()
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
+                self._extension_visual_widgets.remove(widget)
+                del self._extension_visual_by_id[key]
+        for key, widget in tuple(self._extension_sidebar_widgets.items()):
+            if key.startswith(prefix):
+                if self.sidebar.currentWidget() is widget:
+                    self.sidebar.setCurrentWidget(self.extension_panel)
+                    self.activity_bar.extensions_button.setChecked(True)
+                self.sidebar.removeWidget(widget)
+                self.activity_bar.remove_extension_view(key)
+                widget.deleteLater()
+                del self._extension_sidebar_widgets[key]
+
     def _build_workspace(self) -> QWidget:
         workspace = self._make_splitter(Qt.Orientation.Vertical)
         workspace.setChildrenCollapsible(True)
@@ -264,6 +361,7 @@ class MainWindow(QMainWindow):
             tile_cache_service=self.tile_cache_service, parent=workspace,
         )
         self._extension_visual_widgets: list[QWidget] = []
+        self._extension_visual_by_id: dict[str, QWidget] = {}
         visual_contributions = self.extension_host.visual_views()
         if visual_contributions:
             self.visuals_splitter = self._make_splitter(Qt.Orientation.Horizontal)
@@ -274,6 +372,7 @@ class MainWindow(QMainWindow):
                     raise TypeError(f"Extension visual {contribution.identifier} must return QWidget")
                 self.visuals_splitter.addWidget(widget)
                 self._extension_visual_widgets.append(widget)
+                self._extension_visual_by_id[contribution.identifier] = widget
             self.visuals_splitter.setStretchFactor(0, 1)
             for index in range(1, self.visuals_splitter.count()):
                 self.visuals_splitter.setStretchFactor(index, 1)
@@ -357,8 +456,7 @@ class MainWindow(QMainWindow):
         )
         self.log_service.entries_emitted.connect(self.log_panel.add_entries)
         self.connection_service.status_changed.connect(self._on_connection_status)
-        if self._telemetry_ui_enabled:
-            self.telemetry_status.clicked.connect(self._open_mavlink_profiles)
+        self.telemetry_status.clicked.connect(self._open_mavlink_profiles)
         self.autopilot_status.clicked.connect(self._open_mavlink_profiles)
         self.gps_status.clicked.connect(self._open_mavlink_profiles)
         self.mavlink_popup.profiles_saved.connect(self._save_mavlink_profiles)

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from src.container import ApplicationContainer, VehicleStack, create_container
+from src.container import ApplicationContainer, create_container
 from src.core import DependencyContainer, EventBus
 from src.core.mavlink import MavlinkClient, MavlinkConnection, MavlinkEndpoint
 from src.services.runtime import RuntimeServices

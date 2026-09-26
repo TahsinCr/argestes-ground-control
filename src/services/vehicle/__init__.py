@@ -1,4 +1,4 @@
-"""Lazy compatibility exports for vehicle services."""
+"""Protocol-neutral vehicle service helpers."""
 
 _EXPORTS = {
     "BatteryVoltageEstimate": ("src.services.vehicle.battery", "BatteryVoltageEstimate"),
@@ -7,11 +7,7 @@ _EXPORTS = {
     "VehicleParameterService": ("src.services.vehicle.parameters", "VehicleParameterService"),
     "MutableTelemetryService": ("src.services.vehicle.telemetry_base", "MutableTelemetryService"),
     "MockTelemetryService": ("src.services.vehicle.telemetry_base", "MockTelemetryService"),
-    "TelemetryDecoder": ("extensions.mavlink.telemetry", "TelemetryDecoder"),
-    "VehicleTelemetryService": ("extensions.mavlink.telemetry", "VehicleTelemetryService"),
-    "MavlinkParameterDefaultSource": ("extensions.mavlink.parameter_defaults", "MavlinkParameterDefaultSource"),
-    "MavlinkVehicleService": ("extensions.mavlink.vehicle", "MavlinkVehicleService"),
-    "NullVehicleService": ("extensions.mavlink.vehicle", "NullVehicleService"),
+    "SwitchableTelemetryService": ("src.services.vehicle.telemetry_base", "SwitchableTelemetryService"),
 }
 
 __all__ = list(_EXPORTS)
