@@ -7,8 +7,9 @@
 
 A desktop ground-control application with an extension host. The built-in
 MAVLink protocol extension and optional telemetry extension provide the current
-vehicle connection, telemetry/GPS, autopilot and parameter behavior. The common
-application retains mission planning, maps, logs and battery/device status.
+vehicle connection, telemetry/GPS, autopilot and parameter behavior. An optional
+camera extension adds the multi-camera wall, recording and live video output.
+The common application retains mission planning, maps, logs and battery/device status.
 
 The application is maintained as a vehicle-neutral ground-control foundation.
 
@@ -55,7 +56,8 @@ its events; UI code does not create a second reader or encode raw packets.
 ```text
 Qt UI → UI adapters → application contracts → extension host → extensions/
                             │                                  ├── mavlink/
-                            │                                  └── telemetry/
+                            │                                  ├── telemetry/
+                            │                                  └── camera/
                             └── settings, logs, planner, map cache and battery
 ```
 
@@ -70,6 +72,12 @@ extension takes effect after restart. The left activity bar provides search,
 category/status filters and extension controls. Existing MAVLink configuration
 remains in `data/settings.json`; extension state and extension-owned settings
 are stored under `data/extensions/` and are not erased when disabled.
+The camera extension is disabled by default. Its source and output profiles are
+stored in `data/extensions/camera/settings.json`; on first use, legacy camera
+profiles in `data/settings.json` are imported without deleting that file.
+Camera connections, recording and live output controls are contributed by the
+extension and disappear from the common UI when it is disabled. Switching an
+extension on or off requires an application restart.
 
 An extension lives at `extensions/<identifier>/` with a `manifest.json` whose
 `api_major` is `1`, `entry_point` is `extensions.<identifier>.plugin:create_extension`,
@@ -82,6 +90,10 @@ built-in extensions for working examples. An extension can also call
 the factory receives the Qt parent and creates a left-sidebar widget on the UI
 thread. This keeps presentation contributions out of Core and avoids importing
 disabled extension UI modules.
+Extensions can also contribute a visual workspace widget, footer status widget,
+or settings action through `visual_view`, `status_widget`, and `settings_ui`.
+The camera extension uses these to keep capture and output controls out of the
+common window.
 
 ## Settings, logs and tests
 

@@ -175,6 +175,13 @@ class MainWindow(QMainWindow):
             chip.set_state("danger")
             if chip is not self.telemetry_status or self._telemetry_ui_enabled:
                 footer.addWidget(chip)
+        self._extension_status_widgets: list[QWidget] = []
+        for contribution in self.extension_host.status_widgets():
+            widget = contribution.factory(status_bar, self.theme, self.language)
+            if not isinstance(widget, QWidget):
+                raise TypeError(f"Extension status {contribution.identifier} must return QWidget")
+            footer.addWidget(widget)
+            self._extension_status_widgets.append(widget)
         footer.addStretch(1)
         self.command_link_meter = SignalMeter(t("status.command_link", self.language), status_bar)
         self.command_link_meter.set_theme(self.theme)
@@ -256,7 +263,24 @@ class MainWindow(QMainWindow):
             settings_service=self.settings_service,
             tile_cache_service=self.tile_cache_service, parent=workspace,
         )
-        workspace.addWidget(self.map_panel)
+        self._extension_visual_widgets: list[QWidget] = []
+        visual_contributions = self.extension_host.visual_views()
+        if visual_contributions:
+            self.visuals_splitter = self._make_splitter(Qt.Orientation.Horizontal)
+            self.visuals_splitter.addWidget(self.map_panel)
+            for contribution in visual_contributions:
+                widget = contribution.factory(self.visuals_splitter, self.theme, self.language)
+                if not isinstance(widget, QWidget):
+                    raise TypeError(f"Extension visual {contribution.identifier} must return QWidget")
+                self.visuals_splitter.addWidget(widget)
+                self._extension_visual_widgets.append(widget)
+            self.visuals_splitter.setStretchFactor(0, 1)
+            for index in range(1, self.visuals_splitter.count()):
+                self.visuals_splitter.setStretchFactor(index, 1)
+            self.visuals_splitter.setSizes([760] * self.visuals_splitter.count())
+            workspace.addWidget(self.visuals_splitter)
+        else:
+            workspace.addWidget(self.map_panel)
         self.bottom_splitter = self._make_splitter(Qt.Orientation.Horizontal)
         self.log_panel = EventLogPanel("", "", "", self.bottom_splitter)
         self.log_panel.setMinimumWidth(460)
@@ -530,6 +554,13 @@ class MainWindow(QMainWindow):
         self.title_bar.set_menu_language(self.language)
         self.activity_bar.set_language(self.language)
         self.extension_panel.set_language(self.language)
+        for widget in (*self._extension_visual_widgets, *self._extension_status_widgets):
+            set_theme = getattr(widget, "set_theme", None)
+            set_language = getattr(widget, "set_language", None)
+            if callable(set_theme):
+                set_theme(self.theme)
+            if callable(set_language):
+                set_language(self.language)
         self.attitude_indicator.set_theme(self.theme)
         self.battery_meter.set_theme(self.theme)
         self.battery_meter.set_label(t("status.battery", self.language))
@@ -582,6 +613,10 @@ class MainWindow(QMainWindow):
         return old_profiles != new_profiles and old_data == new_data
 
     def prepare_shutdown(self) -> None:
+        for widget in self._extension_visual_widgets:
+            shutdown = getattr(widget, "prepare_shutdown", None)
+            if callable(shutdown):
+                shutdown()
         self.map_panel.shutdown()
         self.attitude_indicator.shutdown()
 

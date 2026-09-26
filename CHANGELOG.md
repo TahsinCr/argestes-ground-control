@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+* Restored the archived multi-camera wall as an optional camera extension.
+  Camera profiles, per-camera recording and live video outputs now live in the
+  extension package and its own settings file; its connection controls and
+  status indicators appear only when the extension is enabled.
+* Extended the presentation contribution contract with camera-wall, status and
+  extension-owned settings actions. The common window keeps its map-only
+  workspace when camera is disabled, while camera controls use the preserved
+  archived UI when enabled.
 * Hiding the optional telemetry extension now also removes its bottom-bar
   connection chip. GPS and autopilot indicators remain visible and continue to
   provide access to the vehicle connection profiles.

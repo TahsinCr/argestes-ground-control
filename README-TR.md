@@ -7,7 +7,8 @@
 
 Eklenti ana makinesine sahip masaüstü yer kontrol uygulaması. Dahili MAVLink
 protokol eklentisi ve isteğe bağlı telemetri eklentisi mevcut araç bağlantısı,
-telemetri/GPS, otopilot ve parametre işlevlerini sağlar. Ortak uygulamada görev
+telemetri/GPS, otopilot ve parametre işlevlerini sağlar. İsteğe bağlı kamera
+eklentisi çoklu kamera panelini, kaydı ve canlı yayın çıkışını getirir. Ortak uygulamada görev
 planlama, harita, loglar, batarya ve cihaz durumu korunur.
 
 Uygulama araçtan bağımsız ortak bir yer kontrol temeli olarak geliştirilmektedir.
@@ -67,6 +68,11 @@ kalmalıdır. Eklenti açma/kapama yeniden başlatınca uygulanır. Sol etkinlik
 çubuğunda arama, kategori/durum filtresi ve eklenti kontrolleri vardır. Mevcut
 MAVLink ayarları `data/settings.json` içinde korunur; eklenti durumu ve kendi
 ayarları `data/extensions/` altında tutulur, devre dışı bırakılınca silinmez.
+Kamera eklentisi varsayılan olarak kapalıdır. Kamera bağlantı ve çıkış profilleri
+`data/extensions/camera/settings.json` dosyasında saklanır; ilk açılışta eski
+`data/settings.json` kamera profilleri silinmeden içe alınır. Kamera paneli,
+bağlantı, kayıt ve yayın kontrolleri yalnız eklenti etkinse görünür. Eklenti
+açma/kapama uygulama yeniden başlatılınca uygulanır.
 
 Yeni eklenti `extensions/<kimlik>/` altında bulunur. `manifest.json` dosyasında
 `api_major: 1`, `entry_point` ve `provides`/`requires` yetenek listeleri
@@ -78,6 +84,9 @@ eklentiler çalışan örnek olarak kullanılabilir. Eklenti ayrıca
 `registrar.sidebar_view(kimlik, başlık, factory)` ile sol yan panel katkısı
 ekleyebilir. `factory`, Qt üst widget'ını alır ve paneli UI iş parçacığında
 oluşturur; devre dışı eklentinin arayüz kodu içe aktarılmaz.
+`visual_view`, `status_widget` ve `settings_ui` ile eklenti ana çalışma alanına,
+alt durum çubuğuna ve kendi ayarlarına arayüz katkısı sağlayabilir. Kamera
+eklentisi bu sınırları kullanır; kamera işlevleri ortak pencereye gömülü değildir.
 
 ## Ayarlar, loglar ve testler
 

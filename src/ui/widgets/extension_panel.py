@@ -87,7 +87,8 @@ class ExtensionPanel(QWidget):
                                    self._toggle(key, value))
             row.addWidget(toggle)
             settings = QPushButton("Settings" if self.language == "en" else "Ayarlar", card)
-            settings.clicked.connect(lambda _checked=False, key=manifest.identifier: self._settings(key))
+            settings.clicked.connect(lambda _checked=False, key=manifest.identifier, anchor=settings:
+                                     self._settings(key, anchor))
             row.addWidget(settings)
             card_layout.addLayout(row)
             self.cards_layout.addWidget(card)
@@ -110,7 +111,11 @@ class ExtensionPanel(QWidget):
             QMessageBox.warning(self, "Extension" if self.language == "en" else "Eklenti", str(exc))
         self.refresh()
 
-    def _settings(self, identifier: str) -> None:
+    def _settings(self, identifier: str, anchor: QWidget | None = None) -> None:
+        contribution = self.host.settings_action(identifier)
+        if contribution is not None:
+            contribution.action(anchor or self)
+            return
         manifest = next(item.manifest for item in self.host.list_extensions()
                         if item.manifest.identifier == identifier)
         if not manifest.settings and self.open_application_settings is not None:

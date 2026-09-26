@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from src.core.dependency import BaseDependencyContainer
-from src.extension.api import API_MAJOR, ExtensionContext, ExtensionManifest, ExtensionRegistrar, SidebarContribution
+from src.extension.api import API_MAJOR, ExtensionContext, ExtensionManifest, ExtensionRegistrar, SidebarContribution, VisualContribution, StatusContribution, SettingsContribution
 from src.services.storage import load_json_file, save_json_file
 
 
@@ -43,6 +43,9 @@ class ExtensionHost:
         self._active_ids: set[str] = set()
         self._dirty_settings: set[str] = set()
         self._sidebar_views: list[SidebarContribution] = []
+        self._visual_views: list[VisualContribution] = []
+        self._status_widgets: list[StatusContribution] = []
+        self._settings_actions: dict[str, SettingsContribution] = {}
         self._validate(self._enabled_ids())
 
     @staticmethod
@@ -120,6 +123,15 @@ class ExtensionHost:
     def sidebar_views(self) -> tuple[SidebarContribution, ...]:
         return tuple(self._sidebar_views)
 
+    def visual_views(self) -> tuple[VisualContribution, ...]:
+        return tuple(self._visual_views)
+
+    def status_widgets(self) -> tuple[StatusContribution, ...]:
+        return tuple(self._status_widgets)
+
+    def settings_action(self, identifier: str) -> SettingsContribution | None:
+        return self._settings_actions.get(identifier)
+
     def is_active(self, identifier: str) -> bool:
         """Report what was actually loaded at startup, not a pending toggle."""
         return identifier in self._active_ids
@@ -180,6 +192,12 @@ class ExtensionHost:
                 if any(existing.identifier == full_identifier for existing in self._sidebar_views):
                     raise ExtensionError(f"Duplicate sidebar view: {full_identifier}")
                 self._sidebar_views.append(SidebarContribution(full_identifier, view.title, view.factory))
+            for view in registrar.visual_views:
+                self._visual_views.append(VisualContribution(f"{identifier}.{view.identifier}", view.factory))
+            for widget in registrar.status_widgets:
+                self._status_widgets.append(StatusContribution(f"{identifier}.{widget.identifier}", widget.factory))
+            if registrar.settings_action is not None:
+                self._settings_actions[identifier] = registrar.settings_action
             self._running.append((plugin, context))
             self._active_ids.add(identifier)
 
