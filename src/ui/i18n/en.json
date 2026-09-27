@@ -2,6 +2,7 @@
   "app.subtitle": "Mission-first hybrid operations interface",
   "app.title": "Kırlangıç Team Ground Control Station",
   "activity.flight_panels": "Flight panels",
+  "activity.panels": "Panels and layouts",
   "activity.extensions": "Extensions",
   "activity.logs": "Logs",
   "activity.parameters": "Parameters",

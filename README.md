@@ -108,6 +108,8 @@ View > Panels to show or hide panels at any time, and resize their dividers
 directly. View > Edit Layout temporarily reveals handles for moving, tabbing
 and floating panels; turn it off when finished. The View menu also provides
 Map Focus, Reset Layout, and a Dark/Light theme switch.
+The panel icon in the left rail opens a quick switcher with live panel
+visibility and Flight, Camera, Analysis, and Map Focus presets.
 Panel positions and visibility are saved in `data/workspace-layout.json` when
 the application closes; extension settings remain separate.
 

@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSpinBox,
@@ -158,6 +159,7 @@ class MainWindow(QMainWindow):
         )
         self.extension_dock.hide()
         self.activity_bar.sidebar_view_requested.connect(self._show_sidebar_view)
+        self.activity_bar.panel_menu_requested.connect(self._show_panel_menu)
         self.activity_bar.flight_sidebar_toggled.connect(self._toggle_flight_panels)
         self.activity_bar.bottom_panel_toggled.connect(self._on_bottom_panel_toggled)
         self.activity_bar.bottom_panel_side_by_side_requested.connect(
@@ -455,6 +457,70 @@ class MainWindow(QMainWindow):
             "Açık", lambda: self._set_theme_choice("light")
         )
         self._retranslate_view_menu()
+
+    def _show_panel_menu(self) -> None:
+        menu = QMenu(self.activity_bar)
+        layouts = menu.addMenu("Yerleşimler" if self.language == "tr" else "Layouts")
+        layouts.addAction(
+            "Uçuş" if self.language == "tr" else "Flight",
+            lambda: self._apply_layout_preset("flight"),
+        )
+        layouts.addAction(
+            "Kamera" if self.language == "tr" else "Camera",
+            lambda: self._apply_layout_preset("camera"),
+        )
+        layouts.addAction(
+            "Analiz" if self.language == "tr" else "Analysis",
+            lambda: self._apply_layout_preset("analysis"),
+        )
+        layouts.addAction(
+            "Harita odağı" if self.language == "tr" else "Map focus",
+            self._focus_map,
+        )
+        menu.addSeparator()
+        menu.addSection("Paneller" if self.language == "tr" else "Panels")
+        for dock in self.workspace.panels.values():
+            menu.addAction(dock.toggleViewAction())
+        menu.addSeparator()
+        menu.addAction(self._edit_layout_action)
+        menu.addAction(
+            "Varsayılan yerleşimi geri yükle"
+            if self.language == "tr" else "Reset layout",
+            self._reset_workspace,
+        )
+        button = self.activity_bar.panels_button
+        menu.exec(button.mapToGlobal(button.rect().topRight()))
+
+    def _apply_layout_preset(self, preset: str) -> None:
+        visual_keys = [
+            key for key in self.workspace.panels
+            if key not in {"flight", "telemetry", "commands", "logs", "parameters", "extensions"}
+        ]
+        for dock in self.workspace.panels.values():
+            dock.hide()
+
+        if preset == "flight":
+            for dock in self._flight_docks:
+                dock.show()
+            self.log_dock.show()
+        elif preset == "camera":
+            self._flight_docks[0].show()
+            self._flight_docks[1].show()
+            self.log_dock.show()
+            for key in visual_keys:
+                if key.startswith("camera"):
+                    self.workspace.panels[key].show()
+        elif preset == "analysis":
+            self.log_dock.show()
+            self.parameters_dock.show()
+            self.workspace.splitDockWidget(
+                self.log_dock, self.parameters_dock, Qt.Orientation.Horizontal
+            )
+
+        self.extension_dock.hide()
+        self.activity_bar.extensions_button.setChecked(False)
+        self._sync_activity_buttons()
+        self.workspace.save_layout()
 
     def _visual_title(self, identifier: str) -> str:
         name = identifier.split(".")[0]
