@@ -14,9 +14,9 @@ All notable changes to this project will be documented in this file.
 * Refined the light palette and added a direct Dark/Light theme choice in the
   View menu. Camera views now open as resizable workspace panels instead of
   forcing an equal-width map split.
-* Added a panel switcher to the activity rail with live visibility state and
-  Flight, Camera, Analysis and Map Focus presets. These quick controls work
-  without enabling layout editing.
+* Added a grouped panel switcher to the activity rail with live visibility
+  state. It exposes vehicle, bottom and extension panels without changing the
+  saved layout; panel movement remains an explicit edit-mode action.
 * Camera and telemetry extensions now activate and deactivate in the running
   application. Only their owned services and UI contributions are rebuilt;
   MAVLink connection, map and shared controls remain in place. Telemetry uses a

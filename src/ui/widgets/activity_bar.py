@@ -49,10 +49,10 @@ class _ActivityButton(QToolButton):
             painter.drawRoundedRect(QRectF(x + 2, y + 2, 16, 16), 1.5, 1.5)
             painter.drawLine(QPointF(x + 8, y + 2), QPointF(x + 8, y + 18))
         elif self.key == "panels":
-            painter.drawRoundedRect(QRectF(x + 2, y + 3, 7, 6), 1, 1)
-            painter.drawRoundedRect(QRectF(x + 11, y + 3, 7, 6), 1, 1)
-            painter.drawRoundedRect(QRectF(x + 2, y + 11, 7, 6), 1, 1)
-            painter.drawRoundedRect(QRectF(x + 11, y + 11, 7, 6), 1, 1)
+            painter.drawRoundedRect(QRectF(x + 2, y + 2, 16, 16), 1.5, 1.5)
+            painter.drawLine(QPointF(x + 9, y + 3), QPointF(x + 9, y + 17))
+            painter.drawLine(QPointF(x + 11, y + 7), QPointF(x + 17, y + 7))
+            painter.drawLine(QPointF(x + 11, y + 12), QPointF(x + 17, y + 12))
         elif self.key == "extensions":
             for left, top in ((3, 3), (12, 3), (3, 12), (12, 12)):
                 painter.drawRoundedRect(QRectF(x + left, y + top, 6, 6), 1, 1)

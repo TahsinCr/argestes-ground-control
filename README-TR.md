@@ -101,8 +101,8 @@ ayraçlardan boyutlandırabilirsin. Görünüm > Yerleşimi düzenle seçeneği,
 taşıma, sekmeleme ve ayrı pencereye alma tutamaklarını geçici olarak açar.
 Görünüm menüsünde ayrıca haritaya odaklanma, varsayılan yerleşim ve Koyu/Açık
 tema seçenekleri bulunur. Sol çubuktaki panel simgesi, panellerin anlık
-görünürlük durumunu ve Uçuş, Kamera, Analiz, Harita odağı yerleşimlerini
-düzenleme moduna girmeden seçtirir. Görünürlük ve yerleşim uygulama kapanırken
+görünürlük durumunu araç, alt panel ve eklenti gruplarıyla listeler. Buradan
+panel açıp kapatmak kayıtlı yerleşimi değiştirmez. Görünürlük ve yerleşim uygulama kapanırken
 `data/workspace-layout.json` içine kaydedilir; eklenti ayarları ayrı tutulur.
 
 ## Ayarlar, loglar ve testler

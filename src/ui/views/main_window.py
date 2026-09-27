@@ -314,9 +314,9 @@ class MainWindow(QMainWindow):
             )
             if preference:
                 dock.setFloating(preference[3])
-            self._panel_menu.addAction(dock.toggleViewAction())
             self._extension_visual_widgets.append(widget)
             self._extension_visual_by_id[contribution.identifier] = widget
+            self._refresh_panel_menu()
             QTimer.singleShot(
                 0,
                 lambda panel=dock, size=preference: self._size_visual_dock(panel, size),
@@ -355,13 +355,13 @@ class MainWindow(QMainWindow):
                         dock.height(),
                         dock.isFloating(),
                     )
-                    self._panel_menu.removeAction(dock.toggleViewAction())
                 self.workspace.remove_panel(key)
                 widget.hide()
                 widget.setParent(None)
                 widget.deleteLater()
                 self._extension_visual_widgets.remove(widget)
                 del self._extension_visual_by_id[key]
+        self._refresh_panel_menu()
         for key, widget in tuple(self._extension_sidebar_widgets.items()):
             if key.startswith(prefix):
                 if self.sidebar.currentWidget() is widget:
@@ -440,8 +440,7 @@ class MainWindow(QMainWindow):
     def _build_view_menu(self) -> None:
         menu = self.title_bar._menu_bar.actions()[3].menu()
         self._panel_menu = menu.addMenu("Paneller")
-        for dock in self.workspace.panels.values():
-            self._panel_menu.addAction(dock.toggleViewAction())
+        self._refresh_panel_menu()
         menu.addSeparator()
         self._edit_layout_action = menu.addAction("Yerleşimi düzenle")
         self._edit_layout_action.setCheckable(True)
@@ -460,28 +459,12 @@ class MainWindow(QMainWindow):
 
     def _show_panel_menu(self) -> None:
         menu = QMenu(self.activity_bar)
-        layouts = menu.addMenu("Yerleşimler" if self.language == "tr" else "Layouts")
-        layouts.addAction(
-            "Uçuş" if self.language == "tr" else "Flight",
-            lambda: self._apply_layout_preset("flight"),
-        )
-        layouts.addAction(
-            "Kamera" if self.language == "tr" else "Camera",
-            lambda: self._apply_layout_preset("camera"),
-        )
-        layouts.addAction(
-            "Analiz" if self.language == "tr" else "Analysis",
-            lambda: self._apply_layout_preset("analysis"),
-        )
-        layouts.addAction(
-            "Harita odağı" if self.language == "tr" else "Map focus",
+        self._populate_panel_actions(menu)
+        menu.addSeparator()
+        menu.addAction(
+            "Haritaya odaklan" if self.language == "tr" else "Focus Map",
             self._focus_map,
         )
-        menu.addSeparator()
-        menu.addSection("Paneller" if self.language == "tr" else "Panels")
-        for dock in self.workspace.panels.values():
-            menu.addAction(dock.toggleViewAction())
-        menu.addSeparator()
         menu.addAction(self._edit_layout_action)
         menu.addAction(
             "Varsayılan yerleşimi geri yükle"
@@ -491,36 +474,36 @@ class MainWindow(QMainWindow):
         button = self.activity_bar.panels_button
         menu.exec(button.mapToGlobal(button.rect().topRight()))
 
-    def _apply_layout_preset(self, preset: str) -> None:
-        visual_keys = [
+    def _refresh_panel_menu(self) -> None:
+        if hasattr(self, "_panel_menu"):
+            self._populate_panel_actions(self._panel_menu)
+
+    def _populate_panel_actions(self, menu: QMenu) -> None:
+        menu.clear()
+        english = self.language == "en"
+        extension_views = tuple(
             key for key in self.workspace.panels
-            if key not in {"flight", "telemetry", "commands", "logs", "parameters", "extensions"}
-        ]
-        for dock in self.workspace.panels.values():
-            dock.hide()
-
-        if preset == "flight":
-            for dock in self._flight_docks:
-                dock.show()
-            self.log_dock.show()
-        elif preset == "camera":
-            self._flight_docks[0].show()
-            self._flight_docks[1].show()
-            self.log_dock.show()
-            for key in visual_keys:
-                if key.startswith("camera"):
-                    self.workspace.panels[key].show()
-        elif preset == "analysis":
-            self.log_dock.show()
-            self.parameters_dock.show()
-            self.workspace.splitDockWidget(
-                self.log_dock, self.parameters_dock, Qt.Orientation.Horizontal
-            )
-
-        self.extension_dock.hide()
-        self.activity_bar.extensions_button.setChecked(False)
-        self._sync_activity_buttons()
-        self.workspace.save_layout()
+            if key not in {
+                "flight", "telemetry", "commands", "logs", "parameters", "extensions"
+            }
+        )
+        groups = (
+            ("Araç" if not english else "Vehicle", ("flight", "telemetry", "commands")),
+            ("Alt paneller" if not english else "Bottom panels", ("logs", "parameters")),
+            ("Eklenti görünümleri" if not english else "Extension views", extension_views),
+            ("Eklentiler" if not english else "Extensions", ("extensions",)),
+        )
+        for title, keys in groups:
+            actions = [
+                self.workspace.panels[key].toggleViewAction()
+                for key in keys
+                if key in self.workspace.panels
+            ]
+            if not actions:
+                continue
+            menu.addSection(title)
+            for action in actions:
+                menu.addAction(action)
 
     def _visual_title(self, identifier: str) -> str:
         name = identifier.split(".")[0]
