@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+* Rebuilt the central workspace as independent panels while keeping the map
+  and existing panel contents intact. Panels can be shown or hidden directly
+  from the activity rail or View menu and resized at any time. The optional
+  Edit Layout mode temporarily reveals handles for moving, tabbing and
+  floating panels, avoiding permanent headers over the working view.
+  Map focus, layout reset and restart-persistent placement are also available.
+* Refined the light palette and added a direct Dark/Light theme choice in the
+  View menu. Camera views now open as resizable workspace panels instead of
+  forcing an equal-width map split.
 * Camera and telemetry extensions now activate and deactivate in the running
   application. Only their owned services and UI contributions are rebuilt;
   MAVLink connection, map and shared controls remain in place. Telemetry uses a

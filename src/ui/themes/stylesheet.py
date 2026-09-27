@@ -19,6 +19,43 @@ def build_stylesheet(theme: ThemePalette) -> str:
     QMainWindow {{
         background: {theme.background};
     }}
+    QMainWindow#PanelWorkspace {{
+        background: {theme.background_alt};
+    }}
+    QMainWindow#PanelWorkspace QDockWidget {{
+        color: {theme.text};
+        font-size: 11px;
+        font-weight: 650;
+        border: 1px solid {theme.border};
+    }}
+    QMainWindow#PanelWorkspace QDockWidget::title {{
+        background: {theme.surface_alt};
+        border-bottom: 1px solid {theme.border};
+        padding: 6px 10px;
+        text-align: left;
+    }}
+    QMainWindow#PanelWorkspace QDockWidget::close-button,
+    QMainWindow#PanelWorkspace QDockWidget::float-button {{
+        background: {theme.surface_hover};
+        border-radius: 3px;
+        padding: 2px;
+    }}
+    QMainWindow#PanelWorkspace QDockWidget::close-button:hover,
+    QMainWindow#PanelWorkspace QDockWidget::float-button:hover {{
+        background: {theme.accent_dim};
+    }}
+    QMainWindow#PanelWorkspace QTabBar::tab {{
+        background: {theme.surface};
+        color: {theme.muted_text};
+        border: 1px solid {theme.border};
+        padding: 6px 12px;
+        min-width: 88px;
+    }}
+    QMainWindow#PanelWorkspace QTabBar::tab:selected {{
+        background: {theme.surface_alt};
+        color: {theme.text};
+        border-top: 2px solid {theme.accent};
+    }}
     QDialog#FramelessDialog {{
         background: {theme.surface};
         border: 1px solid {theme.border_strong};

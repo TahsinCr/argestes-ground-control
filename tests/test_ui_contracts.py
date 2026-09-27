@@ -103,6 +103,33 @@ class UiContractTests(unittest.TestCase):
             finally:
                 backend.shutdown()
 
+    def test_workspace_focus_and_reset_keep_panels_available(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            backend = create_container(Path(directory))
+            try:
+                ui = UiContainer(backend.container, base_dir=Path(directory), theme=DARK)
+                window = ui.resolve(MainWindow)
+                window.show()
+                self.app.processEvents()
+                self.assertIsNotNone(window.log_dock.titleBarWidget())
+                window._focus_map()
+                self.assertTrue(all(dock.isHidden() for dock in window.workspace.panels.values()))
+                window._reset_workspace()
+                self.assertFalse(window.log_dock.isHidden())
+                self.assertFalse(window._flight_docks[0].isHidden())
+                self.assertTrue(window.parameters_dock.isHidden())
+                window._edit_layout_action.trigger()
+                self.assertTrue(window.workspace.edit_mode)
+                self.assertIsNone(window.log_dock.titleBarWidget())
+                window._edit_layout_action.trigger()
+                self.assertFalse(window.workspace.edit_mode)
+                window.close()
+                ui.shutdown()
+                window.deleteLater()
+                self.app.processEvents()
+            finally:
+                backend.shutdown()
+
     def test_main_title_bar_has_localized_empty_application_menus(self) -> None:
         window = QWidget()
         title_bar = AppTitleBar(window, DARK)

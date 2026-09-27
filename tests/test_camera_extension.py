@@ -92,6 +92,7 @@ class CameraExtensionTests(unittest.TestCase):
         script = '''
 import tempfile
 from pathlib import Path
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
 from extensions.camera.ui.video import VideoPanel
 from src.container import create_container
@@ -120,14 +121,17 @@ with tempfile.TemporaryDirectory() as directory:
     assert status.video_chip.text_label.text() == "VIDEO"
     assert status.share_chip.text_label.text() == "VIDEO SHARE"
     assert backend.resolve(ExtensionHost).settings_action("camera") is not None
+    camera_dock = window.workspace.panels["camera.wall"]
+    window.workspace.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, camera_dock)
     window.extension_panel._toggle("camera", False)
     assert not window._extension_visual_widgets
     assert not window._extension_status_widgets
-    assert window.visuals_splitter.count() == 1
+    assert not any(key.startswith("camera.") for key in window.workspace.panels)
     assert not backend.resolve(ExtensionHost).is_active("camera")
     window.extension_panel._toggle("camera", True)
     assert len(window._extension_visual_widgets) == 1
     assert len(window._extension_status_widgets) == 1
+    assert window.workspace.dockWidgetArea(window.workspace.panels["camera.wall"]) == Qt.DockWidgetArea.LeftDockWidgetArea
     window.extension_panel._toggle("telemetry", False)
     assert window.telemetry_status.isHidden()
     assert not window.gps_status.isHidden()

@@ -91,6 +91,18 @@ oluşturur; devre dışı eklentinin arayüz kodu içe aktarılmaz.
 alt durum çubuğuna ve kendi ayarlarına arayüz katkısı sağlayabilir. Kamera
 eklentisi bu sınırları kullanır; kamera işlevleri ortak pencereye gömülü değildir.
 
+## Çalışma alanı
+
+Harita merkezde kalır. Araç dinamiği, telemetri, hızlı komutlar, loglar,
+parametreler ve eklentilerin getirdiği görünümler bağımsız panellerdir.
+Normal kullanımda panel başlıkları görünmez; soldaki aktivite çubuğundan veya
+Görünüm > Paneller menüsünden panelleri istediğin zaman gösterip gizleyebilir,
+ayraçlardan boyutlandırabilirsin. Görünüm > Yerleşimi düzenle seçeneği,
+taşıma, sekmeleme ve ayrı pencereye alma tutamaklarını geçici olarak açar.
+Görünüm menüsünde ayrıca haritaya odaklanma, varsayılan yerleşim ve Koyu/Açık
+tema seçenekleri bulunur. Görünürlük ve yerleşim uygulama kapanırken
+`data/workspace-layout.json` içine kaydedilir; eklenti ayarları ayrı tutulur.
+
 ## Ayarlar, loglar ve testler
 
 Ayarlar `data/settings.json`, yapılandırılmış loglar `data/logs/yki.jsonl`
