@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+* Promoted the map from the workspace's fixed central widget to a first-class,
+  closable dock panel. Camera views now split to the right of the map by
+  default, and the two can be freely repositioned or tabified in layout-edit
+  mode. Camera placement and tab relationships survive extension toggles, and
+  existing saved layouts are migrated without discarding camera docks.
 * Light mode now uses theme-specific subtle borders instead of white-only
   translucent separators, and selected text keeps sufficient contrast.
 * Preserved each dock's last width and height when panels are hidden, reopened,

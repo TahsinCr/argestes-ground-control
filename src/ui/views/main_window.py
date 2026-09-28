@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from PyQt6.QtCore import QPoint, Qt, QTimer, pyqtSignal
@@ -58,6 +59,18 @@ from src.ui.widgets.activity_bar import ActivityBar
 from src.ui.widgets.extension_panel import ExtensionPanel
 from src.ui.widgets.title_bar import AppTitleBar
 from src.ui.widgets.panel_workspace import PanelWorkspace
+
+
+@dataclass(frozen=True)
+class _VisualDockPreference:
+    area: Qt.DockWidgetArea
+    width: int
+    height: int
+    floating: bool
+    tab_target: str | None = None
+    anchor: str | None = None
+    orientation: Qt.Orientation = Qt.Orientation.Horizontal
+    after_anchor: bool = True
 
 
 class MainWindow(QMainWindow):
@@ -306,13 +319,35 @@ class MainWindow(QMainWindow):
             if not isinstance(widget, QWidget):
                 raise TypeError("Extension visual must return QWidget")
             preference = self._visual_dock_preferences.get(contribution.identifier)
-            area = preference[0] if preference else Qt.DockWidgetArea.RightDockWidgetArea
+            map_area = self.workspace.dockWidgetArea(self.map_dock)
+            if map_area == Qt.DockWidgetArea.NoDockWidgetArea:
+                map_area = Qt.DockWidgetArea.RightDockWidgetArea
+            area = (
+                preference.area
+                if preference
+                and preference.area != Qt.DockWidgetArea.NoDockWidgetArea
+                else map_area
+            )
             dock = self.workspace.add_panel(
                 contribution.identifier, self._visual_title(contribution.identifier), widget,
                 area,
             )
-            if preference:
-                dock.setFloating(preference[3])
+            if preference and preference.floating:
+                dock.setFloating(True)
+            elif preference and preference.tab_target in self.workspace.panels:
+                self.workspace._tabify_panel(
+                    self.workspace.panels[preference.tab_target], dock
+                )
+            elif preference and preference.anchor in self.workspace.panels:
+                anchor = self.workspace.panels[preference.anchor]
+                first, second = (
+                    (anchor, dock) if preference.after_anchor else (dock, anchor)
+                )
+                self.workspace.splitDockWidget(first, second, preference.orientation)
+            elif area == map_area:
+                self.workspace.splitDockWidget(
+                    self.map_dock, dock, Qt.Orientation.Horizontal
+                )
             self._extension_visual_widgets.append(widget)
             self._extension_visual_by_id[contribution.identifier] = widget
             self._refresh_panel_menu()
@@ -348,11 +383,8 @@ class MainWindow(QMainWindow):
                     shutdown()
                 dock = self.workspace.panels.get(key)
                 if dock is not None:
-                    self._visual_dock_preferences[key] = (
-                        self.workspace.dockWidgetArea(dock),
-                        dock.width(),
-                        dock.height(),
-                        dock.isFloating(),
+                    self._visual_dock_preferences[key] = self._capture_visual_dock_preference(
+                        key, dock
                     )
                 self.workspace.remove_panel(key)
                 widget.hide()
@@ -378,10 +410,13 @@ class MainWindow(QMainWindow):
             settings_service=self.settings_service,
             tile_cache_service=self.tile_cache_service, parent=self.workspace,
         )
-        self.workspace.setCentralWidget(self.map_panel)
+        self.map_dock = self.workspace.add_panel(
+            "map", "Harita", self.map_panel,
+            Qt.DockWidgetArea.RightDockWidgetArea,
+        )
         self._extension_visual_widgets: list[QWidget] = []
         self._extension_visual_by_id: dict[str, QWidget] = {}
-        self._visual_dock_preferences: dict[str, tuple[Qt.DockWidgetArea, int, int, bool]] = {}
+        self._visual_dock_preferences: dict[str, _VisualDockPreference] = {}
         self.log_panel = EventLogPanel("", "", "", self.workspace)
         self.parameters_panel = ParametersPanel("", "", "", self.workspace)
         bottom = Qt.DockWidgetArea.BottomDockWidgetArea
@@ -395,9 +430,12 @@ class MainWindow(QMainWindow):
             widget = contribution.factory(self.workspace, self.theme, self.language)
             if not isinstance(widget, QWidget):
                 raise TypeError(f"Extension visual {contribution.identifier} must return QWidget")
-            self.workspace.add_panel(
+            dock = self.workspace.add_panel(
                 contribution.identifier, self._visual_title(contribution.identifier), widget,
                 Qt.DockWidgetArea.RightDockWidgetArea,
+            )
+            self.workspace.splitDockWidget(
+                self.map_dock, dock, Qt.Orientation.Horizontal
             )
             self._extension_visual_widgets.append(widget)
             self._extension_visual_by_id[contribution.identifier] = widget
@@ -466,10 +504,11 @@ class MainWindow(QMainWindow):
         extension_views = tuple(
             key for key in self.workspace.panels
             if key not in {
-                "flight", "telemetry", "commands", "logs", "parameters", "extensions"
+                "map", "flight", "telemetry", "commands", "logs", "parameters", "extensions"
             }
         )
         groups = (
+            ("Çalışma alanı" if not english else "Workspace", ("map",)),
             ("Araç" if not english else "Vehicle", ("flight", "telemetry", "commands")),
             ("Alt paneller" if not english else "Bottom panels", ("logs", "parameters")),
             ("Eklenti görünümleri" if not english else "Extension views", extension_views),
@@ -508,6 +547,7 @@ class MainWindow(QMainWindow):
         self._light_action.setText("Light" if english else "Açık")
         self.workspace.language = self.language
         labels = {
+            "map": "Map" if english else "Harita",
             "flight": "Flight Dynamics" if english else "Araç Dinamiği",
             "telemetry": "Vehicle Telemetry" if english else "Araç Telemetrisi",
             "commands": "Quick Commands" if english else "Hızlı Komutlar",
@@ -531,6 +571,8 @@ class MainWindow(QMainWindow):
     def _focus_map(self) -> None:
         for dock in self.workspace.panels.values():
             dock.hide()
+        self.map_dock.show()
+        self.map_dock.raise_()
         self.activity_bar.sidebar_button.setChecked(False)
         self.activity_bar.extensions_button.setChecked(False)
         for key in self.activity_bar.buttons:
@@ -544,6 +586,8 @@ class MainWindow(QMainWindow):
             dock.show()
         self.workspace.splitDockWidget(self._flight_docks[0], self._flight_docks[1], Qt.Orientation.Vertical)
         self.workspace.splitDockWidget(self._flight_docks[1], self._flight_docks[2], Qt.Orientation.Vertical)
+        self.workspace.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.map_dock)
+        self.map_dock.show()
         self.workspace.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.log_dock)
         self.workspace.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.parameters_dock)
         self.workspace.tabifyDockWidget(self.log_dock, self.parameters_dock)
@@ -551,8 +595,11 @@ class MainWindow(QMainWindow):
         self.parameters_dock.hide()
         self.extension_dock.hide()
         for key, dock in self.workspace.panels.items():
-            if key not in {"flight", "telemetry", "commands", "logs", "parameters", "extensions"}:
+            if key not in {"map", "flight", "telemetry", "commands", "logs", "parameters", "extensions"}:
                 self.workspace.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+                self.workspace.splitDockWidget(
+                    self.map_dock, dock, Qt.Orientation.Horizontal
+                )
                 dock.show()
         self.activity_bar.sidebar_button.setChecked(True)
         self.activity_bar.extensions_button.setChecked(False)
@@ -569,20 +616,25 @@ class MainWindow(QMainWindow):
         )
         visible_right = [
             dock for key, dock in self.workspace.panels.items()
-            if key not in {"flight", "telemetry", "commands", "logs", "parameters", "extensions"}
+            if key not in {"map", "flight", "telemetry", "commands", "logs", "parameters", "extensions"}
             and dock.isVisible()
+            and self.workspace.dockWidgetArea(dock)
+            == self.workspace.dockWidgetArea(self.map_dock)
         ]
-        if visible_right:
-            self.workspace.resizeDocks(
-                [self._flight_docks[0], visible_right[0]],
-                [320, max(380, self.workspace.width() // 3)],
-                Qt.Orientation.Horizontal,
-            )
+        visual_sizes = [
+            max(280, self.workspace.width() // (len(visible_right) + 2))
+            for _dock in visible_right
+        ]
+        self.workspace.resizeDocks(
+            [self._flight_docks[0], self.map_dock, *visible_right],
+            [320, max(600, self.workspace.width() // 2), *visual_sizes],
+            Qt.Orientation.Horizontal,
+        )
 
     def _size_visual_dock(
         self,
         dock,
-        preference: tuple[Qt.DockWidgetArea, int, int, bool] | None,
+        preference: _VisualDockPreference | None,
     ) -> None:
         if dock not in self.workspace.panels.values() or dock.isFloating():
             return
@@ -592,11 +644,84 @@ class MainWindow(QMainWindow):
             if area in (Qt.DockWidgetArea.LeftDockWidgetArea, Qt.DockWidgetArea.RightDockWidgetArea)
             else Qt.Orientation.Vertical
         )
-        size = preference[1 if orientation == Qt.Orientation.Horizontal else 2] if preference else (
-            max(380, self.workspace.width() // 3)
-            if orientation == Qt.Orientation.Horizontal else max(240, self.workspace.height() // 3)
-        )
+        if preference:
+            size = (
+                preference.width
+                if orientation == Qt.Orientation.Horizontal
+                else preference.height
+            )
+        else:
+            size = (
+                max(380, self.workspace.width() // 3)
+                if orientation == Qt.Orientation.Horizontal
+                else max(240, self.workspace.height() // 3)
+            )
         self.workspace.resizeDocks([dock], [size], orientation)
+
+    def _capture_visual_dock_preference(
+        self, key: str, dock
+    ) -> _VisualDockPreference:
+        peers = self.workspace.tabifiedDockWidgets(dock)
+        tab_target = next(
+            (
+                panel_key
+                for panel_key, panel in self.workspace.panels.items()
+                if panel in peers
+            ),
+            None,
+        )
+        anchor = None
+        orientation = Qt.Orientation.Horizontal
+        after_anchor = True
+        best_gap: int | None = None
+        if tab_target is None and not dock.isFloating():
+            area = self.workspace.dockWidgetArea(dock)
+            source = dock.geometry()
+            for other_key, other in self.workspace.panels.items():
+                if (
+                    other_key == key
+                    or other.isFloating()
+                    or not other.isVisible()
+                    or self.workspace.dockWidgetArea(other) != area
+                ):
+                    continue
+                rect = other.geometry()
+                vertical_overlap = max(
+                    0, min(source.bottom(), rect.bottom()) - max(source.top(), rect.top())
+                )
+                horizontal_overlap = max(
+                    0, min(source.right(), rect.right()) - max(source.left(), rect.left())
+                )
+                if vertical_overlap >= min(source.height(), rect.height()) // 3:
+                    is_after = source.center().x() >= rect.center().x()
+                    gap = (
+                        source.left() - rect.right()
+                        if is_after else rect.left() - source.right()
+                    )
+                    if gap >= -8 and (best_gap is None or gap < best_gap):
+                        anchor, orientation, after_anchor, best_gap = (
+                            other_key, Qt.Orientation.Horizontal, is_after, gap
+                        )
+                if horizontal_overlap >= min(source.width(), rect.width()) // 3:
+                    is_after = source.center().y() >= rect.center().y()
+                    gap = (
+                        source.top() - rect.bottom()
+                        if is_after else rect.top() - source.bottom()
+                    )
+                    if gap >= -8 and (best_gap is None or gap < best_gap):
+                        anchor, orientation, after_anchor, best_gap = (
+                            other_key, Qt.Orientation.Vertical, is_after, gap
+                        )
+        return _VisualDockPreference(
+            area=self.workspace.dockWidgetArea(dock),
+            width=dock.width(),
+            height=dock.height(),
+            floating=dock.isFloating(),
+            tab_target=tab_target,
+            anchor=anchor,
+            orientation=orientation,
+            after_anchor=after_anchor,
+        )
 
     def _restore_workspace(self) -> None:
         if self._workspace_disconnected:

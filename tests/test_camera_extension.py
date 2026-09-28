@@ -122,7 +122,11 @@ with tempfile.TemporaryDirectory() as directory:
     assert status.share_chip.text_label.text() == "VIDEO SHARE"
     assert backend.resolve(ExtensionHost).settings_action("camera") is not None
     camera_dock = window.workspace.panels["camera.wall"]
-    window.workspace.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, camera_dock)
+    window.show()
+    app.processEvents()
+    assert camera_dock.geometry().x() > window.map_dock.geometry().x()
+    window.workspace._tabify_panel(window.map_dock, camera_dock)
+    app.processEvents()
     window.extension_panel._toggle("camera", False)
     assert not window._extension_visual_widgets
     assert not window._extension_status_widgets
@@ -131,7 +135,8 @@ with tempfile.TemporaryDirectory() as directory:
     window.extension_panel._toggle("camera", True)
     assert len(window._extension_visual_widgets) == 1
     assert len(window._extension_status_widgets) == 1
-    assert window.workspace.dockWidgetArea(window.workspace.panels["camera.wall"]) == Qt.DockWidgetArea.LeftDockWidgetArea
+    camera_dock = window.workspace.panels["camera.wall"]
+    assert camera_dock in window.workspace.tabifiedDockWidgets(window.map_dock)
     window.extension_panel._toggle("telemetry", False)
     assert window.telemetry_status.isHidden()
     assert not window.gps_status.isHidden()

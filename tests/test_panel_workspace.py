@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -23,7 +24,9 @@ class PanelWorkspaceTests(unittest.TestCase):
             state_path = Path(directory) / "layout.json"
             first = PanelWorkspace(state_path)
             first.resize(1200, 800)
-            first.setCentralWidget(QLabel("Map"))
+            map_dock = first.add_panel(
+                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea
+            )
             camera = first.add_panel("camera.visual", "Camera", QLabel("Video"),
                                      Qt.DockWidgetArea.RightDockWidgetArea)
             logs = first.add_panel("logs", "Logs", QLabel("Events"),
@@ -31,13 +34,16 @@ class PanelWorkspaceTests(unittest.TestCase):
             first.show()
             self.app.processEvents()
             first.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, camera)
+            map_dock.hide()
             logs.hide()
             first.save_layout()
             first.close()
 
             second = PanelWorkspace(state_path)
             second.resize(1200, 800)
-            second.setCentralWidget(QLabel("Map"))
+            restored_map = second.add_panel(
+                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea
+            )
             restored_camera = second.add_panel("camera.visual", "Camera", QLabel("Video"),
                                                Qt.DockWidgetArea.RightDockWidgetArea)
             restored_logs = second.add_panel("logs", "Logs", QLabel("Events"),
@@ -49,6 +55,7 @@ class PanelWorkspaceTests(unittest.TestCase):
                 second.dockWidgetArea(restored_camera),
                 Qt.DockWidgetArea.LeftDockWidgetArea,
             )
+            self.assertTrue(restored_map.isHidden())
             self.assertTrue(restored_logs.isHidden())
             second.close()
 
@@ -65,7 +72,8 @@ class PanelWorkspaceTests(unittest.TestCase):
             state_path = Path(directory) / "layout.json"
             first = PanelWorkspace(state_path)
             first.resize(1000, 700)
-            first.setCentralWidget(QLabel("Map"))
+            first.add_panel("map", "Map", QLabel("Map"),
+                            Qt.DockWidgetArea.RightDockWidgetArea)
             docks = [
                 first.add_panel(key, key, QLabel(key), Qt.DockWidgetArea.LeftDockWidgetArea)
                 for key in ("flight", "telemetry", "commands")
@@ -92,7 +100,8 @@ class PanelWorkspaceTests(unittest.TestCase):
 
             second = PanelWorkspace(state_path)
             second.resize(1000, 700)
-            second.setCentralWidget(QLabel("Map"))
+            second.add_panel("map", "Map", QLabel("Map"),
+                             Qt.DockWidgetArea.RightDockWidgetArea)
             restored = [
                 second.add_panel(key, key, QLabel(key), Qt.DockWidgetArea.LeftDockWidgetArea)
                 for key in ("flight", "telemetry", "commands")
@@ -126,6 +135,72 @@ class PanelWorkspaceTests(unittest.TestCase):
             self.assertTrue(second.isVisible())
             workspace.close()
 
+    def test_map_and_camera_can_move_split_and_tabify(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = PanelWorkspace(Path(directory) / "layout.json")
+            map_dock = workspace.add_panel(
+                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            camera = workspace.add_panel(
+                "camera.visual", "Camera", QLabel("Camera"),
+                Qt.DockWidgetArea.RightDockWidgetArea,
+            )
+            workspace.splitDockWidget(map_dock, camera, Qt.Orientation.Horizontal)
+            workspace.resize(1200, 700)
+            workspace.show()
+            self.app.processEvents()
+            self.assertIsNone(workspace.centralWidget())
+            self.assertGreater(camera.x(), map_dock.x())
+            workspace._tabify_panel(map_dock, camera)
+            self.app.processEvents()
+            self.assertIn(camera, workspace.tabifiedDockWidgets(map_dock))
+            workspace.save_layout()
+            workspace.close()
+
+    def test_legacy_central_map_layout_migrates_without_losing_camera(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "layout.json"
+            old = PanelWorkspace(state_path)
+            old.STATE_VERSION = 1
+            old.resize(1200, 700)
+            old.setCentralWidget(QLabel("Map"))
+            old.add_panel(
+                "camera.visual", "Camera", QLabel("Camera"),
+                Qt.DockWidgetArea.RightDockWidgetArea,
+            )
+            old.show()
+            self.app.processEvents()
+            old.save_layout()
+            old.close()
+            legacy_payload = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(legacy_payload["version"], 1)
+
+            workspace = PanelWorkspace(state_path)
+            workspace.resize(1200, 700)
+            map_dock = workspace.add_panel(
+                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            camera = workspace.add_panel(
+                "camera.visual", "Camera", QLabel("Camera"),
+                Qt.DockWidgetArea.RightDockWidgetArea,
+            )
+            workspace.splitDockWidget(map_dock, camera, Qt.Orientation.Horizontal)
+            workspace.show()
+            self.app.processEvents()
+
+            self.assertTrue(workspace.restore_layout())
+            self.app.processEvents()
+            self.assertEqual(
+                workspace.dockWidgetArea(map_dock), Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            self.assertEqual(
+                workspace.dockWidgetArea(camera), Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            self.assertGreater(map_dock.width(), 100)
+            self.assertGreater(camera.width(), 100)
+            self.assertGreater(camera.x(), map_dock.x())
+            workspace.close()
+
     def test_panel_visibility_stays_available_outside_edit_mode(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = PanelWorkspace(Path(directory) / "layout.json")
@@ -144,6 +219,8 @@ class PanelWorkspaceTests(unittest.TestCase):
             self.assertTrue(dock.isHidden())
             dock.toggleViewAction().trigger()
             self.assertFalse(dock.isHidden())
+            dock.close()
+            self.assertTrue(dock.isHidden())
             workspace.set_edit_mode(True)
             self.assertIsNone(dock.titleBarWidget())
             self.assertTrue(

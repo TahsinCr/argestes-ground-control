@@ -11,7 +11,8 @@ from PyQt6.QtWidgets import QDockWidget, QMainWindow, QMenu, QTabWidget, QWidget
 class PanelWorkspace(QMainWindow):
     """Dockable shell around the unchanged content widgets."""
 
-    STATE_VERSION = 1
+    STATE_VERSION = 2
+    LEGACY_STATE_VERSIONS = (1,)
 
     def __init__(
         self,
@@ -221,6 +222,15 @@ class PanelWorkspace(QMainWindow):
         menu.exec(dock.mapToGlobal(point))
 
     def _tabify_panel(self, target: QDockWidget, dock: QDockWidget) -> None:
+        if target.isFloating():
+            target.setFloating(False)
+        if dock.isFloating():
+            dock.setFloating(False)
+        area = self.dockWidgetArea(target)
+        if area == Qt.DockWidgetArea.NoDockWidgetArea:
+            area = Qt.DockWidgetArea.RightDockWidgetArea
+        if self.dockWidgetArea(dock) != area:
+            self.addDockWidget(area, dock)
         self.tabifyDockWidget(target, dock)
         dock.show()
         dock.raise_()
@@ -268,7 +278,8 @@ class PanelWorkspace(QMainWindow):
     def restore_layout(self) -> bool:
         try:
             payload = json.loads(self.state_path.read_text(encoding="utf-8"))
-            if payload.get("version") != self.STATE_VERSION:
+            state_version = payload.get("version")
+            if state_version not in (*self.LEGACY_STATE_VERSIONS, self.STATE_VERSION):
                 return False
             state = QByteArray.fromBase64(payload["state"].encode("ascii"))
             restored_sizes: dict[str, tuple[int, int]] = {}
@@ -287,8 +298,10 @@ class PanelWorkspace(QMainWindow):
                         restored_sizes[key] = (width, height)
             self._panel_sizes = restored_sizes
             self._restoring_panel_sizes = True
-            restored = self.restoreState(state, self.STATE_VERSION)
+            restored = self.restoreState(state, state_version)
             if restored:
+                if state_version in self.LEGACY_STATE_VERSIONS:
+                    self._restore_map_into_legacy_workspace()
                 self._panel_size_restore_enabled = True
                 if restored_sizes:
                     self._schedule_panel_size_restore()
@@ -299,3 +312,28 @@ class PanelWorkspace(QMainWindow):
             return restored
         except (OSError, ValueError, TypeError, KeyError):
             return False
+
+    def _restore_map_into_legacy_workspace(self) -> None:
+        """Reattach the map dock when upgrading layouts that used a central map."""
+        map_dock = self.panels.get("map")
+        if map_dock is None:
+            return
+        area = Qt.DockWidgetArea.RightDockWidgetArea
+        map_dock.setFloating(False)
+        self.addDockWidget(area, map_dock)
+        adjacent = next(
+            (
+                dock for key, dock in self.panels.items()
+                if key not in {
+                    "map", "flight", "telemetry", "commands", "logs",
+                    "parameters", "extensions",
+                }
+                and dock.isVisible()
+                and not dock.isFloating()
+                and self.dockWidgetArea(dock) == area
+            ),
+            None,
+        )
+        if adjacent is not None:
+            self.splitDockWidget(map_dock, adjacent, Qt.Orientation.Horizontal)
+        map_dock.show()
