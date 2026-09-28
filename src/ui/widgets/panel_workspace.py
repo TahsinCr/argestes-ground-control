@@ -11,8 +11,8 @@ from PyQt6.QtWidgets import QDockWidget, QMainWindow, QMenu, QTabWidget, QWidget
 class PanelWorkspace(QMainWindow):
     """Dockable shell around the unchanged content widgets."""
 
-    STATE_VERSION = 2
-    LEGACY_STATE_VERSIONS = (1,)
+    STATE_VERSION = 4
+    LEGACY_STATE_VERSIONS = (1, 2, 3)
 
     def __init__(
         self,
@@ -36,6 +36,9 @@ class PanelWorkspace(QMainWindow):
         )
         self.panels: dict[str, QDockWidget] = {}
         self._panel_keys: dict[QDockWidget, str] = {}
+        self._panel_groups: dict[str, str] = {}
+        self._panel_options: dict[str, tuple[bool, bool, bool]] = {}
+        self._panel_default_areas: dict[str, Qt.DockWidgetArea] = {}
         self._panel_sizes: dict[str, tuple[int, int]] = {}
         self._size_restore_pending = False
         self._restoring_panel_sizes = False
@@ -49,18 +52,23 @@ class PanelWorkspace(QMainWindow):
         title: str,
         widget: QWidget,
         area: Qt.DockWidgetArea,
+        *,
+        group: str = "workspace",
+        allowed_areas: Qt.DockWidgetArea = Qt.DockWidgetArea.AllDockWidgetAreas,
+        movable: bool = True,
+        floatable: bool = True,
+        closable: bool = True,
     ) -> QDockWidget:
         dock = QDockWidget(title, self)
         dock.setObjectName(f"panel.{key}")
-        dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetClosable
-            | QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-        )
+        dock.setAllowedAreas(allowed_areas)
         dock.setWidget(widget)
         self.addDockWidget(area, dock)
         self.panels[key] = dock
         self._panel_keys[dock] = key
+        self._panel_groups[key] = group
+        self._panel_options[key] = (closable, movable, floatable)
+        self._panel_default_areas[key] = area
         dock.installEventFilter(self)
         dock.visibilityChanged.connect(
             lambda visible, panel_key=key: self._on_panel_visibility_changed(
@@ -174,15 +182,18 @@ class PanelWorkspace(QMainWindow):
 
     def _apply_panel_mode(self, key: str) -> None:
         dock = self.panels[key]
-        if self.edit_mode:
+        closable, movable, floatable = self._panel_options[key]
+        features = QDockWidget.DockWidgetFeature.NoDockWidgetFeatures
+        if closable:
+            features |= QDockWidget.DockWidgetFeature.DockWidgetClosable
+        if self.edit_mode and movable:
+            features |= QDockWidget.DockWidgetFeature.DockWidgetMovable
+        if self.edit_mode and floatable:
+            features |= QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        dock.setFeatures(features)
+        if self.edit_mode and movable:
             dock.setTitleBarWidget(None)
-            dock.setFeatures(
-                QDockWidget.DockWidgetFeature.DockWidgetClosable
-                | QDockWidget.DockWidgetFeature.DockWidgetMovable
-                | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-            )
         else:
-            dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable)
             dock.setTitleBarWidget(self._quiet_titles[key])
 
     def _show_panel_menu(self, dock: QDockWidget, point) -> None:
@@ -194,52 +205,105 @@ class PanelWorkspace(QMainWindow):
         for title, area in (
             ("Left" if english else "Sola", Qt.DockWidgetArea.LeftDockWidgetArea),
             ("Right" if english else "Sağa", Qt.DockWidgetArea.RightDockWidgetArea),
+            ("Top" if english else "Yukarı", Qt.DockWidgetArea.TopDockWidgetArea),
             ("Bottom" if english else "Aşağıya", Qt.DockWidgetArea.BottomDockWidgetArea),
         ):
+            if not dock.allowedAreas() & area:
+                continue
             move.addAction(
                 title,
-                lambda selected_area=area: self.addDockWidget(selected_area, dock),
+                lambda selected_area=area: self.move_panel_to_area(dock, selected_area),
             )
-        menu.addAction(
-            ("Float" if english else "Ayrı pencere")
-            if not dock.isFloating() else
-            ("Dock" if english else "Pencereye sabitle"),
-            lambda: dock.setFloating(not dock.isFloating()),
-        )
+        if self._panel_options[self._panel_keys[dock]][2]:
+            menu.addAction(
+                ("Float" if english else "Ayrı pencere")
+                if not dock.isFloating() else
+                ("Dock" if english else "Pencereye sabitle"),
+                lambda: dock.setFloating(not dock.isFloating()),
+            )
         tab_targets = [
             (key, candidate) for key, candidate in self.panels.items()
             if candidate is not dock
+            and self._panel_groups.get(key) == self._panel_groups.get(self._panel_keys[dock])
         ]
         if tab_targets:
-            tabs = menu.addMenu("Tab with Panel" if english else "Sekme olarak birleştir")
+            place = menu.addMenu("Yerleştir" if not english else "Place Panel")
             for key, candidate in tab_targets:
-                tabs.addAction(
-                    candidate.windowTitle() or key,
-                    lambda target=candidate: self._tabify_panel(target, dock),
-                )
+                candidate_area = self.dockWidgetArea(candidate)
+                if not dock.allowedAreas() & candidate_area:
+                    continue
+                target_menu = place.addMenu(candidate.windowTitle() or key)
+                for label, relation in (
+                    ("Sekme yap" if not english else "Tab with", "tab"),
+                    ("Soluna yerleştir" if not english else "Place left", "left"),
+                    ("Sağına yerleştir" if not english else "Place right", "right"),
+                    ("Üstüne yerleştir" if not english else "Place above", "above"),
+                    ("Altına yerleştir" if not english else "Place below", "below"),
+                ):
+                    target_menu.addAction(
+                        label,
+                        lambda target=candidate, direction=relation: self.place_panel(
+                            target, dock, direction
+                        ),
+                    )
         menu.addSeparator()
         menu.addAction("Hide Panel" if english else "Paneli gizle", dock.hide)
         menu.exec(dock.mapToGlobal(point))
 
     def _tabify_panel(self, target: QDockWidget, dock: QDockWidget) -> None:
-        if target.isFloating():
-            target.setFloating(False)
+        self.place_panel(target, dock, "tab")
+
+    def move_panel_to_area(self, dock: QDockWidget, area: Qt.DockWidgetArea) -> bool:
+        if dock not in self._panel_keys or not dock.allowedAreas() & area:
+            return False
         if dock.isFloating():
             dock.setFloating(False)
+        self.addDockWidget(area, dock)
+        return True
+
+    def place_panel(
+        self, target: QDockWidget, dock: QDockWidget, relation: str
+    ) -> bool:
+        """Place a panel relative to another using the workspace's shared rules."""
+        if target is dock or relation not in {"tab", "left", "right", "above", "below"}:
+            return False
+        target_key = self._panel_keys.get(target)
+        dock_key = self._panel_keys.get(dock)
+        if target_key is None or dock_key is None:
+            return False
+        if self._panel_groups.get(target_key) != self._panel_groups.get(dock_key):
+            return False
         area = self.dockWidgetArea(target)
-        if area == Qt.DockWidgetArea.NoDockWidgetArea:
-            area = Qt.DockWidgetArea.RightDockWidgetArea
+        if area == Qt.DockWidgetArea.NoDockWidgetArea or not dock.allowedAreas() & area:
+            return False
+        if relation == "tab":
+            self.move_panel_to_area(dock, area)
+            self.tabifyDockWidget(target, dock)
+            dock.show()
+            dock.raise_()
+            return True
         if self.dockWidgetArea(dock) != area:
-            self.addDockWidget(area, dock)
-        self.tabifyDockWidget(target, dock)
+            self.move_panel_to_area(dock, area)
+        if relation in {"left", "right"}:
+            orientation = Qt.Orientation.Horizontal
+            before = relation == "left"
+        else:
+            orientation = Qt.Orientation.Vertical
+            before = relation == "above"
+        first, second = (dock, target) if before else (target, dock)
+        self.splitDockWidget(first, second, orientation)
         dock.show()
         dock.raise_()
+        return True
 
     def remove_panel(self, key: str) -> QWidget | None:
         dock = self.panels.pop(key, None)
         if dock is None:
             return None
         self._panel_keys.pop(dock, None)
+        self._panel_groups.pop(key, None)
+        self._panel_options.pop(key, None)
+        self._panel_default_areas.pop(key, None)
         self._panel_sizes.pop(key, None)
         self._quiet_titles.pop(key, None)
         widget = dock.widget()
@@ -300,8 +364,9 @@ class PanelWorkspace(QMainWindow):
             self._restoring_panel_sizes = True
             restored = self.restoreState(state, state_version)
             if restored:
-                if state_version in self.LEGACY_STATE_VERSIONS:
+                if state_version == 1:
                     self._restore_map_into_legacy_workspace()
+                self._normalize_panel_areas()
                 self._panel_size_restore_enabled = True
                 if restored_sizes:
                     self._schedule_panel_size_restore()
@@ -313,6 +378,24 @@ class PanelWorkspace(QMainWindow):
         except (OSError, ValueError, TypeError, KeyError):
             return False
 
+    def _normalize_panel_areas(self) -> None:
+        preferred_areas = (
+            Qt.DockWidgetArea.LeftDockWidgetArea,
+            Qt.DockWidgetArea.RightDockWidgetArea,
+            Qt.DockWidgetArea.TopDockWidgetArea,
+            Qt.DockWidgetArea.BottomDockWidgetArea,
+        )
+        for key, dock in self.panels.items():
+            current_area = self.dockWidgetArea(dock)
+            if dock.allowedAreas() & current_area:
+                continue
+            destination = self._panel_default_areas[key]
+            if not dock.allowedAreas() & destination:
+                destination = next(
+                    area for area in preferred_areas if dock.allowedAreas() & area
+                )
+            self.move_panel_to_area(dock, destination)
+
     def _restore_map_into_legacy_workspace(self) -> None:
         """Reattach the map dock when upgrading layouts that used a central map."""
         map_dock = self.panels.get("map")
@@ -320,13 +403,13 @@ class PanelWorkspace(QMainWindow):
             return
         area = Qt.DockWidgetArea.RightDockWidgetArea
         map_dock.setFloating(False)
-        self.addDockWidget(area, map_dock)
+        self.move_panel_to_area(map_dock, area)
         adjacent = next(
             (
                 dock for key, dock in self.panels.items()
                 if key not in {
                     "map", "flight", "telemetry", "commands", "logs",
-                    "parameters", "extensions",
+                    "parameters",
                 }
                 and dock.isVisible()
                 and not dock.isFloating()
@@ -335,5 +418,5 @@ class PanelWorkspace(QMainWindow):
             None,
         )
         if adjacent is not None:
-            self.splitDockWidget(map_dock, adjacent, Qt.Orientation.Horizontal)
+            self.place_panel(map_dock, adjacent, "right")
         map_dock.show()

@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+* Unified panel placement and visibility under the shared workspace manager.
+  Main views (including map and extension-provided camera panels) have
+  individual activity-bar buttons in the upper group; Logs and Parameters
+  remain in the lower group. Workspace panels cannot drift into the bottom
+  region, and bottom panels cannot drift into the workspace. Edit mode now has
+  explicit relative placement and tab actions when drag-drop targets are hard
+  to hit. The Extensions view is pinned beside (not inside) the workspace and
+  can be resized with its splitter without joining or obstructing panel docks.
+  Previous layout versions are normalized into these regions when loaded.
 * Promoted the map from the workspace's fixed central widget to a first-class,
   closable dock panel. Camera views now split to the right of the map by
   default, and the two can be freely repositioned or tabified in layout-edit

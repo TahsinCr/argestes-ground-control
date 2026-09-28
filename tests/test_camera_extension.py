@@ -122,6 +122,7 @@ with tempfile.TemporaryDirectory() as directory:
     assert status.share_chip.text_label.text() == "VIDEO SHARE"
     assert backend.resolve(ExtensionHost).settings_action("camera") is not None
     camera_dock = window.workspace.panels["camera.wall"]
+    assert "camera.wall" in window.activity_bar.panel_buttons
     window.show()
     app.processEvents()
     assert camera_dock.geometry().x() > window.map_dock.geometry().x()
@@ -131,11 +132,13 @@ with tempfile.TemporaryDirectory() as directory:
     assert not window._extension_visual_widgets
     assert not window._extension_status_widgets
     assert not any(key.startswith("camera.") for key in window.workspace.panels)
+    assert "camera.wall" not in window.activity_bar.panel_buttons
     assert not backend.resolve(ExtensionHost).is_active("camera")
     window.extension_panel._toggle("camera", True)
     assert len(window._extension_visual_widgets) == 1
     assert len(window._extension_status_widgets) == 1
     camera_dock = window.workspace.panels["camera.wall"]
+    assert "camera.wall" in window.activity_bar.panel_buttons
     assert camera_dock in window.workspace.tabifiedDockWidgets(window.map_dock)
     window.extension_panel._toggle("telemetry", False)
     assert window.telemetry_status.isHidden()

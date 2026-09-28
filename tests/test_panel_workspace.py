@@ -157,6 +157,40 @@ class PanelWorkspaceTests(unittest.TestCase):
             workspace.save_layout()
             workspace.close()
 
+    def test_panel_groups_enforce_regions_and_shared_relative_placement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = PanelWorkspace(Path(directory) / "layout.json")
+            workspace_areas = (
+                Qt.DockWidgetArea.LeftDockWidgetArea
+                | Qt.DockWidgetArea.RightDockWidgetArea
+                | Qt.DockWidgetArea.TopDockWidgetArea
+            )
+            map_dock = workspace.add_panel(
+                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea,
+                group="workspace", allowed_areas=workspace_areas, floatable=False,
+            )
+            camera = workspace.add_panel(
+                "camera", "Camera", QLabel("Camera"), Qt.DockWidgetArea.RightDockWidgetArea,
+                group="workspace", allowed_areas=workspace_areas, floatable=False,
+            )
+            logs = workspace.add_panel(
+                "logs", "Logs", QLabel("Logs"), Qt.DockWidgetArea.BottomDockWidgetArea,
+                group="bottom", allowed_areas=Qt.DockWidgetArea.BottomDockWidgetArea,
+                floatable=False,
+            )
+            workspace.resize(1200, 700)
+            workspace.show()
+            self.app.processEvents()
+
+            self.assertTrue(workspace.place_panel(map_dock, camera, "right"))
+            self.assertGreater(camera.x(), map_dock.x())
+            self.assertFalse(workspace.place_panel(map_dock, logs, "tab"))
+            self.assertFalse(map_dock.allowedAreas() & Qt.DockWidgetArea.BottomDockWidgetArea)
+            self.assertFalse(
+                camera.features() & camera.DockWidgetFeature.DockWidgetFloatable
+            )
+            workspace.close()
+
     def test_legacy_central_map_layout_migrates_without_losing_camera(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory) / "layout.json"
@@ -199,6 +233,55 @@ class PanelWorkspaceTests(unittest.TestCase):
             self.assertGreater(map_dock.width(), 100)
             self.assertGreater(camera.width(), 100)
             self.assertGreater(camera.x(), map_dock.x())
+            workspace.close()
+
+    def test_v2_layout_is_normalized_to_panel_regions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "layout.json"
+            old = PanelWorkspace(state_path)
+            old.STATE_VERSION = 2
+            old.resize(1000, 600)
+            old_map = old.add_panel(
+                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.BottomDockWidgetArea
+            )
+            old_camera = old.add_panel(
+                "camera", "Camera", QLabel("Camera"),
+                Qt.DockWidgetArea.RightDockWidgetArea,
+            )
+            old.show()
+            self.app.processEvents()
+            old.save_layout()
+            old.close()
+
+            workspace = PanelWorkspace(state_path)
+            workspace.resize(1000, 600)
+            map_dock = workspace.add_panel(
+                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea,
+                allowed_areas=(
+                    Qt.DockWidgetArea.LeftDockWidgetArea
+                    | Qt.DockWidgetArea.RightDockWidgetArea
+                    | Qt.DockWidgetArea.TopDockWidgetArea
+                ),
+            )
+            camera = workspace.add_panel(
+                "camera", "Camera", QLabel("Camera"),
+                Qt.DockWidgetArea.RightDockWidgetArea,
+                allowed_areas=(
+                    Qt.DockWidgetArea.LeftDockWidgetArea
+                    | Qt.DockWidgetArea.RightDockWidgetArea
+                    | Qt.DockWidgetArea.TopDockWidgetArea
+                ),
+            )
+            workspace.show()
+            self.app.processEvents()
+
+            self.assertTrue(workspace.restore_layout())
+            self.assertEqual(
+                workspace.dockWidgetArea(map_dock), Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            self.assertEqual(
+                workspace.dockWidgetArea(camera), Qt.DockWidgetArea.RightDockWidgetArea
+            )
             workspace.close()
 
     def test_panel_visibility_stays_available_outside_edit_mode(self) -> None:

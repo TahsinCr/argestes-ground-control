@@ -126,6 +126,11 @@ class UiContractTests(unittest.TestCase):
                 self.app.processEvents()
                 self.assertIn("map", window.workspace.panels)
                 self.assertIs(window.workspace.panels["map"], window.map_dock)
+                self.assertIn("map", window.activity_bar.panel_buttons)
+                self.assertNotIn("extensions", window.workspace.panels)
+                self.assertIs(window.sidebar.parentWidget(), window.content_splitter)
+                self.assertIs(window.workspace.parentWidget(), window.content_splitter)
+                self.assertTrue(window.sidebar.isHidden())
                 self.assertIsNotNone(window.log_dock.titleBarWidget())
                 window._focus_map()
                 self.assertTrue(all(
@@ -142,6 +147,18 @@ class UiContractTests(unittest.TestCase):
                 window._edit_layout_action.trigger()
                 self.assertTrue(window.workspace.edit_mode)
                 self.assertIsNone(window.log_dock.titleBarWidget())
+                window._show_sidebar_view("extensions")
+                self.app.processEvents()
+                self.assertFalse(window.sidebar.isHidden())
+                window.content_splitter.setSizes([380, 700])
+                self.app.processEvents()
+                before = window.content_splitter.sizes()[0]
+                window._set_extension_sidebar_visible(False)
+                window._set_extension_sidebar_visible(True)
+                self.app.processEvents()
+                self.assertAlmostEqual(
+                    window.content_splitter.sizes()[0], before, delta=2
+                )
                 window._edit_layout_action.trigger()
                 self.assertFalse(window.workspace.edit_mode)
                 window.close()
@@ -180,11 +197,17 @@ class UiContractTests(unittest.TestCase):
         sidebar_visibility: list[bool] = []
         panel_visibility: list[tuple[str, bool]] = []
         side_by_side: list[str] = []
+        workspace_visibility: list[tuple[str, bool]] = []
         bar.flight_sidebar_toggled.connect(sidebar_visibility.append)
         bar.bottom_panel_toggled.connect(
             lambda panel, visible: panel_visibility.append((panel, visible))
         )
         bar.bottom_panel_side_by_side_requested.connect(side_by_side.append)
+        bar.panel_visibility_requested.connect(
+            lambda key, visible: workspace_visibility.append((key, visible))
+        )
+        map_button = bar.add_panel_button("map", "Harita")
+        camera_button = bar.add_panel_button("camera.wall", "Kamera")
         bar.resize(48, 400)
         bar.show()
         self.app.processEvents()
@@ -204,6 +227,12 @@ class UiContractTests(unittest.TestCase):
 
         self.assertEqual(bar.width(), 48)
         self.assertEqual(tuple(bar.buttons), ("logs", "parameters"))
+        self.assertEqual(tuple(bar.panel_buttons), ("map", "camera.wall"))
+        map_button.click()
+        camera_button.click()
+        self.assertEqual(workspace_visibility, [("map", True), ("camera.wall", True)])
+        bar.remove_panel_button("camera.wall")
+        self.assertNotIn("camera.wall", bar.panel_buttons)
         self.assertEqual(bar.sidebar_button.toolTip(), "Uçuş paneli")
         self.assertTrue(bar.sidebar_button.isChecked())
         self.assertTrue(bar.buttons["logs"].isChecked())

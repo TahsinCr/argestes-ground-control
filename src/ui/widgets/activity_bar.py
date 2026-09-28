@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QPointF, QRectF, pyqtSignal, Qt
-from PyQt6.QtGui import QContextMenuEvent, QPainter, QPalette, QPen
+from PyQt6.QtGui import QContextMenuEvent, QPainter, QPalette, QPen, QPolygonF
 from PyQt6.QtWidgets import QMenu, QToolButton, QVBoxLayout, QWidget
 
 from src.ui.i18n import t
@@ -62,6 +62,25 @@ class _ActivityButton(QToolButton):
             for offset, knob in ((4, 10), (10, 5), (16, 13)):
                 painter.drawLine(QPointF(x + 3, y + offset), QPointF(x + 17, y + offset))
                 painter.drawEllipse(QPointF(x + knob, y + offset), 2, 2)
+        elif self.key.startswith("panel:"):
+            panel_key = self.key.removeprefix("panel:")
+            if panel_key == "map":
+                painter.drawPolygon(QPolygonF([
+                    QPointF(x + 2, y + 5), QPointF(x + 8, y + 3),
+                    QPointF(x + 14, y + 5), QPointF(x + 18, y + 3),
+                    QPointF(x + 18, y + 16), QPointF(x + 14, y + 18),
+                    QPointF(x + 8, y + 16), QPointF(x + 2, y + 18),
+                ]))
+                painter.drawLine(QPointF(x + 8, y + 3), QPointF(x + 8, y + 16))
+                painter.drawLine(QPointF(x + 14, y + 5), QPointF(x + 14, y + 18))
+            elif panel_key.startswith("camera"):
+                painter.drawRoundedRect(QRectF(x + 2, y + 6, 16, 12), 2, 2)
+                painter.drawRect(QRectF(x + 6, y + 3, 6, 3))
+                painter.drawEllipse(QPointF(x + 10, y + 12), 3, 3)
+            else:
+                painter.drawRoundedRect(QRectF(x + 2, y + 2, 16, 16), 2, 2)
+                painter.drawLine(QPointF(x + 5, y + 7), QPointF(x + 15, y + 7))
+                painter.drawLine(QPointF(x + 5, y + 11), QPointF(x + 15, y + 11))
         painter.end()
 
 
@@ -72,6 +91,7 @@ class ActivityBar(QWidget):
     bottom_panel_toggled = pyqtSignal(str, bool)
     bottom_panel_side_by_side_requested = pyqtSignal(str)
     sidebar_view_requested = pyqtSignal(str)
+    panel_visibility_requested = pyqtSignal(str, bool)
 
     _BOTTOM_PANELS = ("logs", "parameters")
 
@@ -86,6 +106,7 @@ class ActivityBar(QWidget):
         layout.setSpacing(2)
         self._layout = layout
         self.extension_view_buttons: dict[str, _ActivityButton] = {}
+        self.panel_buttons: dict[str, _ActivityButton] = {}
 
         self.sidebar_button = self._make_button("flight_panels")
         self.sidebar_button.setChecked(True)
@@ -154,6 +175,41 @@ class ActivityBar(QWidget):
             self._layout.removeWidget(button)
             button.hide()
             button.deleteLater()
+
+    def add_panel_button(self, key: str, title: str) -> _ActivityButton:
+        button = self.panel_buttons.get(key)
+        if button is not None:
+            self.set_panel_title(key, title)
+            return button
+        button = _ActivityButton(f"panel:{key}", self, language=self.language)
+        self.panel_buttons[key] = button
+        self.set_panel_title(key, title)
+        button.clicked.connect(
+            lambda checked, panel_key=key: self.panel_visibility_requested.emit(
+                panel_key, checked
+            )
+        )
+        index = 2 + len(self.extension_view_buttons) + len(self.panel_buttons) - 1
+        self._layout.insertWidget(index, button)
+        return button
+
+    def remove_panel_button(self, key: str) -> None:
+        button = self.panel_buttons.pop(key, None)
+        if button is not None:
+            self._layout.removeWidget(button)
+            button.hide()
+            button.deleteLater()
+
+    def set_panel_title(self, key: str, title: str) -> None:
+        button = self.panel_buttons.get(key)
+        if button is not None:
+            button.setAccessibleName(title)
+            button.setToolTip(title)
+
+    def set_panel_checked(self, key: str, checked: bool) -> None:
+        button = self.panel_buttons.get(key)
+        if button is not None:
+            button.setChecked(checked)
 
     def _on_extension_view_clicked(self, identifier: str, checked: bool) -> None:
         if checked:

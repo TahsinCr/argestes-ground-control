@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QSplitter,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -75,6 +76,11 @@ class _VisualDockPreference:
 
 class MainWindow(QMainWindow):
     shutdown_requested = pyqtSignal()
+    _WORKSPACE_AREAS = (
+        Qt.DockWidgetArea.LeftDockWidgetArea
+        | Qt.DockWidgetArea.RightDockWidgetArea
+        | Qt.DockWidgetArea.TopDockWidgetArea
+    )
 
     def __init__(
         self,
@@ -146,13 +152,19 @@ class MainWindow(QMainWindow):
         content_layout.setSpacing(0)
         self.activity_bar = ActivityBar(self.language, content)
         content_layout.addWidget(self.activity_bar)
+        self.content_splitter = QSplitter(Qt.Orientation.Horizontal, content)
+        self.content_splitter.setChildrenCollapsible(False)
+        self.content_splitter.setHandleWidth(4)
+        self._sidebar_last_width = 320
+        self._sidebar_explicitly_visible = False
         self.workspace = PanelWorkspace(
-            self.base_dir / "data" / "workspace-layout.json", content,
+            self.base_dir / "data" / "workspace-layout.json", self.content_splitter,
             language=self.language,
         )
         self._build_sidebar()
         self._build_workspace()
-        self.sidebar = QStackedWidget(self.workspace)
+        self.sidebar = QStackedWidget(self.content_splitter)
+        self.sidebar.setObjectName("ExtensionSidebar")
         self.sidebar.setMinimumWidth(280)
         self.extension_panel = ExtensionPanel(self.extension_host, self.language, self.sidebar,
                                               apply_change=self._apply_extension_change,
@@ -166,18 +178,21 @@ class MainWindow(QMainWindow):
             self.sidebar.addWidget(widget)
             self._extension_sidebar_widgets[contribution.identifier] = widget
             self.activity_bar.add_extension_view(contribution.identifier, contribution.title)
-        self.extension_dock = self.workspace.add_panel(
-            "extensions", "Eklentiler", self.sidebar,
-            Qt.DockWidgetArea.LeftDockWidgetArea,
-        )
-        self.extension_dock.hide()
+        self.content_splitter.addWidget(self.sidebar)
+        self.content_splitter.addWidget(self.workspace)
+        self.content_splitter.setStretchFactor(0, 0)
+        self.content_splitter.setStretchFactor(1, 1)
+        self.sidebar.hide()
         self.activity_bar.sidebar_view_requested.connect(self._show_sidebar_view)
         self.activity_bar.flight_sidebar_toggled.connect(self._toggle_flight_panels)
+        self.activity_bar.panel_visibility_requested.connect(
+            self._set_workspace_panel_visibility
+        )
         self.activity_bar.bottom_panel_toggled.connect(self._on_bottom_panel_toggled)
         self.activity_bar.bottom_panel_side_by_side_requested.connect(
             self._open_bottom_panel_beside
         )
-        content_layout.addWidget(self.workspace, 1)
+        content_layout.addWidget(self.content_splitter, 1)
         self.workspace.show()
         layout.addWidget(content, 1)
         self._build_view_menu()
@@ -245,35 +260,83 @@ class MainWindow(QMainWindow):
         )
         self.vehicle_controls.command_requested.connect(self.command_service.issue_command)
         area = Qt.DockWidgetArea.LeftDockWidgetArea
-        flight = self.workspace.add_panel("flight", "Araç Dinamiği", self.flight_panel, area)
-        telemetry = self.workspace.add_panel("telemetry", "Araç Telemetrisi", self.telemetry_panel, area)
-        controls = self.workspace.add_panel("commands", "Hızlı Komutlar", self.vehicle_controls, area)
-        self.workspace.splitDockWidget(flight, telemetry, Qt.Orientation.Vertical)
-        self.workspace.splitDockWidget(telemetry, controls, Qt.Orientation.Vertical)
+        vehicle_areas = Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        flight = self.workspace.add_panel(
+            "flight", "Araç Dinamiği", self.flight_panel, area,
+            group="vehicle", allowed_areas=vehicle_areas, floatable=False,
+        )
+        telemetry = self.workspace.add_panel(
+            "telemetry", "Araç Telemetrisi", self.telemetry_panel, area,
+            group="vehicle", allowed_areas=vehicle_areas, floatable=False,
+        )
+        controls = self.workspace.add_panel(
+            "commands", "Hızlı Komutlar", self.vehicle_controls, area,
+            group="vehicle", allowed_areas=vehicle_areas, floatable=False,
+        )
+        self.workspace.place_panel(flight, telemetry, "below")
+        self.workspace.place_panel(telemetry, controls, "below")
         self._flight_docks = (flight, telemetry, controls)
 
     def _show_sidebar_view(self, view: str) -> None:
         if view == "flight":
-            self.extension_dock.hide()
+            self._set_extension_sidebar_visible(False)
             for dock in self._flight_docks:
                 dock.show()
             return
         if view:
             for dock in self._flight_docks:
                 dock.hide()
-        self.extension_dock.setVisible(bool(view))
-        if view:
-            self.workspace.resizeDocks(
-                [self.extension_dock], [320], Qt.Orientation.Horizontal
-            )
             self.sidebar.setCurrentWidget(
                 self.extension_panel if view == "extensions" else
                 self._extension_sidebar_widgets.get(view, self.extension_panel)
             )
+            self._set_extension_sidebar_visible(True)
+        else:
+            self._set_extension_sidebar_visible(False)
+
+    def _set_extension_sidebar_visible(self, visible: bool) -> None:
+        if visible == self._sidebar_explicitly_visible:
+            return
+        if not visible:
+            width = self.sidebar.width()
+            if width >= self.sidebar.minimumWidth():
+                self._sidebar_last_width = width
+            self._sidebar_explicitly_visible = False
+            self.sidebar.hide()
+            return
+        self._sidebar_explicitly_visible = True
+        self.sidebar.show()
+        width = max(280, self._sidebar_last_width)
+        QTimer.singleShot(
+            0,
+            lambda remembered=width: self.content_splitter.setSizes(
+                [remembered, max(1, self.content_splitter.width() - remembered)]
+            ),
+        )
 
     def _toggle_flight_panels(self, visible: bool) -> None:
+        if visible:
+            self._set_extension_sidebar_visible(False)
         for dock in self._flight_docks:
             dock.setVisible(visible)
+
+    def _register_workspace_panel_button(
+        self, key: str, title: str, dock
+    ) -> None:
+        button = self.activity_bar.add_panel_button(key, title)
+        button.setChecked(not dock.isHidden())
+        dock.visibilityChanged.connect(
+            lambda _visible, panel_key=key, panel=dock:
+            self.activity_bar.set_panel_checked(panel_key, not panel.isHidden())
+        )
+
+    def _set_workspace_panel_visibility(self, key: str, visible: bool) -> None:
+        dock = self.workspace.panels.get(key)
+        if dock is None:
+            return
+        dock.setVisible(visible)
+        if visible:
+            dock.raise_()
 
     def _apply_extension_change(self, identifier: str, enabled: bool) -> None:
         was_active = self.extension_host.is_active(identifier)
@@ -330,7 +393,11 @@ class MainWindow(QMainWindow):
             )
             dock = self.workspace.add_panel(
                 contribution.identifier, self._visual_title(contribution.identifier), widget,
-                area,
+                area, group="workspace", allowed_areas=self._WORKSPACE_AREAS,
+                floatable=False,
+            )
+            self._register_workspace_panel_button(
+                contribution.identifier, dock.windowTitle(), dock
             )
             if preference and preference.floating:
                 dock.setFloating(True)
@@ -343,11 +410,15 @@ class MainWindow(QMainWindow):
                 first, second = (
                     (anchor, dock) if preference.after_anchor else (dock, anchor)
                 )
-                self.workspace.splitDockWidget(first, second, preference.orientation)
-            elif area == map_area:
-                self.workspace.splitDockWidget(
-                    self.map_dock, dock, Qt.Orientation.Horizontal
+                self.workspace.place_panel(
+                    first, second,
+                    "right" if preference.orientation == Qt.Orientation.Horizontal
+                    and preference.after_anchor else
+                    "left" if preference.orientation == Qt.Orientation.Horizontal else
+                    "below" if preference.after_anchor else "above",
                 )
+            elif area == map_area:
+                self.workspace.place_panel(self.map_dock, dock, "right")
             self._extension_visual_widgets.append(widget)
             self._extension_visual_by_id[contribution.identifier] = widget
             self._refresh_panel_menu()
@@ -387,6 +458,7 @@ class MainWindow(QMainWindow):
                         key, dock
                     )
                 self.workspace.remove_panel(key)
+                self.activity_bar.remove_panel_button(key)
                 widget.hide()
                 widget.setParent(None)
                 widget.deleteLater()
@@ -413,18 +485,25 @@ class MainWindow(QMainWindow):
         self.map_dock = self.workspace.add_panel(
             "map", "Harita", self.map_panel,
             Qt.DockWidgetArea.RightDockWidgetArea,
+            group="workspace", allowed_areas=self._WORKSPACE_AREAS,
+            floatable=False,
         )
+        self._register_workspace_panel_button("map", "Harita", self.map_dock)
         self._extension_visual_widgets: list[QWidget] = []
         self._extension_visual_by_id: dict[str, QWidget] = {}
         self._visual_dock_preferences: dict[str, _VisualDockPreference] = {}
         self.log_panel = EventLogPanel("", "", "", self.workspace)
         self.parameters_panel = ParametersPanel("", "", "", self.workspace)
         bottom = Qt.DockWidgetArea.BottomDockWidgetArea
-        self.log_dock = self.workspace.add_panel("logs", "Loglar", self.log_panel, bottom)
-        self.parameters_dock = self.workspace.add_panel(
-            "parameters", "Parametreler", self.parameters_panel, bottom
+        self.log_dock = self.workspace.add_panel(
+            "logs", "Loglar", self.log_panel, bottom,
+            group="bottom", allowed_areas=bottom, floatable=False,
         )
-        self.workspace.tabifyDockWidget(self.log_dock, self.parameters_dock)
+        self.parameters_dock = self.workspace.add_panel(
+            "parameters", "Parametreler", self.parameters_panel, bottom,
+            group="bottom", allowed_areas=bottom, floatable=False,
+        )
+        self.workspace.place_panel(self.log_dock, self.parameters_dock, "tab")
         self.parameters_dock.hide()
         for contribution in self.extension_host.visual_views():
             widget = contribution.factory(self.workspace, self.theme, self.language)
@@ -433,10 +512,13 @@ class MainWindow(QMainWindow):
             dock = self.workspace.add_panel(
                 contribution.identifier, self._visual_title(contribution.identifier), widget,
                 Qt.DockWidgetArea.RightDockWidgetArea,
+                group="workspace", allowed_areas=self._WORKSPACE_AREAS,
+                floatable=False,
             )
-            self.workspace.splitDockWidget(
-                self.map_dock, dock, Qt.Orientation.Horizontal
+            self._register_workspace_panel_button(
+                contribution.identifier, dock.windowTitle(), dock
             )
+            self.workspace.place_panel(self.map_dock, dock, "right")
             self._extension_visual_widgets.append(widget)
             self._extension_visual_by_id[contribution.identifier] = widget
 
@@ -471,7 +553,7 @@ class MainWindow(QMainWindow):
             return
         self.activity_bar.set_bottom_panel_checked(panel, True)
         self.activity_bar.set_bottom_panel_checked(other_key, True)
-        self.workspace.splitDockWidget(other, selected, Qt.Orientation.Horizontal)
+        self.workspace.place_panel(other, selected, "right")
         selected.show()
 
     def _build_view_menu(self) -> None:
@@ -504,7 +586,7 @@ class MainWindow(QMainWindow):
         extension_views = tuple(
             key for key in self.workspace.panels
             if key not in {
-                "map", "flight", "telemetry", "commands", "logs", "parameters", "extensions"
+                "map", "flight", "telemetry", "commands", "logs", "parameters"
             }
         )
         groups = (
@@ -512,7 +594,6 @@ class MainWindow(QMainWindow):
             ("Araç" if not english else "Vehicle", ("flight", "telemetry", "commands")),
             ("Alt paneller" if not english else "Bottom panels", ("logs", "parameters")),
             ("Eklenti görünümleri" if not english else "Extension views", extension_views),
-            ("Eklentiler" if not english else "Extensions", ("extensions",)),
         )
         for title, keys in groups:
             actions = [
@@ -553,10 +634,11 @@ class MainWindow(QMainWindow):
             "commands": "Quick Commands" if english else "Hızlı Komutlar",
             "logs": "Logs" if english else "Loglar",
             "parameters": "Parameters" if english else "Parametreler",
-            "extensions": "Extensions" if english else "Eklentiler",
         }
         for key, dock in self.workspace.panels.items():
             dock.setWindowTitle(labels.get(key, self._visual_title(key)))
+            if key in self.activity_bar.panel_buttons:
+                self.activity_bar.set_panel_title(key, dock.windowTitle())
 
     def _set_layout_edit_mode(self, enabled: bool) -> None:
         self.workspace.set_edit_mode(enabled)
@@ -569,6 +651,7 @@ class MainWindow(QMainWindow):
         self.settings_service.save_async(SettingsModel.from_dict(payload))
 
     def _focus_map(self) -> None:
+        self._set_extension_sidebar_visible(False)
         for dock in self.workspace.panels.values():
             dock.hide()
         self.map_dock.show()
@@ -579,27 +662,35 @@ class MainWindow(QMainWindow):
             self.activity_bar.set_bottom_panel_checked(key, False)
 
     def _reset_workspace(self) -> None:
+        self._set_extension_sidebar_visible(False)
         for dock in self.workspace.panels.values():
             dock.setFloating(False)
         for dock in self._flight_docks:
-            self.workspace.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+            self.workspace.move_panel_to_area(
+                dock, Qt.DockWidgetArea.LeftDockWidgetArea
+            )
             dock.show()
-        self.workspace.splitDockWidget(self._flight_docks[0], self._flight_docks[1], Qt.Orientation.Vertical)
-        self.workspace.splitDockWidget(self._flight_docks[1], self._flight_docks[2], Qt.Orientation.Vertical)
-        self.workspace.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.map_dock)
+        self.workspace.place_panel(self._flight_docks[0], self._flight_docks[1], "below")
+        self.workspace.place_panel(self._flight_docks[1], self._flight_docks[2], "below")
+        self.workspace.move_panel_to_area(
+            self.map_dock, Qt.DockWidgetArea.RightDockWidgetArea
+        )
         self.map_dock.show()
-        self.workspace.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.log_dock)
-        self.workspace.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.parameters_dock)
-        self.workspace.tabifyDockWidget(self.log_dock, self.parameters_dock)
+        self.workspace.move_panel_to_area(
+            self.log_dock, Qt.DockWidgetArea.BottomDockWidgetArea
+        )
+        self.workspace.move_panel_to_area(
+            self.parameters_dock, Qt.DockWidgetArea.BottomDockWidgetArea
+        )
+        self.workspace.place_panel(self.log_dock, self.parameters_dock, "tab")
         self.log_dock.show()
         self.parameters_dock.hide()
-        self.extension_dock.hide()
         for key, dock in self.workspace.panels.items():
-            if key not in {"map", "flight", "telemetry", "commands", "logs", "parameters", "extensions"}:
-                self.workspace.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
-                self.workspace.splitDockWidget(
-                    self.map_dock, dock, Qt.Orientation.Horizontal
+            if key not in {"map", "flight", "telemetry", "commands", "logs", "parameters"}:
+                self.workspace.move_panel_to_area(
+                    dock, Qt.DockWidgetArea.RightDockWidgetArea
                 )
+                self.workspace.place_panel(self.map_dock, dock, "right")
                 dock.show()
         self.activity_bar.sidebar_button.setChecked(True)
         self.activity_bar.extensions_button.setChecked(False)
@@ -616,7 +707,7 @@ class MainWindow(QMainWindow):
         )
         visible_right = [
             dock for key, dock in self.workspace.panels.items()
-            if key not in {"map", "flight", "telemetry", "commands", "logs", "parameters", "extensions"}
+            if key not in {"map", "flight", "telemetry", "commands", "logs", "parameters"}
             and dock.isVisible()
             and self.workspace.dockWidgetArea(dock)
             == self.workspace.dockWidgetArea(self.map_dock)
@@ -741,12 +832,12 @@ class MainWindow(QMainWindow):
         self.activity_bar.sidebar_button.setChecked(
             any(not dock.isHidden() for dock in self._flight_docks)
         )
-        self.activity_bar.extensions_button.setChecked(not self.extension_dock.isHidden())
+        self.activity_bar.extensions_button.setChecked(self._sidebar_explicitly_visible)
         self.activity_bar.set_bottom_panel_checked("logs", not self.log_dock.isHidden())
         self.activity_bar.set_bottom_panel_checked("parameters", not self.parameters_dock.isHidden())
 
     def _connect_signals(self) -> None:
-        for dock in (*self._flight_docks, self.extension_dock, self.log_dock, self.parameters_dock):
+        for dock in (*self._flight_docks, self.log_dock, self.parameters_dock):
             dock.visibilityChanged.connect(lambda _visible: self._sync_activity_buttons())
         self.telemetry_service.telemetry_updated.connect(self._on_telemetry)
         self.parameter_service.parameters_changed.connect(self.parameters_panel.set_parameters)
@@ -1011,8 +1102,7 @@ class MainWindow(QMainWindow):
         if not getattr(self, "_workspace_disconnected", False):
             self._workspace_disconnected = True
             for dock in (
-                *self._flight_docks, self.extension_dock,
-                self.log_dock, self.parameters_dock,
+                *self._flight_docks, self.log_dock, self.parameters_dock,
             ):
                 dock.visibilityChanged.disconnect()
         for widget in self._extension_visual_widgets:
