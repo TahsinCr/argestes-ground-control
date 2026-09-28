@@ -8,84 +8,14 @@ from PyQt6.QtCore import QByteArray, QEvent, QPoint, QTimer, Qt
 from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import (
     QApplication,
+    QAbstractButton,
     QDockWidget,
-    QHBoxLayout,
-    QLabel,
     QMainWindow,
     QMenu,
+    QStyle,
     QTabWidget,
-    QToolButton,
     QWidget,
 )
-
-
-class _DockTitleBar(QWidget):
-    """Edit-mode title bar with explicit, reliable dock drop targeting."""
-
-    def __init__(self, workspace: "PanelWorkspace", dock: QDockWidget) -> None:
-        super().__init__(dock)
-        self._workspace = workspace
-        self._dock = dock
-        self._press_position: QPoint | None = None
-        self._dragging = False
-        self.setObjectName("PanelDockTitleBar")
-        self.setCursor(Qt.CursorShape.OpenHandCursor)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 2, 4, 2)
-        layout.setSpacing(4)
-        self._title = QLabel(dock.windowTitle(), self)
-        self._title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        layout.addWidget(self._title, 1)
-        dock.windowTitleChanged.connect(self._title.setText)
-        if dock.features() & QDockWidget.DockWidgetFeature.DockWidgetClosable:
-            close_button = QToolButton(self)
-            close_button.setText("×")
-            close_button.setToolTip(
-                "Paneli gizle" if workspace.language == "tr" else "Hide panel"
-            )
-            close_button.setFixedSize(22, 20)
-            close_button.clicked.connect(dock.hide)
-            layout.addWidget(close_button)
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.RightButton:
-            self._workspace._show_panel_menu(
-                self._dock, self._dock.mapFromGlobal(event.globalPosition().toPoint())
-            )
-            event.accept()
-            return
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._press_position = event.globalPosition().toPoint()
-            self._dragging = False
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if (
-            self._press_position is not None
-            and event.buttons() & Qt.MouseButton.LeftButton
-            and (event.globalPosition().toPoint() - self._press_position).manhattanLength()
-            >= QApplication.startDragDistance()
-        ):
-            self._dragging = True
-            event.accept()
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            if self._dragging:
-                self._workspace.drop_panel_at(
-                    self._dock, event.globalPosition().toPoint()
-                )
-            self._press_position = None
-            self._dragging = False
-            self.setCursor(Qt.CursorShape.OpenHandCursor)
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
 
 
 class PanelWorkspace(QMainWindow):
@@ -125,7 +55,7 @@ class PanelWorkspace(QMainWindow):
         self._panel_size_restore_enabled = False
         self.edit_mode = False
         self._quiet_titles: dict[str, QWidget] = {}
-        self._edit_titles: dict[str, _DockTitleBar] = {}
+        self._native_drag_start: tuple[QDockWidget, QPoint, bool] | None = None
 
     def add_panel(
         self,
@@ -167,6 +97,38 @@ class PanelWorkspace(QMainWindow):
         return dock
 
     def eventFilter(self, watched, event) -> bool:
+        if isinstance(event, QMouseEvent):
+            position = event.globalPosition().toPoint()
+            if event.type() == QEvent.Type.MouseButtonPress:
+                dock = self._dock_from_mouse_target(watched)
+                if dock is not None and self.edit_mode:
+                    local = dock.mapFromGlobal(position)
+                    title_height = dock.style().pixelMetric(
+                        QStyle.PixelMetric.PM_TitleBarHeight, None, dock
+                    )
+                    if 0 <= local.y() <= max(24, title_height + 4):
+                        self._native_drag_start = (dock, position, False)
+            elif event.type() == QEvent.Type.MouseMove and self._native_drag_start:
+                dock, start, dragging = self._native_drag_start
+                if (
+                    event.buttons() & Qt.MouseButton.LeftButton
+                    and (position - start).manhattanLength()
+                    >= QApplication.startDragDistance()
+                ):
+                    self._native_drag_start = (dock, start, True)
+                    return True
+                if dragging:
+                    return True
+            elif event.type() == QEvent.Type.MouseButtonRelease and self._native_drag_start:
+                dock, start, dragging = self._native_drag_start
+                self._native_drag_start = None
+                if event.button() == Qt.MouseButton.LeftButton and dragging:
+                    placed = self.drop_panel_at(dock, position)
+                    if not placed and self._panel_options[
+                        self._panel_keys[dock]
+                    ][2]:
+                        dock.setFloating(True)
+                    return True
         if (
             event.type() == QEvent.Type.Resize
             and not self._restoring_panel_sizes
@@ -273,13 +235,32 @@ class PanelWorkspace(QMainWindow):
             features |= QDockWidget.DockWidgetFeature.DockWidgetFloatable
         dock.setFeatures(features)
         if self.edit_mode and movable:
-            title_bar = self._edit_titles.get(key)
-            if title_bar is None:
-                title_bar = _DockTitleBar(self, dock)
-                self._edit_titles[key] = title_bar
-            dock.setTitleBarWidget(title_bar)
+            dock.setTitleBarWidget(None)
+            self._watch_dock_mouse_events(dock, enabled=True)
         else:
+            self._watch_dock_mouse_events(dock, enabled=False)
             dock.setTitleBarWidget(self._quiet_titles[key])
+
+    def _watch_dock_mouse_events(self, dock: QDockWidget, *, enabled: bool) -> None:
+        for child in dock.findChildren(QWidget):
+            if child is self._quiet_titles.get(self._panel_keys.get(dock, "")):
+                continue
+            if enabled:
+                child.installEventFilter(self)
+            else:
+                child.removeEventFilter(self)
+
+    def _dock_from_mouse_target(self, target) -> QDockWidget | None:
+        if isinstance(target, QAbstractButton):
+            return None
+        widget = target if isinstance(target, QWidget) else None
+        while widget is not None and widget is not self:
+            if isinstance(widget, QAbstractButton):
+                return None
+            if isinstance(widget, QDockWidget):
+                return widget if widget in self._panel_keys else None
+            widget = widget.parentWidget()
+        return None
 
     def drop_panel_at(self, dock: QDockWidget, global_position: QPoint) -> bool:
         """Resolve drag drops to a panel center, edge, or workspace outer edge."""
@@ -456,7 +437,9 @@ class PanelWorkspace(QMainWindow):
         self._panel_default_areas.pop(key, None)
         self._panel_sizes.pop(key, None)
         self._quiet_titles.pop(key, None)
-        self._edit_titles.pop(key, None)
+        dock.removeEventFilter(self)
+        for child in dock.findChildren(QWidget):
+            child.removeEventFilter(self)
         widget = dock.widget()
         if widget is not None:
             dock.setWidget(None)

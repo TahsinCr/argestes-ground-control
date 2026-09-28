@@ -146,9 +146,7 @@ class UiContractTests(unittest.TestCase):
                 self.assertTrue(window.parameters_dock.isHidden())
                 window._edit_layout_action.trigger()
                 self.assertTrue(window.workspace.edit_mode)
-                self.assertEqual(
-                    window.log_dock.titleBarWidget().objectName(), "PanelDockTitleBar"
-                )
+                self.assertIsNone(window.log_dock.titleBarWidget())
                 window._show_sidebar_view("extensions")
                 self.app.processEvents()
                 self.assertFalse(window.sidebar.isHidden())

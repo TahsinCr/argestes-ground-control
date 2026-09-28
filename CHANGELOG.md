@@ -14,9 +14,9 @@ All notable changes to this project will be documented in this file.
   to hit. The Extensions view is pinned beside (not inside) the workspace and
   can be resized with its splitter without joining or obstructing panel docks.
   Previous layout versions are normalized into these regions when loaded.
-  In edit mode, panel title bars now resolve drag releases to explicit tab,
-  edge-split, and outer-edge placements so map/camera targets do not depend on
-  Qt's small native dock drop indicators.
+  The native Qt title bar and drag appearance are preserved in edit mode; a
+  shared workspace drop resolver makes center-tab, edge-split and outer-edge
+  placement reliable without replacing the frame.
 * Promoted the map from the workspace's fixed central widget to a first-class,
   closable dock panel. Camera views now split to the right of the map by
   default, and the two can be freely repositioned or tabified in layout-edit

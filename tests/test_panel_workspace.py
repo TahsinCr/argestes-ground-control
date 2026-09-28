@@ -212,22 +212,22 @@ class PanelWorkspaceTests(unittest.TestCase):
             workspace.show()
             workspace.set_edit_mode(True)
             self.app.processEvents()
-            self.assertEqual(camera.titleBarWidget().objectName(), "PanelDockTitleBar")
+            self.assertIsNone(camera.titleBarWidget())
 
-            title_bar = camera.titleBarWidget()
-            start = title_bar.rect().center()
+            start = QPoint(45, 10)
+            start_global = camera.mapToGlobal(start)
             map_center = map_dock.mapToGlobal(map_dock.rect().center())
-            target = title_bar.mapFromGlobal(map_center)
+            target = camera.mapFromGlobal(map_center)
             QApplication.sendEvent(
-                title_bar,
+                camera,
                 QMouseEvent(
                     QEvent.Type.MouseButtonPress, QPointF(start),
-                    QPointF(title_bar.mapToGlobal(start)), Qt.MouseButton.LeftButton,
+                    QPointF(start_global), Qt.MouseButton.LeftButton,
                     Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
                 ),
             )
             QApplication.sendEvent(
-                title_bar,
+                camera,
                 QMouseEvent(
                     QEvent.Type.MouseMove, QPointF(target), QPointF(map_center),
                     Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton,
@@ -235,7 +235,7 @@ class PanelWorkspaceTests(unittest.TestCase):
                 ),
             )
             QApplication.sendEvent(
-                title_bar,
+                camera,
                 QMouseEvent(
                     QEvent.Type.MouseButtonRelease, QPointF(target),
                     QPointF(map_center), Qt.MouseButton.LeftButton,
@@ -371,7 +371,7 @@ class PanelWorkspaceTests(unittest.TestCase):
             dock.close()
             self.assertTrue(dock.isHidden())
             workspace.set_edit_mode(True)
-            self.assertEqual(dock.titleBarWidget().objectName(), "PanelDockTitleBar")
+            self.assertIsNone(dock.titleBarWidget())
             self.assertTrue(
                 dock.features() & dock.DockWidgetFeature.DockWidgetMovable
             )
