@@ -48,11 +48,6 @@ class _ActivityButton(QToolButton):
         if self.key == "flight_panels":
             painter.drawRoundedRect(QRectF(x + 2, y + 2, 16, 16), 1.5, 1.5)
             painter.drawLine(QPointF(x + 8, y + 2), QPointF(x + 8, y + 18))
-        elif self.key == "panels":
-            painter.drawRoundedRect(QRectF(x + 2, y + 2, 16, 16), 1.5, 1.5)
-            painter.drawLine(QPointF(x + 9, y + 3), QPointF(x + 9, y + 17))
-            painter.drawLine(QPointF(x + 11, y + 7), QPointF(x + 17, y + 7))
-            painter.drawLine(QPointF(x + 11, y + 12), QPointF(x + 17, y + 12))
         elif self.key == "extensions":
             for left, top in ((3, 3), (12, 3), (3, 12), (12, 12)):
                 painter.drawRoundedRect(QRectF(x + left, y + top, 6, 6), 1, 1)
@@ -77,7 +72,6 @@ class ActivityBar(QWidget):
     bottom_panel_toggled = pyqtSignal(str, bool)
     bottom_panel_side_by_side_requested = pyqtSignal(str)
     sidebar_view_requested = pyqtSignal(str)
-    panel_menu_requested = pyqtSignal()
 
     _BOTTOM_PANELS = ("logs", "parameters")
 
@@ -98,9 +92,6 @@ class ActivityBar(QWidget):
         layout.addWidget(self.sidebar_button)
         self.sidebar_button.clicked.connect(self.flight_sidebar_toggled.emit)
         self.sidebar_button.clicked.connect(self._on_flight_clicked)
-        self.panels_button = self._make_button("panels", checkable=False)
-        layout.addWidget(self.panels_button)
-        self.panels_button.clicked.connect(self.panel_menu_requested.emit)
         self.extensions_button = self._make_button("extensions")
         layout.addWidget(self.extensions_button)
         self.extensions_button.clicked.connect(self._on_extensions_clicked)
@@ -181,7 +172,6 @@ class ActivityBar(QWidget):
         self.language = language
         for key, button in (
             ("flight_panels", self.sidebar_button),
-            ("panels", self.panels_button),
             ("extensions", self.extensions_button),
             *self.buttons.items(),
         ):

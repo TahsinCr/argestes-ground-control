@@ -103,14 +103,12 @@ common window.
 
 The map stays at the center. Flight dynamics, vehicle telemetry, quick commands,
 logs, parameters, and extension-provided views are independent panels.
-Normal mode keeps panel headers out of the way: use the left activity rail or
-View > Panels to show or hide panels at any time, and resize their dividers
-directly. View > Edit Layout temporarily reveals handles for moving, tabbing
-and floating panels; turn it off when finished. The View menu also provides
-Map Focus, Reset Layout, and a Dark/Light theme switch.
-The panel icon in the left rail opens a quick switcher with live panel
-visibility, grouped by vehicle, bottom, and extension panels. Hiding or showing
-panels there does not replace the saved arrangement.
+Normal mode keeps panel headers out of the way: use View > Panels in the
+top-bar menu to show or hide vehicle, bottom, and extension panels, then resize
+their dividers directly. View > Edit Layout temporarily reveals handles for
+moving, tabbing and floating panels; turn it off when finished. The View menu
+also provides Map Focus, Reset Layout, and a Dark/Light theme switch. Hiding or
+showing panels does not replace the saved arrangement.
 Panel positions and visibility are saved in `data/workspace-layout.json` when
 the application closes; extension settings remain separate.
 

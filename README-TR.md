@@ -95,14 +95,13 @@ eklentisi bu sınırları kullanır; kamera işlevleri ortak pencereye gömülü
 
 Harita merkezde kalır. Araç dinamiği, telemetri, hızlı komutlar, loglar,
 parametreler ve eklentilerin getirdiği görünümler bağımsız panellerdir.
-Normal kullanımda panel başlıkları görünmez; soldaki aktivite çubuğundan veya
-Görünüm > Paneller menüsünden panelleri istediğin zaman gösterip gizleyebilir,
-ayraçlardan boyutlandırabilirsin. Görünüm > Yerleşimi düzenle seçeneği,
-taşıma, sekmeleme ve ayrı pencereye alma tutamaklarını geçici olarak açar.
-Görünüm menüsünde ayrıca haritaya odaklanma, varsayılan yerleşim ve Koyu/Açık
-tema seçenekleri bulunur. Sol çubuktaki panel simgesi, panellerin anlık
-görünürlük durumunu araç, alt panel ve eklenti gruplarıyla listeler. Buradan
-panel açıp kapatmak kayıtlı yerleşimi değiştirmez. Görünürlük ve yerleşim uygulama kapanırken
+Normal kullanımda panel başlıkları görünmez; üst çubuktaki Görünüm > Paneller
+menüsünden panelleri araç, alt panel ve eklenti gruplarına göre gösterip
+gizleyebilir, ayraçlardan boyutlandırabilirsin. Görünüm menüsündeki Yerleşimi
+düzenle seçeneği taşıma, sekmeleme ve ayrı pencereye alma tutamaklarını geçici
+olarak açar. Aynı menü haritaya odaklanma, varsayılan yerleşim ve Koyu/Açık
+tema seçeneklerini de içerir. Panel açıp kapatmak kayıtlı yerleşimi değiştirmez.
+Görünürlük ve yerleşim uygulama kapanırken
 `data/workspace-layout.json` içine kaydedilir; eklenti ayarları ayrı tutulur.
 
 ## Ayarlar, loglar ve testler
