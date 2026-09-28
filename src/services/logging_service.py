@@ -4,6 +4,7 @@ import logging
 import json
 import os
 import threading
+from collections import deque
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -81,8 +82,7 @@ class LoggingService(LogService):
         if max_file_bytes <= 0 or backup_count < 0:
             raise ValueError("Log dosyası limitleri geçersiz")
         self._entries = EventBus[LogEntry]()
-        self._history: list[LogEntry] = []
-        self._max_entries = max_entries
+        self._history: deque[LogEntry] = deque(maxlen=max_entries)
         self._lock = threading.RLock()
         self._log_path = Path(log_path) if log_path is not None else None
         self._max_file_bytes = int(max_file_bytes)
@@ -137,8 +137,6 @@ class LoggingService(LogService):
             return
         with self._lock:
             self._history.extend(snapshots)
-            if len(self._history) > self._max_entries:
-                del self._history[: len(self._history) - self._max_entries]
             self._persist_many(snapshots)
         for snapshot in snapshots:
             self._entries.publish(replace(snapshot, details=dict(snapshot.details)))

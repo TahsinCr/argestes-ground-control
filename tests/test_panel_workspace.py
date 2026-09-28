@@ -60,6 +60,72 @@ class PanelWorkspaceTests(unittest.TestCase):
             self.assertFalse(workspace.restore_layout())
             workspace.close()
 
+    def test_panel_sizes_survive_hide_show_and_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "layout.json"
+            first = PanelWorkspace(state_path)
+            first.resize(1000, 700)
+            first.setCentralWidget(QLabel("Map"))
+            docks = [
+                first.add_panel(key, key, QLabel(key), Qt.DockWidgetArea.LeftDockWidgetArea)
+                for key in ("flight", "telemetry", "commands")
+            ]
+            first.splitDockWidget(docks[0], docks[1], Qt.Orientation.Vertical)
+            first.splitDockWidget(docks[1], docks[2], Qt.Orientation.Vertical)
+            first.show()
+            self.app.processEvents()
+            first.resizeDocks(docks, [150, 300, 180], Qt.Orientation.Vertical)
+            self.app.processEvents()
+            first.enable_panel_size_restore(capture_current=True)
+            expected_heights = [dock.height() for dock in docks]
+
+            for dock in docks:
+                dock.hide()
+            self.app.processEvents()
+            for dock in docks:
+                dock.show()
+            self.app.processEvents()
+            self.app.processEvents()
+            self.assertEqual([dock.height() for dock in docks], expected_heights)
+            self.assertTrue(first.save_layout())
+            first.close()
+
+            second = PanelWorkspace(state_path)
+            second.resize(1000, 700)
+            second.setCentralWidget(QLabel("Map"))
+            restored = [
+                second.add_panel(key, key, QLabel(key), Qt.DockWidgetArea.LeftDockWidgetArea)
+                for key in ("flight", "telemetry", "commands")
+            ]
+            second.splitDockWidget(restored[0], restored[1], Qt.Orientation.Vertical)
+            second.splitDockWidget(restored[1], restored[2], Qt.Orientation.Vertical)
+            second.show()
+            self.app.processEvents()
+            self.assertTrue(second.restore_layout())
+            self.app.processEvents()
+            self.app.processEvents()
+            self.assertEqual([dock.height() for dock in restored], expected_heights)
+            second.close()
+
+    def test_panels_can_be_explicitly_tabified(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = PanelWorkspace(Path(directory) / "layout.json")
+            first = workspace.add_panel(
+                "flight", "Flight", QLabel("Flight"),
+                Qt.DockWidgetArea.LeftDockWidgetArea,
+            )
+            second = workspace.add_panel(
+                "telemetry", "Telemetry", QLabel("Telemetry"),
+                Qt.DockWidgetArea.LeftDockWidgetArea,
+            )
+            workspace.show()
+            self.app.processEvents()
+            workspace._tabify_panel(first, second)
+            self.app.processEvents()
+            self.assertIn(second, workspace.tabifiedDockWidgets(first))
+            self.assertTrue(second.isVisible())
+            workspace.close()
+
     def test_panel_visibility_stays_available_outside_edit_mode(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = PanelWorkspace(Path(directory) / "layout.json")

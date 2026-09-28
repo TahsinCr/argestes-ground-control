@@ -603,6 +603,7 @@ class MainWindow(QMainWindow):
             return
         if not self.workspace.restore_layout():
             self._size_default_docks()
+            self.workspace.enable_panel_size_restore(capture_current=True)
         self._sync_activity_buttons()
 
     def showEvent(self, event) -> None:

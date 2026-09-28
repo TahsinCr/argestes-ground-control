@@ -358,7 +358,7 @@ class SignalMeter(QFrame):
         self.value.setStyleSheet(
             f"""
             color: {color};
-            background: rgba(255,255,255,0.035);
+            background: {self._theme.surface_hover};
             border: 1px solid {color};
             border-radius: 4px;
             padding: 1px 6px;

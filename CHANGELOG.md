@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+* Light mode now uses theme-specific subtle borders instead of white-only
+  translucent separators, and selected text keeps sufficient contrast.
+* Preserved each dock's last width and height when panels are hidden, reopened,
+  or restored after restarting. Edit Layout also offers an explicit
+  "Tab with Panel" action alongside native center-drop tabbing.
+* Bounded in-memory log buffers now use fixed-capacity deques, avoiding repeated
+  front-of-list shifts as the log stream fills while retaining the same limits.
 * Rebuilt the central workspace as independent panels while keeping the map
   and existing panel contents intact. Panels can be shown or hidden directly
   from the View menu and resized at any time. The optional

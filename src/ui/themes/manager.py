@@ -18,7 +18,7 @@ def apply_theme(app: QApplication, theme_name: str) -> ThemePalette:
     palette.setColor(QPalette.ColorRole.Button, QColor(theme.surface_alt))
     palette.setColor(QPalette.ColorRole.ButtonText, QColor(theme.text))
     palette.setColor(QPalette.ColorRole.Highlight, QColor(theme.accent))
-    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(theme.background))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
     app.setPalette(palette)
     app.setStyleSheet(build_stylesheet(theme))
     return theme

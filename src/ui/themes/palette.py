@@ -12,6 +12,7 @@ class ThemePalette:
     surface_alt: str
     surface_hover: str
     border: str
+    border_subtle: str
     border_strong: str
     accent: str
     accent_dim: str
@@ -31,6 +32,7 @@ DARK = ThemePalette(
     surface_alt="#2d3035",
     surface_hover="#34373d",
     border="#3a3d43",
+    border_subtle="#34373d",
     border_strong="#50545c",
     accent="#1f7ab8",
     accent_dim="#174f75",
@@ -50,6 +52,7 @@ LIGHT = ThemePalette(
     surface_alt="#ffffff",
     surface_hover="#e9f1fa",
     border="#cbd5e1",
+    border_subtle="#dfe6ee",
     border_strong="#aebccc",
     accent="#2563a6",
     accent_dim="#d8e9fa",

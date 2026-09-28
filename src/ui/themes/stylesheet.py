@@ -189,7 +189,7 @@ def build_stylesheet(theme: ThemePalette) -> str:
     #PanelHeader {{
         background: {theme.surface};
         border: none;
-        border-bottom: 1px solid rgba(255,255,255,0.035);
+        border-bottom: 1px solid {theme.border_subtle};
     }}
     #PanelBody {{
         background: {theme.surface};
@@ -207,7 +207,7 @@ def build_stylesheet(theme: ThemePalette) -> str:
     }}
     #MetricCard {{
         background: {theme.surface};
-        border: 1px solid rgba(255,255,255,0.055);
+        border: 1px solid {theme.border_subtle};
         border-radius: 4px;
     }}
     #MetricTitle {{
@@ -252,7 +252,7 @@ def build_stylesheet(theme: ThemePalette) -> str:
     }}
     #TelemetrySection {{
         background: {theme.background_alt};
-        border: 1px solid rgba(255,255,255,0.045);
+        border: 1px solid {theme.border_subtle};
         border-radius: 4px;
     }}
     QLabel[role="readout-label"] {{
@@ -315,7 +315,7 @@ def build_stylesheet(theme: ThemePalette) -> str:
     }}
     QFrame#QuickCommandCard {{
         background: {theme.surface};
-        border: 1px solid rgba(255,255,255,0.06);
+        border: 1px solid {theme.border_subtle};
         border-radius: 5px;
     }}
     QLabel#CommandStatus {{
@@ -487,7 +487,7 @@ def build_stylesheet(theme: ThemePalette) -> str:
     }}
     QListWidget::item {{
         min-height: 24px;
-        border-bottom: 1px solid rgba(255,255,255,0.03);
+        border-bottom: 1px solid {theme.border_subtle};
     }}
     QListWidget::item:hover {{
         background: {theme.surface_hover};
@@ -502,7 +502,7 @@ def build_stylesheet(theme: ThemePalette) -> str:
     }}
     #LogTable::item {{
         padding: 4px 6px;
-        border-bottom: 1px solid rgba(255,255,255,0.04);
+        border-bottom: 1px solid {theme.border_subtle};
     }}
     QHeaderView::section {{
         background: {theme.background_alt};

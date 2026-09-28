@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import deque
+
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import (
     QColor,
@@ -81,7 +83,7 @@ class EventLogPanel(PanelFrame):
     def __init__(self, title: str, subtitle: str, clear_text: str, parent=None) -> None:
         super().__init__(title, subtitle, parent)
         self._language = "tr"
-        self._entries: list[LogEntry] = []
+        self._entries: deque[LogEntry] = deque(maxlen=self.MAX_ENTRIES)
         self._follow_latest = True
         self._scroll_change_internal = False
 
@@ -183,8 +185,6 @@ class EventLogPanel(PanelFrame):
     def add_entry(self, entry: LogEntry) -> None:
         follow_latest = self._follow_latest
         self._entries.append(entry)
-        if len(self._entries) > self.MAX_ENTRIES:
-            del self._entries[: len(self._entries) - self.MAX_ENTRIES]
         if not self._entry_matches(entry):
             return
         scrollbar = self.table.verticalScrollBar()
@@ -216,8 +216,6 @@ class EventLogPanel(PanelFrame):
             return
         follow_latest = self._follow_latest
         self._entries.extend(batch)
-        if len(self._entries) > self.MAX_ENTRIES:
-            del self._entries[: len(self._entries) - self.MAX_ENTRIES]
         # One rebuild is substantially cheaper than hundreds of insert/remove
         # operations while startup history or remote logs arrive in a burst.
         self._rebuild_table(scroll_to_bottom=follow_latest)

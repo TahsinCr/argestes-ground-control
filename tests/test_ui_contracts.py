@@ -12,7 +12,7 @@ os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --no-sandbox")
 
 from PyQt6.QtCore import QPoint, Qt
-from PyQt6.QtGui import QContextMenuEvent, QImage
+from PyQt6.QtGui import QContextMenuEvent, QImage, QPalette
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
     QApplication,
@@ -36,7 +36,9 @@ from src.models.telemetry import TelemetrySnapshot
 from src.ui.i18n import t
 from src.ui.config.map import MAP_TOOLS
 from src.ui.config.settings_schema import iter_fields
-from src.ui.themes.palette import DARK
+from src.ui.themes.palette import DARK, LIGHT
+from src.ui.themes.manager import apply_theme
+from src.ui.themes.stylesheet import build_stylesheet
 from src.ui.views.settings_dialog import SettingsDialog
 from src.ui.widgets.attitude import AttitudeIndicator
 from src.ui.widgets.control_panels import TelemetryPanel
@@ -60,6 +62,17 @@ class UiContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication(["yki-ui-tests"])
+
+    def test_light_theme_uses_contrast_aware_surface_borders(self) -> None:
+        stylesheet = build_stylesheet(LIGHT)
+        self.assertIn(LIGHT.border_subtle, stylesheet)
+        self.assertNotIn("rgba(255,255,255", stylesheet)
+        apply_theme(self.app, "light")
+        self.assertEqual(
+            self.app.palette().color(QPalette.ColorRole.HighlightedText).name(),
+            "#ffffff",
+        )
+        apply_theme(self.app, "dark")
 
     def test_settings_dialog_is_fully_schema_driven(self) -> None:
         settings = SettingsModel()
@@ -397,7 +410,7 @@ class UiContractTests(unittest.TestCase):
 
         panel.clear_button.click()
         self.assertEqual(panel.table.rowCount(), 0)
-        self.assertEqual(panel._entries, [])
+        self.assertEqual(list(panel._entries), [])
         panel.close()
         panel.deleteLater()
         self.app.processEvents()
@@ -431,8 +444,8 @@ class UiContractTests(unittest.TestCase):
         self.app.processEvents()
 
     def test_log_panel_does_not_rebuild_every_time_history_is_full(self) -> None:
-        panel = EventLogPanel("", "", "")
-        panel.MAX_ENTRIES = 5
+        with patch.object(EventLogPanel, "MAX_ENTRIES", 5):
+            panel = EventLogPanel("", "", "")
         for index in range(5):
             panel.add_entry(LogEntry("TEST", f"Log {index}"))
         rebuilds = 0
