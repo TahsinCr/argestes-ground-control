@@ -192,7 +192,7 @@ class PanelWorkspaceTests(unittest.TestCase):
             )
             workspace.close()
 
-    def test_edit_mode_drag_drop_targets_tab_center_and_outer_right_edge(self) -> None:
+    def test_edit_mode_preserves_native_title_drag_and_placement_targets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = PanelWorkspace(Path(directory) / "layout.json")
             visual_areas = (
@@ -217,31 +217,20 @@ class PanelWorkspaceTests(unittest.TestCase):
             start = QPoint(45, 10)
             start_global = camera.mapToGlobal(start)
             map_center = map_dock.mapToGlobal(map_dock.rect().center())
-            target = camera.mapFromGlobal(map_center)
-            QApplication.sendEvent(
-                camera,
-                QMouseEvent(
-                    QEvent.Type.MouseButtonPress, QPointF(start),
-                    QPointF(start_global), Qt.MouseButton.LeftButton,
-                    Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
-                ),
-            )
-            QApplication.sendEvent(
-                camera,
-                QMouseEvent(
-                    QEvent.Type.MouseMove, QPointF(target), QPointF(map_center),
-                    Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton,
-                    Qt.KeyboardModifier.NoModifier,
-                ),
-            )
-            QApplication.sendEvent(
-                camera,
-                QMouseEvent(
-                    QEvent.Type.MouseButtonRelease, QPointF(target),
-                    QPointF(map_center), Qt.MouseButton.LeftButton,
-                    Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
-                ),
-            )
+            for event_type, local, global_pos, button, buttons in (
+                (QEvent.Type.MouseButtonPress, start, start_global,
+                 Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton),
+                (QEvent.Type.MouseMove, camera.mapFromGlobal(map_center), map_center,
+                 Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton),
+                (QEvent.Type.MouseButtonRelease, camera.mapFromGlobal(map_center),
+                 map_center, Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton),
+            ):
+                event = QMouseEvent(
+                    event_type, QPointF(local), QPointF(global_pos), button,
+                    buttons, Qt.KeyboardModifier.NoModifier,
+                )
+                self.assertFalse(workspace.eventFilter(camera, event))
+            self.assertTrue(workspace.drop_panel_at(camera, map_center))
             self.app.processEvents()
             self.assertIn(camera, workspace.tabifiedDockWidgets(map_dock))
 
