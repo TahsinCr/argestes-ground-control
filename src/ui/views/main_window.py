@@ -76,11 +76,7 @@ class _VisualDockPreference:
 
 class MainWindow(QMainWindow):
     shutdown_requested = pyqtSignal()
-    _WORKSPACE_AREAS = (
-        Qt.DockWidgetArea.LeftDockWidgetArea
-        | Qt.DockWidgetArea.RightDockWidgetArea
-        | Qt.DockWidgetArea.TopDockWidgetArea
-    )
+    _WORKSPACE_AREAS = Qt.DockWidgetArea.AllDockWidgetAreas
 
     def __init__(
         self,
@@ -260,18 +256,18 @@ class MainWindow(QMainWindow):
         )
         self.vehicle_controls.command_requested.connect(self.command_service.issue_command)
         area = Qt.DockWidgetArea.LeftDockWidgetArea
-        vehicle_areas = Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        vehicle_areas = Qt.DockWidgetArea.AllDockWidgetAreas
         flight = self.workspace.add_panel(
             "flight", "Araç Dinamiği", self.flight_panel, area,
-            group="vehicle", allowed_areas=vehicle_areas, floatable=False,
+            allowed_areas=vehicle_areas, floatable=False,
         )
         telemetry = self.workspace.add_panel(
             "telemetry", "Araç Telemetrisi", self.telemetry_panel, area,
-            group="vehicle", allowed_areas=vehicle_areas, floatable=False,
+            allowed_areas=vehicle_areas, floatable=False,
         )
         controls = self.workspace.add_panel(
             "commands", "Hızlı Komutlar", self.vehicle_controls, area,
-            group="vehicle", allowed_areas=vehicle_areas, floatable=False,
+            allowed_areas=vehicle_areas, floatable=False,
         )
         self.workspace.place_panel(flight, telemetry, "below")
         self.workspace.place_panel(telemetry, controls, "below")
@@ -393,7 +389,7 @@ class MainWindow(QMainWindow):
             )
             dock = self.workspace.add_panel(
                 contribution.identifier, self._visual_title(contribution.identifier), widget,
-                area, group="workspace", allowed_areas=self._WORKSPACE_AREAS,
+                area, allowed_areas=self._WORKSPACE_AREAS,
                 floatable=False,
             )
             self._register_workspace_panel_button(
@@ -485,7 +481,7 @@ class MainWindow(QMainWindow):
         self.map_dock = self.workspace.add_panel(
             "map", "Harita", self.map_panel,
             Qt.DockWidgetArea.RightDockWidgetArea,
-            group="workspace", allowed_areas=self._WORKSPACE_AREAS,
+            allowed_areas=self._WORKSPACE_AREAS,
             floatable=False,
         )
         self._register_workspace_panel_button("map", "Harita", self.map_dock)
@@ -497,11 +493,11 @@ class MainWindow(QMainWindow):
         bottom = Qt.DockWidgetArea.BottomDockWidgetArea
         self.log_dock = self.workspace.add_panel(
             "logs", "Loglar", self.log_panel, bottom,
-            group="bottom", allowed_areas=bottom, floatable=False,
+            allowed_areas=Qt.DockWidgetArea.AllDockWidgetAreas,
         )
         self.parameters_dock = self.workspace.add_panel(
             "parameters", "Parametreler", self.parameters_panel, bottom,
-            group="bottom", allowed_areas=bottom, floatable=False,
+            allowed_areas=Qt.DockWidgetArea.AllDockWidgetAreas,
         )
         self.workspace.place_panel(self.log_dock, self.parameters_dock, "tab")
         self.parameters_dock.hide()
@@ -512,7 +508,7 @@ class MainWindow(QMainWindow):
             dock = self.workspace.add_panel(
                 contribution.identifier, self._visual_title(contribution.identifier), widget,
                 Qt.DockWidgetArea.RightDockWidgetArea,
-                group="workspace", allowed_areas=self._WORKSPACE_AREAS,
+                allowed_areas=self._WORKSPACE_AREAS,
                 floatable=False,
             )
             self._register_workspace_panel_button(

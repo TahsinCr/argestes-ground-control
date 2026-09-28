@@ -4,14 +4,113 @@ import base64
 import json
 from pathlib import Path
 
-from PyQt6.QtCore import QByteArray, QEvent, QPoint, QTimer, Qt
+from PyQt6.QtCore import QByteArray, QEvent, QMimeData, QPoint, QRect, QTimer, Qt
+from PyQt6.QtGui import QColor, QDrag, QMouseEvent, QPainter, QPalette, QPen
 from PyQt6.QtWidgets import (
+    QApplication,
     QDockWidget,
     QMainWindow,
     QMenu,
+    QStyle,
     QTabWidget,
     QWidget,
 )
+
+
+_PANEL_DRAG_MIME = "application/x-yki-panel-drag"
+_TARGET_LABELS = {
+    "tr": {"left": "Sol", "right": "Sağ", "above": "Üst", "below": "Alt", "tab": "Sekme"},
+    "en": {"left": "Left", "right": "Right", "above": "Top", "below": "Bottom", "tab": "Tab"},
+}
+
+
+class _PanelDropOverlay(QWidget):
+    """Show the same five drop targets for every workspace dock."""
+
+    def __init__(self, workspace: PanelWorkspace) -> None:
+        super().__init__(workspace)
+        self.workspace = workspace
+        self.setAcceptDrops(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.active: tuple[QDockWidget | None, str] | None = None
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasFormat(_PANEL_DRAG_MIME):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:
+        if not event.mimeData().hasFormat(_PANEL_DRAG_MIME):
+            event.ignore()
+            return
+        self.active = self.workspace._drop_target(self.mapToGlobal(event.position().toPoint()))
+        self.update()
+        if self.active is None:
+            event.ignore()
+        else:
+            event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event) -> None:
+        self.active = None
+        self.update()
+        event.accept()
+
+    def dropEvent(self, event) -> None:
+        source = self.workspace._drag_source
+        target = self.workspace._drop_target(self.mapToGlobal(event.position().toPoint()))
+        if source is not None and target is not None and self.workspace._apply_drop(source, target):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def paintEvent(self, event) -> None:
+        if self.active is None:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        dark = self.workspace.palette().color(QPalette.ColorRole.Window).lightness() < 128
+        ink = QColor(246, 247, 249) if dark else QColor(27, 34, 43)
+        badge_ink = QColor(27, 34, 43) if dark else QColor(255, 255, 255)
+        dock, active_relation = self.active
+        if dock is not None:
+            origin = self.mapFromGlobal(dock.mapToGlobal(QPoint()))
+            bounds = QRect(origin, dock.size()).intersected(self.rect())
+            for relation, zone in self.workspace._drop_zones(bounds).items():
+                selected = active_relation == relation
+                border = QColor(ink)
+                border.setAlpha(235 if selected else 125)
+                fill = QColor(ink)
+                fill.setAlpha(70 if selected else 16)
+                painter.setPen(QPen(border, 2 if selected else 1))
+                painter.setBrush(fill)
+                painter.drawRoundedRect(zone.adjusted(2, 2, -2, -2), 4, 4)
+                if zone.width() >= 60 and zone.height() >= 32:
+                    language = "en" if self.workspace.language == "en" else "tr"
+                    label = _TARGET_LABELS[language][relation]
+                    badge = QRect(0, 0, painter.fontMetrics().horizontalAdvance(label) + 18, 24)
+                    badge.moveCenter(zone.center())
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    badge_color = QColor(ink)
+                    badge_color.setAlpha(230 if selected else 155)
+                    painter.setBrush(badge_color)
+                    painter.drawRoundedRect(badge, 5, 5)
+                    painter.setPen(badge_ink)
+                    painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, label)
+        else:
+            margin = max(24, min(48, self.width() // 30))
+            outer_zones = {
+                "left": QRect(0, margin, margin, self.height() - 2 * margin),
+                "right": QRect(self.width() - margin, margin, margin, self.height() - 2 * margin),
+                "above": QRect(0, 0, self.width(), margin),
+                "below": QRect(0, self.height() - margin, self.width(), margin),
+            }
+            fill = QColor(ink)
+            fill.setAlpha(70)
+            painter.setPen(QPen(ink, 2))
+            painter.setBrush(fill)
+            painter.drawRoundedRect(
+                outer_zones[active_relation].adjusted(2, 2, -2, -2), 4, 4
+            )
+        painter.end()
 
 
 class PanelWorkspace(QMainWindow):
@@ -38,11 +137,10 @@ class PanelWorkspace(QMainWindow):
         )
         self.setTabPosition(
             Qt.DockWidgetArea.AllDockWidgetAreas,
-            QTabWidget.TabPosition.South,
+            QTabWidget.TabPosition.North,
         )
         self.panels: dict[str, QDockWidget] = {}
         self._panel_keys: dict[QDockWidget, str] = {}
-        self._panel_groups: dict[str, str] = {}
         self._panel_options: dict[str, tuple[bool, bool, bool]] = {}
         self._panel_default_areas: dict[str, Qt.DockWidgetArea] = {}
         self._panel_sizes: dict[str, tuple[int, int]] = {}
@@ -51,6 +149,10 @@ class PanelWorkspace(QMainWindow):
         self._panel_size_restore_enabled = False
         self.edit_mode = False
         self._quiet_titles: dict[str, QWidget] = {}
+        self._drag_start: tuple[QDockWidget, QPoint] | None = None
+        self._drag_source: QDockWidget | None = None
+        self._drop_overlay = _PanelDropOverlay(self)
+        self._drop_overlay.hide()
 
     def add_panel(
         self,
@@ -59,7 +161,6 @@ class PanelWorkspace(QMainWindow):
         widget: QWidget,
         area: Qt.DockWidgetArea,
         *,
-        group: str = "workspace",
         allowed_areas: Qt.DockWidgetArea = Qt.DockWidgetArea.AllDockWidgetAreas,
         movable: bool = True,
         floatable: bool = True,
@@ -72,7 +173,6 @@ class PanelWorkspace(QMainWindow):
         self.addDockWidget(area, dock)
         self.panels[key] = dock
         self._panel_keys[dock] = key
-        self._panel_groups[key] = group
         self._panel_options[key] = (closable, movable, floatable)
         self._panel_default_areas[key] = area
         dock.installEventFilter(self)
@@ -92,6 +192,31 @@ class PanelWorkspace(QMainWindow):
         return dock
 
     def eventFilter(self, watched, event) -> bool:
+        if isinstance(watched, QDockWidget) and watched in self._panel_keys:
+            if isinstance(event, QMouseEvent):
+                if event.type() == QEvent.Type.MouseButtonPress:
+                    if (
+                        self.edit_mode
+                        and self._panel_options[self._panel_keys[watched]][1]
+                        and event.button() == Qt.MouseButton.LeftButton
+                    ):
+                        point = event.position().toPoint()
+                        if 0 <= point.y() <= watched.style().pixelMetric(
+                            QStyle.PixelMetric.PM_TitleBarHeight, None, watched
+                        ) + 4:
+                            self._drag_start = (watched, event.globalPosition().toPoint())
+                            return True
+                elif event.type() == QEvent.Type.MouseMove and self._drag_start:
+                    dock, start = self._drag_start
+                    if event.buttons() & Qt.MouseButton.LeftButton:
+                        if (event.globalPosition().toPoint() - start).manhattanLength() >= QApplication.startDragDistance():
+                            self._drag_start = None
+                            self._start_panel_drag(dock)
+                        return True
+                elif event.type() == QEvent.Type.MouseButtonRelease and self._drag_start:
+                    if event.button() == Qt.MouseButton.LeftButton:
+                        self._drag_start = None
+                        return True
         if (
             event.type() == QEvent.Type.Resize
             and not self._restoring_panel_sizes
@@ -183,89 +308,112 @@ class PanelWorkspace(QMainWindow):
 
     def set_edit_mode(self, enabled: bool) -> None:
         self.edit_mode = enabled
+        self._drag_start = None
         for key in self.panels:
             self._apply_panel_mode(key)
 
     def _apply_panel_mode(self, key: str) -> None:
         dock = self.panels[key]
-        closable, movable, floatable = self._panel_options[key]
+        closable, movable, _floatable = self._panel_options[key]
         features = QDockWidget.DockWidgetFeature.NoDockWidgetFeatures
         if closable:
             features |= QDockWidget.DockWidgetFeature.DockWidgetClosable
-        if self.edit_mode and movable:
-            features |= QDockWidget.DockWidgetFeature.DockWidgetMovable
-        if self.edit_mode and floatable:
-            features |= QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        # Dragging is handled by the shared overlay, so Qt must not start a
+        # second, independent dock drag with different target rules.
         dock.setFeatures(features)
         if self.edit_mode and movable:
             dock.setTitleBarWidget(None)
         else:
             dock.setTitleBarWidget(self._quiet_titles[key])
 
+    def _start_panel_drag(self, dock: QDockWidget) -> None:
+        self._drag_source = dock
+        self._drop_overlay.setGeometry(self.rect())
+        self._drop_overlay.active = None
+        self._drop_overlay.show()
+        self._drop_overlay.raise_()
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(_PANEL_DRAG_MIME, self._panel_keys[dock].encode("utf-8"))
+        drag.setMimeData(mime)
+        drag.setPixmap(dock.grab(QRect(0, 0, min(280, dock.width()), 28)))
+        drag.setHotSpot(QPoint(24, 12))
+        try:
+            drag.exec(Qt.DropAction.MoveAction)
+        finally:
+            self._drop_overlay.hide()
+            self._drag_source = None
+
+    def _drop_zones(self, bounds: QRect) -> dict[str, QRect]:
+        w, h = bounds.width(), bounds.height()
+        edge_x, edge_y = max(1, int(w * .28)), max(1, int(h * .25))
+        x, y = bounds.x(), bounds.y()
+        return {
+            "left": QRect(x, y + edge_y, edge_x, h - 2 * edge_y),
+            "right": QRect(x + w - edge_x, y + edge_y, edge_x, h - 2 * edge_y),
+            "above": QRect(x, y, w, edge_y),
+            "below": QRect(x, y + h - edge_y, w, edge_y),
+            "tab": QRect(x + edge_x, y + edge_y, w - 2 * edge_x, h - 2 * edge_y),
+        }
+
+    def _drop_target(
+        self, global_position: QPoint, *, source: QDockWidget | None = None
+    ) -> tuple[QDockWidget | None, str] | None:
+        local = self.mapFromGlobal(global_position)
+        if not self.rect().contains(local):
+            return None
+        margin = max(24, min(48, self.width() // 30))
+        if local.x() >= self.width() - margin:
+            return None, "right"
+        if local.x() < margin:
+            return None, "left"
+        if local.y() < margin:
+            return None, "above"
+        if local.y() >= self.height() - margin:
+            return None, "below"
+        source = source or self._drag_source
+        for dock in reversed(tuple(self.panels.values())):
+            if dock is source or not dock.isVisible() or dock.isFloating():
+                continue
+            point = dock.mapFromGlobal(global_position)
+            if not dock.rect().contains(point):
+                continue
+            for relation, zone in self._drop_zones(dock.rect()).items():
+                if zone.contains(point):
+                    return dock, relation
+        return None
+
+    def _apply_drop(self, source: QDockWidget, target: tuple[QDockWidget | None, str]) -> bool:
+        if source not in self._panel_keys:
+            return False
+        dock, relation = target
+        if dock is not None:
+            return self.place_panel(dock, source, relation)
+        area = {
+            "left": Qt.DockWidgetArea.LeftDockWidgetArea,
+            "right": Qt.DockWidgetArea.RightDockWidgetArea,
+            "above": Qt.DockWidgetArea.TopDockWidgetArea,
+            "below": Qt.DockWidgetArea.BottomDockWidgetArea,
+        }[relation]
+        candidates = [
+            candidate for candidate in self.panels.values()
+            if candidate is not source and candidate.isVisible()
+            and not candidate.isFloating() and self.dockWidgetArea(candidate) == area
+        ]
+        if candidates:
+            if relation in {"right", "below"}:
+                anchor = max(candidates, key=lambda item: item.geometry().right() if relation == "right" else item.geometry().bottom())
+            else:
+                anchor = min(candidates, key=lambda item: item.geometry().left() if relation == "left" else item.geometry().top())
+            return self.place_panel(anchor, source, relation)
+        return self.move_panel_to_area(source, area)
+
     def drop_panel_at(self, dock: QDockWidget, global_position: QPoint) -> bool:
         """Resolve drag drops to a panel center, edge, or workspace outer edge."""
         if not self.edit_mode or dock not in self._panel_keys:
             return False
-        source_key = self._panel_keys[dock]
-        source_group = self._panel_groups.get(source_key)
-        candidates = [
-            target for key, target in self.panels.items()
-            if target is not dock and target.isVisible()
-            and self._panel_groups.get(key) == source_group
-        ]
-        target = next(
-            (candidate for candidate in candidates
-             if candidate.rect().contains(candidate.mapFromGlobal(global_position))),
-            None,
-        )
-        if target is not None:
-            rect = target.rect()
-            x = global_position.x() - target.mapToGlobal(rect.topLeft()).x()
-            y = global_position.y() - target.mapToGlobal(rect.topLeft()).y()
-            nx, ny = x / max(1, rect.width()), y / max(1, rect.height())
-            center = 0.28 <= nx <= 0.72 and 0.25 <= ny <= 0.75
-            if center:
-                return self.place_panel(target, dock, "tab")
-            relation = min(
-                ((nx, "left"), (1 - nx, "right"), (ny, "above"), (1 - ny, "below")),
-                key=lambda item: item[0],
-            )[1]
-            return self.place_panel(target, dock, relation)
-
-        workspace_rect = self.rect()
-        workspace_top_left = self.mapToGlobal(workspace_rect.topLeft())
-        local = global_position - workspace_top_left
-        if not workspace_rect.contains(local):
-            return False
-        edge_margin = max(36, min(64, workspace_rect.width() // 30))
-        edge_area = None
-        if local.x() >= workspace_rect.width() - edge_margin:
-            edge_area = Qt.DockWidgetArea.RightDockWidgetArea
-        elif local.x() <= edge_margin:
-            edge_area = Qt.DockWidgetArea.LeftDockWidgetArea
-        elif local.y() <= edge_margin:
-            edge_area = Qt.DockWidgetArea.TopDockWidgetArea
-        elif local.y() >= workspace_rect.height() - edge_margin:
-            edge_area = Qt.DockWidgetArea.BottomDockWidgetArea
-        if edge_area is None or not dock.allowedAreas() & edge_area:
-            return False
-        edge_targets = [
-            target for target in candidates
-            if self.dockWidgetArea(target) == edge_area
-        ]
-        if edge_targets:
-            if edge_area == Qt.DockWidgetArea.RightDockWidgetArea:
-                target = max(edge_targets, key=lambda item: item.geometry().right())
-                return self.place_panel(target, dock, "right")
-            if edge_area == Qt.DockWidgetArea.LeftDockWidgetArea:
-                target = min(edge_targets, key=lambda item: item.geometry().left())
-                return self.place_panel(target, dock, "left")
-            if edge_area == Qt.DockWidgetArea.BottomDockWidgetArea:
-                target = max(edge_targets, key=lambda item: item.geometry().bottom())
-                return self.place_panel(target, dock, "below")
-            target = min(edge_targets, key=lambda item: item.geometry().top())
-            return self.place_panel(target, dock, "above")
-        return self.move_panel_to_area(dock, edge_area)
+        target = self._drop_target(global_position, source=dock)
+        return target is not None and self._apply_drop(dock, target)
 
     def _show_panel_menu(self, dock: QDockWidget, point) -> None:
         if not self.edit_mode:
@@ -295,7 +443,6 @@ class PanelWorkspace(QMainWindow):
         tab_targets = [
             (key, candidate) for key, candidate in self.panels.items()
             if candidate is not dock
-            and self._panel_groups.get(key) == self._panel_groups.get(self._panel_keys[dock])
         ]
         if tab_targets:
             place = menu.addMenu("Yerleştir" if not english else "Place Panel")
@@ -342,8 +489,6 @@ class PanelWorkspace(QMainWindow):
         dock_key = self._panel_keys.get(dock)
         if target_key is None or dock_key is None:
             return False
-        if self._panel_groups.get(target_key) != self._panel_groups.get(dock_key):
-            return False
         area = self.dockWidgetArea(target)
         if area == Qt.DockWidgetArea.NoDockWidgetArea or not dock.allowedAreas() & area:
             return False
@@ -371,8 +516,12 @@ class PanelWorkspace(QMainWindow):
         dock = self.panels.pop(key, None)
         if dock is None:
             return None
+        if self._drag_source is dock:
+            self._drag_source = None
+            self._drop_overlay.hide()
+        if self._drop_overlay.active is not None and self._drop_overlay.active[0] is dock:
+            self._drop_overlay.active = None
         self._panel_keys.pop(dock, None)
-        self._panel_groups.pop(key, None)
         self._panel_options.pop(key, None)
         self._panel_default_areas.pop(key, None)
         self._panel_sizes.pop(key, None)
@@ -436,6 +585,10 @@ class PanelWorkspace(QMainWindow):
             self._restoring_panel_sizes = True
             restored = self.restoreState(state, state_version)
             if restored:
+                self.setTabPosition(
+                    Qt.DockWidgetArea.AllDockWidgetAreas,
+                    QTabWidget.TabPosition.North,
+                )
                 if state_version == 1:
                     self._restore_map_into_legacy_workspace()
                 self._normalize_panel_areas()

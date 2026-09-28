@@ -5,18 +5,23 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+* Reworked layout editing around one drag-and-drop target layer shared by the
+  map, camera, flight, telemetry, command, log and parameter panels. Dragging
+  starts from a panel title bar; visible target outlines show its four sides
+  and center. Dropping on the center tabs panels, while edges split or dock
+  them. Hints appear only over the current target panel in theme-matched neutral
+  tones. Tabs now appear above their panels. The Extensions management sidebar
+  stays outside the dock workspace.
 * Unified panel placement and visibility under the shared workspace manager.
   Main views (including map and extension-provided camera panels) have
   individual activity-bar buttons in the upper group; Logs and Parameters
-  remain in the lower group. Workspace panels cannot drift into the bottom
-  region, and bottom panels cannot drift into the workspace. Edit mode now has
+  start in the lower group. Edit mode now has
   explicit relative placement and tab actions when drag-drop targets are hard
   to hit. The Extensions view is pinned beside (not inside) the workspace and
   can be resized with its splitter without joining or obstructing panel docks.
-  Previous layout versions are normalized into these regions when loaded.
-  Edit mode uses Qt's native dock title bar and mouse handling, restoring its
-  normal click, drag preview and docking behavior. The explicit panel placement
-  menu remains available for precise tab and edge positioning.
+  Previous layout versions are normalized when loaded. Edit mode keeps Qt's
+  native dock title bar; the explicit placement menu remains available for
+  precise tab and edge positioning.
 * Promoted the map from the workspace's fixed central widget to a first-class,
   closable dock panel. Camera views now split to the right of the map by
   default, and the two can be freely repositioned or tabified in layout-edit

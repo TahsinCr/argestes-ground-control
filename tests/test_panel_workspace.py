@@ -8,9 +8,10 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
-from PyQt6.QtGui import QMouseEvent
-from PyQt6.QtWidgets import QApplication, QLabel
+from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt
+from PyQt6.QtGui import QDropEvent, QMouseEvent
+from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication, QLabel, QTabWidget
 
 from src.ui.widgets.panel_workspace import PanelWorkspace
 
@@ -158,25 +159,19 @@ class PanelWorkspaceTests(unittest.TestCase):
             workspace.save_layout()
             workspace.close()
 
-    def test_panel_groups_enforce_regions_and_shared_relative_placement(self) -> None:
+    def test_all_panels_share_relative_placement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = PanelWorkspace(Path(directory) / "layout.json")
-            workspace_areas = (
-                Qt.DockWidgetArea.LeftDockWidgetArea
-                | Qt.DockWidgetArea.RightDockWidgetArea
-                | Qt.DockWidgetArea.TopDockWidgetArea
-            )
             map_dock = workspace.add_panel(
                 "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea,
-                group="workspace", allowed_areas=workspace_areas, floatable=False,
+                floatable=False,
             )
             camera = workspace.add_panel(
                 "camera", "Camera", QLabel("Camera"), Qt.DockWidgetArea.RightDockWidgetArea,
-                group="workspace", allowed_areas=workspace_areas, floatable=False,
+                floatable=False,
             )
             logs = workspace.add_panel(
                 "logs", "Logs", QLabel("Logs"), Qt.DockWidgetArea.BottomDockWidgetArea,
-                group="bottom", allowed_areas=Qt.DockWidgetArea.BottomDockWidgetArea,
                 floatable=False,
             )
             workspace.resize(1200, 700)
@@ -185,14 +180,15 @@ class PanelWorkspaceTests(unittest.TestCase):
 
             self.assertTrue(workspace.place_panel(map_dock, camera, "right"))
             self.assertGreater(camera.x(), map_dock.x())
-            self.assertFalse(workspace.place_panel(map_dock, logs, "tab"))
-            self.assertFalse(map_dock.allowedAreas() & Qt.DockWidgetArea.BottomDockWidgetArea)
+            self.assertTrue(workspace.place_panel(map_dock, logs, "tab"))
+            self.assertIn(logs, workspace.tabifiedDockWidgets(map_dock))
+            self.assertTrue(map_dock.allowedAreas() & Qt.DockWidgetArea.BottomDockWidgetArea)
             self.assertFalse(
                 camera.features() & camera.DockWidgetFeature.DockWidgetFloatable
             )
             workspace.close()
 
-    def test_edit_mode_preserves_native_title_drag_and_placement_targets(self) -> None:
+    def test_edit_mode_title_drag_and_placement_targets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = PanelWorkspace(Path(directory) / "layout.json")
             visual_areas = (
@@ -202,11 +198,11 @@ class PanelWorkspaceTests(unittest.TestCase):
             )
             map_dock = workspace.add_panel(
                 "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea,
-                group="workspace", allowed_areas=visual_areas, floatable=False,
+                allowed_areas=visual_areas, floatable=False,
             )
             camera = workspace.add_panel(
                 "camera", "Camera", QLabel("Camera"), Qt.DockWidgetArea.LeftDockWidgetArea,
-                group="workspace", allowed_areas=visual_areas, floatable=False,
+                allowed_areas=visual_areas, floatable=False,
             )
             workspace.resize(1200, 700)
             workspace.show()
@@ -216,23 +212,66 @@ class PanelWorkspaceTests(unittest.TestCase):
 
             start = QPoint(45, 10)
             start_global = camera.mapToGlobal(start)
+            QTest.mousePress(camera, Qt.MouseButton.LeftButton, pos=start)
+            self.assertIsNotNone(workspace._drag_start)
+            QTest.mouseRelease(camera, Qt.MouseButton.LeftButton, pos=start)
+            self.assertIsNone(workspace._drag_start)
+            content_point = QPoint(45, camera.height() // 2)
+            content_press = QMouseEvent(
+                QEvent.Type.MouseButtonPress, QPointF(content_point),
+                QPointF(camera.mapToGlobal(content_point)),
+                Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            self.assertFalse(workspace.eventFilter(camera, content_press))
             map_center = map_dock.mapToGlobal(map_dock.rect().center())
+            started = []
+            workspace._start_panel_drag = lambda dock: started.append(dock)
             for event_type, local, global_pos, button, buttons in (
                 (QEvent.Type.MouseButtonPress, start, start_global,
                  Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton),
                 (QEvent.Type.MouseMove, camera.mapFromGlobal(map_center), map_center,
                  Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton),
-                (QEvent.Type.MouseButtonRelease, camera.mapFromGlobal(map_center),
-                 map_center, Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton),
             ):
                 event = QMouseEvent(
                     event_type, QPointF(local), QPointF(global_pos), button,
                     buttons, Qt.KeyboardModifier.NoModifier,
                 )
-                self.assertFalse(workspace.eventFilter(camera, event))
-            self.assertTrue(workspace.drop_panel_at(camera, map_center))
+                self.assertTrue(workspace.eventFilter(camera, event))
+            self.assertEqual(started, [camera])
+            expected = {
+                "left": QPoint(2, map_dock.height() // 2),
+                "right": QPoint(map_dock.width() - 3, map_dock.height() // 2),
+                "above": QPoint(map_dock.width() // 2, 2),
+                "below": QPoint(map_dock.width() // 2, map_dock.height() - 3),
+                "tab": map_dock.rect().center(),
+            }
+            for relation, point in expected.items():
+                target = workspace._drop_target(map_dock.mapToGlobal(point), source=camera)
+                self.assertIsNotNone(target)
+                self.assertEqual(target[1], relation)
+                if relation == "tab":
+                    self.assertIs(target[0], map_dock)
+            workspace._drag_source = camera
+            overlay = workspace._drop_overlay
+            overlay.setGeometry(workspace.rect())
+            overlay.show()
+            mime = QMimeData()
+            mime.setData("application/x-yki-panel-drag", b"camera")
+            event = QDropEvent(
+                QPointF(overlay.mapFromGlobal(map_center)), Qt.DropAction.MoveAction,
+                mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+            )
+            overlay.dropEvent(event)
+            self.assertTrue(event.isAccepted())
+            overlay.hide()
+            workspace._drag_source = None
             self.app.processEvents()
             self.assertIn(camera, workspace.tabifiedDockWidgets(map_dock))
+            self.assertEqual(
+                workspace.tabPosition(Qt.DockWidgetArea.RightDockWidgetArea),
+                QTabWidget.TabPosition.North,
+            )
 
             self.assertTrue(
                 workspace.move_panel_to_area(camera, Qt.DockWidgetArea.LeftDockWidgetArea)
@@ -361,9 +400,7 @@ class PanelWorkspaceTests(unittest.TestCase):
             self.assertTrue(dock.isHidden())
             workspace.set_edit_mode(True)
             self.assertIsNone(dock.titleBarWidget())
-            self.assertTrue(
-                dock.features() & dock.DockWidgetFeature.DockWidgetMovable
-            )
+            self.assertEqual(dock.features(), dock.DockWidgetFeature.DockWidgetClosable)
             workspace.set_edit_mode(False)
             self.assertIsNotNone(dock.titleBarWidget())
             workspace.close()
