@@ -8,7 +8,8 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
+from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import QApplication, QLabel
 
 from src.ui.widgets.panel_workspace import PanelWorkspace
@@ -191,6 +192,71 @@ class PanelWorkspaceTests(unittest.TestCase):
             )
             workspace.close()
 
+    def test_edit_mode_drag_drop_targets_tab_center_and_outer_right_edge(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = PanelWorkspace(Path(directory) / "layout.json")
+            visual_areas = (
+                Qt.DockWidgetArea.LeftDockWidgetArea
+                | Qt.DockWidgetArea.RightDockWidgetArea
+                | Qt.DockWidgetArea.TopDockWidgetArea
+            )
+            map_dock = workspace.add_panel(
+                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea,
+                group="workspace", allowed_areas=visual_areas, floatable=False,
+            )
+            camera = workspace.add_panel(
+                "camera", "Camera", QLabel("Camera"), Qt.DockWidgetArea.LeftDockWidgetArea,
+                group="workspace", allowed_areas=visual_areas, floatable=False,
+            )
+            workspace.resize(1200, 700)
+            workspace.show()
+            workspace.set_edit_mode(True)
+            self.app.processEvents()
+            self.assertEqual(camera.titleBarWidget().objectName(), "PanelDockTitleBar")
+
+            title_bar = camera.titleBarWidget()
+            start = title_bar.rect().center()
+            map_center = map_dock.mapToGlobal(map_dock.rect().center())
+            target = title_bar.mapFromGlobal(map_center)
+            QApplication.sendEvent(
+                title_bar,
+                QMouseEvent(
+                    QEvent.Type.MouseButtonPress, QPointF(start),
+                    QPointF(title_bar.mapToGlobal(start)), Qt.MouseButton.LeftButton,
+                    Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                ),
+            )
+            QApplication.sendEvent(
+                title_bar,
+                QMouseEvent(
+                    QEvent.Type.MouseMove, QPointF(target), QPointF(map_center),
+                    Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton,
+                    Qt.KeyboardModifier.NoModifier,
+                ),
+            )
+            QApplication.sendEvent(
+                title_bar,
+                QMouseEvent(
+                    QEvent.Type.MouseButtonRelease, QPointF(target),
+                    QPointF(map_center), Qt.MouseButton.LeftButton,
+                    Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                ),
+            )
+            self.app.processEvents()
+            self.assertIn(camera, workspace.tabifiedDockWidgets(map_dock))
+
+            self.assertTrue(
+                workspace.move_panel_to_area(camera, Qt.DockWidgetArea.LeftDockWidgetArea)
+            )
+            self.app.processEvents()
+            right_edge = workspace.mapToGlobal(
+                QPoint(workspace.width() - 2, workspace.height() // 2)
+            )
+            self.assertTrue(workspace.drop_panel_at(camera, right_edge))
+            self.app.processEvents()
+            self.assertGreater(camera.geometry().x(), map_dock.geometry().x())
+            workspace.close()
+
     def test_legacy_central_map_layout_migrates_without_losing_camera(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory) / "layout.json"
@@ -305,7 +371,7 @@ class PanelWorkspaceTests(unittest.TestCase):
             dock.close()
             self.assertTrue(dock.isHidden())
             workspace.set_edit_mode(True)
-            self.assertIsNone(dock.titleBarWidget())
+            self.assertEqual(dock.titleBarWidget().objectName(), "PanelDockTitleBar")
             self.assertTrue(
                 dock.features() & dock.DockWidgetFeature.DockWidgetMovable
             )
