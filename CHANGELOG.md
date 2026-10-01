@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+* Made the three left-side vehicle panels independently adjustable in width.
+  Each row keeps its own saved width and uses flexible trailing space, so
+  widening one panel no longer stretches the other two. Moving or tabbing a
+  panel releases that row's sizing constraints.
+* Limited separator resizing to its immediate neighbors in both directions.
+  Resizing stops at their size limits instead of taking space from a third
+  panel, and repeated movement at a limit no longer triggers extra relayouts.
 * Extended the left dock column to the bottom of the workspace. Log and
   parameter panels now occupy the space beside it, including when an existing
   saved layout is restored.

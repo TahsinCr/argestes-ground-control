@@ -272,6 +272,7 @@ class MainWindow(QMainWindow):
         self.workspace.place_panel(flight, telemetry, "below")
         self.workspace.place_panel(telemetry, controls, "below")
         self._flight_docks = (flight, telemetry, controls)
+        self.workspace.enable_independent_widths(("flight", "telemetry", "commands"))
 
     def _show_sidebar_view(self, view: str) -> None:
         if view == "flight":

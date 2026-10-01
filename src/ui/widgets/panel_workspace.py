@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 from PyQt6.QtCore import QByteArray, QEvent, QMimeData, QPoint, QRect, QTimer, Qt
@@ -113,6 +114,16 @@ class _PanelDropOverlay(QWidget):
         painter.end()
 
 
+@dataclass(frozen=True)
+class _PanelResize:
+    first: QDockWidget
+    second: QDockWidget
+    orientation: Qt.Orientation
+    start: QPoint
+    first_size: int
+    second_size: int
+
+
 class PanelWorkspace(QMainWindow):
     """Dockable shell around the unchanged content widgets."""
 
@@ -152,12 +163,157 @@ class PanelWorkspace(QMainWindow):
         self._quiet_titles: dict[str, QWidget] = {}
         self._drag_start: tuple[QDockWidget, QPoint] | None = None
         self._drag_source: QDockWidget | None = None
+        self._panel_resize: _PanelResize | None = None
+        self._independent_widths: dict[str, int] = {}
+        self._width_limits: dict[str, tuple[int, int, int]] = {}
+        self._width_spacers: dict[str, QDockWidget] = {}
+        self._width_sync_pending = False
         self._drop_overlay = _PanelDropOverlay(self)
         self._drop_overlay.hide()
+        self.installEventFilter(self)
 
     def _configure_dock_corners(self) -> None:
         self.setCorner(Qt.Corner.TopLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
         self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
+
+    def _separator_at(self, point: QPoint) -> _PanelResize | None:
+        docks = [dock for dock in (*self.panels.values(), *self._width_spacers.values())
+                 if dock.isVisible() and not dock.isFloating()
+                 and self.rect().intersects(dock.geometry())]
+        extent = self.style().pixelMetric(QStyle.PixelMetric.PM_DockWidgetSeparatorExtent)
+        for first in docks:
+            a = first.geometry()
+            for second in docks:
+                if first is second:
+                    continue
+                b = second.geometry()
+                if (
+                    0 < b.top() - a.bottom() <= extent + 1
+                    and a.bottom() < point.y() < b.top()
+                    and max(a.left(), b.left()) <= point.x() <= min(a.right(), b.right())
+                ):
+                    owners = {spacer: self.panels[key] for key, spacer in self._width_spacers.items()}
+                    return _PanelResize(owners.get(first, first), owners.get(second, second), Qt.Orientation.Vertical,
+                                        point, a.height(), b.height())
+                if (
+                    0 < b.left() - a.right() <= extent + 1
+                    and a.right() < point.x() < b.left()
+                    and max(a.top(), b.top()) <= point.y() <= min(a.bottom(), b.bottom())
+                ):
+                    return _PanelResize(first, second, Qt.Orientation.Horizontal,
+                                        point, a.width(), b.width())
+        return None
+
+    def _resize_neighbors(self, point: QPoint) -> None:
+        state = self._panel_resize
+        if state is None:
+            return
+        first, second = state.first, state.second
+        active_docks = {*self._panel_keys, *self._width_spacers.values()}
+        if first not in active_docks or second not in active_docks:
+            self._panel_resize = None
+            return
+        horizontal = state.orientation == Qt.Orientation.Horizontal
+        if horizontal:
+            for dock, start_size, direction in (
+                (first, state.first_size, 1), (second, state.second_size, -1)
+            ):
+                key = self._panel_keys.get(dock)
+                if key in self._width_spacers:
+                    _, maximum, minimum = self._width_limits[key]
+                    column_width = max(self.panels[k].width() for k in self._width_spacers)
+                    available = max(0, self.width() - self.minimumSizeHint().width())
+                    desired = start_size + direction * (point.x() - state.start.x())
+                    desired = max(minimum, min(maximum, column_width + available, desired))
+                    self._independent_widths[key] = desired
+                    if dock.width() != desired:
+                        dock.setFixedWidth(desired)
+                    return
+        dimension = (lambda size: size.width()) if horizontal else (lambda size: size.height())
+        minimum_first, maximum_first = self._resize_limits(first, state.orientation)
+        minimum_second, maximum_second = self._resize_limits(second, state.orientation)
+        total = state.first_size + state.second_size
+        lower = max(minimum_first, total - maximum_second)
+        upper = min(maximum_first, total - minimum_second)
+        if lower > upper:
+            return
+        delta = point.x() - state.start.x() if horizontal else point.y() - state.start.y()
+        size = max(lower, min(upper, state.first_size + delta))
+        if dimension(first.size()) == size and dimension(second.size()) == total - size:
+            return
+        # Keep the shared pair's total constant; never borrow from a third dock.
+        self.resizeDocks([first, second], [size, total - size], state.orientation)
+
+    def _resize_limits(self, dock: QDockWidget, orientation: Qt.Orientation) -> tuple[int, int]:
+        horizontal = orientation == Qt.Orientation.Horizontal
+        span = (lambda rect: (rect.left(), rect.right())) if horizontal else (
+            lambda rect: (rect.top(), rect.bottom())
+        )
+        dimension = (lambda size: size.width()) if horizontal else (lambda size: size.height())
+        peers = {dock, *self.tabifiedDockWidgets(dock)}
+        for panel in self.panels.values():
+            if panel.isVisible() and not panel.isFloating() and span(panel.geometry()) == span(dock.geometry()):
+                peers.add(panel)
+        minimum = max(max(1, dimension(panel.minimumSize()), dimension(panel.minimumSizeHint()))
+                      for panel in peers)
+        maximum = min(dimension(panel.maximumSize()) for panel in peers)
+        return minimum, maximum
+
+    def enable_independent_widths(self, keys: tuple[str, ...], *, default_width: int = 320) -> None:
+        """Give stacked left docks their own width and a flexible trailing cell."""
+        for key in keys:
+            dock = self.panels[key]
+            self._width_limits.setdefault(key, (
+                dock.minimumWidth(), dock.maximumWidth(),
+                max(1, dock.minimumWidth(), dock.minimumSizeHint().width()),
+            ))
+            self._independent_widths.setdefault(key, default_width)
+        self._sync_independent_widths()
+
+    def _release_width_row(self, key: str) -> None:
+        spacer = self._width_spacers.pop(key, None)
+        if spacer is not None:
+            self.removeDockWidget(spacer)
+            spacer.deleteLater()
+        dock = self.panels.get(key)
+        if dock is not None and key in self._width_limits:
+            minimum, maximum, _ = self._width_limits[key]
+            dock.setMinimumWidth(minimum)
+            dock.setMaximumWidth(maximum)
+
+    def _schedule_width_sync(self) -> None:
+        if self._width_sync_pending or not self._independent_widths:
+            return
+        self._width_sync_pending = True
+        QTimer.singleShot(0, self._sync_independent_widths)
+
+    def _sync_independent_widths(self, *, rebind: bool = False) -> None:
+        self._width_sync_pending = False
+        for key, desired in self._independent_widths.items():
+            dock = self.panels.get(key)
+            if dock is None:
+                continue
+            if (self.dockWidgetArea(dock) != Qt.DockWidgetArea.LeftDockWidgetArea
+                    or dock.isFloating() or self.tabifiedDockWidgets(dock)):
+                self._release_width_row(key)
+                continue
+            _, maximum, minimum = self._width_limits[key]
+            dock.setFixedWidth(max(minimum, min(maximum, desired)))
+            spacer = self._width_spacers.get(key)
+            if spacer is None:
+                spacer = QDockWidget("", self)
+                spacer.setObjectName(f"panel-space.{key}")
+                spacer.setWidget(QWidget(spacer))
+                title = QWidget(spacer)
+                title.setFixedHeight(0)
+                spacer.setTitleBarWidget(title)
+                spacer.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
+                self._width_spacers[key] = spacer
+                self.splitDockWidget(dock, spacer, Qt.Orientation.Horizontal)
+            elif rebind:
+                self.removeDockWidget(spacer)
+                self.splitDockWidget(dock, spacer, Qt.Orientation.Horizontal)
+            spacer.setVisible(not dock.isHidden())
 
     def add_panel(
         self,
@@ -197,6 +353,21 @@ class PanelWorkspace(QMainWindow):
         return dock
 
     def eventFilter(self, watched, event) -> bool:
+        if watched is self and isinstance(event, QMouseEvent):
+            if event.type() == QEvent.Type.MouseButtonPress:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self._panel_resize = self._separator_at(event.position().toPoint())
+                    if self._panel_resize is not None:
+                        return True
+            elif event.type() == QEvent.Type.MouseMove and self._panel_resize is not None:
+                if event.buttons() & Qt.MouseButton.LeftButton:
+                    self._resize_neighbors(event.position().toPoint())
+                    return True
+            elif event.type() == QEvent.Type.MouseButtonRelease and self._panel_resize is not None:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self._resize_neighbors(event.position().toPoint())
+                    self._panel_resize = None
+                    return True
         if isinstance(watched, QDockWidget) and watched in self._panel_keys:
             if isinstance(event, QMouseEvent):
                 if event.type() == QEvent.Type.MouseButtonPress:
@@ -233,6 +404,9 @@ class PanelWorkspace(QMainWindow):
         return super().eventFilter(watched, event)
 
     def _on_panel_visibility_changed(self, key: str, visible: bool) -> None:
+        if key in self._width_spacers:
+            self._width_spacers[key].setVisible(not self.panels[key].isHidden())
+        self._schedule_width_sync()
         if self._restoring_panel_sizes:
             return
         dock = self.panels.get(key)
@@ -481,7 +655,9 @@ class PanelWorkspace(QMainWindow):
             return False
         if dock.isFloating():
             dock.setFloating(False)
+        self._release_width_row(self._panel_keys[dock])
         self.addDockWidget(area, dock)
+        self._schedule_width_sync()
         return True
 
     def place_panel(
@@ -497,6 +673,9 @@ class PanelWorkspace(QMainWindow):
         area = self.dockWidgetArea(target)
         if area == Qt.DockWidgetArea.NoDockWidgetArea or not dock.allowedAreas() & area:
             return False
+        self._release_width_row(target_key)
+        self._release_width_row(dock_key)
+        self._schedule_width_sync()
         if relation == "tab":
             self.move_panel_to_area(dock, area)
             self.tabifyDockWidget(target, dock)
@@ -518,9 +697,16 @@ class PanelWorkspace(QMainWindow):
         return True
 
     def remove_panel(self, key: str) -> QWidget | None:
+        self._release_width_row(key)
+        self._independent_widths.pop(key, None)
+        self._width_limits.pop(key, None)
         dock = self.panels.pop(key, None)
         if dock is None:
             return None
+        if self._panel_resize is not None and dock in (
+            self._panel_resize.first, self._panel_resize.second
+        ):
+            self._panel_resize = None
         if self._drag_source is dock:
             self._drag_source = None
             self._drop_overlay.hide()
@@ -554,6 +740,7 @@ class PanelWorkspace(QMainWindow):
                     key: {"width": width, "height": height}
                     for key, (width, height) in self._panel_sizes.items()
                 },
+                "panel_widths": self._independent_widths,
             }
             temporary.write_text(json.dumps(payload), encoding="utf-8")
             temporary.replace(self.state_path)
@@ -587,6 +774,13 @@ class PanelWorkspace(QMainWindow):
                     ):
                         restored_sizes[key] = (width, height)
             self._panel_sizes = restored_sizes
+            widths = payload.get("panel_widths", {})
+            for key in self._independent_widths:
+                width = widths.get(key) if isinstance(widths, dict) else None
+                if width is None and key in restored_sizes:
+                    width = restored_sizes[key][0]
+                if isinstance(width, int) and not isinstance(width, bool) and width > 0:
+                    self._independent_widths[key] = width
             self._restoring_panel_sizes = True
             restored = self.restoreState(state, state_version)
             if restored:
@@ -598,6 +792,7 @@ class PanelWorkspace(QMainWindow):
                 if state_version == 1:
                     self._restore_map_into_legacy_workspace()
                 self._normalize_panel_areas()
+                self._sync_independent_widths(rebind=True)
                 self._panel_size_restore_enabled = True
                 if restored_sizes:
                     self._schedule_panel_size_restore()

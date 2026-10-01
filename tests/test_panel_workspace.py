@@ -50,6 +50,119 @@ class PanelWorkspaceTests(unittest.TestCase):
             self.assertGreater(bottom.x(), left.geometry().right())
             workspace.close()
 
+    def test_separator_resizes_only_neighbors_and_stops_at_minimum(self) -> None:
+        for orientation in (Qt.Orientation.Horizontal, Qt.Orientation.Vertical):
+            with self.subTest(orientation=orientation), tempfile.TemporaryDirectory() as directory:
+                workspace = PanelWorkspace(Path(directory) / "layout.json")
+                docks = [workspace.add_panel(key, key, QLabel(key),
+                                            Qt.DockWidgetArea.LeftDockWidgetArea)
+                         for key in ("first", "second", "third")]
+                first, second, third = docks
+                horizontal = orientation == Qt.Orientation.Horizontal
+                relation = "right" if horizontal else "below"
+                workspace.place_panel(first, second, relation)
+                workspace.place_panel(second, third, relation)
+                if horizontal:
+                    second.setMinimumWidth(180)
+                else:
+                    second.setMinimumHeight(180)
+                workspace.resize(1000, 800)
+                workspace.show()
+                self.app.processEvents()
+                workspace.resizeDocks(docks, [250, 230, 300], orientation)
+                self.app.processEvents()
+                unchanged = third.geometry()
+                total = (first.width() + second.width() if horizontal else
+                         first.height() + second.height())
+                point = (QPoint(first.geometry().right() + 3, first.height() // 2)
+                         if horizontal else
+                         QPoint(first.width() // 2, first.geometry().bottom() + 3))
+                end = point + (QPoint(150, 0) if horizontal else QPoint(0, 150))
+                for event_type, position, button, buttons in (
+                    (QEvent.Type.MouseButtonPress, point,
+                     Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton),
+                    (QEvent.Type.MouseMove, end,
+                     Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton),
+                    (QEvent.Type.MouseButtonRelease, end,
+                     Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton),
+                ):
+                    self.app.sendEvent(workspace, QMouseEvent(
+                        event_type, QPointF(position),
+                        QPointF(workspace.mapToGlobal(position)), button, buttons,
+                        Qt.KeyboardModifier.NoModifier,
+                    ))
+                    self.app.processEvents()
+                self.assertEqual(third.geometry(), unchanged)
+                self.assertEqual(second.width() if horizontal else second.height(), 180)
+                self.assertEqual(first.width() + second.width() if horizontal else
+                                 first.height() + second.height(), total)
+                workspace.close()
+
+    def test_left_panels_keep_independent_widths_through_restore_and_moves(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "layout.json"
+
+            def build():
+                workspace = PanelWorkspace(path)
+                docks = [workspace.add_panel(key, key, QLabel(key),
+                                            Qt.DockWidgetArea.LeftDockWidgetArea)
+                         for key in ("flight", "telemetry", "commands")]
+                workspace.place_panel(docks[0], docks[1], "below")
+                workspace.place_panel(docks[1], docks[2], "below")
+                map_dock = workspace.add_panel("map", "Map", QLabel("Map"),
+                                               Qt.DockWidgetArea.RightDockWidgetArea)
+                workspace.enable_independent_widths(("flight", "telemetry", "commands"))
+                workspace.resize(1200, 800)
+                workspace.show()
+                self.app.processEvents()
+                return workspace, docks, map_dock
+
+            workspace, docks, _ = build()
+            first, second, third = docks
+            unchanged = [dock.geometry() for dock in (second, third)]
+            point = QPoint(first.geometry().right() + 3, first.height() // 2)
+            end = point + QPoint(120, 0)
+            for event_type, position, button, buttons in (
+                (QEvent.Type.MouseButtonPress, point,
+                 Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton),
+                (QEvent.Type.MouseMove, end,
+                 Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton),
+                (QEvent.Type.MouseButtonRelease, end,
+                 Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton),
+            ):
+                self.app.sendEvent(workspace, QMouseEvent(
+                    event_type, QPointF(position),
+                    QPointF(workspace.mapToGlobal(position)), button, buttons,
+                    Qt.KeyboardModifier.NoModifier,
+                ))
+                self.app.processEvents()
+            self.assertEqual(first.width(), 440)
+            self.assertEqual([dock.geometry() for dock in (second, third)], unchanged)
+            second.hide()
+            self.app.processEvents()
+            second.show()
+            self.app.processEvents()
+            self.assertEqual([dock.width() for dock in docks], [440, 320, 320])
+            self.assertTrue(workspace.save_layout())
+            workspace.close()
+
+            restored, docks, map_dock = build()
+            self.assertTrue(restored.restore_layout())
+            self.app.processEvents()
+            self.assertEqual([dock.width() for dock in docks], [440, 320, 320])
+            first, second, third = docks
+            restored.place_panel(map_dock, first, "tab")
+            self.app.processEvents()
+            self.assertNotIn("flight", restored._width_spacers)
+            self.assertGreater(first.maximumWidth(), 440)
+            restored.move_panel_to_area(first, Qt.DockWidgetArea.LeftDockWidgetArea)
+            restored.place_panel(third, first, "below")
+            self.app.processEvents()
+            self.assertEqual(first.width(), 440)
+            self.assertEqual(second.width(), 320)
+            self.assertEqual(third.width(), 320)
+            restored.close()
+
     def test_dock_position_visibility_and_size_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory) / "layout.json"
