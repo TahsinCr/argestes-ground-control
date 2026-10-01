@@ -22,11 +22,12 @@ from src.models.vehicle import (
     VehicleConnectionState,
     VehicleTransportStats,
 )
-from src.services.abstracts.vehicle import MissionTransferInterrupted, VehicleService
+from src.services.abstracts.vehicle import MissionTransferInterrupted
+from .ports import MavlinkVehiclePort
 from src.services.logging_service import ServiceLogger
 
 
-class NullVehicleService(VehicleService):
+class NullVehicleService(MavlinkVehiclePort):
     """Service that remains safely offline when no vehicle link is configured."""
 
     def __init__(self) -> None:
@@ -113,8 +114,12 @@ class NullVehicleService(VehicleService):
         raise ConnectionError(f"Uçuş cihazı bağlantısı hazır değil: {action}")
 
 
-class MavlinkVehicleService(VehicleService):
+class MavlinkVehicleService(MavlinkVehiclePort):
     """Vehicle adapter hiding core MAVLink details from domain services."""
+
+    @property
+    def synchronize_mission_on_connect(self) -> bool:
+        return self._synchronize_mission_on_connect
 
     FORCE_ARM_MAGIC = 21_196.0
     GCS_HEARTBEAT_INTERVAL_S = 1.0
@@ -145,10 +150,12 @@ class MavlinkVehicleService(VehicleService):
         default_mission_altitude: float = 100.0,
         custom_handlers: dict[str, Callable[[CommandRequest], bool | None]] | None = None,
         stream_rates_hz: dict[str, float] | None = None,
+        synchronize_mission_on_connect: bool = True,
     ) -> None:
         if operation_timeout <= 0:
             raise ValueError("Araç işlem zaman aşımı pozitif olmalı")
         self._client = client
+        self._synchronize_mission_on_connect = synchronize_mission_on_connect
         self._logger = logger
         self._operation_timeout = float(operation_timeout)
         self._default_mission_altitude = float(default_mission_altitude)

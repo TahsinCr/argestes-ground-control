@@ -18,6 +18,24 @@ from src.ui.widgets.panel_workspace import PanelWorkspace
 
 
 class PanelWorkspaceTests(unittest.TestCase):
+    def test_tab_selection_does_not_restore_panel_sizes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = PanelWorkspace(Path(directory) / "layout.json")
+            first = workspace.add_panel("map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea)
+            second = workspace.add_panel("camera", "Camera", QLabel("Camera"), Qt.DockWidgetArea.RightDockWidgetArea)
+            workspace.show()
+            self.app.processEvents()
+            workspace.enable_panel_size_restore(capture_current=True)
+            workspace.place_panel(first, second, "tab")
+            self.app.processEvents()
+            with patch.object(workspace, "_schedule_panel_size_restore") as restore:
+                first.raise_()
+                self.app.processEvents()
+                second.raise_()
+                self.app.processEvents()
+                restore.assert_not_called()
+            workspace.close()
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication(["yki-workspace-tests"])

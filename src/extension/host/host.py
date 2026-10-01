@@ -252,7 +252,7 @@ class ExtensionHost:
         for view in registrar.visual_views:
             self._visual_views.append(VisualContribution(f"{identifier}.{view.identifier}", view.factory))
         for widget in registrar.status_widgets:
-            self._status_widgets.append(StatusContribution(f"{identifier}.{widget.identifier}", widget.factory))
+            self._status_widgets.append(StatusContribution(f"{identifier}.{widget.identifier}", widget.factory, widget.placement))
         if registrar.settings_action is not None:
             self._settings_actions[identifier] = registrar.settings_action
         self._running.append((identifier, plugin, context))

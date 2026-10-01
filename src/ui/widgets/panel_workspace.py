@@ -260,6 +260,7 @@ class PanelWorkspace(QMainWindow):
         self.edit_mode = False
         self._quiet_titles: dict[str, QWidget] = {}
         self._hover_controls: dict[str, _PanelControls] = {}
+        self._panel_hidden: dict[str, bool] = {}
         self._drag_start: tuple[QDockWidget, QPoint] | None = None
         self._drag_source: QDockWidget | None = None
         self._panel_resize: _PanelResize | None = None
@@ -432,6 +433,7 @@ class PanelWorkspace(QMainWindow):
         dock.setWidget(widget)
         self.addDockWidget(area, dock)
         self.panels[key] = dock
+        self._panel_hidden[key] = dock.isHidden()
         self._panel_keys[dock] = key
         self._panel_options[key] = (closable, movable, floatable)
         self._panel_default_areas[key] = area
@@ -511,13 +513,20 @@ class PanelWorkspace(QMainWindow):
         return super().eventFilter(watched, event)
 
     def _on_panel_visibility_changed(self, key: str, visible: bool) -> None:
+        dock = self.panels.get(key)
+        if dock is None:
+            return
+        hidden = dock.isHidden()
+        was_hidden = self._panel_hidden.get(key, hidden)
+        self._panel_hidden[key] = hidden
         if key in self._width_spacers:
-            self._width_spacers[key].setVisible(not self.panels[key].isHidden())
+            self._width_spacers[key].setVisible(not hidden)
         self._schedule_width_sync()
         if self._restoring_panel_sizes:
             return
-        dock = self.panels.get(key)
-        if dock is None:
+        # An inactive tab is not closed. Restoring geometry here would undo
+        # tab selection, splitting and drag placement.
+        if hidden == was_hidden:
             return
         if not visible:
             if not self._size_restore_pending:
@@ -726,7 +735,7 @@ class PanelWorkspace(QMainWindow):
             )
         tab_targets = [
             (key, candidate) for key, candidate in self.panels.items()
-            if candidate is not dock
+            if candidate is not dock and not candidate.isHidden()
         ]
         if tab_targets:
             place = menu.addMenu("Yerleştir" if not english else "Place Panel")
@@ -787,7 +796,7 @@ class PanelWorkspace(QMainWindow):
             dock.show()
             dock.raise_()
             return True
-        if self.dockWidgetArea(dock) != area:
+        if dock.isFloating() or self.dockWidgetArea(dock) != area:
             self.move_panel_to_area(dock, area)
         if relation in {"left", "right"}:
             orientation = Qt.Orientation.Horizontal
@@ -823,6 +832,7 @@ class PanelWorkspace(QMainWindow):
         self._panel_sizes.pop(key, None)
         self._quiet_titles.pop(key, None)
         self._hover_controls.pop(key, None)
+        self._panel_hidden.pop(key, None)
         dock.removeEventFilter(self)
         widget = dock.widget()
         if widget is not None:

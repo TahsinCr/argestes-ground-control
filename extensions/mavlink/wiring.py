@@ -11,8 +11,8 @@ from src.services.settings import SettingsService
 from .vehicle import MavlinkVehicleService, NullVehicleService
 from src.services.vehicle.parameters import (
     MutableParameterService,
-    VehicleParameterService,
 )
+from .parameters import VehicleParameterService
 from .parameter_defaults import MavlinkParameterDefaultSource
 
 
@@ -53,6 +53,7 @@ def _create_vehicle_stack(
         logging.child("VEHICLE"),
         operation_timeout=float(mavlink.operation_timeout),
         default_mission_altitude=float(settings.backend.mission.default_altitude_m),
+        synchronize_mission_on_connect=mavlink.sync_mission_on_connect,
     )
     parameter_defaults = MavlinkParameterDefaultSource(
         client,

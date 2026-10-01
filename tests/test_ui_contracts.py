@@ -94,6 +94,23 @@ class UiContractTests(unittest.TestCase):
         dialog.deleteLater()
         self.app.processEvents()
 
+    def test_mavlink_extension_settings_preserve_common_and_profile_values(self) -> None:
+        from extensions.mavlink.ui.settings_dialog import MavlinkSettingsDialog
+        original = SettingsModel()
+        dialog = MavlinkSettingsDialog(original, "tr", DARK)
+        self.assertIn("backend.mavlink.endpoint", dialog._widgets)
+        self.assertNotIn("ui.theme", dialog._widgets)
+        dialog._widgets["backend.mavlink.endpoint"].setText("udpin:0.0.0.0:14600")
+        result = dialog.to_settings()
+        self.assertEqual(result.backend.mavlink.endpoint, "udpin:0.0.0.0:14600")
+        self.assertEqual(result.ui, original.ui)
+        self.assertEqual(result.backend.active_mavlink_connection_id, original.backend.active_mavlink_connection_id)
+        active = next(item for item in result.backend.mavlink_connections if item.identifier == result.backend.active_mavlink_connection_id)
+        self.assertEqual(active.endpoint, "udpin:0.0.0.0:14600")
+        dialog.close()
+        dialog.deleteLater()
+        self.app.processEvents()
+
     def test_disabled_telemetry_removes_only_its_connection_chip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             backend = create_container(Path(directory))
@@ -105,8 +122,8 @@ class UiContractTests(unittest.TestCase):
             try:
                 ui = UiContainer(backend.container, base_dir=Path(directory), theme=DARK)
                 window = ui.resolve(MainWindow)
-                footer = window.telemetry_status.parentWidget().layout()
-                self.assertEqual(footer.indexOf(window.telemetry_status), -1)
+                footer = window.status_bar.layout()
+                self.assertFalse(any(key.startswith("telemetry.") for key in window._extension_status_by_id))
                 self.assertGreaterEqual(footer.indexOf(window.autopilot_status), 0)
                 self.assertGreaterEqual(footer.indexOf(window.gps_status), 0)
                 window.close()

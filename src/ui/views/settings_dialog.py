@@ -25,18 +25,20 @@ from PyQt6.QtWidgets import (
 )
 
 from src.ui.i18n import t
-from src.ui.config.settings_schema import FieldSpec, SETTINGS_SECTIONS, SectionSpec, iter_fields
+from src.ui.config.settings_schema import FieldSpec, SETTINGS_SECTIONS, SectionSpec
 from src.models.settings import SettingsModel
 from src.ui.themes.style import ThemePalette
 from src.ui.widgets.title_bar import AppTitleBar
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, settings: SettingsModel, language: str, theme: ThemePalette, parent=None) -> None:
+    def __init__(self, settings: SettingsModel, language: str, theme: ThemePalette, parent=None,
+                 *, sections: tuple[SectionSpec, ...] | None = None) -> None:
         super().__init__(parent)
         self._ui_language = language
         self._theme = theme
         self._settings = settings
+        self._sections = SETTINGS_SECTIONS if sections is None else sections
         self._widgets: dict[str, QWidget] = {}
         self.setObjectName("FramelessDialog")
         self.setModal(True)
@@ -62,7 +64,7 @@ class SettingsDialog(QDialog):
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(8)
-        for section in SETTINGS_SECTIONS:
+        for section in self._sections:
             content_layout.addWidget(self._build_section(section, settings))
         content_layout.addStretch(1)
         scroll.setWidget(content)
@@ -160,7 +162,7 @@ class SettingsDialog(QDialog):
 
     def to_settings(self) -> SettingsModel:
         payload = self._settings.to_dict()
-        for field in iter_fields():
+        for field in (field for section in self._sections for field in section.fields):
             target = payload
             path_parts = field.path.split(".")
             for part in path_parts[:-1]:

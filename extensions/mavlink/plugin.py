@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from src.core.mavlink import MavlinkClient
 from src.extension.api import ExtensionContext, ExtensionRegistrar, TelemetrySource
+from src.extension.api.contracts import ConnectionSettings
 from src.services.abstracts.connections import ConnectionControlService
 from src.services.abstracts.parameters import ParameterService
 from src.services.abstracts.settings import SettingsRepository
@@ -43,6 +44,8 @@ def _source(vehicle: VehicleService) -> TelemetrySource:
 
 class MavlinkExtension:
     def configure(self, registrar: ExtensionRegistrar, context: ExtensionContext) -> None:
+        registrar.singleton(ConnectionSettings, lambda: MavlinkConnectionSettings(context))
+        registrar.settings_ui(lambda anchor: self._open_settings(context, anchor))
         registrar.singleton(VehicleStack, _create_vehicle_stack,
                             dependencies={"settings_service": SettingsService, "logging": LoggingService})
         if not context.services.resolve(SettingsService).current.backend.mock_mode:
@@ -55,5 +58,32 @@ class MavlinkExtension:
                                           "telemetry": TelemetryService, "logging": LoggingService})
 
 
+    @staticmethod
+    def _open_settings(context, anchor):
+        from PyQt6.QtWidgets import QDialog
+        from src.ui.adapters.services import QtSettingsService
+        from .ui.settings_dialog import MavlinkSettingsDialog
+        from src.ui.themes.palette import palette_for
+        settings = context.services.resolve(SettingsService)
+        current = settings.current
+        dialog = MavlinkSettingsDialog(current, current.ui.language, palette_for(current.ui.theme), anchor)
+        adapter = QtSettingsService(settings, dialog)
+        try:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                adapter.save_async(dialog.to_settings())
+        finally:
+            adapter.close()
+            dialog.deleteLater()
+
+
 def create_extension() -> MavlinkExtension:
     return MavlinkExtension()
+
+
+class MavlinkConnectionSettings:
+    def __init__(self, context):
+        self.context = context
+
+    def create_ui(self, parent, theme, language):
+        from .ui.connection_editor import ConnectionEditor
+        return ConnectionEditor(self.context, parent, theme, language)

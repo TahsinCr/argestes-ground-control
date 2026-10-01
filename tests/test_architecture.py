@@ -22,6 +22,17 @@ def imported_modules(path: Path) -> set[str]:
 
 
 class ArchitectureTests(unittest.TestCase):
+    def test_vehicle_contract_does_not_require_wire_level_mavlink_operations(self) -> None:
+        from src.services.abstracts.vehicle import VehicleService
+        self.assertTrue({"subscribe", "mode_name", "set_parameter", "request_parameters"}.isdisjoint(VehicleService.__abstractmethods__))
+        source = (SRC / "ui/views/main_window.py").read_text()
+        for forbidden in ("MavlinkConnectionsPopup", "telemetry_status", "command_link_meter", "active_mavlink_connection_id"):
+            self.assertNotIn(forbidden, source)
+        self.assertFalse((SRC / "ui/widgets/mavlink_connections_popup.py").exists())
+        self.assertNotIn("PARAM_VALUE", (SRC / "services/vehicle/parameters.py").read_text())
+        self.assertNotIn("backend.mavlink", (SRC / "ui/config/settings_schema.py").read_text())
+        self.assertNotIn("backend.mavlink", (SRC / "container.py").read_text())
+
     def test_common_application_does_not_import_extension_implementations(self) -> None:
         violations = [
             f"{path.relative_to(ROOT)} -> {module}"

@@ -63,67 +63,9 @@ class MutableTelemetryService(TelemetryService):
         self._updated.publish(value)
 
 
-class SwitchableTelemetryService(MutableTelemetryService):
-    """Stable telemetry identity for consumers while an optional decoder changes."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._delegate: TelemetryService | None = None
-        self._delegate_subscription = None
-        self._started = False
-        self._switch_lock = threading.RLock()
-
-    def attach(self, delegate: TelemetryService | None) -> None:
-        with self._switch_lock:
-            if self._delegate is delegate:
-                return
-            previous, subscription = self._delegate, self._delegate_subscription
-            self._delegate = None
-            self._delegate_subscription = None
-            if subscription is not None:
-                subscription.cancel()
-            if previous is not None and self._started:
-                previous.stop()
-            if delegate is not None:
-                self._delegate_subscription = delegate.updated.subscribe(self.push)
-                self._delegate = delegate
-                if self._started:
-                    try:
-                        delegate.start()
-                    except Exception:
-                        self._delegate_subscription.cancel()
-                        self._delegate_subscription = None
-                        self._delegate = None
-                        self.push(TelemetrySnapshot.zero())
-                        raise
-                self.push(delegate.current)
-            else:
-                self.push(TelemetrySnapshot.zero())
-
-    def start(self) -> None:
-        with self._switch_lock:
-            if self._started:
-                return
-            self._started = True
-            if self._delegate is not None:
-                try:
-                    self._delegate.start()
-                except Exception:
-                    self._started = False
-                    raise
-            else:
-                super().start()
-
-    def stop(self) -> None:
-        with self._switch_lock:
-            if not self._started:
-                return
-            self._started = False
-            if self._delegate is not None:
-                self._delegate.stop()
-
-
 class MockTelemetryService(MutableTelemetryService):
+    """Local simulated data source for offline operation."""
+
     def __init__(self, logger: ServiceLogger | None = None, *, interval: float = 0.12) -> None:
         super().__init__(logger)
         self._interval = interval

@@ -20,7 +20,7 @@ from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
 from src.services.commands import DispatchCommandService
 from src.services.vehicle.parameters import MutableParameterService
-from src.services.vehicle.parameters import VehicleParameterService
+from extensions.mavlink.parameters import VehicleParameterService
 from extensions.mavlink.parameter_defaults import decode_parameter_defaults
 from src.services.vehicle.battery import VoltageBatteryEstimator
 from extensions.mavlink.telemetry import TelemetryDecoder, VehicleTelemetryService

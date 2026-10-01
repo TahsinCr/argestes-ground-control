@@ -7,7 +7,6 @@ _EXPORTS = {
     "VehicleParameterService": ("src.services.vehicle.parameters", "VehicleParameterService"),
     "MutableTelemetryService": ("src.services.vehicle.telemetry_base", "MutableTelemetryService"),
     "MockTelemetryService": ("src.services.vehicle.telemetry_base", "MockTelemetryService"),
-    "SwitchableTelemetryService": ("src.services.vehicle.telemetry_base", "SwitchableTelemetryService"),
 }
 
 __all__ = list(_EXPORTS)

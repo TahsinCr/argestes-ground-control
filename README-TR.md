@@ -69,6 +69,15 @@ kapatılabilir; yalnız kendi servisleri ve arayüz katkıları yeniden kurulur.
 çubuğunda arama, kategori/durum filtresi ve eklenti kontrolleri vardır. Mevcut
 MAVLink ayarları `data/settings.json` içinde korunur; eklenti durumu ve kendi
 ayarları `data/extensions/` altında tutulur, devre dışı bırakılınca silinmez.
+Ham mesaj abonelikleri, heartbeat çözümlemesi ve parametre mesajlarının işlenmesi
+protokol paketine aittir; ortak `VehicleService` bunları zorunlu kılmaz.
+Telemetri kendi veri akışının yaşam döngüsünü, bağlantı çipini ve kalite
+göstergesini yönetir; kamera durum kontrolleri kamera paketinde kalır.
+`registrar.status_widget(..., placement="connections" | "metrics")` katkıyı
+sol bağlantı grubuna veya bataryanın yanına yerleştirir. Protokole özel bağlantı
+düzenleyicisi isteğe bağlı `ConnectionSettings` servisiyle sağlanır. MAVLink'in
+gelişmiş ayarları ortak ayarlar penceresi yerine Eklentiler panelindeki kendi
+ayarlar eyleminden açılır.
 Kamera eklentisi varsayılan olarak kapalıdır. Kamera bağlantı ve çıkış profilleri
 `data/extensions/camera/settings.json` dosyasında saklanır; ilk açılışta eski
 `data/settings.json` kamera profilleri silinmeden içe alınır. Kamera paneli,

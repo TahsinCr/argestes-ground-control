@@ -34,7 +34,7 @@ class CameraExtensionTests(unittest.TestCase):
                 host = container.resolve(ExtensionHost)
                 self.assertTrue(host.is_active("camera"))
                 self.assertIsNotNone(host.settings_action("camera"))
-                self.assertEqual(len(host.status_widgets()), 1)
+                self.assertEqual(len([item for item in host.status_widgets() if item.identifier.startswith("camera.")]), 1)
                 runtime = container.resolve(CameraRuntime)
                 runtime.start()
                 self.assertFalse(runtime.video._started)
@@ -116,8 +116,8 @@ with tempfile.TemporaryDirectory() as directory:
     camera = window._extension_visual_widgets[0]
     assert isinstance(camera, VideoPanel)
     assert tuple(camera.split_buttons) == (1, 2, 3, 4)
-    assert len(window._extension_status_widgets) == 1
-    status = window._extension_status_widgets[0]
+    assert len([key for key in window._extension_status_by_id if key.startswith("camera.")]) == 1
+    status = window._extension_status_by_id["camera.connections"]
     assert status.video_chip.text_label.text() == "VIDEO"
     assert status.share_chip.text_label.text() == "VIDEO SHARE"
     assert backend.resolve(ExtensionHost).settings_action("camera") is not None
@@ -130,22 +130,23 @@ with tempfile.TemporaryDirectory() as directory:
     app.processEvents()
     window.extension_panel._toggle("camera", False)
     assert not window._extension_visual_widgets
-    assert not window._extension_status_widgets
+    assert not any(key.startswith("camera.") for key in window._extension_status_by_id)
     assert not any(key.startswith("camera.") for key in window.workspace.panels)
     assert "camera.wall" not in window.activity_bar.panel_buttons
     assert not backend.resolve(ExtensionHost).is_active("camera")
     window.extension_panel._toggle("camera", True)
     assert len(window._extension_visual_widgets) == 1
-    assert len(window._extension_status_widgets) == 1
+    assert len([key for key in window._extension_status_by_id if key.startswith("camera.")]) == 1
     camera_dock = window.workspace.panels["camera.wall"]
     assert "camera.wall" in window.activity_bar.panel_buttons
     assert camera_dock in window.workspace.tabifiedDockWidgets(window.map_dock)
     window.extension_panel._toggle("telemetry", False)
-    assert window.telemetry_status.isHidden()
+    assert not any(key.startswith("telemetry.") for key in window._extension_status_by_id)
     assert not window.gps_status.isHidden()
     assert not window.autopilot_status.isHidden()
     window.extension_panel._toggle("telemetry", True)
-    assert not window.telemetry_status.isHidden()
+    assert "telemetry.connection" in window._extension_status_by_id
+    assert "telemetry.quality" in window._extension_status_by_id
     window.close()
     ui.shutdown()
     backend.resolve(TelemetryService).stop()

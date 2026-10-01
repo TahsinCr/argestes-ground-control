@@ -3,10 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 from typing import Protocol
 
 from src.core.dependency import BaseDependencyContainer
+
+if TYPE_CHECKING:
+    from src.services.abstracts.telemetry import TelemetryService
+    from src.services.settings import SettingsService
+    from src.services.logging_service import LoggingService
 
 API_MAJOR = 1
 
@@ -57,6 +62,7 @@ class VisualContribution:
 class StatusContribution:
     identifier: str
     factory: Callable[[Any], Any]
+    placement: str = "connections"
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,12 +107,15 @@ class ExtensionRegistrar:
             raise ValueError(f"Duplicate visual view: {identifier}")
         self.visual_views.append(VisualContribution(identifier, factory))
 
-    def status_widget(self, identifier: str, factory: Callable[[Any], Any]) -> None:
+    def status_widget(self, identifier: str, factory: Callable[[Any], Any], *,
+                      placement: str = "connections") -> None:
+        if placement not in {"connections", "metrics"}:
+            raise ValueError(f"Invalid status placement: {placement}")
         if not re.fullmatch(r"[a-z][a-z0-9_]*", identifier):
             raise ValueError(f"Invalid status identifier: {identifier}")
         if any(widget.identifier == identifier for widget in self.status_widgets):
             raise ValueError(f"Duplicate status widget: {identifier}")
-        self.status_widgets.append(StatusContribution(identifier, factory))
+        self.status_widgets.append(StatusContribution(identifier, factory, placement))
 
     def settings_ui(self, action: Callable[[Any], None]) -> None:
         """Register one extension-owned settings action; its argument is the UI anchor."""
@@ -116,6 +125,16 @@ class ExtensionRegistrar:
 
 
 class TelemetrySource(Protocol):
-    """Protocol adapter supplying the common telemetry service."""
+    """Provider of normalized snapshots, never raw protocol packets.
 
-    def create_telemetry(self, settings: Any, logging: Any) -> Any: ...
+    Each factory call returns a separately owned lifecycle. The telemetry
+    extension subscribes before starting it and cancels before stopping it.
+    """
+
+    def create_telemetry(self, settings: SettingsService, logging: LoggingService) -> TelemetryService: ...
+
+
+class ConnectionSettings(Protocol):
+    """Optional protocol-owned connection editor; no wire types enter the host UI."""
+
+    def create_ui(self, parent: Any, theme: Any, language: str) -> Any: ...

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Callable, Iterable
-from typing import Any
+from collections.abc import Iterable
 
 from src.core.abstracts import Service
-from src.core.events import EventBus, Subscription
+from src.core.events import EventBus
 from src.models.commands import CommandRequest
 from src.models.mission import MapOverlay
 from src.models.vehicle import (
@@ -22,6 +21,11 @@ class MissionTransferInterrupted(RuntimeError):
 
 class VehicleService(Service):
     """Abstract the flight controller from MAVLink, simulators or other transports."""
+
+    @property
+    def synchronize_mission_on_connect(self) -> bool:
+        """Whether the provider opts into automatic mission synchronization."""
+        return False
 
     @property
     @abstractmethod
@@ -50,22 +54,6 @@ class VehicleService(Service):
 
     @abstractmethod
     def reconnect(self, config: VehicleConnectionConfig | None = None) -> None: ...
-
-    @abstractmethod
-    def subscribe(
-        self,
-        message_types: str | Iterable[str],
-        callback: Callable[[Any], None],
-    ) -> Subscription: ...
-
-    @abstractmethod
-    def request_parameters(self) -> None: ...
-
-    @abstractmethod
-    def set_parameter(self, name: str, value: object, value_type: int | None = None) -> None: ...
-
-    @abstractmethod
-    def mode_name(self, heartbeat: Any, fallback: str = "UNKNOWN") -> str: ...
 
     @abstractmethod
     def set_default_mission_altitude(self, altitude_m: float) -> None: ...

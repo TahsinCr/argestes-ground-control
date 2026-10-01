@@ -11,17 +11,36 @@ from src.container import create_container
 from src.extension.api import ExtensionManifest, ExtensionRegistrar
 from src.extension.host import ExtensionError, ExtensionHost
 from src.services.abstracts.telemetry import TelemetryService
-from src.services.vehicle.telemetry_base import MutableTelemetryService, SwitchableTelemetryService
+from src.services.vehicle.telemetry_base import MutableTelemetryService
+from extensions.telemetry.runtime import TelemetryRuntime
 
 
 class ExtensionTests(unittest.TestCase):
+    def test_telemetry_runtime_accepts_protocol_neutral_feed_and_releases_it(self) -> None:
+        from src.models.telemetry import TelemetrySnapshot
+        feed = MutableTelemetryService()
+        feed.patch(battery_percent=73)
+        hub = MutableTelemetryService()
+        source = SimpleNamespace(create_telemetry=lambda settings, logging: feed)
+        runtime = TelemetryRuntime(source, hub, None, None)
+        runtime.start()
+        self.assertEqual(hub.current.battery_percent, 73)
+        feed.patch(battery_percent=52)
+        self.assertEqual(hub.current.battery_percent, 52)
+        runtime.stop()
+        feed.patch(battery_percent=10)
+        self.assertEqual(hub.current.battery_percent, TelemetrySnapshot.zero().battery_percent)
+        runtime.start()
+        self.assertEqual(hub.current.battery_percent, 10)
+        runtime.stop()
+
     def test_builtins_load_and_one_protocol_is_mandatory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             container = create_container(Path(directory))
             try:
                 host = container.resolve(ExtensionHost)
                 telemetry = container.resolve(TelemetryService)
-                self.assertIsInstance(telemetry, SwitchableTelemetryService)
+                self.assertIsInstance(telemetry, MutableTelemetryService)
                 states = {item.manifest.identifier: item for item in host.list_extensions()}
                 self.assertTrue(states["mavlink"].enabled)
                 self.assertTrue(states["telemetry"].enabled)
@@ -41,15 +60,15 @@ class ExtensionTests(unittest.TestCase):
                 telemetry = first.resolve(TelemetryService)
                 host.start()
                 telemetry.start()
-                self.assertIsNotNone(telemetry._delegate)
+                self.assertTrue(first.container.has(TelemetryRuntime))
                 host.set_enabled("telemetry", False)
                 self.assertFalse(host.is_active("telemetry"))
-                self.assertIsNone(telemetry._delegate)
+                self.assertFalse(first.container.has(TelemetryRuntime))
                 self.assertIs(telemetry, first.resolve(TelemetryService))
                 self.assertFalse(next(item for item in host.list_extensions()
                                       if item.manifest.identifier == "telemetry").pending_restart)
                 host.set_enabled("telemetry", True)
-                self.assertIsNotNone(telemetry._delegate)
+                self.assertTrue(first.container.has(TelemetryRuntime))
                 host.set_enabled("telemetry", False)
                 telemetry.stop()
                 host.stop()
@@ -93,11 +112,11 @@ class ExtensionTests(unittest.TestCase):
                 host.reload("camera")
                 self.assertIsNot(previous_runtime, container.resolve(CameraRuntime))
                 self.assertEqual(len(host.visual_views()), 1)
-                self.assertEqual(len(host.status_widgets()), 1)
+                self.assertEqual(len([item for item in host.status_widgets() if item.identifier.startswith("camera.")]), 1)
                 host.set_enabled("camera", False)
                 self.assertFalse(container.container.has(CameraRuntime))
                 self.assertFalse(host.visual_views())
-                self.assertFalse(host.status_widgets())
+                self.assertFalse(any(item.identifier.startswith("camera.") for item in host.status_widgets()))
                 self.assertIsNone(host.settings_action("camera"))
                 host.set_enabled("camera", True)
                 self.assertTrue(container.container.has(CameraRuntime))

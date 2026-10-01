@@ -73,6 +73,15 @@ services and UI are rebuilt. The left activity bar provides search,
 category/status filters and extension controls. Existing MAVLink configuration
 remains in `data/settings.json`; extension state and extension-owned settings
 are stored under `data/extensions/` and are not erased when disabled.
+Wire subscriptions, heartbeat decoding and parameter-message handling belong
+to the protocol package, not the shared `VehicleService` contract. Telemetry
+owns its feed lifecycle and contributes its connection chip and quality meter;
+camera status controls belong to the camera package. Status contributions use
+`registrar.status_widget(..., placement="connections" | "metrics")` to select
+the left connection group or the group beside the battery. Protocol-specific
+connection editors use the optional `ConnectionSettings` service. MAVLink's
+advanced settings are available through its Extensions-panel settings action,
+not the common application settings dialog.
 The camera extension is disabled by default. Its source and output profiles are
 stored in `data/extensions/camera/settings.json`; on first use, legacy camera
 profiles in `data/settings.json` are imported without deleting that file.

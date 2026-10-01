@@ -10,7 +10,7 @@ from src.models.settings import BatteryTelemetrySettings
 from src.models.telemetry import TelemetrySnapshot
 from src.models.vehicle import VehicleConnectionState, VehicleTransportStats
 from src.services.abstracts.settings import SettingsRepository
-from src.services.abstracts.vehicle import VehicleService
+from .ports import MavlinkVehiclePort
 from src.services.logging_service import ServiceLogger
 from src.services.vehicle.battery import VoltageBatteryEstimator
 
@@ -473,7 +473,7 @@ TELEMETRY_MESSAGE_TYPES = (
 class VehicleTelemetryService(MutableTelemetryService):
     def __init__(
         self,
-        vehicle: VehicleService,
+        vehicle: MavlinkVehiclePort,
         logger: ServiceLogger | None = None,
         decoder: TelemetryDecoder | None = None,
         settings_service: SettingsRepository | None = None,

@@ -3,6 +3,31 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+* Stopped treating inactive dock tabs as closed panels. Switching tabs no longer
+  reapplies saved geometry, and floating panels can be placed back beside a
+  dock in the same area. Closed panels are omitted from placement targets.
+* Kept advanced MAVLink connection edits consistent with the selected profile,
+  so settings normalization no longer silently restores its old endpoint.
+
+### Changed
+
+* Moved wire subscriptions, heartbeat mode decoding and parameter-message
+  handling out of the common vehicle contract and into the MAVLink package.
+  Mission synchronization policy now comes from the provider rather than a
+  MAVLink settings lookup in the composition root.
+* Gave telemetry its own feed runtime, connection chip and quality indicator.
+  The runtime consumes normalized snapshots from any protocol provider and
+  releases its subscriptions when disabled; it no longer requires a concrete
+  switchable service from the application. Late events from a stopped feed are
+  rejected. Camera controls remain owned by the camera package.
+* Added generic connection/metrics placement for extension status contributions
+  and an optional protocol-owned connection editor. Removed MAVLink profile
+  editing and telemetry-specific UI toggling from the main window. Advanced
+  MAVLink settings now live in the extension rather than the common form;
+  existing settings files are preserved.
+
 ### Added
 
 * Added compact, hover-only controls at the top center of each workspace panel.

@@ -7,25 +7,20 @@ from PyQt6.QtCore import QPoint, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
-    QDialogButtonBox,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
     QPushButton,
-    QSpinBox,
     QSplitter,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from src.models.connections import ConnectionStatus
 from src.extension.host import ExtensionHost
-from src.models.settings import MavlinkConnectionConfig, SettingsModel
+from src.models.settings import SettingsModel
 from src.services.abstracts.commands import CommandService
 from src.services.abstracts.connections import ConnectionControlService
 from src.services.abstracts.parameters import ParameterService
@@ -50,11 +45,10 @@ from src.ui.themes.style import ThemePalette, apply_theme
 from src.ui.views.settings_dialog import SettingsDialog
 from src.ui.widgets.attitude import AttitudeIndicator
 from src.ui.widgets.battery_popup import BatterySettingsPopup
-from src.ui.widgets.common import BatteryMeter, PanelFrame, SignalMeter, StatusChip
+from src.ui.widgets.common import BatteryMeter, PanelFrame, StatusChip
 from src.ui.widgets.control_panels import TelemetryPanel, VehicleControlsPanel
 from src.ui.widgets.logs import EventLogPanel
 from src.ui.widgets.map_panel import MapPanel
-from src.ui.widgets.mavlink_connections_popup import MavlinkConnectionsPopup
 from src.ui.widgets.parameters import ParametersPanel
 from src.ui.widgets.activity_bar import ActivityBar
 from src.ui.widgets.extension_panel import ExtensionPanel
@@ -107,7 +101,6 @@ class MainWindow(QMainWindow):
         self.theme = theme
         self._settings = settings_service.current
         self.language = self._settings.language
-        self._editing_profile: MavlinkConnectionConfig | None = None
         self._layout_restored = False
         self._workspace_disconnected = False
 
@@ -198,34 +191,24 @@ class MainWindow(QMainWindow):
         footer = QHBoxLayout(status_bar)
         footer.setContentsMargins(8, 3, 8, 3)
         footer.setSpacing(6)
-        self.telemetry_status = StatusChip(t("status.telemetry", self.language), status_bar)
+        self.status_bar = status_bar
         self.autopilot_status = StatusChip(t("status.autopilot", self.language), status_bar)
         self.gps_status = StatusChip(t("status.gps", self.language), status_bar)
-        self._telemetry_ui_enabled = self.extension_host.is_active("telemetry")
-        for chip in (self.telemetry_status, self.autopilot_status, self.gps_status):
+        for chip in (self.autopilot_status, self.gps_status):
             chip.set_theme(self.theme)
             chip.set_state("danger")
-            if chip is not self.telemetry_status or self._telemetry_ui_enabled:
-                footer.addWidget(chip)
+            footer.addWidget(chip)
         self._extension_status_widgets: list[QWidget] = []
         self._extension_status_by_id: dict[str, QWidget] = {}
-        for contribution in self.extension_host.status_widgets():
-            widget = contribution.factory(status_bar, self.theme, self.language)
-            if not isinstance(widget, QWidget):
-                raise TypeError(f"Extension status {contribution.identifier} must return QWidget")
-            footer.addWidget(widget)
-            self._extension_status_widgets.append(widget)
-            self._extension_status_by_id[contribution.identifier] = widget
         footer.addStretch(1)
-        self.command_link_meter = SignalMeter(t("status.command_link", self.language), status_bar)
-        self.command_link_meter.set_theme(self.theme)
-        self.command_link_meter.set_unavailable()
         self.battery_meter = BatteryMeter(t("status.battery", self.language), status_bar)
         self.battery_meter.set_theme(self.theme)
         self.battery_meter.set_unavailable()
         self.battery_meter.clicked.connect(self._open_battery_popup)
         footer.addWidget(self.battery_meter)
-        footer.addWidget(self.command_link_meter)
+        self._status_metrics_anchor = QWidget(status_bar)
+        self._status_metrics_anchor.setFixedWidth(0)
+        footer.addWidget(self._status_metrics_anchor)
         self.settings_button = QPushButton("⚙", status_bar)
         self.settings_button.setObjectName("SettingsIconButton")
         self.settings_button.setProperty("compact", "true")
@@ -233,15 +216,13 @@ class MainWindow(QMainWindow):
         self.settings_button.setToolTip(t("status.settings", self.language))
         self.settings_button.clicked.connect(self.open_settings)
         footer.addWidget(self.settings_button)
+        for contribution in self.extension_host.status_widgets():
+            self._add_status_contribution(contribution)
         layout.addWidget(status_bar)
 
         self.battery_popup = BatterySettingsPopup(self.theme, self, language=self.language)
         self.battery_popup.save_requested.connect(self._save_battery_settings)
         self.battery_popup.settings_requested.connect(self.open_settings)
-        self.mavlink_popup = MavlinkConnectionsPopup(
-            self.theme, self, language=self.language
-        )
-        self._show_mavlink_profiles()
 
     def _build_sidebar(self) -> None:
         self.flight_panel = PanelFrame("", "", self.workspace)
@@ -354,15 +335,7 @@ class MainWindow(QMainWindow):
     def _sync_extension_ui(self, identifier: str) -> None:
         self._remove_extension_ui(identifier)
         if not self.extension_host.is_active(identifier):
-            if identifier == "telemetry":
-                self._telemetry_ui_enabled = False
-                self.telemetry_status.hide()
-                self.telemetry_status.parentWidget().layout().removeWidget(self.telemetry_status)
             return
-        if identifier == "telemetry" and not self._telemetry_ui_enabled:
-            self._telemetry_ui_enabled = True
-            self.telemetry_status.parentWidget().layout().insertWidget(0, self.telemetry_status)
-            self.telemetry_status.show()
         prefix = identifier + "."
         for contribution in self.extension_host.sidebar_views():
             if contribution.identifier.startswith(prefix):
@@ -423,22 +396,28 @@ class MainWindow(QMainWindow):
                 0,
                 lambda panel=dock, size=preference: self._size_visual_dock(panel, size),
             )
-        footer = self.telemetry_status.parentWidget().layout()
         for contribution in self.extension_host.status_widgets():
             if not contribution.identifier.startswith(prefix):
                 continue
-            widget = contribution.factory(self.telemetry_status.parentWidget(), self.theme,
-                                          self.language)
-            if not isinstance(widget, QWidget):
-                raise TypeError("Extension status must return QWidget")
-            footer.insertWidget(footer.indexOf(self.battery_meter) - 1, widget)
-            self._extension_status_widgets.append(widget)
-            self._extension_status_by_id[contribution.identifier] = widget
+            self._add_status_contribution(contribution)
+
+    def _add_status_contribution(self, contribution) -> None:
+        widget = contribution.factory(self.status_bar, self.theme, self.language)
+        if not isinstance(widget, QWidget):
+            raise TypeError("Extension status must return QWidget")
+        footer = self.status_bar.layout()
+        index = footer.indexOf(self._status_metrics_anchor) if contribution.placement == "metrics" else footer.indexOf(self.gps_status) + 1
+        footer.insertWidget(index, widget)
+        self._extension_status_widgets.append(widget)
+        self._extension_status_by_id[contribution.identifier] = widget
 
     def _remove_extension_ui(self, identifier: str) -> None:
         prefix = identifier + "."
         for key, widget in tuple(self._extension_status_by_id.items()):
             if key.startswith(prefix):
+                shutdown = getattr(widget, "prepare_shutdown", None)
+                if callable(shutdown):
+                    shutdown()
                 widget.parentWidget().layout().removeWidget(widget)
                 widget.hide()
                 widget.deleteLater()
@@ -846,13 +825,6 @@ class MainWindow(QMainWindow):
             lambda severity, message: self.log_service.log("MAP", message, severity)
         )
         self.log_service.entries_emitted.connect(self.log_panel.add_entries)
-        self.connection_service.status_changed.connect(self._on_connection_status)
-        self.telemetry_status.clicked.connect(self._open_mavlink_profiles)
-        self.autopilot_status.clicked.connect(self._open_mavlink_profiles)
-        self.gps_status.clicked.connect(self._open_mavlink_profiles)
-        self.mavlink_popup.profiles_saved.connect(self._save_mavlink_profiles)
-        self.mavlink_popup.profile_edit_requested.connect(self._edit_mavlink_profile)
-        self.mavlink_popup.profile_connect_requested.connect(self._connect_mavlink_profile)
         self.settings_service.settings_changed.connect(self._settings_changed)
         self.command_service.command_dispatched.connect(
             lambda code, parameters: self.vehicle_controls.command_started(code, parameters)
@@ -875,27 +847,10 @@ class MainWindow(QMainWindow):
             snapshot.battery_consumed_mah,
         )
         self.autopilot_status.set_state("success" if snapshot.autopilot_link else "danger")
-        self.telemetry_status.set_state("success" if snapshot.telemetry_link else "danger")
         self.gps_status.set_state("success" if snapshot.gps_fix not in {"", "NO_GPS", "NO_FIX"} else "warning")
-        if snapshot.rc_rssi is None or not snapshot.telemetry_link:
-            self.command_link_meter.set_unavailable()
-        else:
-            self.command_link_meter.set_value(int(snapshot.rc_rssi), "RC RSSI")
 
     def _on_parameter_changed(self, name: str, value: object) -> None:
         self.parameter_service.update_values({name: value})
-
-    def _on_connection_status(self, status: ConnectionStatus) -> None:
-        if status.channel != "telemetry":
-            return
-        self.telemetry_status.set_state("success" if status.connected else "warning" if status.detail else "danger")
-        self.mavlink_popup.update_connection(
-            active_identifier=self._settings.backend.active_mavlink_connection_id,
-            connected=status.connected,
-            running=bool(status.options.get("running", status.connected)),
-            detail=status.detail,
-        )
-        self._show_mavlink_profiles()
 
     def _open_battery_popup(self) -> None:
         self.battery_popup.show_settings(
@@ -921,90 +876,6 @@ class MainWindow(QMainWindow):
         self.settings_service.save(SettingsModel.from_dict(payload))
         self.battery_popup.set_result(True, "Batarya ayarları kaydedildi")
 
-    def _show_mavlink_profiles(self) -> None:
-        backend = self._settings.backend
-        status = self.connection_service.status("telemetry")
-        self.mavlink_popup.show_profiles(
-            tuple(backend.mavlink_connections),
-            active_identifier=backend.active_mavlink_connection_id,
-            connected=status.connected,
-            running=bool(status.options.get("running", status.connected)),
-            detail=status.detail,
-        )
-
-    def _open_mavlink_profiles(self) -> None:
-        self._show_mavlink_profiles()
-        self.mavlink_popup.adjustSize()
-        anchor = self.telemetry_status if self._telemetry_ui_enabled else self.autopilot_status
-        self.mavlink_popup.move(anchor.mapToGlobal(anchor.rect().topLeft()))
-        self.mavlink_popup.show()
-        self.mavlink_popup.raise_()
-
-    def _connect_mavlink_profile(self, profile: MavlinkConnectionConfig) -> None:
-        self._save_mavlink_profiles(tuple(self._settings.backend.mavlink_connections), profile.identifier)
-        status = self.connection_service.status("telemetry")
-        if status.connected and profile.identifier == self._settings.backend.active_mavlink_connection_id:
-            self.connection_service.disconnect("telemetry")
-            return
-        self.mavlink_popup.set_connecting(profile.identifier)
-        self.connection_service.reconnect(
-            "telemetry",
-            {
-                "profile_id": profile.identifier,
-                "profile_name": profile.name,
-                "endpoint": profile.endpoint,
-                "baud": profile.baud,
-                "timeout_s": profile.heartbeat_timeout,
-                "auto_connect": profile.auto_connect,
-            },
-        )
-
-    def _edit_mavlink_profile(self, profile: MavlinkConnectionConfig | None) -> None:
-        existing = tuple(self._settings.backend.mavlink_connections)
-        template = self._settings.backend.mavlink
-        profile = profile or MavlinkConnectionConfig(
-            name=f"Telemetri {len(existing) + 1}",
-            endpoint=template.endpoint,
-            baud=template.baud,
-            heartbeat_timeout=template.heartbeat_timeout,
-        )
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Telemetri bağlantısı")
-        form = QFormLayout(dialog)
-        name = QLineEdit(profile.name, dialog)
-        endpoint = QLineEdit(profile.endpoint, dialog)
-        baud = QSpinBox(dialog); baud.setRange(1200, 4_000_000); baud.setValue(profile.baud)
-        timeout = QSpinBox(dialog); timeout.setRange(1, 120); timeout.setValue(profile.heartbeat_timeout)
-        form.addRow("İsim", name); form.addRow("MAVLink adresi", endpoint)
-        form.addRow("Baud", baud); form.addRow("Zaman aşımı", timeout)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel, dialog)
-        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject)
-        form.addRow(buttons)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        updated = MavlinkConnectionConfig(
-            identifier=profile.identifier,
-            name=name.text().strip(),
-            endpoint=endpoint.text().strip(),
-            baud=baud.value(),
-            heartbeat_timeout=timeout.value(),
-            auto_connect=profile.auto_connect,
-        )
-        profiles = [updated if item.identifier == profile.identifier else item for item in existing]
-        if not any(item.identifier == updated.identifier for item in existing):
-            profiles.append(updated)
-        self._save_mavlink_profiles(tuple(profiles), updated.identifier)
-
-    def _save_mavlink_profiles(self, profiles, active_identifier: str | None = None) -> None:
-        payload = self._settings.to_dict()
-        payload["backend"]["mavlink_connections"] = [item.to_dict() for item in profiles]
-        if active_identifier is not None:
-            payload["backend"]["active_mavlink_connection_id"] = active_identifier
-        try:
-            self.settings_service.save_async(SettingsModel.from_dict(payload))
-        except (TypeError, ValueError) as exc:
-            QMessageBox.warning(self, "Telemetri bağlantısı", str(exc))
-
     def open_settings(self) -> None:
         dialog = SettingsDialog(self._settings, self.language, self.theme, self)
         dialog.clear_cache_button.clicked.connect(self.settings_service.clear_cache)
@@ -1014,8 +885,9 @@ class MainWindow(QMainWindow):
     def _settings_changed(self, settings: SettingsModel) -> None:
         previous = self._settings
         self._settings = settings
-        if self._is_mavlink_profile_only_update(previous, settings):
-            self._show_mavlink_profiles()
+        if (previous.ui == settings.ui and previous.backend.mission == settings.backend.mission
+                and previous.backend.battery_alarm == settings.backend.battery_alarm
+                and previous.backend.battery_telemetry == settings.backend.battery_telemetry):
             return
         self.language = settings.language
         self.planner_service.set_default_radii(
@@ -1048,12 +920,9 @@ class MainWindow(QMainWindow):
         self.battery_meter.set_theme(self.theme)
         self.battery_meter.set_label(t("status.battery", self.language))
         self.battery_meter.set_language(self.language)
-        self.command_link_meter.set_theme(self.theme)
-        self.command_link_meter.set_label(t("status.command_link", self.language))
-        for chip in (self.telemetry_status, self.autopilot_status, self.gps_status):
+        for chip in (self.autopilot_status, self.gps_status):
             chip.set_theme(self.theme)
         self.battery_popup.set_theme(self.theme)
-        self.mavlink_popup.set_theme(self.theme)
         self.map_panel.set_theme(self.theme)
         self.map_panel.retranslate(self.language)
         self.telemetry_panel.set_theme(self.theme)
@@ -1063,37 +932,10 @@ class MainWindow(QMainWindow):
         self.parameters_panel.set_language(self.language)
         self.title_bar.set_title(self.windowTitle())
         self.settings_button.setToolTip(t("status.settings", self.language))
-        self.telemetry_status.set_label(t("status.telemetry", self.language))
         self.autopilot_status.set_label(t("status.autopilot", self.language))
         self.gps_status.set_label(t("status.gps", self.language))
         self.battery_popup.set_language(self.language)
-        self.mavlink_popup.set_language(self.language)
-        self._show_mavlink_profiles()
 
-    @staticmethod
-    def _is_mavlink_profile_only_update(
-        previous: SettingsModel,
-        current: SettingsModel,
-    ) -> bool:
-        if previous is current:
-            return False
-        old_data = previous.to_dict()
-        new_data = current.to_dict()
-        old_backend = old_data.get("backend", {})
-        new_backend = new_data.get("backend", {})
-        old_profiles = (
-            old_backend.get("mavlink_connections"),
-            old_backend.get("active_mavlink_connection_id"),
-        )
-        new_profiles = (
-            new_backend.get("mavlink_connections"),
-            new_backend.get("active_mavlink_connection_id"),
-        )
-        for payload in (old_data, new_data):
-            backend = payload.get("backend", {})
-            backend.pop("mavlink_connections", None)
-            backend.pop("active_mavlink_connection_id", None)
-        return old_profiles != new_profiles and old_data == new_data
 
     def prepare_shutdown(self) -> None:
         if not getattr(self, "_workspace_disconnected", False):
@@ -1102,7 +944,7 @@ class MainWindow(QMainWindow):
                 *self._flight_docks, self.log_dock, self.parameters_dock,
             ):
                 dock.visibilityChanged.disconnect()
-        for widget in self._extension_visual_widgets:
+        for widget in (*self._extension_visual_widgets, *self._extension_status_widgets):
             shutdown = getattr(widget, "prepare_shutdown", None)
             if callable(shutdown):
                 shutdown()

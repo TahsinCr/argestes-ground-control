@@ -24,7 +24,7 @@ from src.services.planner import PlannerService
 from src.services.runtime import RuntimeServices
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
-from src.services.vehicle.telemetry_base import SwitchableTelemetryService
+from src.services.vehicle.telemetry_base import MutableTelemetryService
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +71,7 @@ def _planner(
         initial_state=None if settings.backend.mock_mode else MissionState(),
         default_radii=settings.backend.mission.radii,
         vehicle=None if settings.backend.mock_mode else vehicle,
-        sync_from_vehicle_on_connect=settings.backend.mavlink.sync_mission_on_connect,
+        sync_from_vehicle_on_connect=vehicle.synchronize_mission_on_connect,
     )
 
 
@@ -234,7 +234,7 @@ class ApplicationContainer(BaseDependencyContainer):
 
     def configure(self) -> None:
         _register_infrastructure(self, self.context)
-        self.singleton(TelemetryService, concrete=SwitchableTelemetryService,
+        self.singleton(TelemetryService, concrete=MutableTelemetryService,
                        priority=int(DependencyPriority.VEHICLE))
         host = ExtensionHost(self.context.base_dir, self)
         self.instance(ExtensionHost, host, priority=int(DependencyPriority.VEHICLE))
