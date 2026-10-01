@@ -6,7 +6,7 @@
 # Kırlangıç Ground Control Station
 
 A desktop ground-control application with an extension host. The built-in
-MAVLink protocol extension and optional telemetry extension provide the current
+MAVLink protocol extension and optional Vehicle Connection extension provide the current
 vehicle connection, telemetry/GPS, autopilot and parameter behavior. An optional
 camera extension adds the multi-camera wall, recording and live video output.
 The common application retains mission planning, maps, logs and battery/device status.
@@ -56,7 +56,7 @@ its events; UI code does not create a second reader or encode raw packets.
 ```text
 Qt UI → UI adapters → application contracts → extension host → extensions/
                             │                                  ├── mavlink/
-                            │                                  ├── telemetry/
+                            │                                  ├── vehicle_connection/
                             │                                  └── camera/
                             └── settings, logs, planner, map cache and battery
 ```
@@ -65,23 +65,31 @@ Qt UI → UI adapters → application contracts → extension host → extension
 versioned extension contract; `src/extension/host` discovers static manifests,
 checks capabilities and composes enabled extensions. An extension may use the
 public `src.core` packages directly. Protocol adapters provide the common
-vehicle contracts and a telemetry-source factory; the separate telemetry
-extension consumes that factory, so it can be disabled without removing the
-protocol. One protocol provider must remain enabled. Camera and telemetry
+vehicle contracts and decoded telemetry. The separate Vehicle Connection
+extension owns connection lifecycle and profile editing through protocol-neutral
+`ConnectionSource` and `ConnectionProfiles` contracts. One protocol provider
+must remain enabled. Camera and Vehicle Connection
 switches apply immediately without restarting the application; only their owned
 services and UI are rebuilt. The left activity bar provides search,
 category/status filters and extension controls. Existing MAVLink configuration
 remains in `data/settings.json`; extension state and extension-owned settings
 are stored under `data/extensions/` and are not erased when disabled.
 Wire subscriptions, heartbeat decoding and parameter-message handling belong
-to the protocol package, not the shared `VehicleService` contract. Telemetry
-owns its feed lifecycle and contributes its connection chip and quality meter;
+to the protocol package, not the shared `VehicleService` contract. MAVLink owns
+its decoded feed, GPS and autopilot indicators. Vehicle Connection contributes
+the connection chip and quality meter;
 camera status controls belong to the camera package. Status contributions use
 `registrar.status_widget(..., placement="connections" | "metrics")` to select
-the left connection group or the group beside the battery. Protocol-specific
-connection editors use the optional `ConnectionSettings` service. MAVLink's
+the left connection group or the group beside the battery. Connection, GPS and
+autopilot indicators are status-only; profile editing opens from Vehicle
+Connection's Extensions-panel settings action. MAVLink's
 advanced settings are available through its Extensions-panel settings action,
 not the common application settings dialog.
+Each extension owns `i18n/tr.json` and `i18n/en.json`. Installed catalogs are
+validated and merged once, then translations use cached dictionaries. Duplicate
+keys are rejected; discovery refresh rebuilds the catalogs without importing
+disabled extension code. Legacy `telemetry` enablement is migrated to
+`vehicle_connection`, preserving disabled state and existing connection profiles.
 The camera extension is disabled by default. Its source and output profiles are
 stored in `data/extensions/camera/settings.json`; on first use, legacy camera
 profiles in `data/settings.json` are imported without deleting that file.

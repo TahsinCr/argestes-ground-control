@@ -13,6 +13,17 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+* Renamed the optional telemetry extension to Vehicle Connection. It now owns
+  connection lifecycle and profile editing through provider-neutral contracts;
+  MAVLink retains decoded telemetry, GPS and autopilot indicators. Existing
+  profiles and disabled-extension preferences survive the migration.
+* Made connection, GPS and autopilot footer indicators status-only without
+  changing their appearance. Connection profiles are edited through extension
+  settings instead of opening a popup from the footer.
+* Moved camera, connection and MAVLink translations into their owning packages.
+  Installed catalogs are validated and cached together; duplicate translation
+  ownership is rejected, and discovery refresh rebuilds the catalogs.
+
 * Moved wire subscriptions, heartbeat mode decoding and parameter-message
   handling out of the common vehicle contract and into the MAVLink package.
   Mission synchronization policy now comes from the provider rather than a

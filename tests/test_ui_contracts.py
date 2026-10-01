@@ -111,11 +111,32 @@ class UiContractTests(unittest.TestCase):
         dialog.deleteLater()
         self.app.processEvents()
 
-    def test_disabled_telemetry_removes_only_its_connection_chip(self) -> None:
+    def test_footer_connection_and_protocol_indicators_do_not_open_popups(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             backend = create_container(Path(directory))
             try:
-                backend.resolve(ExtensionHost).set_enabled("telemetry", False)
+                ui = UiContainer(backend.container, base_dir=Path(directory), theme=DARK)
+                window = ui.resolve(MainWindow)
+                connection = window._extension_status_by_id["vehicle_connection.connection"].indicator
+                indicators = (connection, window._extension_status_by_id["mavlink.gps"],
+                              window._extension_status_by_id["mavlink.autopilot"])
+                for indicator in indicators:
+                    self.assertEqual(indicator.receivers(indicator.clicked), 0)
+                    indicator.clicked.emit()
+                self.app.processEvents()
+                self.assertIsNone(self.app.activePopupWidget())
+                window.close()
+                ui.shutdown()
+                window.deleteLater()
+                self.app.processEvents()
+            finally:
+                backend.shutdown()
+
+    def test_disabled_connection_removes_only_its_connection_chip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            backend = create_container(Path(directory))
+            try:
+                backend.resolve(ExtensionHost).set_enabled("vehicle_connection", False)
             finally:
                 backend.shutdown()
             backend = create_container(Path(directory))
@@ -123,9 +144,9 @@ class UiContractTests(unittest.TestCase):
                 ui = UiContainer(backend.container, base_dir=Path(directory), theme=DARK)
                 window = ui.resolve(MainWindow)
                 footer = window.status_bar.layout()
-                self.assertFalse(any(key.startswith("telemetry.") for key in window._extension_status_by_id))
-                self.assertGreaterEqual(footer.indexOf(window.autopilot_status), 0)
-                self.assertGreaterEqual(footer.indexOf(window.gps_status), 0)
+                self.assertFalse(any(key.startswith("vehicle_connection.") for key in window._extension_status_by_id))
+                self.assertGreaterEqual(footer.indexOf(window._extension_status_by_id["mavlink.autopilot"]), 0)
+                self.assertGreaterEqual(footer.indexOf(window._extension_status_by_id["mavlink.gps"]), 0)
                 window.close()
                 ui.shutdown()
                 window.deleteLater()

@@ -8,9 +8,19 @@ from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                              QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 from src.extension.host import ExtensionError, ExtensionHost
+from src.ui.i18n import t, reload_language_packs
 
 
 class ExtensionPanel(QWidget):
+    def _metadata(self, manifest, field):
+        key = f"extension.{manifest.identifier}.{field}"
+        translated = t(key, self.language)
+        return getattr(manifest, field) if translated == f"[{key}]" else translated
+
+    def _category_name(self, name):
+        entry = next(item for item in self.host.list_extensions() if item.manifest.category == name)
+        return self._metadata(entry.manifest, "category")
+
     def __init__(self, host: ExtensionHost, language: str, parent: QWidget | None = None,
                  apply_change: Callable[[str, bool], None] | None = None,
                  reload_extension: Callable[[str], None] | None = None) -> None:
@@ -40,7 +50,7 @@ class ExtensionPanel(QWidget):
         self.category = QComboBox(self)
         self.category.addItem("All categories" if language == "en" else "Tüm kategoriler", "")
         for name in sorted({entry.manifest.category for entry in host.list_extensions()}):
-            self.category.addItem(name, name)
+            self.category.addItem(self._category_name(name), name)
         self.category.currentIndexChanged.connect(self.refresh)
         layout.addWidget(self.category)
         self.restart_label = QLabel("", self)
@@ -70,7 +80,8 @@ class ExtensionPanel(QWidget):
         )
         for item in entries:
             manifest = item.manifest
-            if query and query not in f"{manifest.name} {manifest.description}".casefold():
+            name, detail = self._metadata(manifest, "name"), self._metadata(manifest, "description")
+            if query and query not in f"{name} {detail} {manifest.name}".casefold():
                 continue
             if self.filter.currentIndex() == 1 and not item.enabled:
                 continue
@@ -82,9 +93,9 @@ class ExtensionPanel(QWidget):
             card.setObjectName("ExtensionCard")
             card_layout = QVBoxLayout(card)
             card_layout.setContentsMargins(6, 8, 6, 8)
-            title = QLabel(f"{manifest.name}  ·  {manifest.version}", card)
+            title = QLabel(f"{name}  ·  {manifest.version}", card)
             card_layout.addWidget(title)
-            description = QLabel(manifest.description, card)
+            description = QLabel(detail, card)
             description.setWordWrap(True)
             card_layout.addWidget(description)
             row = QHBoxLayout()
@@ -120,6 +131,8 @@ class ExtensionPanel(QWidget):
         for index, label in enumerate(labels):
             self.filter.setItemText(index, label)
         self.category.setItemText(0, "All categories" if language == "en" else "Tüm kategoriler")
+        for index in range(1, self.category.count()):
+            self.category.setItemText(index, self._category_name(self.category.itemData(index)))
         self.refresh()
 
     def _toggle(self, identifier: str, enabled: bool) -> None:
@@ -145,12 +158,13 @@ class ExtensionPanel(QWidget):
     def _refresh_discovery(self) -> None:
         try:
             self.host.refresh_extensions()
+            reload_language_packs()
         except (ExtensionError, OSError, ValueError) as exc:
             QMessageBox.warning(self, "Extension" if self.language == "en" else "Eklenti", str(exc))
             return
         known = {self.category.itemData(index) for index in range(self.category.count())}
         for name in sorted({entry.manifest.category for entry in self.host.list_extensions()} - known):
-            self.category.addItem(name, name)
+            self.category.addItem(self._category_name(name), name)
         self.refresh()
 
     def _settings(self, identifier: str, anchor: QWidget | None = None) -> None:
@@ -161,7 +175,7 @@ class ExtensionPanel(QWidget):
         manifest = next(item.manifest for item in self.host.list_extensions()
                         if item.manifest.identifier == identifier)
         dialog = QDialog(self)
-        dialog.setWindowTitle(manifest.name)
+        dialog.setWindowTitle(self._metadata(manifest, "name"))
         layout = QVBoxLayout(dialog)
         form = QFormLayout()
         values = self.host.settings(identifier)
@@ -198,5 +212,5 @@ class ExtensionPanel(QWidget):
             elif self.host.is_active(identifier):
                 self.host.reload(identifier)
         except (ExtensionError, RuntimeError, ValueError, OSError) as exc:
-            QMessageBox.warning(self, manifest.name, str(exc))
+            QMessageBox.warning(self, self._metadata(manifest, "name"), str(exc))
         self.refresh()

@@ -5,25 +5,25 @@ from dataclasses import replace
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal
 from PyQt6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
-from src.models.settings import MavlinkConnectionConfig
+from src.models.connections import ConnectionProfile
 from src.ui.i18n import t
 from src.ui.themes.style import ThemePalette
 
 
-class MavlinkConnectionsPopup(QDialog):
-    """Selectable MAVLink profiles, styled consistently with server profiles."""
+class ConnectionsPanel(QDialog):
+    """Protocol-neutral connection profiles for the extension settings dialog."""
 
     profiles_saved = pyqtSignal(tuple)
     profile_edit_requested = pyqtSignal(object)
     profile_connect_requested = pyqtSignal(object)
 
     def __init__(self, theme: ThemePalette, parent: QWidget | None = None, *, language: str = "tr") -> None:
-        super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        self.setObjectName("MavlinkConnectionsPopup")
+        super().__init__(parent)
+        self.setObjectName("ConnectionsPanel")
         self.setMinimumSize(405, 360)
         self.setMaximumHeight(590)
         self._theme, self._language = theme, language
-        self._profiles: list[MavlinkConnectionConfig] = []
+        self._profiles: list[ConnectionProfile] = []
         self._active_identifier = ""
         self._connected = self._running = False
         self._connecting_identifier = ""
@@ -38,7 +38,7 @@ class MavlinkConnectionsPopup(QDialog):
     def set_theme(self, theme: ThemePalette) -> None:
         self._theme = theme
         self.setStyleSheet(f"""
-            QDialog#MavlinkConnectionsPopup {{ background: {theme.surface}; border: 1px solid {theme.border_strong}; border-radius: 7px; }}
+            QDialog#ConnectionsPanel {{ background: {theme.surface}; border: 1px solid {theme.border_strong}; border-radius: 7px; }}
             QLabel {{ background: transparent; color: {theme.text}; }}
             QLabel[role=title] {{ font-size: 11px; font-weight: 750; }}
             QLabel[role=detail] {{ color: {theme.muted_text}; font-size: 10px; }}
@@ -49,10 +49,13 @@ class MavlinkConnectionsPopup(QDialog):
 
     def set_language(self, language: str) -> None:
         self._language = language
+        self.title_label.setText(t("extension.vehicle_connection.name", language))
+        self.detail_label.setText(t("connection.profiles.description", language))
+        self.add_button.setText(t("connection.profiles.add", language))
         self.back_button.setText(t("common.action.back", language))
         self._render()
 
-    def show_profiles(self, profiles: tuple[MavlinkConnectionConfig, ...], *, active_identifier: str, connected: bool, running: bool, detail: str = "") -> None:
+    def show_profiles(self, profiles: tuple[ConnectionProfile, ...], *, active_identifier: str, connected: bool, running: bool, detail: str = "") -> None:
         self._profiles = list(profiles)
         self._active_identifier, self._connected, self._running, self._detail = active_identifier, connected, running, detail
         if self._connected:
@@ -95,16 +98,16 @@ class MavlinkConnectionsPopup(QDialog):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self); root.setContentsMargins(12, 10, 12, 12); root.setSpacing(8)
         header = QHBoxLayout()
-        title = QLabel("TELEMETRİ", self); title.setProperty("role", "title")
+        title = self.title_label = QLabel(t("extension.vehicle_connection.name", self._language), self); title.setProperty("role", "title")
         header.addWidget(title); header.addStretch(1)
         self.back_button = QPushButton(t("common.action.back", self._language), self); self.back_button.clicked.connect(self.hide)
         header.addWidget(self.back_button); root.addLayout(header)
-        detail = QLabel("Yalnızca bir MAVLink telemetri profili aktiftir. Otomatik bağlan profilleri sırayla denenir.", self)
+        detail = self.detail_label = QLabel(t("connection.profiles.description", self._language), self)
         detail.setWordWrap(True); detail.setProperty("role", "detail"); root.addWidget(detail)
         self.scroll = QScrollArea(self); self.scroll.setWidgetResizable(True); self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.host = QWidget(self.scroll); self.layout = QVBoxLayout(self.host); self.layout.setContentsMargins(0, 0, 3, 0); self.layout.setSpacing(6)
         self.scroll.setWidget(self.host); root.addWidget(self.scroll, 1)
-        add = QPushButton("+ Telemetri ekle", self); add.setProperty("role", "primary"); add.clicked.connect(lambda: self.profile_edit_requested.emit(None)); root.addWidget(add)
+        add = self.add_button = QPushButton(t("connection.profiles.add", self._language), self); add.setProperty("role", "primary"); add.clicked.connect(lambda: self.profile_edit_requested.emit(None)); root.addWidget(add)
 
     def _render(self) -> None:
         while self.layout.count():
@@ -113,7 +116,7 @@ class MavlinkConnectionsPopup(QDialog):
         for profile in self._profiles: self._add_card(profile)
         self.layout.addStretch(1)
 
-    def _add_card(self, profile: MavlinkConnectionConfig) -> None:
+    def _add_card(self, profile: ConnectionProfile) -> None:
         active = profile.identifier == self._active_identifier
         color = self._theme.success if active and self._connected else self._theme.warning if active and self._running else self._theme.danger
         card = QFrame(self.host); card.setProperty("role", "card")
@@ -121,17 +124,17 @@ class MavlinkConnectionsPopup(QDialog):
         operation_active = bool(self._connecting_identifier)
         row = QHBoxLayout(); dot = QLabel("●", card); dot.setStyleSheet(f"color: {color};"); row.addWidget(dot)
         name = QLabel(profile.name, card); name.setStyleSheet("font-weight: 700;"); row.addWidget(name, 1)
-        edit = QPushButton("Düzenle", card); edit.setProperty("compact", "true"); edit.setEnabled(not operation_active); edit.clicked.connect(lambda _=False, p=profile: self.profile_edit_requested.emit(p)); row.addWidget(edit); layout.addLayout(row)
+        edit = QPushButton(t("connection.profiles.edit", self._language), card); edit.setProperty("compact", "true"); edit.setEnabled(not operation_active); edit.clicked.connect(lambda _=False, p=profile: self.profile_edit_requested.emit(p)); row.addWidget(edit); layout.addLayout(row)
         endpoint = QLabel(profile.endpoint, card); endpoint.setProperty("role", "detail"); endpoint.setWordWrap(True); layout.addWidget(endpoint)
         is_connecting = profile.identifier == self._connecting_identifier
-        state = "Bağlı" if active and self._connected else "Bağlanıyor" if is_connecting else "Beklemede"
+        state = t("connection.profile.connected" if active and self._connected else "connection.profile.connecting" if is_connecting else "connection.profile.waiting", self._language)
         info = QLabel(f"{profile.baud} baud · {profile.heartbeat_timeout} sn · {self._detail if active and self._detail else state}", card); info.setProperty("role", "detail"); info.setWordWrap(True); layout.addWidget(info)
         actions = QHBoxLayout()
-        auto = QPushButton("OTO: AÇIK" if profile.auto_connect else "OTO: KAPALI", card); auto.setCheckable(True); auto.setChecked(profile.auto_connect); auto.setEnabled(not operation_active); auto.setProperty("compact", "true"); auto.setProperty("role", "primary" if profile.auto_connect else "secondary")
+        auto = QPushButton(t("connection.profile.auto_on" if profile.auto_connect else "connection.profile.auto_off", self._language), card); auto.setCheckable(True); auto.setChecked(profile.auto_connect); auto.setEnabled(not operation_active); auto.setProperty("compact", "true"); auto.setProperty("role", "primary" if profile.auto_connect else "secondary")
         auto.clicked.connect(lambda checked, ident=profile.identifier: self._set_auto(ident, checked)); actions.addWidget(auto)
         busy = is_connecting
-        connect = QPushButton("Bağlantıyı Kes" if active and self._connected else "Bağlanıyor" if busy else "Bağlan", card); connect.setProperty("compact", "true"); connect.setProperty("role", "danger" if active and self._connected else "primary"); connect.setEnabled(not operation_active); connect.clicked.connect(lambda _=False, p=profile: self.profile_connect_requested.emit(p)); actions.addWidget(connect)
-        delete = QPushButton("Sil", card); delete.setProperty("compact", "true"); delete.setProperty("role", "danger"); delete.setEnabled(len(self._profiles) > 1 and not operation_active); delete.clicked.connect(lambda _=False, ident=profile.identifier: self._delete(ident)); actions.addWidget(delete)
+        connect = QPushButton(t("connection.action.disconnect" if active and self._connected else "connection.profile.connecting" if busy else "connection.action.connect", self._language), card); connect.setProperty("compact", "true"); connect.setProperty("role", "danger" if active and self._connected else "primary"); connect.setEnabled(not operation_active); connect.clicked.connect(lambda _=False, p=profile: self.profile_connect_requested.emit(p)); actions.addWidget(connect)
+        delete = QPushButton(t("connection.profiles.delete", self._language), card); delete.setProperty("compact", "true"); delete.setProperty("role", "danger"); delete.setEnabled(len(self._profiles) > 1 and not operation_active); delete.clicked.connect(lambda _=False, ident=profile.identifier: self._delete(ident)); actions.addWidget(delete)
         layout.addLayout(actions); self.layout.addWidget(card)
 
     def _set_auto(self, identifier: str, enabled: bool) -> None:

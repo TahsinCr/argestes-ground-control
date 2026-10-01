@@ -1,0 +1,13 @@
+{
+  "identifier": "vehicle_connection",
+  "name": "Vehicle Connection",
+  "description": "Transport connection, recovery and connection status",
+  "category": "Connection",
+  "version": "1.0.0",
+  "api_major": 1,
+  "entry_point": "extensions.vehicle_connection.plugin:create_extension",
+  "requires": ["vehicle.connection.source"],
+  "provides": ["vehicle.connection"],
+  "default_enabled": true,
+  "settings": {}
+}

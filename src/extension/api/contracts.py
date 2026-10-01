@@ -12,6 +12,9 @@ if TYPE_CHECKING:
     from src.services.abstracts.telemetry import TelemetryService
     from src.services.settings import SettingsService
     from src.services.logging_service import LoggingService
+    from src.services.abstracts.connections import ConnectionControlService
+    from src.models.connections import ConnectionProfile
+    from src.models.settings import SettingsModel
 
 API_MAJOR = 1
 
@@ -134,7 +137,28 @@ class TelemetrySource(Protocol):
     def create_telemetry(self, settings: SettingsService, logging: LoggingService) -> TelemetryService: ...
 
 
-class ConnectionSettings(Protocol):
-    """Optional protocol-owned connection editor; no wire types enter the host UI."""
+class ConnectionProfiles(Protocol):
+    """Protocol-neutral connection profiles and provider-owned persistence mapping."""
 
-    def create_ui(self, parent: Any, theme: Any, language: str) -> Any: ...
+    @property
+    def profiles(self) -> tuple[ConnectionProfile, ...]: ...
+
+    @property
+    def active_identifier(self) -> str: ...
+
+    @property
+    def default_profile(self) -> ConnectionProfile: ...
+
+    def settings_payload(self, profiles: tuple[ConnectionProfile, ...], active_identifier: str | None) -> SettingsModel: ...
+
+
+class ConnectionSource(Protocol):
+    """Protocol provider's transport controller, owned by a connection extension."""
+
+    def create_connection(self) -> ConnectionControlService: ...
+
+
+class ConnectionBinding(Protocol):
+    """Bind an optional transport controller to the application's stable facade."""
+
+    def bind(self, controller: ConnectionControlService | None) -> None: ...

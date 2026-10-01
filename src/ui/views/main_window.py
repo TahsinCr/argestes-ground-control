@@ -45,7 +45,7 @@ from src.ui.themes.style import ThemePalette, apply_theme
 from src.ui.views.settings_dialog import SettingsDialog
 from src.ui.widgets.attitude import AttitudeIndicator
 from src.ui.widgets.battery_popup import BatterySettingsPopup
-from src.ui.widgets.common import BatteryMeter, PanelFrame, StatusChip
+from src.ui.widgets.common import BatteryMeter, PanelFrame
 from src.ui.widgets.control_panels import TelemetryPanel, VehicleControlsPanel
 from src.ui.widgets.logs import EventLogPanel
 from src.ui.widgets.map_panel import MapPanel
@@ -192,12 +192,9 @@ class MainWindow(QMainWindow):
         footer.setContentsMargins(8, 3, 8, 3)
         footer.setSpacing(6)
         self.status_bar = status_bar
-        self.autopilot_status = StatusChip(t("status.autopilot", self.language), status_bar)
-        self.gps_status = StatusChip(t("status.gps", self.language), status_bar)
-        for chip in (self.autopilot_status, self.gps_status):
-            chip.set_theme(self.theme)
-            chip.set_state("danger")
-            footer.addWidget(chip)
+        self._status_connections_anchor = QWidget(status_bar)
+        self._status_connections_anchor.setFixedWidth(0)
+        footer.addWidget(self._status_connections_anchor)
         self._extension_status_widgets: list[QWidget] = []
         self._extension_status_by_id: dict[str, QWidget] = {}
         footer.addStretch(1)
@@ -406,7 +403,7 @@ class MainWindow(QMainWindow):
         if not isinstance(widget, QWidget):
             raise TypeError("Extension status must return QWidget")
         footer = self.status_bar.layout()
-        index = footer.indexOf(self._status_metrics_anchor) if contribution.placement == "metrics" else footer.indexOf(self.gps_status) + 1
+        index = footer.indexOf(self._status_metrics_anchor if contribution.placement == "metrics" else self._status_connections_anchor)
         footer.insertWidget(index, widget)
         self._extension_status_widgets.append(widget)
         self._extension_status_by_id[contribution.identifier] = widget
@@ -846,8 +843,6 @@ class MainWindow(QMainWindow):
             snapshot.battery_current_amps,
             snapshot.battery_consumed_mah,
         )
-        self.autopilot_status.set_state("success" if snapshot.autopilot_link else "danger")
-        self.gps_status.set_state("success" if snapshot.gps_fix not in {"", "NO_GPS", "NO_FIX"} else "warning")
 
     def _on_parameter_changed(self, name: str, value: object) -> None:
         self.parameter_service.update_values({name: value})
@@ -920,8 +915,6 @@ class MainWindow(QMainWindow):
         self.battery_meter.set_theme(self.theme)
         self.battery_meter.set_label(t("status.battery", self.language))
         self.battery_meter.set_language(self.language)
-        for chip in (self.autopilot_status, self.gps_status):
-            chip.set_theme(self.theme)
         self.battery_popup.set_theme(self.theme)
         self.map_panel.set_theme(self.theme)
         self.map_panel.retranslate(self.language)
@@ -932,8 +925,6 @@ class MainWindow(QMainWindow):
         self.parameters_panel.set_language(self.language)
         self.title_bar.set_title(self.windowTitle())
         self.settings_button.setToolTip(t("status.settings", self.language))
-        self.autopilot_status.set_label(t("status.autopilot", self.language))
-        self.gps_status.set_label(t("status.gps", self.language))
         self.battery_popup.set_language(self.language)
 
 

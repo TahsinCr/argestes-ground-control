@@ -6,7 +6,7 @@
   "version": "1.0.0",
   "api_major": 1,
   "entry_point": "extensions.mavlink.plugin:create_extension",
-  "provides": ["vehicle.protocol", "vehicle.commands", "vehicle.parameters", "vehicle.telemetry.source"],
+  "provides": ["vehicle.protocol", "vehicle.commands", "vehicle.parameters", "vehicle.telemetry.source", "vehicle.connection.source"],
   "default_enabled": true,
   "settings": {}
 }

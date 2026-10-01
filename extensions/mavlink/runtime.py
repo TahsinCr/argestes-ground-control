@@ -5,7 +5,7 @@ from src.models.telemetry import TelemetrySnapshot
 import threading
 
 
-class TelemetryRuntime(Service):
+class MavlinkTelemetryRuntime(Service):
     def __init__(self, source, telemetry, settings, logging):
         self._provider = source
         self._telemetry = telemetry

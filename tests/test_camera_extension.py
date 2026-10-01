@@ -140,13 +140,13 @@ with tempfile.TemporaryDirectory() as directory:
     camera_dock = window.workspace.panels["camera.wall"]
     assert "camera.wall" in window.activity_bar.panel_buttons
     assert camera_dock in window.workspace.tabifiedDockWidgets(window.map_dock)
-    window.extension_panel._toggle("telemetry", False)
-    assert not any(key.startswith("telemetry.") for key in window._extension_status_by_id)
-    assert not window.gps_status.isHidden()
-    assert not window.autopilot_status.isHidden()
-    window.extension_panel._toggle("telemetry", True)
-    assert "telemetry.connection" in window._extension_status_by_id
-    assert "telemetry.quality" in window._extension_status_by_id
+    window.extension_panel._toggle("vehicle_connection", False)
+    assert not any(key.startswith("vehicle_connection.") for key in window._extension_status_by_id)
+    assert not window._extension_status_by_id["mavlink.gps"].isHidden()
+    assert not window._extension_status_by_id["mavlink.autopilot"].isHidden()
+    window.extension_panel._toggle("vehicle_connection", True)
+    assert "vehicle_connection.connection" in window._extension_status_by_id
+    assert "vehicle_connection.quality" in window._extension_status_by_id
     window.close()
     ui.shutdown()
     backend.resolve(TelemetryService).stop()

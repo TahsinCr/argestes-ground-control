@@ -73,7 +73,8 @@ class CoreIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             application = create_container(Path(directory))
             try:
-                controller = application.resolve(ConnectionControlService)
+                from src.extension.api import ConnectionSource
+                controller = application.resolve(ConnectionSource).create_connection()
                 self.assertIsInstance(controller._logger, ServiceLogger)
                 self.assertEqual(controller._logger._source, "CONNECTION")
             finally:

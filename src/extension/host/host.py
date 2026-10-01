@@ -34,6 +34,15 @@ class ExtensionHost:
         self._state_path = base_dir / "data" / "extensions" / "state.json"
         # A malformed persisted switch must never silently re-enable a plugin.
         self._stored = load_json_file(self._state_path)
+        if "telemetry" in self._stored:
+            if not isinstance(self._stored["telemetry"], bool):
+                raise ExtensionError("Invalid enabled state for telemetry")
+            migrated = dict(self._stored)
+            if "vehicle_connection" not in migrated:
+                migrated["vehicle_connection"] = migrated["telemetry"]
+            del migrated["telemetry"]
+            save_json_file(self._state_path, migrated)
+            self._stored = migrated
         self._manifests = self._discover(Path(__file__).resolve().parents[3] / "extensions")
         for key, value in self._stored.items():
             if key in self._manifests and not isinstance(value, bool):

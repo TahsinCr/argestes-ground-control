@@ -1,1 +1,0 @@
-"""Generic vehicle telemetry extension."""

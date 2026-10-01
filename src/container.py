@@ -25,6 +25,8 @@ from src.services.runtime import RuntimeServices
 from src.services.settings import SettingsService
 from src.services.tile_cache import TileCacheServer
 from src.services.vehicle.telemetry_base import MutableTelemetryService
+from src.services.connections import ConnectionHub
+from src.extension.api.contracts import ConnectionBinding
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +237,11 @@ class ApplicationContainer(BaseDependencyContainer):
     def configure(self) -> None:
         _register_infrastructure(self, self.context)
         self.singleton(TelemetryService, concrete=MutableTelemetryService,
+                       priority=int(DependencyPriority.VEHICLE))
+        self.singleton(ConnectionControlService, concrete=ConnectionHub,
+                       priority=int(DependencyPriority.VEHICLE))
+        self.singleton(ConnectionBinding, factory=lambda service: service,
+                       dependencies={"service": ConnectionControlService},
                        priority=int(DependencyPriority.VEHICLE))
         host = ExtensionHost(self.context.base_dir, self)
         self.instance(ExtensionHost, host, priority=int(DependencyPriority.VEHICLE))

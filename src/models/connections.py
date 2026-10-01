@@ -7,6 +7,20 @@ from src.core.abstracts import Model
 
 
 @dataclass(frozen=True, slots=True)
+class ConnectionProfile:
+    identifier: str
+    name: str
+    endpoint: str
+    baud: int = 115200
+    heartbeat_timeout: int = 10
+    auto_connect: bool = False
+
+    def to_dict(self):
+        from dataclasses import asdict
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class ConnectionStatus(Model):
     """UI-independent current state of a connection channel."""
 

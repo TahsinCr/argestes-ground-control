@@ -11,7 +11,21 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 
 
 def _load_language_pack(language: str) -> dict[str, str]:
-    path = _PACKAGE_DIR / f"{language}.json"
+    merged = _read_language_pack(_PACKAGE_DIR / f"{language}.json")
+    extension_root = _PACKAGE_DIR.parents[2] / "extensions"
+    for manifest in sorted(extension_root.glob("*/manifest.json")):
+        path = manifest.parent / "i18n" / f"{language}.json"
+        if not path.exists():
+            continue
+        pack = _read_language_pack(path)
+        collisions = set(pack) & set(merged)
+        if collisions:
+            raise RuntimeError(f"Duplicate translation ownership: {path}: {sorted(collisions)}")
+        merged.update(pack)
+    return merged
+
+
+def _read_language_pack(path: Path) -> dict[str, str]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as error:
@@ -39,6 +53,16 @@ TURKISH = _load_language_pack("tr")
 ENGLISH = _load_language_pack("en")
 LANGUAGES = {"tr": TURKISH, "en": ENGLISH}
 SUPPORTED_LANGUAGES = tuple(LANGUAGES)
+
+
+def reload_language_packs() -> None:
+    """Atomically rebuild installed catalogs, never perform disk I/O in t()."""
+    packs = {language: _load_language_pack(language) for language in SUPPORTED_LANGUAGES}
+    if set(packs["tr"]) != set(packs["en"]):
+        raise RuntimeError("Extension language packs must have matching keys")
+    for language, pack in packs.items():
+        LANGUAGES[language].clear()
+        LANGUAGES[language].update(pack)
 
 _turkish_keys = set(TURKISH)
 _english_keys = set(ENGLISH)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from src.core.mavlink import MavlinkClient
 from src.extension.api import ExtensionContext, ExtensionRegistrar, TelemetrySource
-from src.extension.api.contracts import ConnectionSettings
+from src.extension.api.contracts import ConnectionProfiles, ConnectionSource
 from src.services.abstracts.connections import ConnectionControlService
 from src.services.abstracts.parameters import ParameterService
 from src.services.abstracts.settings import SettingsRepository
@@ -11,6 +11,7 @@ from src.services.abstracts.vehicle import VehicleService
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
 from .connection_control import VehicleConnectionControlService
+from .runtime import MavlinkTelemetryRuntime
 
 from .wiring import VehicleStack, _create_vehicle_stack, _mavlink_client, _parameters, _vehicle
 
@@ -44,8 +45,10 @@ def _source(vehicle: VehicleService) -> TelemetrySource:
 
 class MavlinkExtension:
     def configure(self, registrar: ExtensionRegistrar, context: ExtensionContext) -> None:
-        registrar.singleton(ConnectionSettings, lambda: MavlinkConnectionSettings(context))
         registrar.settings_ui(lambda anchor: self._open_settings(context, anchor))
+        for channel in ("autopilot", "gps"):
+            registrar.status_widget(channel, lambda parent, theme, language, selected=channel:
+                                    self._status(context, parent, theme, language, selected))
         registrar.singleton(VehicleStack, _create_vehicle_stack,
                             dependencies={"settings_service": SettingsService, "logging": LoggingService})
         if not context.services.resolve(SettingsService).current.backend.mock_mode:
@@ -53,9 +56,24 @@ class MavlinkExtension:
         registrar.singleton(VehicleService, _vehicle, dependencies={"stack": VehicleStack})
         registrar.singleton(ParameterService, _parameters, dependencies={"stack": VehicleStack})
         registrar.singleton(TelemetrySource, _source, dependencies={"vehicle": VehicleService})
-        registrar.singleton(ConnectionControlService, _connection,
-                            dependencies={"settings": SettingsRepository, "vehicle": VehicleService,
-                                          "telemetry": TelemetryService, "logging": LoggingService})
+        self._context = context
+        registrar.singleton(ConnectionSource, lambda: MavlinkConnectionSource(context))
+        registrar.singleton(ConnectionProfiles, lambda source: source,
+                            dependencies={"source": ConnectionSource})
+        registrar.singleton(MavlinkTelemetryRuntime, MavlinkTelemetryRuntime,
+                            dependencies={"source": TelemetrySource, "telemetry": TelemetryService,
+                                          "settings": SettingsService, "logging": LoggingService})
+
+    def start(self, context):
+        context.services.resolve(MavlinkTelemetryRuntime).start()
+
+    def stop(self):
+        self._context.services.resolve(MavlinkTelemetryRuntime).stop()
+
+    @staticmethod
+    def _status(context, parent, theme, language, channel):
+        from .ui.status import ProtocolStatusChip
+        return ProtocolStatusChip(context, parent, theme, language, channel)
 
 
     @staticmethod
@@ -80,10 +98,34 @@ def create_extension() -> MavlinkExtension:
     return MavlinkExtension()
 
 
-class MavlinkConnectionSettings:
+class MavlinkConnectionSource:
     def __init__(self, context):
         self.context = context
 
-    def create_ui(self, parent, theme, language):
-        from .ui.connection_editor import ConnectionEditor
-        return ConnectionEditor(self.context, parent, theme, language)
+    def create_connection(self):
+        services = self.context.services
+        return _connection(services.resolve(SettingsRepository), services.resolve(VehicleService),
+                           services.resolve(TelemetryService), services.resolve(LoggingService))
+
+    @property
+    def profiles(self):
+        from src.models.connections import ConnectionProfile
+        return tuple(ConnectionProfile(**item.to_dict()) for item in self.context.services.resolve(SettingsService).current.backend.mavlink_connections)
+
+    @property
+    def active_identifier(self):
+        return self.context.services.resolve(SettingsService).current.backend.active_mavlink_connection_id
+
+    @property
+    def default_profile(self):
+        from src.models.connections import ConnectionProfile
+        settings = self.context.services.resolve(SettingsService).current.backend.mavlink
+        return ConnectionProfile("", "", settings.endpoint, settings.baud, settings.heartbeat_timeout, settings.auto_connect)
+
+    def settings_payload(self, profiles, active_identifier):
+        from src.models.settings import SettingsModel
+        payload = self.context.services.resolve(SettingsService).current.to_dict()
+        payload["backend"]["mavlink_connections"] = [item.to_dict() for item in profiles]
+        if active_identifier is not None:
+            payload["backend"]["active_mavlink_connection_id"] = active_identifier
+        return SettingsModel.from_dict(payload)

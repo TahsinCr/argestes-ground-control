@@ -6,7 +6,7 @@
 # Kırlangıç Yer Kontrol İstasyonu
 
 Eklenti ana makinesine sahip masaüstü yer kontrol uygulaması. Dahili MAVLink
-protokol eklentisi ve isteğe bağlı telemetri eklentisi mevcut araç bağlantısı,
+protokol eklentisi ve isteğe bağlı Araç Bağlantısı eklentisi mevcut araç bağlantısı,
 telemetri/GPS, otopilot ve parametre işlevlerini sağlar. İsteğe bağlı kamera
 eklentisi çoklu kamera panelini, kaydı ve canlı yayın çıkışını getirir. Ortak uygulamada görev
 planlama, harita, loglar, batarya ve cihaz durumu korunur.
@@ -32,7 +32,7 @@ başlatmadan önce PyQt6 ve Qt WebEngine için gereken sistem paketlerini kurun.
 
 ## MAVLink bağlantıları
 
-Telemetri bağlantı kontrolünden isimli MAVLink profilleri ekleyip seçin. Yaygın
+Eklentiler → Araç Bağlantısı → Ayarlar üzerinden isimli bağlantı profilleri ekleyip seçin. Yaygın
 uç noktalar:
 
 ```text
@@ -62,22 +62,30 @@ Qt arayüzü → UI adaptörleri → uygulama sözleşmeleri → eklenti ana mak
 sözleşmesini, `src/extension/host` statik manifest keşfini, yetenek kontrolünü
 ve etkin eklentilerin kurulumunu sağlar. Eklentiler `src.core` herkese açık
 paketlerini doğrudan kullanabilir. Protokol eklentisi ortak araç sözleşmelerini
-ve telemetri kaynağı fabrikasını sağlar; telemetri eklentisi bunu kullanır ve
-protokolden bağımsız olarak kapatılabilir. En az bir protokol sağlayıcısı etkin
-kalmalıdır. Kamera ve telemetri eklentileri uygulama kapanmadan açılıp
+ve çözümlenmiş telemetri verisini sağlar. Araç Bağlantısı eklentisi bağlantının
+yaşam döngüsünü ve profil düzenlemeyi protokolden bağımsız `ConnectionSource`
+ve `ConnectionProfiles` sözleşmeleriyle yönetir. En az bir protokol sağlayıcısı etkin
+kalmalıdır. Kamera ve Araç Bağlantısı eklentileri uygulama kapanmadan açılıp
 kapatılabilir; yalnız kendi servisleri ve arayüz katkıları yeniden kurulur. Sol etkinlik
 çubuğunda arama, kategori/durum filtresi ve eklenti kontrolleri vardır. Mevcut
 MAVLink ayarları `data/settings.json` içinde korunur; eklenti durumu ve kendi
 ayarları `data/extensions/` altında tutulur, devre dışı bırakılınca silinmez.
 Ham mesaj abonelikleri, heartbeat çözümlemesi ve parametre mesajlarının işlenmesi
 protokol paketine aittir; ortak `VehicleService` bunları zorunlu kılmaz.
-Telemetri kendi veri akışının yaşam döngüsünü, bağlantı çipini ve kalite
-göstergesini yönetir; kamera durum kontrolleri kamera paketinde kalır.
+MAVLink çözümlenmiş veri akışını, GPS ve otopilot göstergelerini yönetir.
+Araç Bağlantısı bağlantı çipini ve kalite göstergesini sağlar;
+kamera durum kontrolleri kamera paketinde kalır.
 `registrar.status_widget(..., placement="connections" | "metrics")` katkıyı
-sol bağlantı grubuna veya bataryanın yanına yerleştirir. Protokole özel bağlantı
-düzenleyicisi isteğe bağlı `ConnectionSettings` servisiyle sağlanır. MAVLink'in
+sol bağlantı grubuna veya bataryanın yanına yerleştirir. Bağlantı, GPS ve
+otopilot göstergeleri yalnız durum gösterir; tıklayınca pencere açmaz.
+Bağlantı profilleri Araç Bağlantısı eklentisinin ayarlarından düzenlenir. MAVLink'in
 gelişmiş ayarları ortak ayarlar penceresi yerine Eklentiler panelindeki kendi
 ayarlar eyleminden açılır.
+Her eklenti `i18n/tr.json` ve `i18n/en.json` dil paketlerini kendi içinde taşır.
+Kurulu paketler doğrulanıp bir kez birleştirilir; çeviri sırasında disk okunmaz.
+Yinelenen anahtarlar reddedilir, keşif yenilemesinde katalog yeniden oluşturulur.
+Eski `telemetry` etkinlik tercihi `vehicle_connection` kimliğine taşınır;
+kapalı durum ve mevcut bağlantı profilleri korunur.
 Kamera eklentisi varsayılan olarak kapalıdır. Kamera bağlantı ve çıkış profilleri
 `data/extensions/camera/settings.json` dosyasında saklanır; ilk açılışta eski
 `data/settings.json` kamera profilleri silinmeden içe alınır. Kamera paneli,
