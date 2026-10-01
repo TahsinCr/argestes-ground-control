@@ -48,7 +48,6 @@ from src.ui.widgets.battery_popup import BatterySettingsPopup
 from src.ui.widgets.common import BatteryMeter, PanelFrame
 from src.ui.widgets.control_panels import TelemetryPanel, VehicleControlsPanel
 from src.ui.widgets.logs import EventLogPanel
-from src.ui.widgets.map_panel import MapPanel
 from src.ui.widgets.parameters import ParametersPanel
 from src.ui.widgets.activity_bar import ActivityBar
 from src.ui.widgets.extension_panel import ExtensionPanel
@@ -349,7 +348,8 @@ class MainWindow(QMainWindow):
             if not isinstance(widget, QWidget):
                 raise TypeError("Extension visual must return QWidget")
             preference = self._visual_dock_preferences.get(contribution.identifier)
-            map_area = self.workspace.dockWidgetArea(self.map_dock)
+            map_area = (self.workspace.dockWidgetArea(self.primary_dock) if self.primary_dock is not None
+                        else Qt.DockWidgetArea.RightDockWidgetArea)
             if map_area == Qt.DockWidgetArea.NoDockWidgetArea:
                 map_area = Qt.DockWidgetArea.RightDockWidgetArea
             area = (
@@ -362,6 +362,7 @@ class MainWindow(QMainWindow):
                 contribution.identifier, self._visual_title(contribution.identifier), widget,
                 area, allowed_areas=self._WORKSPACE_AREAS,
                 floatable=False,
+                legacy_key=contribution.legacy_key,
             )
             self._register_workspace_panel_button(
                 contribution.identifier, dock.windowTitle(), dock
@@ -384,8 +385,10 @@ class MainWindow(QMainWindow):
                     "left" if preference.orientation == Qt.Orientation.Horizontal else
                     "below" if preference.after_anchor else "above",
                 )
-            elif area == map_area:
-                self.workspace.place_panel(self.map_dock, dock, "right")
+            elif area == map_area and self.primary_dock is not None and not contribution.primary:
+                self.workspace.place_panel(self.primary_dock, dock, "right")
+            if contribution.primary:
+                self.primary_view, self.primary_dock = widget, dock
             self._extension_visual_widgets.append(widget)
             self._extension_visual_by_id[contribution.identifier] = widget
             self._refresh_panel_menu()
@@ -432,6 +435,8 @@ class MainWindow(QMainWindow):
                     )
                 self.workspace.remove_panel(key)
                 self.activity_bar.remove_panel_button(key)
+                if widget is self.primary_view:
+                    self.primary_view = self.primary_dock = None
                 widget.hide()
                 widget.setParent(None)
                 widget.deleteLater()
@@ -449,19 +454,8 @@ class MainWindow(QMainWindow):
                 del self._extension_sidebar_widgets[key]
 
     def _build_workspace(self) -> None:
-        self.map_panel = MapPanel(
-            "", "", theme=self.theme, language=self.language,
-            base_dir=self.base_dir, planner_service=self.planner_service,
-            settings_service=self.settings_service,
-            tile_cache_service=self.tile_cache_service, parent=self.workspace,
-        )
-        self.map_dock = self.workspace.add_panel(
-            "map", "Harita", self.map_panel,
-            Qt.DockWidgetArea.RightDockWidgetArea,
-            allowed_areas=self._WORKSPACE_AREAS,
-            floatable=False,
-        )
-        self._register_workspace_panel_button("map", "Harita", self.map_dock)
+        self.primary_view = None
+        self.primary_dock = None
         self._extension_visual_widgets: list[QWidget] = []
         self._extension_visual_by_id: dict[str, QWidget] = {}
         self._visual_dock_preferences: dict[str, _VisualDockPreference] = {}
@@ -478,7 +472,7 @@ class MainWindow(QMainWindow):
         )
         self.workspace.place_panel(self.log_dock, self.parameters_dock, "tab")
         self.parameters_dock.hide()
-        for contribution in self.extension_host.visual_views():
+        for contribution in sorted(self.extension_host.visual_views(), key=lambda item: not item.primary):
             widget = contribution.factory(self.workspace, self.theme, self.language)
             if not isinstance(widget, QWidget):
                 raise TypeError(f"Extension visual {contribution.identifier} must return QWidget")
@@ -487,11 +481,15 @@ class MainWindow(QMainWindow):
                 Qt.DockWidgetArea.RightDockWidgetArea,
                 allowed_areas=self._WORKSPACE_AREAS,
                 floatable=False,
+                legacy_key=contribution.legacy_key,
             )
             self._register_workspace_panel_button(
                 contribution.identifier, dock.windowTitle(), dock
             )
-            self.workspace.place_panel(self.map_dock, dock, "right")
+            if self.primary_dock is not None and not contribution.primary:
+                self.workspace.place_panel(self.primary_dock, dock, "right")
+            if contribution.primary:
+                self.primary_view, self.primary_dock = widget, dock
             self._extension_visual_widgets.append(widget)
             self._extension_visual_by_id[contribution.identifier] = widget
 
@@ -582,8 +580,10 @@ class MainWindow(QMainWindow):
 
     def _visual_title(self, identifier: str) -> str:
         name = identifier.split(".")[0]
-        if name == "camera":
-            return "Camera" if self.language == "en" else "Kamera"
+        key = f"extension.{name}.name"
+        translated = t(key, self.language)
+        if translated != f"[{key}]":
+            return translated
         return name.replace("_", " ").title()
 
     def _retranslate_view_menu(self) -> None:
@@ -592,7 +592,7 @@ class MainWindow(QMainWindow):
         self._edit_layout_action.setText(
             "Edit Layout" if english else "Yerleşimi düzenle"
         )
-        self._focus_action.setText("Focus Map" if english else "Haritaya odaklan")
+        self._focus_action.setText("Focus Main View" if english else "Ana görünüme odaklan")
         self._reset_action.setText(
             "Reset Layout" if english else "Varsayılan yerleşimi geri yükle"
         )
@@ -624,11 +624,14 @@ class MainWindow(QMainWindow):
         self.settings_service.save_async(SettingsModel.from_dict(payload))
 
     def _focus_map(self) -> None:
+        if self.primary_dock is None:
+            return
         self._set_extension_sidebar_visible(False)
         for dock in self.workspace.panels.values():
             dock.hide()
-        self.map_dock.show()
-        self.map_dock.raise_()
+        if self.primary_dock is not None:
+            self.primary_dock.show()
+            self.primary_dock.raise_()
         self.activity_bar.sidebar_button.setChecked(False)
         self.activity_bar.extensions_button.setChecked(False)
         for key in self.activity_bar.buttons:
@@ -645,10 +648,9 @@ class MainWindow(QMainWindow):
             dock.show()
         self.workspace.place_panel(self._flight_docks[0], self._flight_docks[1], "below")
         self.workspace.place_panel(self._flight_docks[1], self._flight_docks[2], "below")
-        self.workspace.move_panel_to_area(
-            self.map_dock, Qt.DockWidgetArea.RightDockWidgetArea
-        )
-        self.map_dock.show()
+        if self.primary_dock is not None:
+            self.workspace.move_panel_to_area(self.primary_dock, Qt.DockWidgetArea.RightDockWidgetArea)
+            self.primary_dock.show()
         self.workspace.move_panel_to_area(
             self.log_dock, Qt.DockWidgetArea.BottomDockWidgetArea
         )
@@ -659,11 +661,12 @@ class MainWindow(QMainWindow):
         self.log_dock.show()
         self.parameters_dock.hide()
         for key, dock in self.workspace.panels.items():
-            if key not in {"map", "flight", "telemetry", "commands", "logs", "parameters"}:
+            if dock is not self.primary_dock and key not in {"flight", "telemetry", "commands", "logs", "parameters"}:
                 self.workspace.move_panel_to_area(
                     dock, Qt.DockWidgetArea.RightDockWidgetArea
                 )
-                self.workspace.place_panel(self.map_dock, dock, "right")
+                if self.primary_dock is not None:
+                    self.workspace.place_panel(self.primary_dock, dock, "right")
                 dock.show()
         self.activity_bar.sidebar_button.setChecked(True)
         self.activity_bar.extensions_button.setChecked(False)
@@ -673,27 +676,39 @@ class MainWindow(QMainWindow):
         self.workspace.save_layout()
 
     def _size_default_docks(self) -> None:
+        if self.primary_dock is None:
+            return
+        self.workspace._panel_size_restore_enabled = False
         self.workspace.resizeDocks(
-            [self._flight_docks[0], self.log_dock],
-            [205, 260],
+            list(self._flight_docks),
+            [205, 280, max(240, self.workspace.height() - 485)],
+            Qt.Orientation.Vertical,
+        )
+        self.workspace.resizeDocks(
+            [self.primary_dock, self.log_dock],
+            [max(240, self.workspace.height() - 266), 260],
             Qt.Orientation.Vertical,
         )
         visible_right = [
             dock for key, dock in self.workspace.panels.items()
-            if key not in {"map", "flight", "telemetry", "commands", "logs", "parameters"}
+            if dock is not self.primary_dock and key not in {"flight", "telemetry", "commands", "logs", "parameters"}
             and dock.isVisible()
             and self.workspace.dockWidgetArea(dock)
-            == self.workspace.dockWidgetArea(self.map_dock)
+            == self.workspace.dockWidgetArea(self.primary_dock)
         ]
         visual_sizes = [
             max(280, self.workspace.width() // (len(visible_right) + 2))
             for _dock in visible_right
         ]
         self.workspace.resizeDocks(
-            [self._flight_docks[0], self.map_dock, *visible_right],
-            [320, max(600, self.workspace.width() // 2), *visual_sizes],
+            [self._flight_docks[0], self.primary_dock, *visible_right],
+            [320, max(400, self.workspace.width() - 326 - sum(visual_sizes)), *visual_sizes],
             Qt.Orientation.Horizontal,
         )
+        # resizeDocks queues geometry. Capture only the applied layout, not the
+        # initial equal-width allocation that would otherwise be restored.
+        self.workspace.layout().activate()
+        self.workspace.enable_panel_size_restore(capture_current=True)
 
     def _size_visual_dock(
         self,
@@ -817,10 +832,6 @@ class MainWindow(QMainWindow):
         self.parameters_panel.parameter_changed.connect(self._on_parameter_changed)
         self.parameters_panel.apply_requested.connect(self.parameter_service.update_values)
         self.parameters_panel.reset_requested.connect(self.parameter_service.refresh)
-        self.map_panel.command_requested.connect(self.command_service.issue_command)
-        self.map_panel.info_generated.connect(
-            lambda severity, message: self.log_service.log("MAP", message, severity)
-        )
         self.log_service.entries_emitted.connect(self.log_panel.add_entries)
         self.settings_service.settings_changed.connect(self._settings_changed)
         self.command_service.command_dispatched.connect(
@@ -836,7 +847,6 @@ class MainWindow(QMainWindow):
             self.command_service.available_flight_modes
         )
         self.vehicle_controls.update_snapshot(snapshot)
-        self.map_panel.update_snapshot(snapshot)
         self.battery_meter.set_battery(
             snapshot.battery_percent,
             snapshot.battery_voltage,
@@ -916,8 +926,6 @@ class MainWindow(QMainWindow):
         self.battery_meter.set_label(t("status.battery", self.language))
         self.battery_meter.set_language(self.language)
         self.battery_popup.set_theme(self.theme)
-        self.map_panel.set_theme(self.theme)
-        self.map_panel.retranslate(self.language)
         self.telemetry_panel.set_theme(self.theme)
         self.telemetry_panel.set_language(self.language)
         self.vehicle_controls.set_language(self.language)
@@ -939,7 +947,6 @@ class MainWindow(QMainWindow):
             shutdown = getattr(widget, "prepare_shutdown", None)
             if callable(shutdown):
                 shutdown()
-        self.map_panel.shutdown()
         self.attitude_indicator.shutdown()
 
     def closeEvent(self, event) -> None:

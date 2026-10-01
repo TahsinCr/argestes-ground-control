@@ -145,8 +145,12 @@ class VehicleConnectionControlTests(unittest.TestCase):
         self.service.start()
         self.vehicle.lose_heartbeat()
         deadline = time.monotonic() + 1.0
-        while self.vehicle.reconnect_calls == 0 and time.monotonic() < deadline:
-            time.sleep(0.01)
+        # The call counter changes before the worker commits its backoff.
+        while time.monotonic() < deadline:
+            with self.service._state_lock:
+                if self.service._retry_attempt == 1 and self.service._next_retry_at is not None:
+                    break
+            time.sleep(0.005)
 
         with self.service._state_lock:
             retry_at = self.service._next_retry_at

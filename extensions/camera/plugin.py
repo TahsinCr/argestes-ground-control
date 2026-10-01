@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from src.extension.api import ExtensionContext, ExtensionRegistrar
 from src.services.logging_service import LoggingService
+from src.services.settings import SettingsService
 
 from .runtime import CameraRuntime
 
@@ -14,8 +15,8 @@ class CameraExtension:
         self._runtime: CameraRuntime | None = None
 
     def configure(self, registrar: ExtensionRegistrar, context: ExtensionContext) -> None:
-        registrar.singleton(CameraRuntime, lambda logging: CameraRuntime(context.base_dir, logging),
-                            dependencies={"logging": LoggingService})
+        registrar.singleton(CameraRuntime, lambda logging, settings: CameraRuntime(context.base_dir, logging, settings),
+                            dependencies={"logging": LoggingService, "settings": SettingsService})
         registrar.visual_view("wall", lambda parent, theme, language:
                               self._create_workspace(context, parent, theme, language))
         registrar.status_widget("connections", lambda parent, theme, language:

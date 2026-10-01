@@ -57,7 +57,10 @@ its events; UI code does not create a second reader or encode raw packets.
 Qt UI → UI adapters → application contracts → extension host → extensions/
                             │                                  ├── mavlink/
                             │                                  ├── vehicle_connection/
-                            │                                  └── camera/
+                            │                                  ├── camera/
+                            │                                  ├── map/
+                            │                                  ├── joystick/
+                            │                                  └── teknofest/
                             └── settings, logs, planner, map cache and battery
 ```
 
@@ -72,8 +75,10 @@ must remain enabled. Camera and Vehicle Connection
 switches apply immediately without restarting the application; only their owned
 services and UI are rebuilt. The left activity bar provides search,
 category/status filters and extension controls. Existing MAVLink configuration
-remains in `data/settings.json`; extension state and extension-owned settings
-are stored under `data/extensions/` and are not erased when disabled.
+remains in `data/settings.json`; extension state and settings share its
+`extensions.<identifier>.enabled` and `extensions.<identifier>.config` fields.
+Disabling an extension never erases its settings. Legacy files in
+`data/extensions/` are imported before removal; unrelated data is left intact.
 Wire subscriptions, heartbeat decoding and parameter-message handling belong
 to the protocol package, not the shared `VehicleService` contract. MAVLink owns
 its decoded feed, GPS and autopilot indicators. Vehicle Connection contributes
@@ -91,7 +96,7 @@ keys are rejected; discovery refresh rebuilds the catalogs without importing
 disabled extension code. Legacy `telemetry` enablement is migrated to
 `vehicle_connection`, preserving disabled state and existing connection profiles.
 The camera extension is disabled by default. Its source and output profiles are
-stored in `data/extensions/camera/settings.json`; on first use, legacy camera
+stored in `data/settings.json` under `extensions.camera.config`; legacy camera
 profiles in `data/settings.json` are imported without deleting that file.
 Camera connections, recording and live output controls are contributed by the
 extension and disappear from the common UI when it is disabled. Newly installed
@@ -127,12 +132,52 @@ moving, tabbing and floating panels; turn it off when finished. The View menu
 also provides Map Focus, Reset Layout, and a Dark/Light theme switch. Hiding or
 showing panels does not replace the saved arrangement.
 Panel positions and visibility are saved in `data/workspace-layout.json` when
-the application closes; extension settings remain separate.
+the application closes. Empty spacer docks are not used: adjacent split panels
+fill their row or column, and unrelated split branches keep their own sizes.
+
+## Optional integrations
+
+* **Map** owns the map widget, web assets, preferences and mission view. It uses
+  normalized telemetry and navigation services, currently provided by MAVLink.
+  It can be disabled or re-enabled without restarting the application.
+* **Joystick** restores RC1–RC16 mapping, PWM calibration, input detection and
+  button actions. It is disabled by default and currently selects the MAVLink
+  RC adapter. Device activation is separate from enabling the extension;
+  deactivation releases RC overrides. Protocol selection lives outside sampling
+  and UI code, using `src.extension.api.protocol.ActiveProtocol`.
+* **TEKNOFEST** provides independently controlled HTTP server profiles, fixed
+  1 Hz telemetry scheduling, server clock tracking, QR/HSS requests and real
+  lock/kamikaze result submission methods. It consumes normalized telemetry,
+  not MAVLink messages, and does not require the MAVLink package by identity.
+  Server exchanges are recorded in `data/teknofest/history.sqlite3` using WAL;
+  login credentials are omitted. After the first valid position, the last
+  snapshot continues to be sent during vehicle loss, with estimated server time.
+  No server is contacted unless its profile has auto-connect enabled or the
+  operator explicitly connects. The extension itself is disabled by default.
+
+Configuration layout:
+
+```json
+{
+  "extensions": {
+    "camera": { "enabled": false, "config": {} },
+    "joystick": { "enabled": false, "config": {} },
+    "teknofest": { "enabled": false, "config": { "servers": [] } }
+  }
+}
+```
+
+Existing typed backend fields remain compatibility aliases. The MAVLink package
+projects its protocol settings and vehicle connection profiles into the shared
+extension section, so legacy editors cannot overwrite another extension's config.
 
 ## Settings, logs and tests
 
 Settings are stored in `data/settings.json`; structured logs are stored in
-`data/logs/yki.jsonl`. Run the application test suite with:
+`data/logs/gcs_<session-date>_<session-time>.json`. Each session is a valid JSON
+array. All extensions use the same bounded-memory log service; the host adds
+`extension_id` to injected loggers and captures extension-origin Python logs.
+Run the application test suite with:
 
 ```bash
 python run_tests.py

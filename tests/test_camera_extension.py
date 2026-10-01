@@ -25,7 +25,7 @@ class CameraExtensionTests(unittest.TestCase):
             try:
                 host = container.resolve(ExtensionHost)
                 self.assertFalse(host.is_active("camera"))
-                self.assertEqual(host.visual_views(), ())
+                self.assertFalse([item for item in host.visual_views() if item.identifier.startswith('camera.')])
                 host.set_enabled("camera", True)
             finally:
                 container.shutdown()
@@ -112,8 +112,8 @@ with tempfile.TemporaryDirectory() as directory:
     backend.resolve(TelemetryService).start()
     ui = UiContainer(backend.container, base_dir=root, theme=DARK)
     window = ui.resolve(MainWindow)
-    assert len(window._extension_visual_widgets) == 1
-    camera = window._extension_visual_widgets[0]
+    assert 'camera.wall' in window._extension_visual_by_id
+    camera = window._extension_visual_by_id['camera.wall']
     assert isinstance(camera, VideoPanel)
     assert tuple(camera.split_buttons) == (1, 2, 3, 4)
     assert len([key for key in window._extension_status_by_id if key.startswith("camera.")]) == 1
@@ -125,21 +125,21 @@ with tempfile.TemporaryDirectory() as directory:
     assert "camera.wall" in window.activity_bar.panel_buttons
     window.show()
     app.processEvents()
-    assert camera_dock.geometry().x() > window.map_dock.geometry().x()
-    window.workspace._tabify_panel(window.map_dock, camera_dock)
+    assert camera_dock.geometry().x() > window.primary_dock.geometry().x()
+    window.workspace._tabify_panel(window.primary_dock, camera_dock)
     app.processEvents()
     window.extension_panel._toggle("camera", False)
-    assert not window._extension_visual_widgets
+    assert 'camera.wall' not in window._extension_visual_by_id
     assert not any(key.startswith("camera.") for key in window._extension_status_by_id)
     assert not any(key.startswith("camera.") for key in window.workspace.panels)
     assert "camera.wall" not in window.activity_bar.panel_buttons
     assert not backend.resolve(ExtensionHost).is_active("camera")
     window.extension_panel._toggle("camera", True)
-    assert len(window._extension_visual_widgets) == 1
+    assert 'camera.wall' in window._extension_visual_by_id
     assert len([key for key in window._extension_status_by_id if key.startswith("camera.")]) == 1
     camera_dock = window.workspace.panels["camera.wall"]
     assert "camera.wall" in window.activity_bar.panel_buttons
-    assert camera_dock in window.workspace.tabifiedDockWidgets(window.map_dock)
+    assert camera_dock in window.workspace.tabifiedDockWidgets(window.primary_dock)
     window.extension_panel._toggle("vehicle_connection", False)
     assert not any(key.startswith("vehicle_connection.") for key in window._extension_status_by_id)
     assert not window._extension_status_by_id["mavlink.gps"].isHidden()

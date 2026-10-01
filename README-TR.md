@@ -69,7 +69,10 @@ kalmalıdır. Kamera ve Araç Bağlantısı eklentileri uygulama kapanmadan aç�
 kapatılabilir; yalnız kendi servisleri ve arayüz katkıları yeniden kurulur. Sol etkinlik
 çubuğunda arama, kategori/durum filtresi ve eklenti kontrolleri vardır. Mevcut
 MAVLink ayarları `data/settings.json` içinde korunur; eklenti durumu ve kendi
-ayarları `data/extensions/` altında tutulur, devre dışı bırakılınca silinmez.
+ayarları aynı dosyanın `extensions.<kimlik>.enabled` ve
+`extensions.<kimlik>.config` alanlarında tutulur; devre dışı bırakılınca silinmez.
+Eski `data/extensions/` config dosyaları içe alındıktan sonra kaldırılır;
+ilgisiz veri dosyalarına dokunulmaz.
 Ham mesaj abonelikleri, heartbeat çözümlemesi ve parametre mesajlarının işlenmesi
 protokol paketine aittir; ortak `VehicleService` bunları zorunlu kılmaz.
 MAVLink çözümlenmiş veri akışını, GPS ve otopilot göstergelerini yönetir.
@@ -87,7 +90,7 @@ Yinelenen anahtarlar reddedilir, keşif yenilemesinde katalog yeniden oluşturul
 Eski `telemetry` etkinlik tercihi `vehicle_connection` kimliğine taşınır;
 kapalı durum ve mevcut bağlantı profilleri korunur.
 Kamera eklentisi varsayılan olarak kapalıdır. Kamera bağlantı ve çıkış profilleri
-`data/extensions/camera/settings.json` dosyasında saklanır; ilk açılışta eski
+`data/settings.json` içindeki `extensions.camera.config` alanında saklanır; eski
 `data/settings.json` kamera profilleri silinmeden içe alınır. Kamera paneli,
 bağlantı, kayıt ve yayın kontrolleri yalnız eklenti etkinse görünür. Yeni
 kurulan eklentiler Yenile ile bulunur ve kullanıcı etkinleştirmedikçe kapalı
@@ -119,12 +122,52 @@ düzenle seçeneği taşıma, sekmeleme ve ayrı pencereye alma tutamaklarını 
 olarak açar. Aynı menü haritaya odaklanma, varsayılan yerleşim ve Koyu/Açık
 tema seçeneklerini de içerir. Panel açıp kapatmak kayıtlı yerleşimi değiştirmez.
 Görünürlük ve yerleşim uygulama kapanırken
-`data/workspace-layout.json` içine kaydedilir; eklenti ayarları ayrı tutulur.
+`data/workspace-layout.json` içine kaydedilir. Boş alan oluşturan sahte dock'lar
+kullanılmaz; bölmenin gerçek satır/sütun ilişkisi boyutları belirler. İlgisiz
+yerleşim dalları kendi boyutlarını korur.
+
+## İsteğe bağlı entegrasyonlar
+
+* **Harita** kendi panelini, web dosyalarını, tercihlerini ve görev görünümünü
+  sağlar. Normalize telemetri ve seyrüsefer servislerini kullanır; şu an sağlayıcı
+  MAVLink'tir. Uygulama yeniden başlatılmadan kapatılıp açılabilir.
+* **Joystick** RC1–RC16 atama, PWM kalibrasyonu, otomatik algılama ve buton
+  aksiyonlarını getirir. Varsayılan olarak kapalıdır ve şu an MAVLink RC adaptörü
+  seçilir. Kumandanın aktivasyonu eklentinin etkin olmasından ayrıdır; kapatılınca
+  RC override bırakılır. Protokol seçimi cihaz/UI kodundan ayrı tutulur ve
+  `src.extension.api.protocol.ActiveProtocol` üzerinden yapılır.
+* **TEKNOFEST** bağımsız HTTP sunucu profilleri, sabit 1 Hz telemetri zamanlaması,
+  sunucu saati, QR/HSS sorguları ve gerçek kilitlenme/kamikaze sonuçlarını gönderme
+  metotlarını sağlar. Normalize telemetri kullanır; MAVLink kimliğine bağlı değildir.
+  Sunucu alışverişleri WAL kullanan `data/teknofest/history.sqlite3` veritabanına
+  kaydedilir; giriş parolaları kaydedilmez. İlk geçerli konumdan sonra araç hattı
+  kopsa da son veri tahmini sunucu saatiyle gönderilmeye devam eder. Otomatik
+  bağlantı işaretlenmedikçe veya kullanıcı bağlanmadıkça sunucuya istek yapılmaz.
+  Eklenti varsayılan olarak kapalıdır.
+
+Örnek ortak yapı:
+
+```json
+{
+  "extensions": {
+    "camera": { "enabled": false, "config": {} },
+    "joystick": { "enabled": false, "config": {} },
+    "teknofest": { "enabled": false, "config": { "servers": [] } }
+  }
+}
+```
+
+Eski typed backend alanları uyumluluk için korunur. MAVLink paketi protokol
+ayarlarını ve bağlantı profillerini ortak eklenti bölümüne yansıtır; eski
+düzenleyiciler diğer eklentilerin configlerini ezmez.
 
 ## Ayarlar, loglar ve testler
 
-Ayarlar `data/settings.json`, yapılandırılmış loglar `data/logs/yki.jsonl`
-içinde tutulur. Testleri çalıştırmak için:
+Ayarlar `data/settings.json`, loglar
+`data/logs/gcs_<oturum-tarihi>_<oturum-saati>.json` içinde tutulur. Oturum dosyası
+geçerli bir JSON dizisidir. Eklentiler aynı, belleği sınırlı log servisini kullanır;
+ana makine enjekte edilen logger'lara ve Python loglarına `extension_id` ekler.
+Testleri çalıştırmak için:
 
 ```bash
 python run_tests.py

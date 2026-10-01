@@ -1,4 +1,5 @@
 from __future__ import annotations
+from copy import deepcopy
 
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
@@ -297,6 +298,7 @@ class SettingsModel(Model):
 
     backend: BackendSettings = field(default_factory=BackendSettings)
     ui: UiSettings = field(default_factory=UiSettings)
+    extensions: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -358,7 +360,8 @@ class SettingsModel(Model):
                     default_altitude_m=int(mission_payload.get("default_altitude_m", 100)),
                 ),
             )
-            return cls(backend=backend, ui=UiSettings(**_known(UiSettings, ui_payload)))
+            return cls(backend=backend, ui=UiSettings(**_known(UiSettings, ui_payload)),
+                       extensions=deepcopy(payload.get("extensions", {})))
         return cls._from_legacy(payload)
 
     @classmethod

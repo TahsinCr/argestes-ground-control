@@ -44,18 +44,6 @@ SETTINGS_SECTIONS = (
         ),
     ),
     SectionSpec(
-        "dialog.settings.section.map",
-        (
-            FieldSpec("ui.map_layer", "dialog.settings.map_layer", "combo", (
-                ChoiceSpec("vector", "map.layer.vector"),
-                ChoiceSpec("satellite", "map.layer.satellite"),
-            )),
-            FieldSpec("ui.map_center_min_zoom", "dialog.settings.center_zoom", "spin", minimum=10, maximum=21),
-            FieldSpec("ui.vehicle_trail_limit", "dialog.settings.vehicle_trail", "spin", minimum=10, maximum=300),
-            FieldSpec("ui.contact_trail_limit", "dialog.settings.contact_trail", "spin", minimum=10, maximum=160),
-        ),
-    ),
-    SectionSpec(
         "dialog.settings.section.backend",
         (
             FieldSpec("backend.mock_mode", "dialog.settings.mock", "check"),

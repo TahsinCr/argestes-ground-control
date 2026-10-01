@@ -3,6 +3,37 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+* Added optional joystick and TEKNOFEST packages, with their own configuration
+  views and language catalogs. Joystick supports calibrated RC channels and
+  button actions through the active MAVLink adapter. TEKNOFEST supports separate
+  server sessions, clock synchronization, telemetry delivery, result submission
+  and SQLite exchange history without storing login request credentials.
+* Added active-protocol adapter selection so integrations can support another
+  provider without placing wire-protocol logic in their UI or device workers.
+
+### Changed
+
+* Consolidated extension enablement and configuration under `extensions` in
+  `data/settings.json`. Existing extension files are imported before removal;
+  concurrent edits and ordinary settings saves preserve other packages' data.
+* Moved the map widget, web assets, tools and translations into the map package.
+  The map can be disabled and restored without removing unrelated panels.
+* Unified session logging in `data/logs/gcs_<date>_<time>.json`. Application and
+  extension entries share one JSON log, and scoped loggers retain extension
+  identity even when individual messages do not specify it.
+
+### Fixed
+
+* Removed invisible spacer docks and fixed-width constraints that left unused
+  workspace regions. Split groups now fill their shared area while unrelated
+  branches retain their own resizing behavior. Legacy layouts are migrated.
+* Applied initial dock dimensions before remembering them, preventing stale
+  startup geometry from squeezing the map and expanding the bottom panel.
+* Made recovery and tooltip regression tests wait for completed asynchronous
+  work rather than observing an intermediate state.
+
 ### Fixed
 
 * Stopped treating inactive dock tabs as closed panels. Switching tabs no longer

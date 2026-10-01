@@ -3,6 +3,7 @@ from __future__ import annotations
 from src.core.mavlink import MavlinkClient
 from src.extension.api import ExtensionContext, ExtensionRegistrar, TelemetrySource
 from src.extension.api.contracts import ConnectionProfiles, ConnectionSource
+from src.extension.api.protocol import ActiveProtocol
 from src.services.abstracts.connections import ConnectionControlService
 from src.services.abstracts.parameters import ParameterService
 from src.services.abstracts.settings import SettingsRepository
@@ -45,6 +46,28 @@ def _source(vehicle: VehicleService) -> TelemetrySource:
 
 class MavlinkExtension:
     def configure(self, registrar: ExtensionRegistrar, context: ExtensionContext) -> None:
+        from dataclasses import asdict
+        from src.models.settings import SettingsModel
+        def project(settings):
+            return {"mavlink": asdict(settings.backend.mavlink)}
+        def restore(settings, config):
+            payload = settings.to_dict()
+            payload["backend"].update({key: config[key] for key in
+                                      ("mavlink", "mavlink_connections", "active_mavlink_connection_id") if key in config})
+            return SettingsModel.from_dict(payload)
+        context.services.resolve(SettingsService).bind_extension_settings("mavlink", project, restore)
+        def connection_project(settings):
+            return {"profiles": [item.to_dict() for item in settings.backend.mavlink_connections],
+                    "active_profile": settings.backend.active_mavlink_connection_id}
+        def connection_restore(settings, config):
+            payload = settings.to_dict()
+            if "profiles" in config:
+                payload["backend"]["mavlink_connections"] = config["profiles"]
+                payload["backend"]["active_mavlink_connection_id"] = config.get("active_profile", "")
+            return SettingsModel.from_dict(payload)
+        context.services.resolve(SettingsService).bind_extension_settings(
+            "vehicle_connection", connection_project, connection_restore)
+        registrar.singleton(ActiveProtocol, lambda: ActiveProtocol("mavlink"))
         registrar.settings_ui(lambda anchor: self._open_settings(context, anchor))
         for channel in ("autopilot", "gps"):
             registrar.status_widget(channel, lambda parent, theme, language, selected=channel:

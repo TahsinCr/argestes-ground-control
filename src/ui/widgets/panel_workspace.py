@@ -225,8 +225,8 @@ class _PanelResize:
 class PanelWorkspace(QMainWindow):
     """Dockable shell around the unchanged content widgets."""
 
-    STATE_VERSION = 4
-    LEGACY_STATE_VERSIONS = (1, 2, 3)
+    STATE_VERSION = 5
+    LEGACY_STATE_VERSIONS = (1, 2, 3, 4)
 
     def __init__(
         self,
@@ -360,7 +360,7 @@ class PanelWorkspace(QMainWindow):
         return minimum, maximum
 
     def enable_independent_widths(self, keys: tuple[str, ...], *, default_width: int = 320) -> None:
-        """Give stacked left docks their own width and a flexible trailing cell."""
+        """Remember preferred widths without adding empty layout cells."""
         for key in keys:
             dock = self.panels[key]
             self._width_limits.setdefault(key, (
@@ -389,31 +389,11 @@ class PanelWorkspace(QMainWindow):
 
     def _sync_independent_widths(self, *, rebind: bool = False) -> None:
         self._width_sync_pending = False
-        for key, desired in self._independent_widths.items():
-            dock = self.panels.get(key)
-            if dock is None:
-                continue
-            if (self.dockWidgetArea(dock) != Qt.DockWidgetArea.LeftDockWidgetArea
-                    or dock.isFloating() or self.tabifiedDockWidgets(dock)):
-                self._release_width_row(key)
-                continue
-            _, maximum, minimum = self._width_limits[key]
-            dock.setFixedWidth(max(minimum, min(maximum, desired)))
-            spacer = self._width_spacers.get(key)
-            if spacer is None:
-                spacer = QDockWidget("", self)
-                spacer.setObjectName(f"panel-space.{key}")
-                spacer.setWidget(QWidget(spacer))
-                title = QWidget(spacer)
-                title.setFixedHeight(0)
-                spacer.setTitleBarWidget(title)
-                spacer.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
-                self._width_spacers[key] = spacer
-                self.splitDockWidget(dock, spacer, Qt.Orientation.Horizontal)
-            elif rebind:
-                self.removeDockWidget(spacer)
-                self.splitDockWidget(dock, spacer, Qt.Orientation.Horizontal)
-            spacer.setVisible(not dock.isHidden())
+        # Real split topology owns geometry: stacked siblings share a width,
+        # horizontal siblings share a height. Dummy docks leave dead space and
+        # fixed widths prevent Qt from filling available workspace on resize.
+        for key in tuple(self._independent_widths):
+            self._release_width_row(key)
 
     def add_panel(
         self,
@@ -426,9 +406,11 @@ class PanelWorkspace(QMainWindow):
         movable: bool = True,
         floatable: bool = True,
         closable: bool = True,
+        legacy_key: str | None = None,
     ) -> QDockWidget:
         dock = QDockWidget(title, self)
         dock.setObjectName(f"panel.{key}")
+        dock.setProperty("legacyPanelKey", legacy_key)
         dock.setAllowedAreas(allowed_areas)
         dock.setWidget(widget)
         self.addDockWidget(area, dock)
@@ -875,10 +857,14 @@ class PanelWorkspace(QMainWindow):
             if state_version not in (*self.LEGACY_STATE_VERSIONS, self.STATE_VERSION):
                 return False
             state = QByteArray.fromBase64(payload["state"].encode("ascii"))
+            legacy_docks = []
+            renamed = []
             restored_sizes: dict[str, tuple[int, int]] = {}
             sizes = payload.get("panel_sizes", {})
             if isinstance(sizes, dict):
                 for key, size in sizes.items():
+                    key = next((new_key for new_key, dock in self.panels.items()
+                                if dock.property("legacyPanelKey") == key), key)
                     if key not in self.panels or not isinstance(size, dict):
                         continue
                     width, height = size.get("width"), size.get("height")
@@ -898,7 +884,25 @@ class PanelWorkspace(QMainWindow):
                 if isinstance(width, int) and not isinstance(width, bool) and width > 0:
                     self._independent_widths[key] = width
             self._restoring_panel_sizes = True
-            restored = self.restoreState(state, state_version)
+            if state_version < self.STATE_VERSION:
+                for key, dock in self.panels.items():
+                    legacy_key = dock.property("legacyPanelKey")
+                    if legacy_key:
+                        renamed.append((dock, dock.objectName()))
+                        dock.setObjectName(f"panel.{legacy_key}")
+                for key in self._independent_widths:
+                    spacer = QDockWidget(self)
+                    spacer.setObjectName(f"panel-space.{key}")
+                    spacer.setWidget(QWidget(spacer))
+                    legacy_docks.append(spacer)
+            try:
+                restored = self.restoreState(state, state_version)
+            finally:
+                for dock, name in renamed:
+                    dock.setObjectName(name)
+                for spacer in legacy_docks:
+                    self.removeDockWidget(spacer)
+                    spacer.deleteLater()
             if restored:
                 self._configure_dock_corners()
                 self.setTabPosition(

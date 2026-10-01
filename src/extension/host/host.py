@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 import re
 from dataclasses import dataclass
@@ -12,6 +13,23 @@ from typing import Any
 from src.core.dependency import BaseDependencyContainer
 from src.extension.api import API_MAJOR, ExtensionContext, ExtensionManifest, ExtensionRegistrar, SidebarContribution, VisualContribution, StatusContribution, SettingsContribution
 from src.services.storage import load_json_file, save_json_file
+from src.services.settings import SettingsService
+from src.services.logging_service import LoggingService
+from src.services.abstracts.logging import LogService
+
+
+class ExtensionServices:
+    """Delegate service access while binding shared logs to extension identity."""
+
+    def __init__(self, services, identifier):
+        self._services, self._identifier = services, identifier
+
+    def __getattr__(self, name):
+        return getattr(self._services, name)
+
+    def resolve(self, token):
+        service = self._services.resolve(token)
+        return service.for_extension(self._identifier) if token in (LoggingService, LogService) else service
 
 
 class ExtensionError(RuntimeError):
@@ -31,9 +49,10 @@ class ExtensionHost:
     def __init__(self, base_dir: Path, container: BaseDependencyContainer) -> None:
         self.base_dir = base_dir
         self.container = container
-        self._state_path = base_dir / "data" / "extensions" / "state.json"
+        self._settings_service = container.resolve(SettingsService)
         # A malformed persisted switch must never silently re-enable a plugin.
-        self._stored = load_json_file(self._state_path)
+        self._stored = {key: entry["enabled"] for key, entry in
+                        self._settings_service.current.extensions.items() if "enabled" in entry}
         if "telemetry" in self._stored:
             if not isinstance(self._stored["telemetry"], bool):
                 raise ExtensionError("Invalid enabled state for telemetry")
@@ -41,7 +60,7 @@ class ExtensionHost:
             if "vehicle_connection" not in migrated:
                 migrated["vehicle_connection"] = migrated["telemetry"]
             del migrated["telemetry"]
-            save_json_file(self._state_path, migrated)
+            self._save_states(migrated, remove="telemetry")
             self._stored = migrated
         self._manifests = self._discover(Path(__file__).resolve().parents[3] / "extensions")
         for key, value in self._stored.items():
@@ -58,6 +77,21 @@ class ExtensionHost:
         self._status_widgets: list[StatusContribution] = []
         self._settings_actions: dict[str, SettingsContribution] = {}
         self._validate(self._enabled_ids())
+        self._save_states({key: self._stored.get(key, manifest.default_enabled)
+                           for key, manifest in self._manifests.items()})
+
+    def _save_states(self, states, *, remove=None):
+        def mutate(settings):
+            for key, enabled in states.items():
+                entry = settings.extensions.setdefault(key, {})
+                entry["enabled"] = enabled
+                entry.setdefault("config", {})
+            if remove is not None:
+                old = settings.extensions.pop(remove, {})
+                if old.get("config"):
+                    settings.extensions.setdefault("vehicle_connection", {}).setdefault("config", old["config"])
+            return settings
+        self._settings_service.update(mutate, notify=False)
 
     @staticmethod
     def _discover(root: Path) -> dict[str, ExtensionManifest]:
@@ -140,7 +174,7 @@ class ExtensionHost:
         added = set(found) - set(self._manifests)
         if added:
             updated = {**self._stored, **{key: False for key in added}}
-            save_json_file(self._state_path, updated)
+            self._save_states(updated)
             self._stored = updated
         self._manifests = found
 
@@ -189,7 +223,7 @@ class ExtensionHost:
         previous = self._stored.get(identifier, self._manifests[identifier].default_enabled)
         self._stored[identifier] = enabled
         try:
-            save_json_file(self._state_path, self._stored)
+            self._save_states(self._stored)
         except Exception:
             self._stored[identifier] = previous
             if was_active != enabled:
@@ -202,8 +236,7 @@ class ExtensionHost:
     def settings(self, identifier: str) -> dict[str, Any]:
         manifest = self._manifests[identifier]
         defaults = {key: spec.get("default") for key, spec in manifest.settings.items()}
-        path = self.base_dir / "data" / "extensions" / identifier / "settings.json"
-        return {**defaults, **load_json_file(path)}
+        return {**defaults, **self._settings_service.extension_config(identifier)}
 
     def save_settings(self, identifier: str, values: dict[str, Any]) -> None:
         manifest = self._manifests[identifier]
@@ -217,8 +250,7 @@ class ExtensionHost:
                 raise ValueError(f"{key} must be string")
             if kind == "integer" and (not isinstance(value, int) or isinstance(value, bool)):
                 raise ValueError(f"{key} must be integer")
-        path = self.base_dir / "data" / "extensions" / identifier / "settings.json"
-        save_json_file(path, {**self.settings(identifier), **values})
+        self._settings_service.update_extension(identifier, config={**self.settings(identifier), **values})
         self._dirty_settings.add(identifier)
 
     def configure(self) -> None:
@@ -232,7 +264,7 @@ class ExtensionHost:
             raise ExtensionError(f"Invalid entry point: {manifest.entry_point}")
         plugin = getattr(importlib.import_module(module_name), factory_name)()
         registrar = ExtensionRegistrar()
-        context = ExtensionContext(self.base_dir, self.settings(identifier), self.container)
+        context = ExtensionContext(self.base_dir, self.settings(identifier), ExtensionServices(self.container, identifier))
         plugin.configure(registrar, context)
         for binding in registrar.bindings:
             if self.container.container.has(binding.token):
@@ -240,7 +272,13 @@ class ExtensionHost:
         registered: list[Any] = []
         try:
             for binding in registrar.bindings:
-                self.container.singleton(binding.token, factory=binding.factory,
+                def scoped_factory(_binding=binding, **kwargs):
+                    for name, token in _binding.dependencies.items():
+                        if token in (LoggingService, LogService):
+                            kwargs[name] = kwargs[name].for_extension(identifier)
+                    return _binding.factory(**kwargs)
+                scoped_factory.__signature__ = inspect.signature(binding.factory)
+                self.container.singleton(binding.token, factory=scoped_factory,
                                          dependencies=binding.dependencies, priority=10)
                 registered.append(binding.token)
             if self._lifecycle_started and hasattr(plugin, "start"):
@@ -259,7 +297,7 @@ class ExtensionHost:
             key = f"{identifier}.{view.identifier}"
             self._sidebar_views.append(SidebarContribution(key, view.title, view.factory))
         for view in registrar.visual_views:
-            self._visual_views.append(VisualContribution(f"{identifier}.{view.identifier}", view.factory))
+            self._visual_views.append(VisualContribution(f"{identifier}.{view.identifier}", view.factory, view.primary, view.legacy_key))
         for widget in registrar.status_widgets:
             self._status_widgets.append(StatusContribution(f"{identifier}.{widget.identifier}", widget.factory, widget.placement))
         if registrar.settings_action is not None:
@@ -298,7 +336,7 @@ class ExtensionHost:
         except Exception:
             # A rejected replacement must not remain advertised as enabled.
             self._stored[identifier] = False
-            save_json_file(self._state_path, self._stored)
+            self._save_states(self._stored)
             raise
         self._dirty_settings.discard(identifier)
 

@@ -31,7 +31,8 @@ class ExtensionTests(unittest.TestCase):
                               container.resolve(ExtensionHost).list_extensions()}
                     self.assertEqual(states["vehicle_connection"].enabled, expected)
                     self.assertNotIn("telemetry", states)
-                    persisted = json.loads(path.read_text())
+                    persisted = {key: entry["enabled"] for key, entry in json.loads((root / "data/settings.json").read_text())["extensions"].items() if "enabled" in entry}
+                    self.assertFalse(path.exists())
                     self.assertNotIn("telemetry", persisted)
                     self.assertEqual(persisted["vehicle_connection"], expected)
                 finally:
@@ -128,7 +129,7 @@ class ExtensionTests(unittest.TestCase):
                 state = {item.manifest.identifier: item for item in second.resolve(ExtensionHost).list_extensions()}
                 self.assertFalse(state["vehicle_connection"].enabled)
                 self.assertFalse(state["vehicle_connection"].pending_restart)
-                self.assertEqual(json.loads((root / "data/extensions/state.json").read_text())["vehicle_connection"], False)
+                self.assertEqual(json.loads((root / "data/settings.json").read_text())["extensions"]["vehicle_connection"]["enabled"], False)
             finally:
                 second.shutdown()
 
@@ -155,15 +156,15 @@ class ExtensionTests(unittest.TestCase):
                 self.assertFalse(next(item.pending_restart for item in host.list_extensions()
                                       if item.manifest.identifier == "camera"))
                 self.assertTrue(container.container.has(CameraRuntime))
-                self.assertEqual(len(host.visual_views()), 1)
+                self.assertEqual(len([item for item in host.visual_views() if item.identifier.startswith('camera.')]), 1)
                 previous_runtime = container.resolve(CameraRuntime)
                 host.reload("camera")
                 self.assertIsNot(previous_runtime, container.resolve(CameraRuntime))
-                self.assertEqual(len(host.visual_views()), 1)
+                self.assertEqual(len([item for item in host.visual_views() if item.identifier.startswith('camera.')]), 1)
                 self.assertEqual(len([item for item in host.status_widgets() if item.identifier.startswith("camera.")]), 1)
                 host.set_enabled("camera", False)
                 self.assertFalse(container.container.has(CameraRuntime))
-                self.assertFalse(host.visual_views())
+                self.assertFalse([item for item in host.visual_views() if item.identifier.startswith('camera.')])
                 self.assertFalse(any(item.identifier.startswith("camera.") for item in host.status_widgets()))
                 self.assertIsNone(host.settings_action("camera"))
                 host.set_enabled("camera", True)

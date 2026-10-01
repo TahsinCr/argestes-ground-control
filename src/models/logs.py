@@ -17,6 +17,7 @@ class LogEntry(Model):
     device_id: str | None = None
     correlation_id: str | None = None
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    extension_id: str | None = None
 
     def __post_init__(self) -> None:
         self.source = self.source.strip().upper() or "SYSTEM"
@@ -43,4 +44,5 @@ class LogEntry(Model):
             "device_id": self.device_id,
             "correlation_id": self.correlation_id,
             "timestamp": self.timestamp.isoformat(),
+            "extension_id": self.extension_id,
         }

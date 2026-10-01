@@ -63,7 +63,15 @@ class ServiceLogHandler(logging.Handler):
             logging.ERROR: "danger",
             logging.CRITICAL: "danger",
         }.get(record.levelno, "info")
-        self._log_service.log(self._source, self.format(record), severity)
+        service = self._log_service
+        parts = Path(record.pathname).parts
+        if "extensions" in parts:
+            index = parts.index("extensions") + 1
+            if index < len(parts):
+                service = service.for_extension(parts[index])
+        elif record.name.startswith("extensions."):
+            service = service.for_extension(record.name.split(".")[1])
+        service.log(self._source, self.format(record), severity)
 
 
 class LoggingService(LogService):
@@ -101,6 +109,9 @@ class LoggingService(LogService):
 
     def child(self, source: str) -> ServiceLogger:
         return ServiceLogger(self, source)
+
+    def for_extension(self, identifier: str) -> "LoggingService":
+        return ExtensionLoggingService(self, identifier)
 
     def log(self, source: str, message: str, severity: str = "info") -> None:
         self.emit_entry(LogEntry(source=source, message=message, severity=severity))
@@ -182,9 +193,23 @@ class LoggingService(LogService):
         # thread, at roughly one-second intervals. Runtime shutdown calls
         # flush() once to provide the durability boundary without an idle
         # writer thread or periodic UI stalls.
-        with self._log_path.open("a", encoding="utf-8") as handle:
-            handle.write("\n".join(payloads))
-            handle.write("\n")
+        if self._log_path.suffix == ".json":
+            # Maintain a valid array without loading the session into memory.
+            exists = self._log_path.exists() and self._log_path.stat().st_size > 2
+            mode = "r+b" if self._log_path.exists() else "w+b"
+            with self._log_path.open(mode) as handle:
+                if exists:
+                    handle.seek(-1, os.SEEK_END)
+                    prefix = b",\n"
+                else:
+                    handle.seek(0)
+                    prefix = b"["
+                handle.write(prefix + ",\n".join(payloads).encode("utf-8") + b"]")
+                handle.truncate()
+        else:
+            with self._log_path.open("a", encoding="utf-8") as handle:
+                handle.write("\n".join(payloads))
+                handle.write("\n")
 
     def _rotate_files(self) -> None:
         if self._log_path is None:
@@ -200,6 +225,23 @@ class LoggingService(LogService):
                 source.replace(self._log_path.with_name(f"{self._log_path.name}.{index + 1}"))
         if self._log_path.exists():
             self._log_path.replace(self._log_path.with_name(f"{self._log_path.name}.1"))
+
+
+class ExtensionLoggingService(LoggingService):
+    """The host attaches origin even when extension code only uses child()."""
+
+    def __init__(self, service: LoggingService, identifier: str):
+        self._service = service
+        self._identifier = identifier
+
+    def __getattr__(self, name):
+        return getattr(self._service, name)
+
+    def for_extension(self, identifier):
+        return self._service.for_extension(identifier)
+
+    def emit_entries(self, entries):
+        self._service.emit_entries(tuple(replace(entry, extension_id=self._identifier) for entry in entries))
 
 
 QtLogHandler = ServiceLogHandler

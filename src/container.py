@@ -3,6 +3,7 @@ from __future__ import annotations
 from enum import IntEnum
 from dataclasses import dataclass
 from pathlib import Path
+from datetime import datetime
 
 from src.core.dependency import BaseDependencyContainer, DependencyContainer
 from src.extension.host import ExtensionHost
@@ -47,7 +48,9 @@ class DependencyPriority(IntEnum):
 # behavior and contracts only; they do not know which concrete implementation
 # the desktop application chooses.
 def _logging(context: ApplicationContext) -> LoggingService:
-    return LoggingService(log_path=context.base_dir / "data" / "logs" / "yki.jsonl")
+    session = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
+    return LoggingService(log_path=context.base_dir / "data" / "logs" / f"gcs_{session}.json",
+                          max_file_bytes=2**63 - 1)
 
 
 def _log_contract(service: LoggingService) -> LogService:

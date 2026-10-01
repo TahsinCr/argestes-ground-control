@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 from src.ui.i18n import t
 from src.models.commands import CommandResult
 from src.models.geometry import Point
-from src.ui.config.map import TOOL_LABEL_KEYS, map_tool_config
+from .tools import TOOL_LABEL_KEYS, map_tool_config
 from src.models.mission import MapContact, MapOverlay, MissionState
 from src.models.telemetry import TelemetrySnapshot
 from src.services.planner import PlannerService
@@ -613,7 +613,7 @@ class MapPanel(PanelFrame):
         self._last_telemetry_payload = None
         self._pending_telemetry_payload = None
         self._last_cache_count = None
-        html_path = self._base_dir / "src" / "ui" / "web" / "map.html"
+        html_path = Path(__file__).resolve().parents[1] / "web" / "map.html"
         self._view.load(QUrl.fromLocalFile(str(html_path)))
 
     def _reset_map_view_state(self) -> None:

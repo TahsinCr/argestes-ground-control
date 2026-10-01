@@ -34,7 +34,7 @@ from src.models.parameters import Parameter
 from src.models.settings import SettingsModel
 from src.models.telemetry import TelemetrySnapshot
 from src.ui.i18n import t
-from src.ui.config.map import MAP_TOOLS
+from extensions.map.ui.tools import MAP_TOOLS
 from src.ui.config.settings_schema import iter_fields
 from src.ui.themes.palette import DARK, LIGHT
 from src.ui.themes.manager import apply_theme
@@ -46,7 +46,7 @@ from src.ui.widgets.common import BatteryMeter, SignalMeter
 from src.ui.widgets.battery_popup import BatterySettingsPopup
 from src.ui.widgets.logs import EventLogPanel
 from src.ui.widgets.parameters import ParametersPanel
-from src.ui.widgets.map_panel import MapPanel, MapWebBridge
+from extensions.map.ui.panel import MapPanel, MapWebBridge
 from src.ui.widgets.activity_bar import ActivityBar
 from src.ui.widgets.title_bar import AppTitleBar, FramelessResizeController
 from src.container import create_container
@@ -59,6 +59,69 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class UiContractTests(unittest.TestCase):
+    def test_initial_workspace_geometry_fills_split_regions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            backend = create_container(Path(directory))
+            ui = UiContainer(backend.container, base_dir=Path(directory), theme=DARK)
+            window = ui.resolve(MainWindow)
+            try:
+                window.resize(1400, 900)
+                window.show()
+                QTest.qWait(100)
+                window._size_default_docks()
+                self.app.processEvents()
+                panels = window.workspace.panels
+                widths = [panels[key].width() for key in ("flight", "telemetry", "commands")]
+                self.assertTrue(all(300 <= width <= 340 for width in widths), widths)
+                self.assertLessEqual(max(widths) - min(widths), 1)
+                self.assertGreater(window.primary_dock.height(), panels["logs"].height())
+                self.assertAlmostEqual(window.primary_dock.width(), panels["logs"].width(), delta=2)
+            finally:
+                window.close()
+                window.deleteLater()
+                self.app.processEvents()
+                ui.shutdown()
+                backend.shutdown()
+
+    def test_map_hot_toggle_and_joystick_config_preserve_other_panels(self):
+        from extensions.joystick.models import JoystickSettings, JoystickState
+        from extensions.joystick.ui.dialog import JoystickDialog
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            backend = create_container(Path(directory))
+            ui = UiContainer(backend.container, base_dir=Path(directory), theme=DARK)
+            try:
+                window = ui.resolve(MainWindow)
+                window.show()
+                self.app.processEvents()
+                self.assertIsNotNone(window.primary_dock)
+                window._apply_extension_change("map", False)
+                self.app.processEvents()
+                self.assertIsNone(window.primary_dock)
+                self.assertNotIn("map.view", window.workspace.panels)
+                self.assertIn("logs", window.workspace.panels)
+                window._reset_workspace()
+                window._apply_extension_change("map", True)
+                self.app.processEvents()
+                self.assertIsNotNone(window.primary_dock)
+                self.assertIn("map.view", window.workspace.panels)
+                fake = SimpleNamespace(devices=lambda: (), state=JoystickState(),
+                                       reconnect=lambda: None, disconnect=lambda: None)
+                from src.services.settings import SettingsService
+                settings = backend.resolve(SettingsService)
+                dialog = JoystickDialog(settings, fake, "tr", DARK, window)
+                config = JoystickSettings.from_config({"channels": [{"channel": 1, "control": "axis:0"}]})
+                dialog._persist(config)
+                self.assertEqual(settings.extension_config("joystick")["channels"][0]["control"], "axis:0")
+                dialog.close()
+                dialog.deleteLater()
+                window.close()
+                window.deleteLater()
+                self.app.processEvents()
+            finally:
+                ui.shutdown()
+                backend.shutdown()
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication(["yki-ui-tests"])
@@ -162,9 +225,9 @@ class UiContractTests(unittest.TestCase):
                 window = ui.resolve(MainWindow)
                 window.show()
                 self.app.processEvents()
-                self.assertIn("map", window.workspace.panels)
-                self.assertIs(window.workspace.panels["map"], window.map_dock)
-                self.assertIn("map", window.activity_bar.panel_buttons)
+                self.assertIn("map.view", window.workspace.panels)
+                self.assertIs(window.workspace.panels["map.view"], window.primary_dock)
+                self.assertIn("map.view", window.activity_bar.panel_buttons)
                 self.assertNotIn("extensions", window.workspace.panels)
                 self.assertIs(window.sidebar.parentWidget(), window.content_splitter)
                 self.assertIs(window.workspace.parentWidget(), window.content_splitter)
@@ -174,11 +237,11 @@ class UiContractTests(unittest.TestCase):
                 self.assertTrue(all(
                     dock.isHidden()
                     for key, dock in window.workspace.panels.items()
-                    if key != "map"
+                    if key != "map.view"
                 ))
-                self.assertFalse(window.map_dock.isHidden())
+                self.assertFalse(window.primary_dock.isHidden())
                 window._reset_workspace()
-                self.assertFalse(window.map_dock.isHidden())
+                self.assertFalse(window.primary_dock.isHidden())
                 self.assertFalse(window.log_dock.isHidden())
                 self.assertFalse(window._flight_docks[0].isHidden())
                 self.assertTrue(window.parameters_dock.isHidden())
@@ -413,7 +476,12 @@ class UiContractTests(unittest.TestCase):
             patch("src.ui.widgets.common.QToolTip.showText") as show_tooltip,
         ):
             meter.set_metric_tooltip("RF 82%")
-            QTest.qWait(120)
+            # WebEngine cleanup can delay timers in the shared offscreen event
+            # loop. Wait for the signal rather than assuming an exact tick.
+            for _ in range(50):
+                if show_tooltip.called:
+                    break
+                QTest.qWait(20)
 
         show_tooltip.assert_called_once()
         self.assertEqual(show_tooltip.call_args.args[1], "RF 82%")

@@ -59,6 +59,8 @@ class SidebarContribution:
 class VisualContribution:
     identifier: str
     factory: Callable[[Any], Any]
+    primary: bool = False
+    legacy_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,12 +105,13 @@ class ExtensionRegistrar:
             raise ValueError(f"Duplicate sidebar view: {identifier}")
         self.sidebar_views.append(SidebarContribution(identifier, title, factory))
 
-    def visual_view(self, identifier: str, factory: Callable[[Any], Any]) -> None:
+    def visual_view(self, identifier: str, factory: Callable[[Any], Any], *, primary: bool = False,
+                    legacy_key: str | None = None) -> None:
         if not re.fullmatch(r"[a-z][a-z0-9_]*", identifier):
             raise ValueError(f"Invalid visual identifier: {identifier}")
         if any(view.identifier == identifier for view in self.visual_views):
             raise ValueError(f"Duplicate visual view: {identifier}")
-        self.visual_views.append(VisualContribution(identifier, factory))
+        self.visual_views.append(VisualContribution(identifier, factory, primary, legacy_key))
 
     def status_widget(self, identifier: str, factory: Callable[[Any], Any], *,
                       placement: str = "connections") -> None:

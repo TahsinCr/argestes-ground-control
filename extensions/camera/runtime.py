@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from src.services.logging_service import LoggingService
 from src.services.storage import load_json_file, save_json_file
+from src.services.settings import SettingsService
 
 from .capture import MultiVideoService
 from .models import VideoShareConfig, VideoSourceConfig
@@ -24,8 +25,9 @@ class CameraConfiguration:
 
 
 class CameraSettingsStore:
-    def __init__(self, base_dir: Path) -> None:
-        self.path = base_dir / "data" / "extensions" / "camera" / "settings.json"
+    def __init__(self, base_dir: Path, settings: SettingsService | None = None) -> None:
+        self._settings = settings or SettingsService(base_dir)
+        self.path = base_dir / "data" / "settings.json"
         self._legacy_path = base_dir / "data" / "settings.json"
         self._lock = threading.RLock()
         self._current = self._read()
@@ -36,9 +38,8 @@ class CameraSettingsStore:
             return self._current
 
     def _read(self) -> CameraConfiguration:
-        if self.path.exists():
-            payload = load_json_file(self.path)
-        else:
+        payload = self._settings.extension_config("camera")
+        if not payload:
             legacy = load_json_file(self._legacy_path, {})
             payload = dict(legacy.get("backend", {}))
         raw_sources = payload.get("video_sources", ())
@@ -74,16 +75,16 @@ class CameraSettingsStore:
         if not checked.sources or checked.active_source_id not in {item.identifier for item in checked.sources}:
             raise ValueError("Active camera must be one of the configured sources")
         with self._lock:
-            save_json_file(self.path, payload)
+            self._settings.update_extension("camera", config=payload)
             self._current = checked
 
 
 class CameraRuntime:
     """Serialize capture reconfiguration away from the Qt thread."""
 
-    def __init__(self, base_dir: Path, logging: LoggingService) -> None:
+    def __init__(self, base_dir: Path, logging: LoggingService, settings: SettingsService | None = None) -> None:
         self.base_dir = base_dir
-        self.settings = CameraSettingsStore(base_dir)
+        self.settings = CameraSettingsStore(base_dir, settings)
         config = self.settings.current
         self.video = MultiVideoService(config.sources, config.active_source_id,
                                        logging.child("VIDEO"))
