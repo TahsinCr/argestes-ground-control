@@ -139,6 +139,7 @@ class PanelWorkspace(QMainWindow):
             Qt.DockWidgetArea.AllDockWidgetAreas,
             QTabWidget.TabPosition.North,
         )
+        self._configure_dock_corners()
         self.panels: dict[str, QDockWidget] = {}
         self._panel_keys: dict[QDockWidget, str] = {}
         self._panel_options: dict[str, tuple[bool, bool, bool]] = {}
@@ -153,6 +154,10 @@ class PanelWorkspace(QMainWindow):
         self._drag_source: QDockWidget | None = None
         self._drop_overlay = _PanelDropOverlay(self)
         self._drop_overlay.hide()
+
+    def _configure_dock_corners(self) -> None:
+        self.setCorner(Qt.Corner.TopLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
+        self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
 
     def add_panel(
         self,
@@ -585,6 +590,7 @@ class PanelWorkspace(QMainWindow):
             self._restoring_panel_sizes = True
             restored = self.restoreState(state, state_version)
             if restored:
+                self._configure_dock_corners()
                 self.setTabPosition(
                     Qt.DockWidgetArea.AllDockWidgetAreas,
                     QTabWidget.TabPosition.North,

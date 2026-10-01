@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+* Extended the left dock column to the bottom of the workspace. Log and
+  parameter panels now occupy the space beside it, including when an existing
+  saved layout is restored.
 * Reworked layout editing around one drag-and-drop target layer shared by the
   map, camera, flight, telemetry, command, log and parameter panels. Dragging
   starts from a panel title bar; visible target outlines show its four sides

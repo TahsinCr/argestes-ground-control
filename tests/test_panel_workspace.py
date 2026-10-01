@@ -21,6 +21,35 @@ class PanelWorkspaceTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication(["yki-workspace-tests"])
 
+    def test_left_column_spans_beside_bottom_panel_after_layout_restore(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "layout.json"
+            workspace = PanelWorkspace(path)
+            left = workspace.add_panel(
+                "telemetry", "Telemetry", QLabel("Telemetry"),
+                Qt.DockWidgetArea.LeftDockWidgetArea,
+            )
+            workspace.add_panel("map", "Map", QLabel("Map"),
+                                Qt.DockWidgetArea.RightDockWidgetArea)
+            bottom = workspace.add_panel("logs", "Logs", QLabel("Logs"),
+                                         Qt.DockWidgetArea.BottomDockWidgetArea)
+            workspace.resize(1000, 700)
+            workspace.show()
+            self.app.processEvents()
+            self.assertGreaterEqual(left.geometry().bottom(), bottom.geometry().bottom())
+            self.assertGreater(bottom.x(), left.geometry().right())
+
+            workspace.setCorner(Qt.Corner.BottomLeftCorner,
+                                Qt.DockWidgetArea.BottomDockWidgetArea)
+            self.assertTrue(workspace.save_layout())
+            self.assertTrue(workspace.restore_layout())
+            self.app.processEvents()
+            self.assertEqual(workspace.corner(Qt.Corner.BottomLeftCorner),
+                             Qt.DockWidgetArea.LeftDockWidgetArea)
+            self.assertGreaterEqual(left.geometry().bottom(), bottom.geometry().bottom())
+            self.assertGreater(bottom.x(), left.geometry().right())
+            workspace.close()
+
     def test_dock_position_visibility_and_size_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory) / "layout.json"
