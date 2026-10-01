@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -20,6 +21,37 @@ class PanelWorkspaceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication(["yki-workspace-tests"])
+
+    def test_hover_controls_drag_and_menu_without_edit_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = PanelWorkspace(Path(directory) / "layout.json")
+            dock = workspace.add_panel("map", "Map", QLabel("Map"),
+                                       Qt.DockWidgetArea.RightDockWidgetArea)
+            workspace.resize(700, 500)
+            workspace.show()
+            self.app.processEvents()
+            controls = workspace._hover_controls["map"]
+            QApplication.sendEvent(dock, QEvent(QEvent.Type.Enter))
+            QTest.qWait(160)
+            self.assertTrue(controls.isVisible())
+            self.assertEqual(controls.effect.opacity(), 1)
+            self.assertFalse(workspace.edit_mode)
+            self.assertEqual(controls.x(), (dock.width() - controls.width()) // 2)
+            with patch.object(workspace, "_show_panel_menu") as menu:
+                QTest.mouseClick(controls.arrow, Qt.MouseButton.LeftButton)
+                self.assertEqual(menu.call_args.args[0], dock)
+            with patch.object(workspace, "_start_panel_drag") as drag:
+                QTest.mousePress(controls.grip, Qt.MouseButton.LeftButton)
+                event = QMouseEvent(QEvent.Type.MouseMove, QPointF(35, 10),
+                                    QPointF(controls.grip.mapToGlobal(QPoint(35, 10))),
+                                    Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton,
+                                    Qt.KeyboardModifier.NoModifier)
+                QApplication.sendEvent(controls.grip, event)
+                drag.assert_called_once_with(dock)
+            QApplication.sendEvent(dock, QEvent(QEvent.Type.Leave))
+            QTest.qWait(160)
+            self.assertTrue(controls.isHidden())
+            workspace.close()
 
     def test_left_column_spans_beside_bottom_panel_after_layout_restore(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -3,6 +3,14 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+* Added compact, hover-only controls at the top center of each workspace panel.
+  The rounded grip moves panels without entering layout-edit mode, and its
+  adjacent arrow opens placement and visibility actions. A short opacity
+  transition affects only the controls, leaving panel content and geometry
+  unchanged; colors follow the active theme.
+
 ### Changed
 
 * Made the three left-side vehicle panels independently adjustable in width.

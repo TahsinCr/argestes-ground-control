@@ -5,15 +5,18 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from PyQt6.QtCore import QByteArray, QEvent, QMimeData, QPoint, QRect, QTimer, Qt
+from PyQt6.QtCore import QByteArray, QEasingCurve, QEvent, QMimeData, QPoint, QPropertyAnimation, QRect, QTimer, Qt
 from PyQt6.QtGui import QColor, QDrag, QMouseEvent, QPainter, QPalette, QPen
 from PyQt6.QtWidgets import (
     QApplication,
     QDockWidget,
+    QGraphicsOpacityEffect,
+    QHBoxLayout,
     QMainWindow,
     QMenu,
     QStyle,
     QTabWidget,
+    QToolButton,
     QWidget,
 )
 
@@ -23,6 +26,101 @@ _TARGET_LABELS = {
     "tr": {"left": "Sol", "right": "Sağ", "above": "Üst", "below": "Alt", "tab": "Sekme"},
     "en": {"left": "Left", "right": "Right", "above": "Top", "below": "Bottom", "tab": "Tab"},
 }
+
+
+class _PanelGrip(QToolButton):
+    """A small drag surface; content mouse events never initiate a drag."""
+
+    def __init__(self, controls) -> None:
+        super().__init__(controls)
+        self.controls = controls
+        self.start: QPoint | None = None
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setFixedSize(36, 20)
+        self.setToolTip(controls.dock.windowTitle())
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self.palette().color(QPalette.ColorRole.Text))
+        for x in (12, 18, 24):
+            for y in (7, 13):
+                painter.drawEllipse(QPoint(x, y), 1, 1)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.start = event.globalPosition().toPoint()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self.start is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            if (event.globalPosition().toPoint() - self.start).manhattanLength() >= QApplication.startDragDistance():
+                self.start = None
+                self.controls.workspace._start_panel_drag(self.controls.dock)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self.start = None
+        super().mouseReleaseEvent(event)
+
+
+class _PanelControls(QWidget):
+    """Hover-only controls animated independently of expensive panel content."""
+
+    def __init__(self, workspace, dock) -> None:
+        super().__init__(dock)
+        self.workspace, self.dock = workspace, dock
+        self.setObjectName("panelHoverControls")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(3, 1, 3, 1)
+        layout.setSpacing(0)
+        self.grip = _PanelGrip(self)
+        self.grip.setEnabled(workspace._panel_options[workspace._panel_keys[dock]][1])
+        self.arrow = QToolButton(self)
+        self.arrow.setArrowType(Qt.ArrowType.DownArrow)
+        self.arrow.setFixedSize(20, 20)
+        self.arrow.setToolTip("Panel settings" if workspace.language == "en" else "Panel ayarları")
+        self.arrow.clicked.connect(self.open_menu)
+        layout.addWidget(self.grip)
+        layout.addWidget(self.arrow)
+        self.setFixedSize(62, 22)
+        self.setStyleSheet("#panelHoverControls { border: 1px solid palette(mid); border-radius: 7px; background: palette(window); } QToolButton { border: none; border-radius: 5px; color: palette(text); background: transparent; } QToolButton:hover { background: palette(mid); }")
+        self.effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.effect)
+        self.effect.setOpacity(0)
+        self.animation = QPropertyAnimation(self.effect, b"opacity", self)
+        self.animation.setDuration(130)
+        self.animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.animation.finished.connect(self._finished)
+        self.hide()
+
+    def reveal(self, visible: bool) -> None:
+        end = 1.0 if visible else 0.0
+        if self.animation.endValue() == end:
+            return
+        self.animation.stop()
+        if visible:
+            self.move(max(0, (self.dock.width() - self.width()) // 2), 4)
+            self.show()
+            self.raise_()
+        self.animation.setStartValue(self.effect.opacity())
+        self.animation.setEndValue(end)
+        self.animation.start()
+
+    def _finished(self) -> None:
+        if self.effect.opacity() == 0:
+            self.hide()
+
+    def open_menu(self) -> None:
+        self.workspace._show_panel_menu(self.dock, self.dock.mapFromGlobal(self.mapToGlobal(QPoint(0, self.height()))))
+        self.reveal(self.dock.underMouse())
 
 
 class _PanelDropOverlay(QWidget):
@@ -161,6 +259,7 @@ class PanelWorkspace(QMainWindow):
         self._panel_size_restore_enabled = False
         self.edit_mode = False
         self._quiet_titles: dict[str, QWidget] = {}
+        self._hover_controls: dict[str, _PanelControls] = {}
         self._drag_start: tuple[QDockWidget, QPoint] | None = None
         self._drag_source: QDockWidget | None = None
         self._panel_resize: _PanelResize | None = None
@@ -345,6 +444,7 @@ class PanelWorkspace(QMainWindow):
         quiet_title = QWidget(dock)
         quiet_title.setFixedHeight(0)
         self._quiet_titles[key] = quiet_title
+        self._hover_controls[key] = _PanelControls(self, dock)
         self._apply_panel_mode(key)
         dock.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         dock.customContextMenuRequested.connect(
@@ -368,7 +468,14 @@ class PanelWorkspace(QMainWindow):
                     self._resize_neighbors(event.position().toPoint())
                     self._panel_resize = None
                     return True
-        if isinstance(watched, QDockWidget) and watched in self._panel_keys:
+        if isinstance(watched, QDockWidget) and watched in self._panel_keys and self._panel_keys[watched] in self._hover_controls:
+            controls = self._hover_controls[self._panel_keys[watched]]
+            if event.type() == QEvent.Type.Enter:
+                controls.reveal(True)
+            elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
+                controls.reveal(False)
+            elif event.type() == QEvent.Type.Resize:
+                controls.move(max(0, (watched.width() - controls.width()) // 2), 4)
             if isinstance(event, QMouseEvent):
                 if event.type() == QEvent.Type.MouseButtonPress:
                     if (
@@ -589,14 +696,12 @@ class PanelWorkspace(QMainWindow):
 
     def drop_panel_at(self, dock: QDockWidget, global_position: QPoint) -> bool:
         """Resolve drag drops to a panel center, edge, or workspace outer edge."""
-        if not self.edit_mode or dock not in self._panel_keys:
+        if dock not in self._panel_keys or not self._panel_options[self._panel_keys[dock]][1]:
             return False
         target = self._drop_target(global_position, source=dock)
         return target is not None and self._apply_drop(dock, target)
 
     def _show_panel_menu(self, dock: QDockWidget, point) -> None:
-        if not self.edit_mode:
-            return
         english = self.language == "en"
         menu = QMenu(dock)
         move = menu.addMenu("Move Panel" if english else "Paneli taşı")
@@ -717,6 +822,7 @@ class PanelWorkspace(QMainWindow):
         self._panel_default_areas.pop(key, None)
         self._panel_sizes.pop(key, None)
         self._quiet_titles.pop(key, None)
+        self._hover_controls.pop(key, None)
         dock.removeEventFilter(self)
         widget = dock.widget()
         if widget is not None:
