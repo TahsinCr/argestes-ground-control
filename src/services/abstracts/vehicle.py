@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Iterable
 
 from src.core.abstracts import Service
 from src.core.events import EventBus
 from src.models.commands import CommandRequest
-from src.models.mission import MapOverlay
 from src.models.vehicle import (
     VehicleCapabilities,
     VehicleConnectionConfig,
@@ -21,11 +19,6 @@ class MissionTransferInterrupted(RuntimeError):
 
 class VehicleService(Service):
     """Abstract the flight controller from MAVLink, simulators or other transports."""
-
-    @property
-    def synchronize_mission_on_connect(self) -> bool:
-        """Whether the provider opts into automatic mission synchronization."""
-        return False
 
     @property
     @abstractmethod
@@ -54,32 +47,7 @@ class VehicleService(Service):
 
     @abstractmethod
     def reconnect(self, config: VehicleConnectionConfig | None = None) -> None: ...
-
-    @abstractmethod
-    def set_default_mission_altitude(self, altitude_m: float) -> None: ...
-
     @abstractmethod
     def execute(self, request: CommandRequest) -> bool:
         """Execute the operation and return True after protocol-level confirmation."""
         ...
-
-    @abstractmethod
-    def send_rc_override(self, channels: Iterable[int | None]) -> None:
-        """Send one latest RC override sample; ``None`` leaves a channel unchanged."""
-        ...
-
-    @abstractmethod
-    def release_rc_override(self) -> None:
-        """Return every overridden RC channel to the flight controller."""
-        ...
-
-    @abstractmethod
-    def upload_mission(
-        self,
-        overlays: Iterable[MapOverlay],
-        *,
-        loop: bool = False,
-    ) -> int: ...
-
-    @abstractmethod
-    def download_mission(self) -> list[MapOverlay]: ...

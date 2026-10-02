@@ -18,11 +18,59 @@ from src.ui.widgets.panel_workspace import PanelWorkspace
 
 
 class PanelWorkspaceTests(unittest.TestCase):
+    def test_restart_preserves_nested_splits_without_reapplying_sizes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "layout.json"
+
+            def build():
+                workspace = PanelWorkspace(path)
+                docks = [
+                    workspace.add_panel(
+                        key, key, QLabel(key), Qt.DockWidgetArea.RightDockWidgetArea
+                    )
+                    for key in ("map", "camera", "logs")
+                ]
+                workspace.splitDockWidget(docks[0], docks[1], Qt.Orientation.Horizontal)
+                workspace.splitDockWidget(docks[0], docks[2], Qt.Orientation.Vertical)
+                return workspace, docks
+
+            original, docks = build()
+            original.resize(740, 540)
+            original.show()
+            self.app.processEvents()
+            original.resizeDocks(docks[:2], [440, 290], Qt.Orientation.Horizontal)
+            original.resizeDocks(
+                [docks[0], docks[2]], [310, 220], Qt.Orientation.Vertical
+            )
+            self.app.processEvents()
+            geometry = [dock.geometry() for dock in docks]
+            self.assertTrue(original.save_layout())
+            original.close()
+            restored, restored_docks = build()
+            restored.resize(600, 400)
+            with patch.object(restored, "_schedule_panel_size_restore") as resize:
+                self.assertTrue(restored.restore_layout())
+                restored.show()
+                self.app.processEvents()
+                resize.assert_not_called()
+            self.assertEqual(restored.size(), original.size())
+            for expected, dock in zip(geometry, restored_docks):
+                self.assertLessEqual(abs(expected.width() - dock.width()), 3)
+                self.assertLessEqual(abs(expected.height() - dock.height()), 3)
+            restored.close()
+
     def test_tab_selection_does_not_restore_panel_sizes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = PanelWorkspace(Path(directory) / "layout.json")
-            first = workspace.add_panel("map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea)
-            second = workspace.add_panel("camera", "Camera", QLabel("Camera"), Qt.DockWidgetArea.RightDockWidgetArea)
+            first = workspace.add_panel(
+                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            second = workspace.add_panel(
+                "camera",
+                "Camera",
+                QLabel("Camera"),
+                Qt.DockWidgetArea.RightDockWidgetArea,
+            )
             workspace.show()
             self.app.processEvents()
             workspace.enable_panel_size_restore(capture_current=True)
@@ -43,8 +91,9 @@ class PanelWorkspaceTests(unittest.TestCase):
     def test_hover_controls_drag_and_menu_without_edit_mode(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = PanelWorkspace(Path(directory) / "layout.json")
-            dock = workspace.add_panel("map", "Map", QLabel("Map"),
-                                       Qt.DockWidgetArea.RightDockWidgetArea)
+            dock = workspace.add_panel(
+                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea
+            )
             workspace.resize(700, 500)
             workspace.show()
             self.app.processEvents()
@@ -60,10 +109,14 @@ class PanelWorkspaceTests(unittest.TestCase):
                 self.assertEqual(menu.call_args.args[0], dock)
             with patch.object(workspace, "_start_panel_drag") as drag:
                 QTest.mousePress(controls.grip, Qt.MouseButton.LeftButton)
-                event = QMouseEvent(QEvent.Type.MouseMove, QPointF(35, 10),
-                                    QPointF(controls.grip.mapToGlobal(QPoint(35, 10))),
-                                    Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton,
-                                    Qt.KeyboardModifier.NoModifier)
+                event = QMouseEvent(
+                    QEvent.Type.MouseMove,
+                    QPointF(35, 10),
+                    QPointF(controls.grip.mapToGlobal(QPoint(35, 10))),
+                    Qt.MouseButton.NoButton,
+                    Qt.MouseButton.LeftButton,
+                    Qt.KeyboardModifier.NoModifier,
+                )
                 QApplication.sendEvent(controls.grip, event)
                 drag.assert_called_once_with(dock)
             QApplication.sendEvent(dock, QEvent(QEvent.Type.Leave))
@@ -76,37 +129,54 @@ class PanelWorkspaceTests(unittest.TestCase):
             path = Path(directory) / "layout.json"
             workspace = PanelWorkspace(path)
             left = workspace.add_panel(
-                "telemetry", "Telemetry", QLabel("Telemetry"),
+                "telemetry",
+                "Telemetry",
+                QLabel("Telemetry"),
                 Qt.DockWidgetArea.LeftDockWidgetArea,
             )
-            workspace.add_panel("map", "Map", QLabel("Map"),
-                                Qt.DockWidgetArea.RightDockWidgetArea)
-            bottom = workspace.add_panel("logs", "Logs", QLabel("Logs"),
-                                         Qt.DockWidgetArea.BottomDockWidgetArea)
+            workspace.add_panel(
+                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            bottom = workspace.add_panel(
+                "logs", "Logs", QLabel("Logs"), Qt.DockWidgetArea.BottomDockWidgetArea
+            )
             workspace.resize(1000, 700)
             workspace.show()
             self.app.processEvents()
-            self.assertGreaterEqual(left.geometry().bottom(), bottom.geometry().bottom())
+            self.assertGreaterEqual(
+                left.geometry().bottom(), bottom.geometry().bottom()
+            )
             self.assertGreater(bottom.x(), left.geometry().right())
 
-            workspace.setCorner(Qt.Corner.BottomLeftCorner,
-                                Qt.DockWidgetArea.BottomDockWidgetArea)
+            workspace.setCorner(
+                Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.BottomDockWidgetArea
+            )
             self.assertTrue(workspace.save_layout())
             self.assertTrue(workspace.restore_layout())
             self.app.processEvents()
-            self.assertEqual(workspace.corner(Qt.Corner.BottomLeftCorner),
-                             Qt.DockWidgetArea.LeftDockWidgetArea)
-            self.assertGreaterEqual(left.geometry().bottom(), bottom.geometry().bottom())
+            self.assertEqual(
+                workspace.corner(Qt.Corner.BottomLeftCorner),
+                Qt.DockWidgetArea.LeftDockWidgetArea,
+            )
+            self.assertGreaterEqual(
+                left.geometry().bottom(), bottom.geometry().bottom()
+            )
             self.assertGreater(bottom.x(), left.geometry().right())
             workspace.close()
 
     def test_separator_resizes_only_neighbors_and_stops_at_minimum(self) -> None:
         for orientation in (Qt.Orientation.Horizontal, Qt.Orientation.Vertical):
-            with self.subTest(orientation=orientation), tempfile.TemporaryDirectory() as directory:
+            with (
+                self.subTest(orientation=orientation),
+                tempfile.TemporaryDirectory() as directory,
+            ):
                 workspace = PanelWorkspace(Path(directory) / "layout.json")
-                docks = [workspace.add_panel(key, key, QLabel(key),
-                                            Qt.DockWidgetArea.LeftDockWidgetArea)
-                         for key in ("first", "second", "third")]
+                docks = [
+                    workspace.add_panel(
+                        key, key, QLabel(key), Qt.DockWidgetArea.LeftDockWidgetArea
+                    )
+                    for key in ("first", "second", "third")
+                ]
                 first, second, third = docks
                 horizontal = orientation == Qt.Orientation.Horizontal
                 relation = "right" if horizontal else "below"
@@ -122,41 +192,73 @@ class PanelWorkspaceTests(unittest.TestCase):
                 workspace.resizeDocks(docks, [250, 230, 300], orientation)
                 self.app.processEvents()
                 unchanged = third.geometry()
-                total = (first.width() + second.width() if horizontal else
-                         first.height() + second.height())
-                point = (QPoint(first.geometry().right() + 3, first.height() // 2)
-                         if horizontal else
-                         QPoint(first.width() // 2, first.geometry().bottom() + 3))
+                total = (
+                    first.width() + second.width()
+                    if horizontal
+                    else first.height() + second.height()
+                )
+                point = (
+                    QPoint(first.geometry().right() + 3, first.height() // 2)
+                    if horizontal
+                    else QPoint(first.width() // 2, first.geometry().bottom() + 3)
+                )
                 end = point + (QPoint(150, 0) if horizontal else QPoint(0, 150))
                 for event_type, position, button, buttons in (
-                    (QEvent.Type.MouseButtonPress, point,
-                     Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton),
-                    (QEvent.Type.MouseMove, end,
-                     Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton),
-                    (QEvent.Type.MouseButtonRelease, end,
-                     Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton),
+                    (
+                        QEvent.Type.MouseButtonPress,
+                        point,
+                        Qt.MouseButton.LeftButton,
+                        Qt.MouseButton.LeftButton,
+                    ),
+                    (
+                        QEvent.Type.MouseMove,
+                        end,
+                        Qt.MouseButton.NoButton,
+                        Qt.MouseButton.LeftButton,
+                    ),
+                    (
+                        QEvent.Type.MouseButtonRelease,
+                        end,
+                        Qt.MouseButton.LeftButton,
+                        Qt.MouseButton.NoButton,
+                    ),
                 ):
-                    self.app.sendEvent(workspace, QMouseEvent(
-                        event_type, QPointF(position),
-                        QPointF(workspace.mapToGlobal(position)), button, buttons,
-                        Qt.KeyboardModifier.NoModifier,
-                    ))
+                    self.app.sendEvent(
+                        workspace,
+                        QMouseEvent(
+                            event_type,
+                            QPointF(position),
+                            QPointF(workspace.mapToGlobal(position)),
+                            button,
+                            buttons,
+                            Qt.KeyboardModifier.NoModifier,
+                        ),
+                    )
                     self.app.processEvents()
                 self.assertEqual(third.geometry(), unchanged)
                 self.assertEqual(second.width() if horizontal else second.height(), 180)
-                self.assertEqual(first.width() + second.width() if horizontal else
-                                 first.height() + second.height(), total)
+                self.assertEqual(
+                    first.width() + second.width()
+                    if horizontal
+                    else first.height() + second.height(),
+                    total,
+                )
                 workspace.close()
 
     def test_stacked_panels_fill_shared_column_without_spacer_docks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = PanelWorkspace(Path(directory) / "layout.json")
-            docks = [workspace.add_panel(key, key, QLabel(key),
-                                         Qt.DockWidgetArea.LeftDockWidgetArea)
-                     for key in ("flight", "telemetry", "commands")]
+            docks = [
+                workspace.add_panel(
+                    key, key, QLabel(key), Qt.DockWidgetArea.LeftDockWidgetArea
+                )
+                for key in ("flight", "telemetry", "commands")
+            ]
             workspace.place_panel(docks[0], docks[1], "below")
             workspace.place_panel(docks[1], docks[2], "below")
-            workspace.add_panel("map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea)
+            workspace.add_panel(
+                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea
+            )
             workspace.enable_independent_widths(("flight", "telemetry", "commands"))
             workspace.resize(1200, 800)
             workspace.show()
@@ -180,10 +282,15 @@ class PanelWorkspaceTests(unittest.TestCase):
             map_dock = first.add_panel(
                 "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea
             )
-            camera = first.add_panel("camera.visual", "Camera", QLabel("Video"),
-                                     Qt.DockWidgetArea.RightDockWidgetArea)
-            logs = first.add_panel("logs", "Logs", QLabel("Events"),
-                                   Qt.DockWidgetArea.BottomDockWidgetArea)
+            camera = first.add_panel(
+                "camera.visual",
+                "Camera",
+                QLabel("Video"),
+                Qt.DockWidgetArea.RightDockWidgetArea,
+            )
+            logs = first.add_panel(
+                "logs", "Logs", QLabel("Events"), Qt.DockWidgetArea.BottomDockWidgetArea
+            )
             first.show()
             self.app.processEvents()
             first.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, camera)
@@ -197,10 +304,15 @@ class PanelWorkspaceTests(unittest.TestCase):
             restored_map = second.add_panel(
                 "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea
             )
-            restored_camera = second.add_panel("camera.visual", "Camera", QLabel("Video"),
-                                               Qt.DockWidgetArea.RightDockWidgetArea)
-            restored_logs = second.add_panel("logs", "Logs", QLabel("Events"),
-                                             Qt.DockWidgetArea.BottomDockWidgetArea)
+            restored_camera = second.add_panel(
+                "camera.visual",
+                "Camera",
+                QLabel("Video"),
+                Qt.DockWidgetArea.RightDockWidgetArea,
+            )
+            restored_logs = second.add_panel(
+                "logs", "Logs", QLabel("Events"), Qt.DockWidgetArea.BottomDockWidgetArea
+            )
             second.show()
             self.app.processEvents()
             self.assertTrue(second.restore_layout())
@@ -225,10 +337,13 @@ class PanelWorkspaceTests(unittest.TestCase):
             state_path = Path(directory) / "layout.json"
             first = PanelWorkspace(state_path)
             first.resize(1000, 700)
-            first.add_panel("map", "Map", QLabel("Map"),
-                            Qt.DockWidgetArea.RightDockWidgetArea)
+            first.add_panel(
+                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea
+            )
             docks = [
-                first.add_panel(key, key, QLabel(key), Qt.DockWidgetArea.LeftDockWidgetArea)
+                first.add_panel(
+                    key, key, QLabel(key), Qt.DockWidgetArea.LeftDockWidgetArea
+                )
                 for key in ("flight", "telemetry", "commands")
             ]
             first.splitDockWidget(docks[0], docks[1], Qt.Orientation.Vertical)
@@ -253,10 +368,13 @@ class PanelWorkspaceTests(unittest.TestCase):
 
             second = PanelWorkspace(state_path)
             second.resize(1000, 700)
-            second.add_panel("map", "Map", QLabel("Map"),
-                             Qt.DockWidgetArea.RightDockWidgetArea)
+            second.add_panel(
+                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea
+            )
             restored = [
-                second.add_panel(key, key, QLabel(key), Qt.DockWidgetArea.LeftDockWidgetArea)
+                second.add_panel(
+                    key, key, QLabel(key), Qt.DockWidgetArea.LeftDockWidgetArea
+                )
                 for key in ("flight", "telemetry", "commands")
             ]
             second.splitDockWidget(restored[0], restored[1], Qt.Orientation.Vertical)
@@ -273,11 +391,15 @@ class PanelWorkspaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             workspace = PanelWorkspace(Path(directory) / "layout.json")
             first = workspace.add_panel(
-                "flight", "Flight", QLabel("Flight"),
+                "flight",
+                "Flight",
+                QLabel("Flight"),
                 Qt.DockWidgetArea.LeftDockWidgetArea,
             )
             second = workspace.add_panel(
-                "telemetry", "Telemetry", QLabel("Telemetry"),
+                "telemetry",
+                "Telemetry",
+                QLabel("Telemetry"),
                 Qt.DockWidgetArea.LeftDockWidgetArea,
             )
             workspace.show()
@@ -295,7 +417,9 @@ class PanelWorkspaceTests(unittest.TestCase):
                 "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea
             )
             camera = workspace.add_panel(
-                "camera.visual", "Camera", QLabel("Camera"),
+                "camera.visual",
+                "Camera",
+                QLabel("Camera"),
                 Qt.DockWidgetArea.RightDockWidgetArea,
             )
             workspace.splitDockWidget(map_dock, camera, Qt.Orientation.Horizontal)
@@ -314,15 +438,24 @@ class PanelWorkspaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             workspace = PanelWorkspace(Path(directory) / "layout.json")
             map_dock = workspace.add_panel(
-                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea,
+                "map",
+                "Map",
+                QLabel("Map"),
+                Qt.DockWidgetArea.RightDockWidgetArea,
                 floatable=False,
             )
             camera = workspace.add_panel(
-                "camera", "Camera", QLabel("Camera"), Qt.DockWidgetArea.RightDockWidgetArea,
+                "camera",
+                "Camera",
+                QLabel("Camera"),
+                Qt.DockWidgetArea.RightDockWidgetArea,
                 floatable=False,
             )
             logs = workspace.add_panel(
-                "logs", "Logs", QLabel("Logs"), Qt.DockWidgetArea.BottomDockWidgetArea,
+                "logs",
+                "Logs",
+                QLabel("Logs"),
+                Qt.DockWidgetArea.BottomDockWidgetArea,
                 floatable=False,
             )
             workspace.resize(1200, 700)
@@ -333,7 +466,9 @@ class PanelWorkspaceTests(unittest.TestCase):
             self.assertGreater(camera.x(), map_dock.x())
             self.assertTrue(workspace.place_panel(map_dock, logs, "tab"))
             self.assertIn(logs, workspace.tabifiedDockWidgets(map_dock))
-            self.assertTrue(map_dock.allowedAreas() & Qt.DockWidgetArea.BottomDockWidgetArea)
+            self.assertTrue(
+                map_dock.allowedAreas() & Qt.DockWidgetArea.BottomDockWidgetArea
+            )
             self.assertFalse(
                 camera.features() & camera.DockWidgetFeature.DockWidgetFloatable
             )
@@ -348,12 +483,20 @@ class PanelWorkspaceTests(unittest.TestCase):
                 | Qt.DockWidgetArea.TopDockWidgetArea
             )
             map_dock = workspace.add_panel(
-                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea,
-                allowed_areas=visual_areas, floatable=False,
+                "map",
+                "Map",
+                QLabel("Map"),
+                Qt.DockWidgetArea.RightDockWidgetArea,
+                allowed_areas=visual_areas,
+                floatable=False,
             )
             camera = workspace.add_panel(
-                "camera", "Camera", QLabel("Camera"), Qt.DockWidgetArea.LeftDockWidgetArea,
-                allowed_areas=visual_areas, floatable=False,
+                "camera",
+                "Camera",
+                QLabel("Camera"),
+                Qt.DockWidgetArea.LeftDockWidgetArea,
+                allowed_areas=visual_areas,
+                floatable=False,
             )
             workspace.resize(1200, 700)
             workspace.show()
@@ -369,9 +512,11 @@ class PanelWorkspaceTests(unittest.TestCase):
             self.assertIsNone(workspace._drag_start)
             content_point = QPoint(45, camera.height() // 2)
             content_press = QMouseEvent(
-                QEvent.Type.MouseButtonPress, QPointF(content_point),
+                QEvent.Type.MouseButtonPress,
+                QPointF(content_point),
                 QPointF(camera.mapToGlobal(content_point)),
-                Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
                 Qt.KeyboardModifier.NoModifier,
             )
             self.assertFalse(workspace.eventFilter(camera, content_press))
@@ -379,14 +524,28 @@ class PanelWorkspaceTests(unittest.TestCase):
             started = []
             workspace._start_panel_drag = lambda dock: started.append(dock)
             for event_type, local, global_pos, button, buttons in (
-                (QEvent.Type.MouseButtonPress, start, start_global,
-                 Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton),
-                (QEvent.Type.MouseMove, camera.mapFromGlobal(map_center), map_center,
-                 Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton),
+                (
+                    QEvent.Type.MouseButtonPress,
+                    start,
+                    start_global,
+                    Qt.MouseButton.LeftButton,
+                    Qt.MouseButton.LeftButton,
+                ),
+                (
+                    QEvent.Type.MouseMove,
+                    camera.mapFromGlobal(map_center),
+                    map_center,
+                    Qt.MouseButton.NoButton,
+                    Qt.MouseButton.LeftButton,
+                ),
             ):
                 event = QMouseEvent(
-                    event_type, QPointF(local), QPointF(global_pos), button,
-                    buttons, Qt.KeyboardModifier.NoModifier,
+                    event_type,
+                    QPointF(local),
+                    QPointF(global_pos),
+                    button,
+                    buttons,
+                    Qt.KeyboardModifier.NoModifier,
                 )
                 self.assertTrue(workspace.eventFilter(camera, event))
             self.assertEqual(started, [camera])
@@ -398,7 +557,9 @@ class PanelWorkspaceTests(unittest.TestCase):
                 "tab": map_dock.rect().center(),
             }
             for relation, point in expected.items():
-                target = workspace._drop_target(map_dock.mapToGlobal(point), source=camera)
+                target = workspace._drop_target(
+                    map_dock.mapToGlobal(point), source=camera
+                )
                 self.assertIsNotNone(target)
                 self.assertEqual(target[1], relation)
                 if relation == "tab":
@@ -410,8 +571,11 @@ class PanelWorkspaceTests(unittest.TestCase):
             mime = QMimeData()
             mime.setData("application/x-yki-panel-drag", b"camera")
             event = QDropEvent(
-                QPointF(overlay.mapFromGlobal(map_center)), Qt.DropAction.MoveAction,
-                mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                QPointF(overlay.mapFromGlobal(map_center)),
+                Qt.DropAction.MoveAction,
+                mime,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
             )
             overlay.dropEvent(event)
             self.assertTrue(event.isAccepted())
@@ -425,7 +589,9 @@ class PanelWorkspaceTests(unittest.TestCase):
             )
 
             self.assertTrue(
-                workspace.move_panel_to_area(camera, Qt.DockWidgetArea.LeftDockWidgetArea)
+                workspace.move_panel_to_area(
+                    camera, Qt.DockWidgetArea.LeftDockWidgetArea
+                )
             )
             self.app.processEvents()
             right_edge = workspace.mapToGlobal(
@@ -444,7 +610,9 @@ class PanelWorkspaceTests(unittest.TestCase):
             old.resize(1200, 700)
             old.setCentralWidget(QLabel("Map"))
             old.add_panel(
-                "camera.visual", "Camera", QLabel("Camera"),
+                "camera.visual",
+                "Camera",
+                QLabel("Camera"),
                 Qt.DockWidgetArea.RightDockWidgetArea,
             )
             old.show()
@@ -460,7 +628,9 @@ class PanelWorkspaceTests(unittest.TestCase):
                 "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea
             )
             camera = workspace.add_panel(
-                "camera.visual", "Camera", QLabel("Camera"),
+                "camera.visual",
+                "Camera",
+                QLabel("Camera"),
                 Qt.DockWidgetArea.RightDockWidgetArea,
             )
             workspace.splitDockWidget(map_dock, camera, Qt.Orientation.Horizontal)
@@ -470,7 +640,8 @@ class PanelWorkspaceTests(unittest.TestCase):
             self.assertTrue(workspace.restore_layout())
             self.app.processEvents()
             self.assertEqual(
-                workspace.dockWidgetArea(map_dock), Qt.DockWidgetArea.RightDockWidgetArea
+                workspace.dockWidgetArea(map_dock),
+                Qt.DockWidgetArea.RightDockWidgetArea,
             )
             self.assertEqual(
                 workspace.dockWidgetArea(camera), Qt.DockWidgetArea.RightDockWidgetArea
@@ -490,7 +661,9 @@ class PanelWorkspaceTests(unittest.TestCase):
                 "map", "Map", QLabel("Map"), Qt.DockWidgetArea.BottomDockWidgetArea
             )
             old_camera = old.add_panel(
-                "camera", "Camera", QLabel("Camera"),
+                "camera",
+                "Camera",
+                QLabel("Camera"),
                 Qt.DockWidgetArea.RightDockWidgetArea,
             )
             old.show()
@@ -501,7 +674,10 @@ class PanelWorkspaceTests(unittest.TestCase):
             workspace = PanelWorkspace(state_path)
             workspace.resize(1000, 600)
             map_dock = workspace.add_panel(
-                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea,
+                "map",
+                "Map",
+                QLabel("Map"),
+                Qt.DockWidgetArea.RightDockWidgetArea,
                 allowed_areas=(
                     Qt.DockWidgetArea.LeftDockWidgetArea
                     | Qt.DockWidgetArea.RightDockWidgetArea
@@ -509,7 +685,9 @@ class PanelWorkspaceTests(unittest.TestCase):
                 ),
             )
             camera = workspace.add_panel(
-                "camera", "Camera", QLabel("Camera"),
+                "camera",
+                "Camera",
+                QLabel("Camera"),
                 Qt.DockWidgetArea.RightDockWidgetArea,
                 allowed_areas=(
                     Qt.DockWidgetArea.LeftDockWidgetArea
@@ -522,7 +700,8 @@ class PanelWorkspaceTests(unittest.TestCase):
 
             self.assertTrue(workspace.restore_layout())
             self.assertEqual(
-                workspace.dockWidgetArea(map_dock), Qt.DockWidgetArea.RightDockWidgetArea
+                workspace.dockWidgetArea(map_dock),
+                Qt.DockWidgetArea.RightDockWidgetArea,
             )
             self.assertEqual(
                 workspace.dockWidgetArea(camera), Qt.DockWidgetArea.RightDockWidgetArea
@@ -533,7 +712,9 @@ class PanelWorkspaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             workspace = PanelWorkspace(Path(directory) / "layout.json")
             dock = workspace.add_panel(
-                "logs", "Logs", QLabel("Events"),
+                "logs",
+                "Logs",
+                QLabel("Events"),
                 Qt.DockWidgetArea.BottomDockWidgetArea,
             )
             workspace.show()

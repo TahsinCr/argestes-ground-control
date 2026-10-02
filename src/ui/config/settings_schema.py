@@ -35,35 +35,18 @@ SETTINGS_SECTIONS = (
     SectionSpec(
         "dialog.settings.section.ui",
         (
-            FieldSpec("ui.language", "dialog.settings.language", "combo", (
-                ChoiceSpec("tr", "language.tr"), ChoiceSpec("en", "language.en")
-            )),
-            FieldSpec("ui.theme", "dialog.settings.theme", "combo", (
-                ChoiceSpec("dark", "theme.dark"), ChoiceSpec("light", "theme.light")
-            )),
-        ),
-    ),
-    SectionSpec(
-        "dialog.settings.section.backend",
-        (
-            FieldSpec("backend.mock_mode", "dialog.settings.mock", "check"),
-            FieldSpec("backend.cache.enabled", "dialog.settings.cache", "check"),
-            FieldSpec("backend.cache.limit_mb", "dialog.settings.cache_limit", "spin", minimum=256, maximum=8192, suffix=" MB"),
-            FieldSpec("backend.cache.path", "dialog.settings.cache_path", "text"),
-        ),
-    ),
-    SectionSpec(
-        "dialog.settings.section.battery_alarm",
-        (
-            FieldSpec("backend.battery_telemetry.use_pixhawk_percent", "dialog.settings.battery_use_pixhawk_percent", "check"),
-            FieldSpec("backend.battery_telemetry.full_voltage", "dialog.settings.battery_estimate_full_voltage", "double", minimum=1.0, maximum=100.0, suffix=" V", decimals=2),
-            FieldSpec("backend.battery_telemetry.reserve_voltage", "dialog.settings.battery_estimate_min_voltage", "double", minimum=1.0, maximum=100.0, suffix=" V", decimals=2),
-            FieldSpec("backend.battery_telemetry.reserve_percent", "dialog.settings.battery_estimate_min_percent", "double", minimum=0.1, maximum=99.0, suffix=" %", decimals=1, single_step=1.0),
-            FieldSpec("backend.battery_alarm.warning_mode", "dialog.settings.battery_warning_mode", "combo", (ChoiceSpec("percent", "battery.alarm.mode.percent"), ChoiceSpec("voltage", "battery.alarm.mode.voltage"))),
-            FieldSpec("backend.battery_alarm.warning_threshold", "dialog.settings.battery_warning_threshold", "double", minimum=0.1, maximum=100.0),
-            FieldSpec("backend.battery_alarm.failsafe_enabled", "dialog.settings.battery_failsafe_enabled", "check"),
-            FieldSpec("backend.battery_alarm.failsafe_mode", "dialog.settings.battery_failsafe_mode", "combo", (ChoiceSpec("percent", "battery.alarm.mode.percent"), ChoiceSpec("voltage", "battery.alarm.mode.voltage"))),
-            FieldSpec("backend.battery_alarm.failsafe_threshold", "dialog.settings.battery_failsafe_threshold", "double", minimum=0.1, maximum=100.0),
+            FieldSpec(
+                "ui.language",
+                "dialog.settings.language",
+                "combo",
+                (ChoiceSpec("tr", "language.tr"), ChoiceSpec("en", "language.en")),
+            ),
+            FieldSpec(
+                "ui.theme",
+                "dialog.settings.theme",
+                "combo",
+                (ChoiceSpec("dark", "theme.dark"), ChoiceSpec("light", "theme.light")),
+            ),
         ),
     ),
 )

@@ -1,0 +1,5 @@
+{
+  "extension.flight_dynamics.name": "Araç Dinamiği",
+  "extension.flight_dynamics.description": "Tutum, hava hızı ve irtifa",
+  "extension.flight_dynamics.category": "Araç"
+}

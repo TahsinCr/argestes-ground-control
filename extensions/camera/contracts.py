@@ -73,7 +73,9 @@ class VideoService(Service):
     def set_active_source(self, identifier: str) -> None: ...
 
     @abstractmethod
-    def set_server_time_provider(self, provider: Callable[[], datetime | None]) -> None: ...
+    def set_server_time_provider(
+        self, provider: Callable[[], datetime | None]
+    ) -> None: ...
 
     @abstractmethod
     def configure(

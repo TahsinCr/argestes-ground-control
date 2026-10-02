@@ -15,14 +15,19 @@ from src.models.mission import MapOverlay
 from src.models.parameters import Parameter
 from src.models.settings import BatteryTelemetrySettings
 from src.models.telemetry import TelemetrySnapshot
-from src.models.vehicle import VehicleCapabilities, VehicleConnectionState, VehicleTransportStats
+from src.models.vehicle import (
+    VehicleCapabilities,
+    VehicleConnectionState,
+    VehicleTransportStats,
+)
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
-from src.services.commands import DispatchCommandService
-from src.services.vehicle.parameters import MutableParameterService
-from extensions.mavlink.parameters import VehicleParameterService
-from extensions.mavlink.parameter_defaults import decode_parameter_defaults
-from src.services.vehicle.battery import VoltageBatteryEstimator
+from extensions.mavlink.commands import DispatchCommandService
+from extensions.parameters.mutable import MutableParameterService
+from extensions.parameters.protocols.mavlink import VehicleParameterService
+from extensions.parameters.protocols.mavlink_defaults import decode_parameter_defaults
+from extensions.battery.estimation import VoltageBatteryEstimator
+from extensions.battery.processor import BatteryProcessor
 from extensions.mavlink.telemetry import TelemetryDecoder, VehicleTelemetryService
 from src.services.abstracts.vehicle import MissionTransferInterrupted
 from extensions.mavlink.vehicle import MavlinkVehicleService
@@ -49,7 +54,9 @@ class _FakeVehicle:
         )
 
     def subscribe(self, message_types, callback):
-        types = (message_types,) if isinstance(message_types, str) else tuple(message_types)
+        types = (
+            (message_types,) if isinstance(message_types, str) else tuple(message_types)
+        )
         for message_type in types:
             self.subscriptions.setdefault(message_type, []).append(callback)
         return Subscription(0, lambda: None)
@@ -57,7 +64,9 @@ class _FakeVehicle:
     def request_parameters(self) -> None:
         self.parameter_requests += 1
 
-    def set_parameter(self, name: str, value: object, value_type: int | None = None) -> None:
+    def set_parameter(
+        self, name: str, value: object, value_type: int | None = None
+    ) -> None:
         self.parameter_writes.append((name, value, value_type))
         self.publish(
             _Message(
@@ -274,7 +283,9 @@ class VehicleServiceTests(unittest.TestCase):
         )
         snapshot = decoder.apply(
             snapshot,
-            _Message(message_type="HOME_POSITION", latitude=399000000, longitude=328000000),
+            _Message(
+                message_type="HOME_POSITION", latitude=399000000, longitude=328000000
+            ),
         )
         snapshot = decoder.apply(
             snapshot,
@@ -312,8 +323,10 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(snapshot.mission_index, 1)
         self.assertEqual(snapshot.mission_total, 5)
 
-    def test_telemetry_decoder_exposes_battery_baro_and_body_axis_acceleration(self) -> None:
-        decoder = TelemetryDecoder(BatteryTelemetrySettings(use_pixhawk_percent=True))
+    def test_telemetry_decoder_exposes_battery_baro_and_body_axis_acceleration(
+        self,
+    ) -> None:
+        decoder = TelemetryDecoder()
         snapshot = decoder.apply(
             TelemetrySnapshot.zero(),
             _Message(
@@ -355,7 +368,9 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertAlmostEqual(snapshot.acceleration_z_mps2 or 0.0, 9.80665)
         self.assertIsNotNone(snapshot.load_factor_g)
 
-    def test_voltage_only_battery_uses_filtered_voltage_and_preserves_current(self) -> None:
+    def test_voltage_only_battery_uses_filtered_voltage_and_preserves_current(
+        self,
+    ) -> None:
         decoder = TelemetryDecoder()
         snapshot = TelemetrySnapshot.zero().copy(
             battery_current_amps=42.0,
@@ -373,6 +388,7 @@ class VehicleServiceTests(unittest.TestCase):
             ),
         )
 
+        snapshot = BatteryProcessor(BatteryTelemetrySettings())(snapshot)
         self.assertEqual(snapshot.battery_percent, 10)
         self.assertAlmostEqual(snapshot.battery_voltage, 14.8)
         self.assertAlmostEqual(snapshot.battery_current_amps or 0.0, 24.0)
@@ -403,14 +419,24 @@ class VehicleServiceTests(unittest.TestCase):
             recovered = estimator.update(16.2, sample_at=index * 0.5)
         self.assertGreater(recovered.filtered_voltage, before_recovery)
 
-    def test_vehicle_telemetry_applies_changed_battery_profile_without_restart(self) -> None:
+    def test_vehicle_telemetry_applies_changed_battery_profile_without_restart(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = SettingsService(Path(directory))
             vehicle = _FakeVehicle()
             telemetry = VehicleTelemetryService(
                 vehicle,  # type: ignore[arg-type]
-                settings_service=settings,
             )
+            from src.services.telemetry import MutableTelemetryService
+
+            hub = MutableTelemetryService()
+            processor = BatteryProcessor(settings.current.backend.battery_telemetry)
+            hub.add_processor("battery", processor)
+            profile_subscription = settings.changed.subscribe(
+                lambda model: processor.configure(model.backend.battery_telemetry)
+            )
+            feed_subscription = telemetry.updated.subscribe(hub.push)
             telemetry.start()
             vehicle.publish(
                 _Message(
@@ -421,7 +447,7 @@ class VehicleServiceTests(unittest.TestCase):
                     current_battery=1_500,
                 )
             )
-            self.assertEqual(telemetry.current.battery_percent, 10)
+            self.assertEqual(hub.current.battery_percent, 10)
 
             changed = settings.current.with_value(
                 "backend.battery_telemetry.reserve_percent",
@@ -438,11 +464,17 @@ class VehicleServiceTests(unittest.TestCase):
                 )
             )
 
-            self.assertEqual(telemetry.current.battery_percent, 20)
-            self.assertAlmostEqual(telemetry.current.battery_current_amps or 0.0, 15.0)
+            self.assertEqual(hub.current.battery_percent, 20)
+            self.assertAlmostEqual(hub.current.battery_current_amps or 0.0, 15.0)
             telemetry.stop()
+            profile_subscription.cancel()
+            feed_subscription.cancel()
+            hub.remove_processor("battery")
+            self.assertEqual(hub.current.battery_percent, 90)
 
-    def test_radio_status_uses_both_rf_margins_and_tx_buffer_for_link_health(self) -> None:
+    def test_radio_status_uses_both_rf_margins_and_tx_buffer_for_link_health(
+        self,
+    ) -> None:
         snapshot = TelemetryDecoder().apply(
             TelemetrySnapshot.zero(),
             _Message(
@@ -466,7 +498,9 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertIsNotNone(snapshot.link_quality_received_at)
         self.assertTrue(snapshot.has_fresh_link_quality(5))
 
-    def test_vehicle_telemetry_uses_packet_delivery_when_radio_status_is_absent(self) -> None:
+    def test_vehicle_telemetry_uses_packet_delivery_when_radio_status_is_absent(
+        self,
+    ) -> None:
         vehicle = _FakeVehicle()
         vehicle.transport_stats = VehicleTransportStats(
             received_packets=128,
@@ -691,7 +725,12 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(snapshot.uav_time, expected)
         self.assertIsNotNone(snapshot.uav_time_received_at)
 
-        boot_relative = _Message(message_type="GPS_RAW_INT", time_usec=42_000_000, fix_type=3, satellites_visible=10)
+        boot_relative = _Message(
+            message_type="GPS_RAW_INT",
+            time_usec=42_000_000,
+            fix_type=3,
+            satellites_visible=10,
+        )
         snapshot = TelemetryDecoder().apply(snapshot, boot_relative)
         self.assertEqual(snapshot.uav_time, expected)
 
@@ -1007,7 +1046,9 @@ class VehicleServiceTests(unittest.TestCase):
                 )
             )
 
-        workers = [threading.Thread(target=send, args=(value,)) for value in (1.0, 2.0, 3.0)]
+        workers = [
+            threading.Thread(target=send, args=(value,)) for value in (1.0, 2.0, 3.0)
+        ]
         workers[0].start()
         self.assertTrue(first_started.wait(timeout=1.0))
         workers[1].start()
@@ -1142,7 +1183,9 @@ class VehicleServiceTests(unittest.TestCase):
         vehicle = MavlinkVehicleService(client)  # type: ignore[arg-type]
         vehicle._state = VehicleConnectionState(True, "test", 7, 1)
 
-        vehicle.execute(CommandRequest("GOTO", {"latitude": 39.925533, "longitude": 32.836974}))
+        vehicle.execute(
+            CommandRequest("GOTO", {"latitude": 39.925533, "longitude": 32.836974})
+        )
 
         method, arguments = client.sent[0]
         self.assertEqual(method, "set_position_target_global_int_send")
@@ -1194,7 +1237,9 @@ class VehicleServiceTests(unittest.TestCase):
             MutableParameterService(),
         )
 
-        result = commands.dispatch(CommandRequest("GOTO", {"latitude": 1, "longitude": 2}))
+        result = commands.dispatch(
+            CommandRequest("GOTO", {"latitude": 1, "longitude": 2})
+        )
 
         self.assertFalse(result.accepted)
         self.assertIn("desteklediğini bildirmiyor", result.message)
@@ -1235,7 +1280,9 @@ class VehicleServiceTests(unittest.TestCase):
             MutableParameterService(),
             logs.child("COMMAND"),
         )
-        result = commands.dispatch(CommandRequest("GOTO", {"latitude": 1, "longitude": 2}))
+        result = commands.dispatch(
+            CommandRequest("GOTO", {"latitude": 1, "longitude": 2})
+        )
         self.assertTrue(result.accepted)
         self.assertEqual(logs.history[-1].action, "command.sent")
         self.assertNotIn("doğrulandı", result.message)
@@ -1268,7 +1315,9 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertTrue(result.accepted)
         self.assertTrue(result.details["forced"])
         self.assertTrue(result.details["operator_confirmation"])
-        self.assertEqual(result.details["normal_arm_error"], "Pre-arm kontrolü reddetti")
+        self.assertEqual(
+            result.details["normal_arm_error"], "Pre-arm kontrolü reddetti"
+        )
         self.assertIn("ZORLA ARM", result.message)
         self.assertTrue(logs.history[-1].details["forced"])
 
@@ -1406,7 +1455,9 @@ class VehicleServiceTests(unittest.TestCase):
             state = VehicleConnectionState(True, "test", 1, 1)
 
             def execute(self, request) -> bool:
-                raise NotImplementedError(f"Araç davranışı tanımlı değil: {request.code}")
+                raise NotImplementedError(
+                    f"Araç davranışı tanımlı değil: {request.code}"
+                )
 
         logs = LoggingService()
         commands = DispatchCommandService(
@@ -1530,7 +1581,9 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(client.sent[2][1][11:13], (391_000_000, 321_000_000))
         self.assertEqual(client.sent[3][1], (1, 1, 1))
 
-    def test_operator_upload_preempts_an_incomplete_background_mission_download(self) -> None:
+    def test_operator_upload_preempts_an_incomplete_background_mission_download(
+        self,
+    ) -> None:
         mavlink = SimpleNamespace(
             MAV_CMD_NAV_TAKEOFF=22,
             MAV_CMD_NAV_WAYPOINT=16,
@@ -1707,7 +1760,9 @@ class VehicleServiceTests(unittest.TestCase):
                 loop=True,
             )
 
-    def test_mission_conversion_sorts_route_items_and_retains_areas_locally(self) -> None:
+    def test_mission_conversion_sorts_route_items_and_retains_areas_locally(
+        self,
+    ) -> None:
         mavlink = SimpleNamespace(
             MAV_CMD_NAV_TAKEOFF=22,
             MAV_CMD_NAV_WAYPOINT=16,
@@ -1727,8 +1782,23 @@ class VehicleServiceTests(unittest.TestCase):
                     metadata={"route_order": 0, "takeoff_pitch_deg": 12.5},
                 ),
                 MapOverlay("safe", "safe_zone", "Safe", [[39.0, 32.0]], "#fff"),
-                MapOverlay("land", "land", "Land", [[39.2, 32.2]], "#fff", metadata={"route_order": 2}),
-                MapOverlay("wp", "waypoint", "WP", [[39.1, 32.1, 100]], "#fff", 45, {"route_order": 1}),
+                MapOverlay(
+                    "land",
+                    "land",
+                    "Land",
+                    [[39.2, 32.2]],
+                    "#fff",
+                    metadata={"route_order": 2},
+                ),
+                MapOverlay(
+                    "wp",
+                    "waypoint",
+                    "WP",
+                    [[39.1, 32.1, 100]],
+                    "#fff",
+                    45,
+                    {"route_order": 1},
+                ),
             ],
             mavlink,
         )

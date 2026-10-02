@@ -14,7 +14,9 @@ def ensure_directory(path: str | Path) -> Path:
     return directory
 
 
-def load_json_file(path: str | Path, default: dict[str, Any] | None = None) -> dict[str, Any]:
+def load_json_file(
+    path: str | Path, default: dict[str, Any] | None = None
+) -> dict[str, Any]:
     file_path = Path(path)
     if not file_path.exists():
         return dict(default or {})

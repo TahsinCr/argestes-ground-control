@@ -4,7 +4,7 @@ import unittest
 
 from src.models.settings import BatteryAlarmSettings
 from src.models.telemetry import TelemetrySnapshot
-from src.services.battery_alarm import BatteryAlarmService
+from extensions.battery.alarm import BatteryAlarmService
 from src.services.logging_service import LoggingService
 
 

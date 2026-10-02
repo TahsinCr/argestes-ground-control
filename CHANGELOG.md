@@ -3,6 +3,61 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Architecture and workspace
+
+* Updated Core to the 1.9.1 upstream line while preserving cancellable MAVLink
+  connection setup. Consumers now use its typed connection backend and initial
+  heartbeat state instead of discarding the first handshake message.
+* Split battery, parameters, flight dynamics, telemetry display and quick commands
+  into independently owned extension packages, including their panels, lifecycle
+  and translations. The common window composes visual contributions rather than
+  constructing feature widgets. Disabled packages do not create their services.
+* Narrowed the common vehicle contract to connection state, capabilities and
+  generic command execution. Optional RC and mission ports are separate structural
+  contracts; new command codes do not require adding abstract methods. Parameter
+  handling now lives in the parameter package's MAVLink adapter.
+  Connection state also accepts a provider protocol and explicit device identity
+  instead of labelling every vehicle as MAVLink.
+* Moved the planner, tile cache, Qt adapters and PlannerMapApi into `map_autonomy`.
+  Shared settings no longer create map-cache directories. Renamed the competition
+  package to `siha_teknofest_server`; existing configs, unknown fields and disabled
+  preferences survive migration. Package directory names use underscores.
+* Removed production mock telemetry and null vehicle wiring. The application
+  retains a protocol-neutral latest-state hub, not a simulated data generator.
+  ConnectionHub accepts arbitrary provider channels and rejects detached-source
+  events without knowing GPS, autopilot or MAVLink channel names.
+* Added a normalized telemetry processing port. Battery voltage estimation is
+  installed and removed by the battery package; MAVLink only decodes raw readings.
+  Estimation samples fresh battery measurements rather than every unrelated packet.
+* Added configurable telemetry readouts and an installed-dialect selector. Changing
+  active MAVLink protocol options reconfigures the transport in a background worker;
+  it does not implicitly enable automatic connection for disabled profiles.
+* Moved extension management from the activity bar to a compact button beside
+  Settings. Its responsive dialog retains search and category/status filters, with
+  a reusable installed-view tab shell; no marketplace has been added.
+* Fixed workspace restart sizing by restoring window geometry and trusting Qt's
+  saved split/tab state. Opening the workspace no longer reapplies old pixel sizes
+  over nested splits. Hot-reloaded panels still keep their saved preferences.
+* Initialized shared OpenGL contexts before QApplication, added actionable WebEngine
+  import diagnostics and split Qt/MAVLink dependencies into their owning requirement
+  files. The map uses a memory-only Chromium profile; persistent tile caching is
+  owned solely by the map cache service. Live WebEngine and JavaScript initialization
+  were checked in the matching Qt virtual environment.
+* Closed SQLite history connections explicitly and removed stale extension cards
+  before deferred Qt deletion, avoiding lingering resources and overlapping widgets.
+* Removed map-cache startup from widget construction. The map extension owns its
+  listener lifecycle, updates the browser when its URL becomes available and cancels
+  pending clients on stop without stopping the shared async runtime. Failed telemetry
+  processors are isolated and logged once per continuous failure instead of flooding
+  the session log on every packet.
+* Fixed GPS footer health treating the normalized `NO FIX`/`NO GPS` values as a
+  valid fix. A disconnected vehicle is red; a connected source without a fix is
+  amber. Indicator appearance and status-only interaction remain unchanged.
+* Verification: the combined application/Core suite passes 557 tests; compileall,
+  undefined/unused-import checks and whitespace checks pass. Qt/WebEngine startup,
+  the JavaScript bridge and dark/light workspace rendering were checked offscreen.
+  Physical vehicle, camera and remote-service behavior was not exercised.
+
 ### Added
 
 * Added optional joystick and TEKNOFEST packages, with their own configuration

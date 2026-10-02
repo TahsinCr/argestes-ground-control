@@ -10,7 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from src.services.logging_service import LoggingService
-from src.services.storage import load_json_file, save_json_file
+from src.services.storage import load_json_file
 from src.services.settings import SettingsService
 
 from .capture import MultiVideoService
@@ -45,10 +45,19 @@ class CameraSettingsStore:
         raw_sources = payload.get("video_sources", ())
         sources = tuple(VideoSourceConfig(**dict(item)) for item in raw_sources)
         if not sources:
-            sources = (VideoSourceConfig(identifier="video-primary", name="Kamera 1",
-                                         source_type="usb", source_uri="/dev/video0",
-                                         codec="mjpeg", auto_connect=False),)
-        outputs = tuple(VideoShareConfig(**dict(item)) for item in payload.get("video_shares", ()))
+            sources = (
+                VideoSourceConfig(
+                    identifier="video-primary",
+                    name="Kamera 1",
+                    source_type="usb",
+                    source_uri="/dev/video0",
+                    codec="mjpeg",
+                    auto_connect=False,
+                ),
+            )
+        outputs = tuple(
+            VideoShareConfig(**dict(item)) for item in payload.get("video_shares", ())
+        )
         identifiers = [item.identifier for item in sources]
         if len(identifiers) != len(set(identifiers)):
             raise ValueError("Duplicate camera source identifiers")
@@ -72,7 +81,9 @@ class CameraSettingsStore:
             str(payload["active_video_source_id"]),
             tuple(VideoShareConfig(**item) for item in payload["video_shares"]),
         )
-        if not checked.sources or checked.active_source_id not in {item.identifier for item in checked.sources}:
+        if not checked.sources or checked.active_source_id not in {
+            item.identifier for item in checked.sources
+        }:
             raise ValueError("Active camera must be one of the configured sources")
         with self._lock:
             self._settings.update_extension("camera", config=payload)
@@ -82,17 +93,25 @@ class CameraSettingsStore:
 class CameraRuntime:
     """Serialize capture reconfiguration away from the Qt thread."""
 
-    def __init__(self, base_dir: Path, logging: LoggingService, settings: SettingsService | None = None) -> None:
+    def __init__(
+        self,
+        base_dir: Path,
+        logging: LoggingService,
+        settings: SettingsService | None = None,
+    ) -> None:
         self.base_dir = base_dir
         self.settings = CameraSettingsStore(base_dir, settings)
         config = self.settings.current
-        self.video = MultiVideoService(config.sources, config.active_source_id,
-                                       logging.child("VIDEO"))
+        self.video = MultiVideoService(
+            config.sources, config.active_source_id, logging.child("VIDEO")
+        )
         # Camera outputs use their own wall clock; competition time belongs to
         # a separate optional extension and must not block generic streaming.
         self.video.set_server_time_provider(lambda: datetime.now(UTC))
         self.video.configure_shares(config.outputs)
-        self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="CameraConfig")
+        self._worker = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="CameraConfig"
+        )
         self._started = False
         self._lock = threading.RLock()
 
@@ -100,7 +119,9 @@ class CameraRuntime:
         with self._lock:
             self._started = True
         config = self.settings.current
-        if any(item.auto_connect for item in config.sources) or any(item.enabled for item in config.outputs):
+        if any(item.auto_connect for item in config.sources) or any(
+            item.enabled for item in config.outputs
+        ):
             self._worker.submit(self.video.start)
 
     def stop(self) -> None:
@@ -109,7 +130,9 @@ class CameraRuntime:
         self._worker.shutdown(wait=True, cancel_futures=True)
         self.video.stop()
 
-    def save_sources(self, sources: tuple[VideoSourceConfig, ...], active_id: str) -> None:
+    def save_sources(
+        self, sources: tuple[VideoSourceConfig, ...], active_id: str
+    ) -> None:
         if not sources:
             raise ValueError("At least one camera source is required")
         previous = self.settings.current
@@ -124,7 +147,9 @@ class CameraRuntime:
 
     def save_outputs(self, outputs: tuple[VideoShareConfig, ...]) -> None:
         previous = self.settings.current
-        config = CameraConfiguration(previous.sources, previous.active_source_id, outputs)
+        config = CameraConfiguration(
+            previous.sources, previous.active_source_id, outputs
+        )
         self.settings.save(config)
         self._worker.submit(self._apply_outputs, config)
 
@@ -142,15 +167,25 @@ class CameraRuntime:
         if enabled:
             for source in config.sources:
                 if source.identifier not in known:
-                    outputs.append(VideoShareConfig(
-                        identifier=uuid4().hex, name=f"{source.name} Kaydı",
-                        endpoint=str(self.base_dir / "data" / "recordings"),
-                        connection_type="udp", codec="h264", fps=30, enabled=True,
-                        timestamp_enabled=False, fixed_frame_rate=True,
-                        source_id=source.identifier, output_type="record",
-                    ))
-        outputs = [replace(item, enabled=enabled) if item.output_type == "record" else item
-                   for item in outputs]
+                    outputs.append(
+                        VideoShareConfig(
+                            identifier=uuid4().hex,
+                            name=f"{source.name} Kaydı",
+                            endpoint=str(self.base_dir / "data" / "recordings"),
+                            connection_type="udp",
+                            codec="h264",
+                            fps=30,
+                            enabled=True,
+                            timestamp_enabled=False,
+                            fixed_frame_rate=True,
+                            source_id=source.identifier,
+                            output_type="record",
+                        )
+                    )
+        outputs = [
+            replace(item, enabled=enabled) if item.output_type == "record" else item
+            for item in outputs
+        ]
         self.save_outputs(tuple(outputs))
 
     def connect_source(self, identifier: str) -> Future[None]:

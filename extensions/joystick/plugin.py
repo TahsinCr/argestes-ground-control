@@ -9,10 +9,13 @@ from .protocol import controller
 class JoystickExtension:
     def configure(self, registrar: ExtensionRegistrar, context):
         self.context = context
-        registrar.singleton(JoystickService,
-                            lambda settings, logging: LinuxRcJoystickService(
-                                settings, controller(context), logging.child("JOYSTICK")),
-                            dependencies={"settings": SettingsService, "logging": LoggingService})
+        registrar.singleton(
+            JoystickService,
+            lambda settings, logging: LinuxRcJoystickService(
+                settings, controller(context), logging.child("JOYSTICK")
+            ),
+            dependencies={"settings": SettingsService, "logging": LoggingService},
+        )
         registrar.settings_ui(self.settings)
 
     def start(self, context):
@@ -24,10 +27,16 @@ class JoystickExtension:
     def settings(self, anchor):
         from .ui.dialog import JoystickDialog
         from src.ui.themes.palette import palette_for
+
         settings = self.context.services.resolve(SettingsService)
         current = settings.current
-        dialog = JoystickDialog(settings, self.context.services.resolve(JoystickService),
-                                current.ui.language, palette_for(current.ui.theme), anchor)
+        dialog = JoystickDialog(
+            settings,
+            self.context.services.resolve(JoystickService),
+            current.ui.language,
+            palette_for(current.ui.theme),
+            anchor,
+        )
         try:
             dialog.exec()
         finally:

@@ -1,39 +1,29 @@
 from __future__ import annotations
-
-from enum import IntEnum
 from dataclasses import dataclass
-from pathlib import Path
 from datetime import datetime
-
+from enum import IntEnum
+from pathlib import Path
 from src.core.dependency import BaseDependencyContainer, DependencyContainer
 from src.extension.host import ExtensionHost
-from src.models.mission import MissionState
+from src.extension.api.contracts import ConnectionBinding
+from src.extension.api.telemetry import TelemetryPipeline
 from src.services.abstracts.commands import CommandService
 from src.services.abstracts.connections import ConnectionControlService
 from src.services.abstracts.logging import LogService
-from src.services.abstracts.parameters import ParameterService
 from src.services.abstracts.settings import SettingsRepository
 from src.services.abstracts.telemetry import TelemetryService
-from src.services.abstracts.tile_cache import TileCacheService
 from src.services.abstracts.vehicle import VehicleService
 from src.services.async_runtime import AsyncRuntime
-from src.services.battery_alarm import BatteryAlarmService
-from src.services.commands import DispatchCommandService
+from src.services.connections import ConnectionHub
 from src.services.facade import BackendFacade
 from src.services.logging_service import LoggingService
-from src.services.planner import PlannerService
 from src.services.runtime import RuntimeServices
 from src.services.settings import SettingsService
-from src.services.tile_cache import TileCacheServer
-from src.services.vehicle.telemetry_base import MutableTelemetryService
-from src.services.connections import ConnectionHub
-from src.extension.api.contracts import ConnectionBinding
+from src.services.telemetry import MutableTelemetryService
 
 
 @dataclass(frozen=True, slots=True)
 class ApplicationContext:
-    """Immutable context supplied to the application's composition root."""
-
     base_dir: Path
 
 
@@ -44,224 +34,95 @@ class DependencyPriority(IntEnum):
     RUNTIME = 30
 
 
-# All dependency wiring intentionally lives in this module.  Services expose
-# behavior and contracts only; they do not know which concrete implementation
-# the desktop application chooses.
-def _logging(context: ApplicationContext) -> LoggingService:
+def _logging(context):
     session = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
-    return LoggingService(log_path=context.base_dir / "data" / "logs" / f"gcs_{session}.json",
-                          max_file_bytes=2**63 - 1)
-
-
-def _log_contract(service: LoggingService) -> LogService:
-    return service
-
-
-def _settings(context: ApplicationContext, logging: LoggingService) -> SettingsService:
-    return SettingsService(context.base_dir, logging.child("SETTINGS"))
-
-
-def _settings_contract(service: SettingsService) -> SettingsRepository:
-    return service
-
-
-def _planner(
-    vehicle: VehicleService,
-    settings_service: SettingsService,
-    logging: LoggingService,
-) -> PlannerService:
-    settings = settings_service.current
-    return PlannerService(
-        logging.child("PLANNER"),
-        initial_state=None if settings.backend.mock_mode else MissionState(),
-        default_radii=settings.backend.mission.radii,
-        vehicle=None if settings.backend.mock_mode else vehicle,
-        sync_from_vehicle_on_connect=vehicle.synchronize_mission_on_connect,
-    )
-
-
-def _commands(vehicle: VehicleService, parameters: ParameterService,
-              logging: LoggingService) -> CommandService:
-    return DispatchCommandService(vehicle, parameters, logging.child("COMMAND"))
-
-
-def _tile_cache(
-    settings_service: SettingsService,
-    async_runtime: AsyncRuntime,
-) -> TileCacheServer:
-    cache = settings_service.current.backend.cache
-    return TileCacheServer(
-        cache_path=cache.path,
-        enabled=cache.enabled,
-        limit_mb=cache.limit_mb,
-        async_runtime=async_runtime,
-    )
-
-
-def _tile_cache_contract(service: TileCacheServer) -> TileCacheService:
-    return service
-
-
-def _battery_alarm(commands: CommandService, logging: LoggingService) -> BatteryAlarmService:
-    return BatteryAlarmService(
-        logging.child("BATTERY"),
-        lambda mode: commands.issue_command(
-            "APPLY_MODE",
-            {"mode": mode, "battery_failsafe": True},
-            source="battery-failsafe",
-        ),
-    )
-
-
-def _facade(
-    telemetry: TelemetryService,
-    planner: PlannerService,
-    commands: CommandService,
-    parameters: ParameterService,
-    settings: SettingsRepository,
-) -> BackendFacade:
-    return BackendFacade(
-        telemetry=telemetry,
-        planner=planner,
-        commands=commands,
-        parameters=parameters,
-        settings=settings,
-    )
-
-
-def _register_infrastructure(
-    container: BaseDependencyContainer,
-    context: ApplicationContext,
-) -> None:
-    priority = int(DependencyPriority.INFRASTRUCTURE)
-    container.instance(ApplicationContext, context, priority=priority)
-    container.instance(DependencyContainer, container.container, priority=priority)
-    container.singleton(AsyncRuntime, concrete=AsyncRuntime, priority=priority)
-    container.singleton(
-        LoggingService,
-        factory=_logging,
-        dependencies={"context": ApplicationContext},
-        priority=priority,
-    )
-    container.singleton(
-        LogService,
-        factory=_log_contract,
-        dependencies={"service": LoggingService},
-        priority=priority,
-    )
-    container.singleton(
-        SettingsService,
-        factory=_settings,
-        dependencies={"context": ApplicationContext, "logging": LoggingService},
-        priority=priority,
-    )
-    container.singleton(
-        SettingsRepository,
-        factory=_settings_contract,
-        dependencies={"service": SettingsService},
-        priority=priority,
-    )
-
-
-def _register_application(container: BaseDependencyContainer) -> None:
-    priority = int(DependencyPriority.APPLICATION)
-    runtime_priority = int(DependencyPriority.RUNTIME)
-    container.singleton(
-        PlannerService,
-        factory=_planner,
-        dependencies={"vehicle": VehicleService, "settings_service": SettingsService, "logging": LoggingService},
-        priority=priority,
-    )
-    container.singleton(
-        CommandService,
-        factory=_commands,
-        dependencies={"vehicle": VehicleService, "parameters": ParameterService, "logging": LoggingService},
-        priority=priority,
-    )
-    container.singleton(
-        TileCacheServer,
-        factory=_tile_cache,
-        dependencies={"settings_service": SettingsService, "async_runtime": AsyncRuntime},
-        priority=priority,
-    )
-    container.singleton(
-        TileCacheService,
-        factory=_tile_cache_contract,
-        dependencies={"service": TileCacheServer},
-        priority=priority,
-    )
-    container.singleton(
-        BatteryAlarmService,
-        factory=_battery_alarm,
-        dependencies={"commands": CommandService, "logging": LoggingService},
-        priority=priority,
-    )
-    container.singleton(
-        BackendFacade,
-        factory=_facade,
-        dependencies={
-            "telemetry": TelemetryService,
-            "planner": PlannerService,
-            "commands": CommandService,
-            "parameters": ParameterService,
-            "settings": SettingsRepository,
-        },
-        priority=runtime_priority,
-    )
-    container.singleton(
-        RuntimeServices,
-        concrete=RuntimeServices,
-        dependencies={
-            "container": DependencyContainer,
-            "async_runtime": AsyncRuntime,
-            "log_service": LoggingService,
-            "settings_service": SettingsService,
-            "vehicle_service": VehicleService,
-            "telemetry_service": TelemetryService,
-            "planner_service": PlannerService,
-            "command_service": CommandService,
-            "parameter_service": ParameterService,
-            "tile_cache_service": TileCacheServer,
-            "connection_service": ConnectionControlService,
-            "facade": BackendFacade,
-            "extension_host": ExtensionHost,
-        },
-        priority=runtime_priority,
+    return LoggingService(
+        log_path=context.base_dir / "data" / "logs" / f"gcs_{session}.json",
+        max_file_bytes=2**63 - 1,
     )
 
 
 class ApplicationContainer(BaseDependencyContainer):
-    """Root container coordinating the YKI dependency modules."""
+    """Application-only composition. Features contribute their own factories."""
 
-    def __init__(self, base_dir: Path, **kwargs) -> None:
+    def __init__(self, base_dir: Path, **kwargs):
         self.context = ApplicationContext(base_dir.resolve())
         super().__init__(**kwargs)
 
-    def configure(self) -> None:
-        _register_infrastructure(self, self.context)
-        self.singleton(TelemetryService, concrete=MutableTelemetryService,
-                       priority=int(DependencyPriority.VEHICLE))
-        self.singleton(ConnectionControlService, concrete=ConnectionHub,
-                       priority=int(DependencyPriority.VEHICLE))
-        self.singleton(ConnectionBinding, factory=lambda service: service,
-                       dependencies={"service": ConnectionControlService},
-                       priority=int(DependencyPriority.VEHICLE))
+    def configure(self):
+        self.instance(ApplicationContext, self.context)
+        self.instance(DependencyContainer, self.container)
+        self.singleton(AsyncRuntime, concrete=AsyncRuntime)
+        self.singleton(
+            LoggingService,
+            factory=_logging,
+            dependencies={"context": ApplicationContext},
+        )
+        self.singleton(
+            LogService,
+            factory=lambda service: service,
+            dependencies={"service": LoggingService},
+        )
+        self.singleton(
+            SettingsService,
+            factory=lambda context, logging: SettingsService(
+                context.base_dir, logging.child("SETTINGS")
+            ),
+            dependencies={"context": ApplicationContext, "logging": LoggingService},
+        )
+        self.singleton(
+            SettingsRepository,
+            factory=lambda service: service,
+            dependencies={"service": SettingsService},
+        )
+        self.singleton(TelemetryService, concrete=MutableTelemetryService, priority=10)
+        self.singleton(
+            TelemetryPipeline,
+            factory=lambda service: service,
+            dependencies={"service": TelemetryService},
+            priority=10,
+        )
+        self.singleton(ConnectionControlService, concrete=ConnectionHub, priority=10)
+        self.singleton(
+            ConnectionBinding,
+            factory=lambda service: service,
+            dependencies={"service": ConnectionControlService},
+            priority=10,
+        )
         host = ExtensionHost(self.context.base_dir, self)
-        self.instance(ExtensionHost, host, priority=int(DependencyPriority.VEHICLE))
+        self.instance(ExtensionHost, host, priority=10)
         host.configure()
-        _register_application(self)
+        self.singleton(
+            BackendFacade,
+            concrete=BackendFacade,
+            dependencies={
+                "telemetry": TelemetryService,
+                "commands": CommandService,
+                "settings": SettingsRepository,
+            },
+            priority=30,
+        )
+        self.singleton(
+            RuntimeServices,
+            concrete=RuntimeServices,
+            dependencies={
+                "container": DependencyContainer,
+                "async_runtime": AsyncRuntime,
+                "log_service": LoggingService,
+                "settings_service": SettingsService,
+                "vehicle_service": VehicleService,
+                "telemetry_service": TelemetryService,
+                "command_service": CommandService,
+                "connection_service": ConnectionControlService,
+                "facade": BackendFacade,
+                "extension_host": ExtensionHost,
+            },
+            priority=30,
+        )
 
 
-def create_container(base_dir: Path, *, warmup: bool = False) -> ApplicationContainer:
+def create_container(base_dir: Path, *, warmup=False):
     container = ApplicationContainer(base_dir)
     if warmup:
         container.warmup()
     return container
-
-
-__all__ = [
-    "ApplicationContainer",
-    "ApplicationContext",
-    "DependencyPriority",
-    "create_container",
-]

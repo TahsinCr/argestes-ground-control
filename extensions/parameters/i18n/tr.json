@@ -1,0 +1,5 @@
+{
+  "extension.parameters.name": "Parametreler",
+  "extension.parameters.description": "MAVLink parametre inceleme ve düzenleme",
+  "extension.parameters.category": "Araç"
+}

@@ -1,0 +1,5 @@
+{
+  "extension.parameters.name": "Parameters",
+  "extension.parameters.description": "MAVLink parameter inspection and editing",
+  "extension.parameters.category": "Vehicle"
+}

@@ -57,20 +57,32 @@ class _ActivityButton(QToolButton):
         elif self.key == "logs":
             for offset, width in ((4, 13), (9, 16), (14, 11)):
                 painter.drawEllipse(QPointF(x + 3, y + offset), 0.8, 0.8)
-                painter.drawLine(QPointF(x + 7, y + offset), QPointF(x + width, y + offset))
+                painter.drawLine(
+                    QPointF(x + 7, y + offset), QPointF(x + width, y + offset)
+                )
         elif self.key == "parameters":
             for offset, knob in ((4, 10), (10, 5), (16, 13)):
-                painter.drawLine(QPointF(x + 3, y + offset), QPointF(x + 17, y + offset))
+                painter.drawLine(
+                    QPointF(x + 3, y + offset), QPointF(x + 17, y + offset)
+                )
                 painter.drawEllipse(QPointF(x + knob, y + offset), 2, 2)
         elif self.key.startswith("panel:"):
             panel_key = self.key.removeprefix("panel:")
             if panel_key == "map":
-                painter.drawPolygon(QPolygonF([
-                    QPointF(x + 2, y + 5), QPointF(x + 8, y + 3),
-                    QPointF(x + 14, y + 5), QPointF(x + 18, y + 3),
-                    QPointF(x + 18, y + 16), QPointF(x + 14, y + 18),
-                    QPointF(x + 8, y + 16), QPointF(x + 2, y + 18),
-                ]))
+                painter.drawPolygon(
+                    QPolygonF(
+                        [
+                            QPointF(x + 2, y + 5),
+                            QPointF(x + 8, y + 3),
+                            QPointF(x + 14, y + 5),
+                            QPointF(x + 18, y + 3),
+                            QPointF(x + 18, y + 16),
+                            QPointF(x + 14, y + 18),
+                            QPointF(x + 8, y + 16),
+                            QPointF(x + 2, y + 18),
+                        ]
+                    )
+                )
                 painter.drawLine(QPointF(x + 8, y + 3), QPointF(x + 8, y + 16))
                 painter.drawLine(QPointF(x + 14, y + 5), QPointF(x + 14, y + 18))
             elif panel_key.startswith("camera"):
@@ -114,7 +126,7 @@ class ActivityBar(QWidget):
         self.sidebar_button.clicked.connect(self.flight_sidebar_toggled.emit)
         self.sidebar_button.clicked.connect(self._on_flight_clicked)
         self.extensions_button = self._make_button("extensions")
-        layout.addWidget(self.extensions_button)
+        self.extensions_button.hide()
         self.extensions_button.clicked.connect(self._on_extensions_clicked)
 
         layout.addStretch(1)
@@ -133,9 +145,7 @@ class ActivityBar(QWidget):
             layout.addWidget(button)
 
     def _make_button(self, key: str, *, checkable: bool = True) -> _ActivityButton:
-        button = _ActivityButton(
-            key, self, checkable=checkable, language=self.language
-        )
+        button = _ActivityButton(key, self, checkable=checkable, language=self.language)
         label = t(f"activity.{key}", self.language)
         button.setAccessibleName(label)
         button.setToolTip(label)
@@ -162,12 +172,18 @@ class ActivityBar(QWidget):
         self.sidebar_view_requested.emit("flight" if checked else "")
 
     def add_extension_view(self, identifier: str, title: str) -> None:
-        button = _ActivityButton(f"extension:{identifier}", self, language=self.language)
+        button = _ActivityButton(
+            f"extension:{identifier}", self, language=self.language
+        )
         button.setAccessibleName(title)
         button.setToolTip(title)
         self.extension_view_buttons[identifier] = button
         self._layout.insertWidget(2 + len(self.extension_view_buttons) - 1, button)
-        button.clicked.connect(lambda checked, key=identifier: self._on_extension_view_clicked(key, checked))
+        button.clicked.connect(
+            lambda checked, key=identifier: self._on_extension_view_clicked(
+                key, checked
+            )
+        )
 
     def remove_extension_view(self, identifier: str) -> None:
         button = self.extension_view_buttons.pop(identifier, None)

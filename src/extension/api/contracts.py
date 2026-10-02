@@ -61,6 +61,11 @@ class VisualContribution:
     factory: Callable[[Any], Any]
     primary: bool = False
     legacy_key: str | None = None
+    region: str = "workspace"
+    title: str = ""
+    initial_visible: bool = True
+    order: int = 0
+    preferred_height: int = 240
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,8 +101,9 @@ class ExtensionRegistrar:
             raise ValueError(f"Duplicate extension service: {token}")
         self.bindings.append(ServiceBinding(token, factory, dict(dependencies or {})))
 
-    def sidebar_view(self, identifier: str, title: str,
-                     factory: Callable[[Any], Any]) -> None:
+    def sidebar_view(
+        self, identifier: str, title: str, factory: Callable[[Any], Any]
+    ) -> None:
         """Contribute a lazily created left-sidebar QWidget without importing Qt here."""
         if not re.fullmatch(r"[a-z][a-z0-9_]*", identifier):
             raise ValueError(f"Invalid sidebar identifier: {identifier}")
@@ -105,16 +111,46 @@ class ExtensionRegistrar:
             raise ValueError(f"Duplicate sidebar view: {identifier}")
         self.sidebar_views.append(SidebarContribution(identifier, title, factory))
 
-    def visual_view(self, identifier: str, factory: Callable[[Any], Any], *, primary: bool = False,
-                    legacy_key: str | None = None) -> None:
+    def visual_view(
+        self,
+        identifier: str,
+        factory: Callable[[Any], Any],
+        *,
+        primary: bool = False,
+        legacy_key: str | None = None,
+        region: str = "workspace",
+        title: str = "",
+        initial_visible: bool = True,
+        order: int = 0,
+        preferred_height: int = 240,
+    ) -> None:
+        if region not in {"workspace", "left", "bottom"}:
+            raise ValueError(f"Invalid visual region: {region}")
         if not re.fullmatch(r"[a-z][a-z0-9_]*", identifier):
             raise ValueError(f"Invalid visual identifier: {identifier}")
         if any(view.identifier == identifier for view in self.visual_views):
             raise ValueError(f"Duplicate visual view: {identifier}")
-        self.visual_views.append(VisualContribution(identifier, factory, primary, legacy_key))
+        self.visual_views.append(
+            VisualContribution(
+                identifier,
+                factory,
+                primary,
+                legacy_key,
+                region,
+                title,
+                initial_visible,
+                order,
+                preferred_height,
+            )
+        )
 
-    def status_widget(self, identifier: str, factory: Callable[[Any], Any], *,
-                      placement: str = "connections") -> None:
+    def status_widget(
+        self,
+        identifier: str,
+        factory: Callable[[Any], Any],
+        *,
+        placement: str = "connections",
+    ) -> None:
         if placement not in {"connections", "metrics"}:
             raise ValueError(f"Invalid status placement: {placement}")
         if not re.fullmatch(r"[a-z][a-z0-9_]*", identifier):
@@ -137,7 +173,9 @@ class TelemetrySource(Protocol):
     extension subscribes before starting it and cancels before stopping it.
     """
 
-    def create_telemetry(self, settings: SettingsService, logging: LoggingService) -> TelemetryService: ...
+    def create_telemetry(
+        self, settings: SettingsService, logging: LoggingService
+    ) -> TelemetryService: ...
 
 
 class ConnectionProfiles(Protocol):
@@ -152,7 +190,9 @@ class ConnectionProfiles(Protocol):
     @property
     def default_profile(self) -> ConnectionProfile: ...
 
-    def settings_payload(self, profiles: tuple[ConnectionProfile, ...], active_identifier: str | None) -> SettingsModel: ...
+    def settings_payload(
+        self, profiles: tuple[ConnectionProfile, ...], active_identifier: str | None
+    ) -> SettingsModel: ...
 
 
 class ConnectionSource(Protocol):

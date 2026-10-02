@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from PyQt6.QtCore import QCoreApplication, Qt
+
+# Allows lazily loaded graphics extensions (including WebEngine) to use the
+# existing Qt application without importing their optional packages here.
+if QCoreApplication.instance() is None:
+    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
 
 from src.core.dependency import BaseDependencyContainer, DependencyContainer
 from src.ui.dependencies import UiContext, register_ui_dependencies

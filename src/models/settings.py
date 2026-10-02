@@ -82,7 +82,11 @@ class MavlinkConnectionConfig(Model):
     auto_connect: bool = False
 
     def __post_init__(self) -> None:
-        identifier, name, endpoint = self.identifier.strip(), self.name.strip(), self.endpoint.strip()
+        identifier, name, endpoint = (
+            self.identifier.strip(),
+            self.name.strip(),
+            self.endpoint.strip(),
+        )
         if not identifier or not name or not endpoint:
             raise ValueError("Telemetri profil kimliği, adı ve adresi boş olamaz")
         if int(self.baud) <= 0 or int(self.heartbeat_timeout) <= 0:
@@ -133,7 +137,9 @@ class MissionDefaults:
         self.default_altitude_m = int(self.default_altitude_m)
         invalid = [key for key, value in self.radii.items() if value <= 0]
         if invalid:
-            raise ValueError(f"Görev çapları pozitif olmalı: {', '.join(sorted(invalid))}")
+            raise ValueError(
+                f"Görev çapları pozitif olmalı: {', '.join(sorted(invalid))}"
+            )
         if self.default_altitude_m <= 0:
             raise ValueError("Varsayılan görev irtifası pozitif olmalı")
 
@@ -169,16 +175,12 @@ class BatteryAlarmSettings:
         normalized_mode = str(mode).strip().lower()
         normalized_threshold = float(threshold)
         if normalized_mode not in {"percent", "voltage"}:
-            raise ValueError(
-                f"Desteklenmeyen batarya {name} birimi: {normalized_mode}"
-            )
+            raise ValueError(f"Desteklenmeyen batarya {name} birimi: {normalized_mode}")
         if normalized_threshold <= 0.0:
             raise ValueError(f"Batarya {name} eşiği pozitif olmalı")
         if normalized_threshold > 100.0:
             suffix = "%" if normalized_mode == "percent" else "V"
-            raise ValueError(
-                f"Batarya {name} eşiği 100 {suffix} değerini aşamaz"
-            )
+            raise ValueError(f"Batarya {name} eşiği 100 {suffix} değerini aşamaz")
         return normalized_mode
 
 
@@ -230,9 +232,9 @@ class BatteryTelemetrySettings:
     @property
     def empty_voltage(self) -> float:
         reserve_fraction = self.reserve_percent / 100.0
-        return (
-            self.reserve_voltage - reserve_fraction * self.full_voltage
-        ) / (1.0 - reserve_fraction)
+        return (self.reserve_voltage - reserve_fraction * self.full_voltage) / (
+            1.0 - reserve_fraction
+        )
 
 
 @dataclass(slots=True)
@@ -250,11 +252,15 @@ class BackendSettings:
 
     def __post_init__(self) -> None:
         self.mavlink_connections = [
-            value if isinstance(value, MavlinkConnectionConfig) else MavlinkConnectionConfig(**value)
+            value
+            if isinstance(value, MavlinkConnectionConfig)
+            else MavlinkConnectionConfig(**value)
             for value in self.mavlink_connections
         ]
         if not self.mavlink_connections:
-            self.mavlink_connections = [MavlinkConnectionConfig.from_mavlink(self.mavlink)]
+            self.mavlink_connections = [
+                MavlinkConnectionConfig.from_mavlink(self.mavlink)
+            ]
         identifiers = [profile.identifier for profile in self.mavlink_connections]
         if len(identifiers) != len(set(identifiers)):
             raise ValueError("Telemetri profil kimlikleri benzersiz olmalı")
@@ -308,13 +314,19 @@ class SettingsModel(Model):
         if "backend" in payload or "ui" in payload:
             backend_payload = dict(payload.get("backend", {}))
             ui_payload = dict(payload.get("ui", {}))
-            cache = CacheSettings(**_known(CacheSettings, backend_payload.pop("cache", {})))
-            mavlink = MavlinkSettings(**_known(MavlinkSettings, backend_payload.pop("mavlink", {})))
+            cache = CacheSettings(
+                **_known(CacheSettings, backend_payload.pop("cache", {}))
+            )
+            mavlink = MavlinkSettings(
+                **_known(MavlinkSettings, backend_payload.pop("mavlink", {}))
+            )
             mavlink_connections = [
                 MavlinkConnectionConfig(**dict(item))
                 for item in backend_payload.pop("mavlink_connections", ())
             ]
-            active_mavlink_connection_id = str(backend_payload.pop("active_mavlink_connection_id", ""))
+            active_mavlink_connection_id = str(
+                backend_payload.pop("active_mavlink_connection_id", "")
+            )
             battery_payload = dict(backend_payload.pop("battery_alarm", {}))
             legacy_mode = battery_payload.pop("mode", None)
             legacy_threshold = battery_payload.pop("threshold", None)
@@ -346,7 +358,12 @@ class SettingsModel(Model):
             )
             mission_payload = dict(backend_payload.pop("mission", {}))
             radii = dict(DEFAULT_RADII)
-            radii.update({key: int(value) for key, value in mission_payload.get("radii", {}).items()})
+            radii.update(
+                {
+                    key: int(value)
+                    for key, value in mission_payload.get("radii", {}).items()
+                }
+            )
             backend = BackendSettings(
                 **_known(BackendSettings, backend_payload),
                 cache=cache,
@@ -357,11 +374,16 @@ class SettingsModel(Model):
                 battery_telemetry=battery_telemetry,
                 mission=MissionDefaults(
                     radii=radii,
-                    default_altitude_m=int(mission_payload.get("default_altitude_m", 100)),
+                    default_altitude_m=int(
+                        mission_payload.get("default_altitude_m", 100)
+                    ),
                 ),
             )
-            return cls(backend=backend, ui=UiSettings(**_known(UiSettings, ui_payload)),
-                       extensions=deepcopy(payload.get("extensions", {})))
+            return cls(
+                backend=backend,
+                ui=UiSettings(**_known(UiSettings, ui_payload)),
+                extensions=deepcopy(payload.get("extensions", {})),
+            )
         return cls._from_legacy(payload)
 
     @classmethod
@@ -427,39 +449,70 @@ class SettingsModel(Model):
     def patch(self, **changes: Any) -> "SettingsModel":
         result = self
         for legacy_name, value in changes.items():
-            result = result.with_value(_LEGACY_PATHS.get(legacy_name, legacy_name), value)
+            result = result.with_value(
+                _LEGACY_PATHS.get(legacy_name, legacy_name), value
+            )
         return result
 
     @property
-    def language(self) -> str: return self.ui.language
+    def language(self) -> str:
+        return self.ui.language
+
     @property
-    def theme(self) -> str: return self.ui.theme
+    def theme(self) -> str:
+        return self.ui.theme
+
     @property
-    def map_layer(self) -> str: return self.ui.map_layer
+    def map_layer(self) -> str:
+        return self.ui.map_layer
+
     @property
-    def map_center_min_zoom(self) -> int: return self.ui.map_center_min_zoom
+    def map_center_min_zoom(self) -> int:
+        return self.ui.map_center_min_zoom
+
     @property
-    def vehicle_trail_limit(self) -> int: return self.ui.vehicle_trail_limit
+    def vehicle_trail_limit(self) -> int:
+        return self.ui.vehicle_trail_limit
+
     @property
-    def contact_trail_limit(self) -> int: return self.ui.contact_trail_limit
+    def contact_trail_limit(self) -> int:
+        return self.ui.contact_trail_limit
+
     @property
-    def mock_mode(self) -> bool: return self.backend.mock_mode
+    def mock_mode(self) -> bool:
+        return self.backend.mock_mode
+
     @property
-    def cache_enabled(self) -> bool: return self.backend.cache.enabled
+    def cache_enabled(self) -> bool:
+        return self.backend.cache.enabled
+
     @property
-    def cache_limit_mb(self) -> int: return self.backend.cache.limit_mb
+    def cache_limit_mb(self) -> int:
+        return self.backend.cache.limit_mb
+
     @property
-    def cache_path(self) -> str: return self.backend.cache.path
+    def cache_path(self) -> str:
+        return self.backend.cache.path
+
     @property
-    def default_radius_takeoff(self) -> int: return self.backend.mission.radius_for("takeoff")
+    def default_radius_takeoff(self) -> int:
+        return self.backend.mission.radius_for("takeoff")
+
     @property
-    def default_radius_waypoint(self) -> int: return self.backend.mission.radius_for("waypoint")
+    def default_radius_waypoint(self) -> int:
+        return self.backend.mission.radius_for("waypoint")
+
     @property
-    def default_radius_loiter(self) -> int: return self.backend.mission.radius_for("loiter")
+    def default_radius_loiter(self) -> int:
+        return self.backend.mission.radius_for("loiter")
+
     @property
-    def default_radius_rtl(self) -> int: return self.backend.mission.radius_for("rtl")
+    def default_radius_rtl(self) -> int:
+        return self.backend.mission.radius_for("rtl")
+
     @property
-    def default_radius_land(self) -> int: return self.backend.mission.radius_for("land")
+    def default_radius_land(self) -> int:
+        return self.backend.mission.radius_for("land")
 
 
 def _known(model_type: type, payload: dict[str, Any]) -> dict[str, Any]:

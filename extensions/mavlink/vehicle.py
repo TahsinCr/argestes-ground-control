@@ -27,93 +27,6 @@ from .ports import MavlinkVehiclePort
 from src.services.logging_service import ServiceLogger
 
 
-class NullVehicleService(MavlinkVehiclePort):
-    """Service that remains safely offline when no vehicle link is configured."""
-
-    def __init__(self) -> None:
-        self._changed = EventBus[VehicleConnectionState]()
-        self._state = VehicleConnectionState(False, "")
-
-    @property
-    def connected(self) -> bool:
-        return False
-
-    @property
-    def state(self) -> VehicleConnectionState:
-        return self._state
-
-    @property
-    def connection_changed(self) -> EventBus[VehicleConnectionState]:
-        return self._changed
-
-    @property
-    def transport_stats(self) -> VehicleTransportStats:
-        return VehicleTransportStats()
-
-    @property
-    def capabilities(self) -> VehicleCapabilities:
-        return VehicleCapabilities()
-
-    def start(self) -> None:
-        return
-
-    def stop(self) -> None:
-        return
-
-    def configure_connection(self, config: VehicleConnectionConfig) -> None:
-        del config
-        self._unavailable("CONFIGURE_CONNECTION")
-
-    def reconnect(self, config: VehicleConnectionConfig | None = None) -> None:
-        del config
-        self._unavailable("RECONNECT")
-
-    def subscribe(self, message_types, callback) -> Subscription:
-        del message_types, callback
-        return Subscription(0, lambda: None)
-
-    def request_parameters(self) -> None:
-        self._unavailable("PARAM_REQUEST_LIST")
-
-    def set_parameter(self, name: str, value: object, value_type: int | None = None) -> None:
-        del value, value_type
-        self._unavailable(f"PARAM_SET:{name}")
-
-    def mode_name(self, heartbeat: Any, fallback: str = "UNKNOWN") -> str:
-        del heartbeat
-        return fallback
-
-    def set_default_mission_altitude(self, altitude_m: float) -> None:
-        if float(altitude_m) <= 0:
-            raise ValueError("Varsayılan görev irtifası pozitif olmalı")
-
-    def execute(self, request: CommandRequest) -> bool:
-        self._unavailable(request.code)
-
-    def send_rc_override(self, channels: Iterable[int | None]) -> None:
-        del channels
-        self._unavailable("RC_CHANNELS_OVERRIDE")
-
-    def release_rc_override(self) -> None:
-        return
-
-    def upload_mission(
-        self,
-        overlays: Iterable[MapOverlay],
-        *,
-        loop: bool = False,
-    ) -> int:
-        del overlays, loop
-        self._unavailable("MISSION_UPLOAD")
-
-    def download_mission(self) -> list[MapOverlay]:
-        self._unavailable("MISSION_DOWNLOAD")
-
-    @staticmethod
-    def _unavailable(action: str) -> None:
-        raise ConnectionError(f"Uçuş cihazı bağlantısı hazır değil: {action}")
-
-
 class MavlinkVehicleService(MavlinkVehiclePort):
     """Vehicle adapter hiding core MAVLink details from domain services."""
 
@@ -148,7 +61,8 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         *,
         operation_timeout: float = 5.0,
         default_mission_altitude: float = 100.0,
-        custom_handlers: dict[str, Callable[[CommandRequest], bool | None]] | None = None,
+        custom_handlers: dict[str, Callable[[CommandRequest], bool | None]]
+        | None = None,
         stream_rates_hz: dict[str, float] | None = None,
         synchronize_mission_on_connect: bool = True,
     ) -> None:
@@ -162,7 +76,9 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         if self._default_mission_altitude <= 0:
             raise ValueError("Varsayılan görev irtifası pozitif olmalı")
         self._changed = EventBus[VehicleConnectionState]()
-        self._state = VehicleConnectionState(False, client.endpoint.uri)
+        self._state = VehicleConnectionState(
+            False, client.endpoint.uri, protocol="mavlink"
+        )
         self._subscriptions: list[Subscription] = []
         self._started = False
         self._state_lock = threading.RLock()
@@ -179,7 +95,8 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         self._round_trip_ms: float | None = None
         self._round_trip_measured_at = 0.0
         self._custom_handlers = {
-            code.strip().upper(): handler for code, handler in (custom_handlers or {}).items()
+            code.strip().upper(): handler
+            for code, handler in (custom_handlers or {}).items()
         }
         source_rates = stream_rates_hz or self.DEFAULT_STREAM_RATES_HZ
         self._stream_rates_hz = {
@@ -268,7 +185,9 @@ class MavlinkVehicleService(MavlinkVehiclePort):
             "MISSION_PAUSE": "MAV_CMD_DO_PAUSE_CONTINUE",
             "MISSION_RESUME": "MAV_CMD_DO_PAUSE_CONTINUE",
         }
-        commands.extend(code for code, constant in optional.items() if hasattr(mavlink, constant))
+        commands.extend(
+            code for code, constant in optional.items() if hasattr(mavlink, constant)
+        )
         if "RTL" in modes:
             commands.append("RTL")
         if "LOITER" in modes or "BRAKE" in modes:
@@ -286,7 +205,9 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         endpoint = self._endpoint_for(config)
         self._client.configure_endpoint(endpoint)
         with self._state_lock:
-            self._state = VehicleConnectionState(False, endpoint.uri)
+            self._state = VehicleConnectionState(
+                False, endpoint.uri, protocol="mavlink"
+            )
 
     def reconnect(self, config: VehicleConnectionConfig | None = None) -> None:
         endpoint = self._endpoint_for(config) if config is not None else None
@@ -294,7 +215,9 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         if endpoint is not None:
             self._client.configure_endpoint(endpoint)
             with self._state_lock:
-                self._state = VehicleConnectionState(False, endpoint.uri)
+                self._state = VehicleConnectionState(
+                    False, endpoint.uri, protocol="mavlink"
+                )
         self.start()
 
     def _endpoint_for(self, config: VehicleConnectionConfig):
@@ -303,6 +226,16 @@ class MavlinkVehicleService(MavlinkVehiclePort):
             uri=config.endpoint.strip(),
             baud=int(config.baud),
             heartbeat_timeout=float(config.heartbeat_timeout_s),
+            **{
+                key: config.options[key]
+                for key in (
+                    "dialect",
+                    "source_system",
+                    "source_component",
+                    "autoreconnect",
+                )
+                if key in config.options
+            },
         )
 
     def start(self) -> None:
@@ -332,7 +265,10 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                 connection.target_system,
                 connection.target_component,
                 int(getattr(heartbeat, "type", 0)) if heartbeat is not None else None,
-                int(getattr(heartbeat, "autopilot", 0)) if heartbeat is not None else None,
+                int(getattr(heartbeat, "autopilot", 0))
+                if heartbeat is not None
+                else None,
+                protocol="mavlink",
             )
             self._last_heartbeat = time.monotonic()
         self._started = True
@@ -384,8 +320,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                 "Uçuş cihazından hızlı telemetri akışı istendi",
                 details={
                     "rates": ", ".join(
-                        f"{name}={rate:g} Hz"
-                        for name, rate in requested.items()
+                        f"{name}={rate:g} Hz" for name, rate in requested.items()
                     ),
                     "requested_count": len(requested),
                 },
@@ -427,6 +362,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                     previous.component_id,
                     previous.vehicle_type,
                     previous.autopilot_type,
+                    protocol="mavlink",
                 )
             self._changed.publish(self._state)
             self._cancel_subscriptions()
@@ -499,7 +435,9 @@ class MavlinkVehicleService(MavlinkVehiclePort):
 
     def send_rc_override(self, channels: Iterable[int | None]) -> None:
         if not self.connected:
-            raise ConnectionError("Uçuş cihazı bağlantısı hazır değil: RC_CHANNELS_OVERRIDE")
+            raise ConnectionError(
+                "Uçuş cihazı bağlantısı hazır değil: RC_CHANNELS_OVERRIDE"
+            )
         source = tuple(channels)
         if len(source) > 18:
             raise ValueError("En fazla 18 RC kanalı gönderilebilir")
@@ -533,7 +471,9 @@ class MavlinkVehicleService(MavlinkVehiclePort):
             *([65534] * 10),
         )
 
-    def set_parameter(self, name: str, value: object, value_type: int | None = None) -> None:
+    def set_parameter(
+        self, name: str, value: object, value_type: int | None = None
+    ) -> None:
         normalized_name = name.strip()
         if not normalized_name or len(normalized_name.encode("ascii")) > 16:
             raise ValueError(f"Geçersiz MAVLink parametre adı: {name!r}")
@@ -590,7 +530,9 @@ class MavlinkVehicleService(MavlinkVehiclePort):
             "MISSION_UPLOAD": lambda: bool(
                 self.upload_mission(
                     (
-                        item if isinstance(item, MapOverlay) else MapOverlay.from_dict(item)
+                        item
+                        if isinstance(item, MapOverlay)
+                        else MapOverlay.from_dict(item)
                         for item in request.parameters.get("overlays", [])
                     ),
                     loop=bool(request.parameters.get("loop", False)),
@@ -645,7 +587,9 @@ class MavlinkVehicleService(MavlinkVehiclePort):
             system, component = self._target
             mission_type = mavlink.MAV_MISSION_TYPE_MISSION
             boundary = self._client.router.sequence
-            self._client.call_mav("mission_count_send", system, component, len(items), mission_type)
+            self._client.call_mav(
+                "mission_count_send", system, component, len(items), mission_type
+            )
 
             sent_sequences: set[int] = set()
             deadline = time.monotonic() + self._operation_timeout * max(2, len(items))
@@ -678,7 +622,9 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                 after_sequence=boundary,
             )
             if int(acknowledgement.type) != mavlink.MAV_MISSION_ACCEPTED:
-                raise RuntimeError(f"Araç görev planını reddetti: {acknowledgement.type}")
+                raise RuntimeError(
+                    f"Araç görev planını reddetti: {acknowledgement.type}"
+                )
             self._client.call_mav("mission_set_current_send", system, component, 1)
             route_item_count = len(route_items)
             self._event(
@@ -701,7 +647,9 @@ class MavlinkVehicleService(MavlinkVehiclePort):
             system, component = self._target
             mission_type = mavlink.MAV_MISSION_TYPE_MISSION
             boundary = self._client.router.sequence
-            self._client.call_mav("mission_request_list_send", system, component, mission_type)
+            self._client.call_mav(
+                "mission_request_list_send", system, component, mission_type
+            )
             count_message = self._wait_for_mission_download(
                 "MISSION_COUNT",
                 after_sequence=boundary,
@@ -720,7 +668,9 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                 )
                 item = self._wait_for_mission_download(
                     {"MISSION_ITEM_INT", "MISSION_ITEM"},
-                    predicate=lambda message, expected=sequence: int(message.seq) == expected,
+                    predicate=lambda message, expected=sequence: (
+                        int(message.seq) == expected
+                    ),
                     after_sequence=boundary,
                 )
                 if (
@@ -745,7 +695,10 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                 "success",
                 "mission.download_confirmed",
                 f"Uçuş cihazından {count} görev öğesi alındı",
-                details={"vehicle_item_count": count, "supported_item_count": len(overlays)},
+                details={
+                    "vehicle_item_count": count,
+                    "supported_item_count": len(overlays),
+                },
             )
             return overlays
 
@@ -759,11 +712,19 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         deadline = time.monotonic() + self._operation_timeout
         while True:
             if self._mission_download_cancel.is_set():
-                raise MissionTransferInterrupted("Otomatik görev indirme kullanıcı gönderimi için ertelendi")
+                raise MissionTransferInterrupted(
+                    "Otomatik görev indirme kullanıcı gönderimi için ertelendi"
+                )
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                expected = sorted(message_types) if isinstance(message_types, set) else [message_types]
-                raise TimeoutError(f"MAVLink mesajı beklenirken zaman aşımı: {expected}")
+                expected = (
+                    sorted(message_types)
+                    if isinstance(message_types, set)
+                    else [message_types]
+                )
+                raise TimeoutError(
+                    f"MAVLink mesajı beklenirken zaman aşımı: {expected}"
+                )
             try:
                 return self._client.wait_for(
                     message_types,
@@ -880,7 +841,14 @@ class MavlinkVehicleService(MavlinkVehiclePort):
             latitude,
             longitude,
             altitude,
-            0, 0, 0, 0, 0, 0, 0, 0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
         )
         self._event(
             "info",
@@ -979,7 +947,9 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         latest = getattr(self._client, "latest", None)
         heartbeat = latest("HEARTBEAT") if callable(latest) else None
         if heartbeat is None:
-            heartbeat = getattr(self._client.connection, "message_state", {}).get("HEARTBEAT")
+            heartbeat = getattr(self._client.connection, "message_state", {}).get(
+                "HEARTBEAT"
+            )
         if heartbeat is None:
             raise RuntimeError(
                 "Home güncellemesi reddedildi: Pixhawk arm durumu alınamadı"
@@ -998,7 +968,13 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         altitude = float(parameters.get("altitude", 0.0))
         self._command_long(
             self._client.mavlink.MAV_CMD_NAV_LAND,
-            0, 0, 0, 0, latitude, longitude, altitude,
+            0,
+            0,
+            0,
+            0,
+            latitude,
+            longitude,
+            altitude,
         )
         return True
 
@@ -1039,12 +1015,16 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         for mode in ("LOITER", "BRAKE"):
             if mode in mapping:
                 return self._set_mode(mode)
-        raise NotImplementedError("Bağlı araç HOLD için LOITER veya BRAKE modu sunmuyor")
+        raise NotImplementedError(
+            "Bağlı araç HOLD için LOITER veya BRAKE modu sunmuyor"
+        )
 
     def _mission_start(self, parameters: dict[str, Any]) -> bool:
         command = getattr(self._client.mavlink, "MAV_CMD_MISSION_START", None)
         if command is None:
-            raise NotImplementedError("Bağlı MAVLink dialect MISSION_START desteklemiyor")
+            raise NotImplementedError(
+                "Bağlı MAVLink dialect MISSION_START desteklemiyor"
+            )
         first_item = int(parameters.get("first_item", 0))
         last_item = int(parameters.get("last_item", 0))
         if first_item < 0 or last_item < 0:
@@ -1055,7 +1035,9 @@ class MavlinkVehicleService(MavlinkVehiclePort):
     def _set_mission_paused(self, paused: bool) -> bool:
         command = getattr(self._client.mavlink, "MAV_CMD_DO_PAUSE_CONTINUE", None)
         if command is None:
-            raise NotImplementedError("Bağlı MAVLink dialect görev duraklatmayı desteklemiyor")
+            raise NotImplementedError(
+                "Bağlı MAVLink dialect görev duraklatmayı desteklemiyor"
+            )
         self._command_long(command, 0.0 if paused else 1.0)
         return True
 
@@ -1161,12 +1143,10 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         if loop:
             if terminal:
                 raise ValueError(
-                    "Döngü görevinde terminal öğe kullanılamaz: "
-                    + terminal[0][1]
+                    "Döngü görevinde terminal öğe kullanılamaz: " + terminal[0][1]
                 )
             if not any(
-                overlay.overlay_type in {"waypoint", "route"}
-                and overlay.points
+                overlay.overlay_type in {"waypoint", "route"} and overlay.points
                 for overlay in ordered
             ):
                 raise ValueError(
@@ -1190,13 +1170,20 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         source = list(overlays)
         ordered = sorted(
             enumerate(source),
-            key=lambda pair: (pair[1].route_order if pair[1].route_order is not None else 1_000_000, pair[0]),
+            key=lambda pair: (
+                pair[1].route_order if pair[1].route_order is not None else 1_000_000,
+                pair[0],
+            ),
         )
         result: list[tuple[Any, ...]] = []
         ignored: list[str] = []
         for _index, overlay in ordered:
             overlay_type = overlay.overlay_type
-            command = mavlink.MAV_CMD_NAV_WAYPOINT if overlay_type == "route" else supported.get(overlay_type)
+            command = (
+                mavlink.MAV_CMD_NAV_WAYPOINT
+                if overlay_type == "route"
+                else supported.get(overlay_type)
+            )
             if command is None:
                 ignored.append(overlay_type)
                 continue
@@ -1208,8 +1195,10 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                 latitude = int(float(point[0]) * 1e7) if not is_rtl else 0
                 longitude = int(float(point[1]) * 1e7) if not is_rtl else 0
                 fallback_altitude = 0.0 if overlay_type == "land" else default_altitude
-                altitude = float(point[2]) if len(point) > 2 else float(
-                    overlay.metadata.get("altitude", fallback_altitude)
+                altitude = (
+                    float(point[2])
+                    if len(point) > 2
+                    else float(overlay.metadata.get("altitude", fallback_altitude))
                 )
                 radius = float(overlay.radius_m or 0.0)
                 takeoff_pitch = 0.0
@@ -1221,7 +1210,9 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                             float(overlay.metadata.get("takeoff_pitch_deg") or 0.0),
                         ),
                     )
-                acceptance_radius = radius if overlay_type in {"waypoint", "route"} else 0.0
+                acceptance_radius = (
+                    radius if overlay_type in {"waypoint", "route"} else 0.0
+                )
                 loiter_radius = radius if overlay_type == "loiter" else 0.0
                 result.append(
                     (
@@ -1280,9 +1271,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         ordered = sorted(
             enumerate(overlays),
             key=lambda pair: (
-                pair[1].route_order
-                if pair[1].route_order is not None
-                else 1_000_000,
+                pair[1].route_order if pair[1].route_order is not None else 1_000_000,
                 pair[0],
             ),
         )
@@ -1356,10 +1345,18 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         recovered: VehicleConnectionState | None = None
         with self._state_lock:
             self._last_heartbeat = time.monotonic()
-            if self._started and not self._state.connected and self._client.is_connected:
-                system_id = int(getattr(heartbeat, "get_srcSystem", lambda: 0)() or self._state.system_id)
+            if (
+                self._started
+                and not self._state.connected
+                and self._client.is_connected
+            ):
+                system_id = int(
+                    getattr(heartbeat, "get_srcSystem", lambda: 0)()
+                    or self._state.system_id
+                )
                 component_id = int(
-                    getattr(heartbeat, "get_srcComponent", lambda: 0)() or self._state.component_id
+                    getattr(heartbeat, "get_srcComponent", lambda: 0)()
+                    or self._state.component_id
                 )
                 self._state = VehicleConnectionState(
                     True,
@@ -1368,6 +1365,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                     component_id,
                     int(getattr(heartbeat, "type", 0)),
                     int(getattr(heartbeat, "autopilot", 0)),
+                    protocol="mavlink",
                 )
                 recovered = self._state
         if recovered is not None:
@@ -1423,6 +1421,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                         previous.component_id,
                         previous.vehicle_type,
                         previous.autopilot_type,
+                        protocol="mavlink",
                     )
                     lost = self._state
             if lost is not None:
@@ -1517,5 +1516,6 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                 message,
                 severity=severity,
                 details=details,
-                device_id=device_id or (self._state.device_id if self._state.connected else None),
+                device_id=device_id
+                or (self._state.device_id if self._state.connected else None),
             )

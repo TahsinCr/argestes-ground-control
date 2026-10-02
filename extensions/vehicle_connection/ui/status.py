@@ -13,7 +13,9 @@ class ConnectionStatusWidget(QWidget):
         super().__init__(parent)
         self.language = language
         self.metrics = metrics
-        self.telemetry = QtTelemetryService(context.services.resolve(TelemetryService), self)
+        self.telemetry = QtTelemetryService(
+            context.services.resolve(TelemetryService), self
+        )
         self.connections = None
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -22,7 +24,9 @@ class ConnectionStatusWidget(QWidget):
         else:
             self.indicator = StatusChip(t("status.telemetry", language), self)
             if context.services.container.has(ConnectionControlService):
-                self.connections = QtConnectionControlService(context.services.resolve(ConnectionControlService), self)
+                self.connections = QtConnectionControlService(
+                    context.services.resolve(ConnectionControlService), self
+                )
                 self.connections.status_changed.connect(self._connection_changed)
         layout.addWidget(self.indicator)
         self.set_theme(theme)
@@ -42,7 +46,13 @@ class ConnectionStatusWidget(QWidget):
 
     def _connection_changed(self, status):
         if status.channel == "telemetry":
-            self.indicator.set_state("success" if status.connected else "warning" if status.detail else "danger")
+            self.indicator.set_state(
+                "success"
+                if status.connected
+                else "warning"
+                if status.detail
+                else "danger"
+            )
             self.indicator.setToolTip(status.detail)
 
     def set_theme(self, theme):
@@ -50,7 +60,9 @@ class ConnectionStatusWidget(QWidget):
 
     def set_language(self, language):
         self.language = language
-        self.indicator.set_label(t("status.command_link" if self.metrics else "status.telemetry", language))
+        self.indicator.set_label(
+            t("status.command_link" if self.metrics else "status.telemetry", language)
+        )
 
     def prepare_shutdown(self):
         self.telemetry.close()

@@ -17,7 +17,13 @@ except ImportError:  # pragma: no cover - Linux-only device API
 
 from src.core.events import EventBus, Subscription
 from src.models.commands import CommandRequest
-from extensions.joystick.models import JoystickButtonConfig, JoystickChannelConfig, JoystickDevice, JoystickSettings, JoystickState
+from extensions.joystick.models import (
+    JoystickButtonConfig,
+    JoystickChannelConfig,
+    JoystickDevice,
+    JoystickSettings,
+    JoystickState,
+)
 from extensions.joystick.contracts import JoystickService
 from src.services.abstracts.settings import SettingsRepository
 from src.services.abstracts.vehicle import VehicleService
@@ -55,7 +61,9 @@ class LinuxRcJoystickService(JoystickService):
         self._settings_subscription: Subscription | None = None
         self._extension_subscription: Subscription | None = None
         self._configuration_revision = 0
-        self._configuration = JoystickSettings.from_config(self._settings.extension_config("joystick"))
+        self._configuration = JoystickSettings.from_config(
+            self._settings.extension_config("joystick")
+        )
         self._manual_disconnect = False
 
     @property
@@ -72,11 +80,22 @@ class LinuxRcJoystickService(JoystickService):
             return
         self._stop_event.clear()
         self._manual_disconnect = False
-        self._configuration = JoystickSettings.from_config(self._settings.extension_config("joystick"))
-        self._settings_subscription = self._settings.changed.subscribe(self._settings_changed)
+        self._configuration = JoystickSettings.from_config(
+            self._settings.extension_config("joystick")
+        )
+        self._settings_subscription = self._settings.changed.subscribe(
+            self._settings_changed
+        )
         self._extension_subscription = self._settings.extensions_changed.subscribe(
-            lambda identifier: self._settings_changed(self._settings.current) if identifier == "joystick" else None)
-        self._thread = threading.Thread(target=self._run, name="RcJoystick", daemon=True)
+            lambda identifier: (
+                self._settings_changed(self._settings.current)
+                if identifier == "joystick"
+                else None
+            )
+        )
+        self._thread = threading.Thread(
+            target=self._run, name="RcJoystick", daemon=True
+        )
         self._thread.start()
 
     def stop(self) -> None:
@@ -119,7 +138,9 @@ class LinuxRcJoystickService(JoystickService):
         return tuple(found)
 
     def _settings_changed(self, settings) -> None:
-        configuration = JoystickSettings.from_config(settings.extensions.get("joystick", {}).get("config", {}))
+        configuration = JoystickSettings.from_config(
+            settings.extensions.get("joystick", {}).get("config", {})
+        )
         if configuration == self._configuration:
             return
         self._configuration = configuration
@@ -130,7 +151,9 @@ class LinuxRcJoystickService(JoystickService):
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
-            config = JoystickSettings.from_config(self._settings.extension_config("joystick"))
+            config = JoystickSettings.from_config(
+                self._settings.extension_config("joystick")
+            )
             if not config.enabled or self._manual_disconnect:
                 self._wake_event.wait(0.5)
                 self._wake_event.clear()
@@ -192,7 +215,11 @@ class LinuxRcJoystickService(JoystickService):
                 pwm = self.channel_pwm(config, axes, buttons, toggles)
                 now = time.monotonic()
                 transmitting = self._vehicle.connected
-                if changed or not self.state.connected or self.state.transmitting != transmitting:
+                if (
+                    changed
+                    or not self.state.connected
+                    or self.state.transmitting != transmitting
+                ):
                     self._publish(
                         JoystickState(
                             connected=True,
@@ -216,7 +243,14 @@ class LinuxRcJoystickService(JoystickService):
             self._publish(JoystickState())
 
     def _execute_button_action(self, config: JoystickSettings, button: int) -> None:
-        assignment = next((item for item in config.buttons if item.button >= 0 and item.button == button), None)
+        assignment = next(
+            (
+                item
+                for item in config.buttons
+                if item.button >= 0 and item.button == button
+            ),
+            None,
+        )
         if assignment is None or not assignment.action or not self._vehicle.connected:
             return
         if not self._action_lock.acquire(blocking=False):
@@ -248,7 +282,11 @@ class LinuxRcJoystickService(JoystickService):
                 "joystick.button_action",
                 f"Joystick buton aksiyonu {'doğrulandı' if accepted else 'reddedildi'}: {assignment.action}",
                 "success" if accepted else "warning",
-                {"button": assignment.button + 1, "action": assignment.action, **parameters},
+                {
+                    "button": assignment.button + 1,
+                    "action": assignment.action,
+                    **parameters,
+                },
             )
         except Exception as exc:
             self._event(

@@ -14,8 +14,20 @@ from src.models.vehicle import (
 )
 
 __all__ = [
-    "CommandDefinition", "CommandRequest", "CommandResult", "ConnectionStatus",
-    "Point", "LogEntry", "MapContact", "MapOverlay", "MissionState", "Parameter",
-    "SettingsModel", "TelemetrySnapshot", "VehicleCapabilities",
-    "VehicleConnectionConfig", "VehicleConnectionState", "VehicleTransportStats",
+    "CommandDefinition",
+    "CommandRequest",
+    "CommandResult",
+    "ConnectionStatus",
+    "Point",
+    "LogEntry",
+    "MapContact",
+    "MapOverlay",
+    "MissionState",
+    "Parameter",
+    "SettingsModel",
+    "TelemetrySnapshot",
+    "VehicleCapabilities",
+    "VehicleConnectionConfig",
+    "VehicleConnectionState",
+    "VehicleTransportStats",
 ]

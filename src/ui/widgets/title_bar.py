@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer
 from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPen
-from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QMenuBar, QPushButton, QSizePolicy, QWidget
+from PyQt6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QMenuBar,
+    QPushButton,
+    QSizePolicy,
+    QWidget,
+)
 
 from src.ui.themes.style import ThemePalette
 
@@ -48,7 +56,9 @@ class AppMark(QWidget):
 
 
 class WindowControlButton(QPushButton):
-    def __init__(self, kind: str, theme: ThemePalette, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, kind: str, theme: ThemePalette, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self._kind = kind
         self._theme = theme
@@ -95,12 +105,18 @@ class WindowControlButton(QPushButton):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = self.rect()
         if self._hovered:
-            color = QColor(self._theme.danger if self._kind == "close" else self._theme.surface_hover)
+            color = QColor(
+                self._theme.danger
+                if self._kind == "close"
+                else self._theme.surface_hover
+            )
             if self._pressed:
                 color = color.darker(112)
             painter.fillRect(rect, color)
 
-        icon_color = QColor("#ffffff" if self._kind == "close" and self._hovered else self._theme.text)
+        icon_color = QColor(
+            "#ffffff" if self._kind == "close" and self._hovered else self._theme.text
+        )
         pen = QPen(icon_color, 1.6)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
@@ -172,7 +188,10 @@ class FramelessResizeController(QObject):
                 self._queue_resize(event.globalPosition().toPoint())
                 return True
             self._set_cursor(self._edge_at(event.globalPosition().toPoint()))
-        elif event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+        elif (
+            event.type() == QEvent.Type.MouseButtonPress
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
             edges = self._edge_at(event.globalPosition().toPoint())
             if edges:
                 if self._start_native_resize(edges):
@@ -183,7 +202,11 @@ class FramelessResizeController(QObject):
         elif event.type() == QEvent.Type.MouseButtonRelease:
             self._finish_manual_resize(event.globalPosition().toPoint())
             self._clear_cursor()
-        elif event.type() in {QEvent.Type.Leave, QEvent.Type.WindowDeactivate, QEvent.Type.Hide}:
+        elif event.type() in {
+            QEvent.Type.Leave,
+            QEvent.Type.WindowDeactivate,
+            QEvent.Type.Hide,
+        }:
             if self._resizing and event.type() != QEvent.Type.Leave:
                 self._finish_manual_resize()
             if not self._resizing:
@@ -211,7 +234,9 @@ class FramelessResizeController(QObject):
 
     def _edge_at(self, global_pos: QPoint):
         rect = self._window.frameGeometry()
-        if not rect.adjusted(-self._border, -self._border, self._border, self._border).contains(global_pos):
+        if not rect.adjusted(
+            -self._border, -self._border, self._border, self._border
+        ).contains(global_pos):
             return None
         edges = None
         if abs(global_pos.x() - rect.left()) <= self._border:
@@ -231,7 +256,10 @@ class FramelessResizeController(QObject):
         horizontal = bool(edges & (Qt.Edge.LeftEdge | Qt.Edge.RightEdge))
         vertical = bool(edges & (Qt.Edge.TopEdge | Qt.Edge.BottomEdge))
         if horizontal and vertical:
-            if edges in (Qt.Edge.TopEdge | Qt.Edge.LeftEdge, Qt.Edge.BottomEdge | Qt.Edge.RightEdge):
+            if edges in (
+                Qt.Edge.TopEdge | Qt.Edge.LeftEdge,
+                Qt.Edge.BottomEdge | Qt.Edge.RightEdge,
+            ):
                 self._window.setCursor(Qt.CursorShape.SizeFDiagCursor)
             else:
                 self._window.setCursor(Qt.CursorShape.SizeBDiagCursor)
@@ -287,15 +315,23 @@ class FramelessResizeController(QObject):
         geometry = QRect(self._start_geometry)
         minimum = self._window.minimumSize()
         if self._resize_edges & Qt.Edge.LeftEdge:
-            next_left = min(geometry.right() - minimum.width(), geometry.left() + delta.x())
+            next_left = min(
+                geometry.right() - minimum.width(), geometry.left() + delta.x()
+            )
             geometry.setLeft(next_left)
         if self._resize_edges & Qt.Edge.RightEdge:
-            geometry.setRight(max(geometry.left() + minimum.width(), geometry.right() + delta.x()))
+            geometry.setRight(
+                max(geometry.left() + minimum.width(), geometry.right() + delta.x())
+            )
         if self._resize_edges & Qt.Edge.TopEdge:
-            next_top = min(geometry.bottom() - minimum.height(), geometry.top() + delta.y())
+            next_top = min(
+                geometry.bottom() - minimum.height(), geometry.top() + delta.y()
+            )
             geometry.setTop(next_top)
         if self._resize_edges & Qt.Edge.BottomEdge:
-            geometry.setBottom(max(geometry.top() + minimum.height(), geometry.bottom() + delta.y()))
+            geometry.setBottom(
+                max(geometry.top() + minimum.height(), geometry.bottom() + delta.y())
+            )
         self._window.setGeometry(geometry)
 
     def _create_edge_handles(self) -> list[tuple[QWidget, Qt.Edge]]:
@@ -368,7 +404,9 @@ class AppTitleBar(QWidget):
         "menu.help",
     )
 
-    def __init__(self, window: QWidget, theme: ThemePalette, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, window: QWidget, theme: ThemePalette, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self._window = window
         self._theme = theme
@@ -389,8 +427,12 @@ class AppTitleBar(QWidget):
 
         self.title_label = QLabel("", self)
         self.title_label.setObjectName("WindowTitleLabel")
-        self.title_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-        self.title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.title_label.setAlignment(
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+        )
+        self.title_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         layout.addWidget(self.title_label, 1)
 
         self.minimize_button = self._control_button("minimize")
@@ -472,22 +514,32 @@ class AppTitleBar(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             if not self._window.isMaximized():
                 handle = self._window.windowHandle()
-                start_system_move = getattr(handle, "startSystemMove", None) if handle else None
+                start_system_move = (
+                    getattr(handle, "startSystemMove", None) if handle else None
+                )
                 if start_system_move and start_system_move():
                     self._drag_offset = None
                     event.accept()
                     return
-            self._drag_offset = event.globalPosition().toPoint() - self._window.frameGeometry().topLeft()
+            self._drag_offset = (
+                event.globalPosition().toPoint()
+                - self._window.frameGeometry().topLeft()
+            )
             event.accept()
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
-        if event.buttons() & Qt.MouseButton.LeftButton and self._drag_offset is not None:
+        if (
+            event.buttons() & Qt.MouseButton.LeftButton
+            and self._drag_offset is not None
+        ):
             if self._window.isMaximized():
                 self._window.showNormal()
                 self.sync_window_state()
-                self._drag_offset = QPoint(self._window.width() // 2, self.height() // 2)
+                self._drag_offset = QPoint(
+                    self._window.width() // 2, self.height() // 2
+                )
             self._window.move(event.globalPosition().toPoint() - self._drag_offset)
             event.accept()
             return

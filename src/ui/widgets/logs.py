@@ -118,10 +118,18 @@ class EventLogPanel(PanelFrame):
         self.table = QTableWidget(0, 4, self)
         self.table.setObjectName("LogTable")
         self.table.setHorizontalHeaderLabels(["TIME", "LEVEL", "SOURCE", "MESSAGE"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Fixed
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.Stretch
+        )
         self.table.setColumnWidth(1, 88)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -136,7 +144,6 @@ class EventLogPanel(PanelFrame):
             self._on_scroll_value_changed
         )
         self.set_language("tr")
-
 
     def set_language(self, language: str) -> None:
         self._language = language
@@ -169,11 +176,7 @@ class EventLogPanel(PanelFrame):
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        color = (
-            QColor("#8CA1B5")
-            if level == "all"
-            else self._severity_color(level)
-        )
+        color = QColor("#8CA1B5") if level == "all" else self._severity_color(level)
         glow = QColor(color)
         glow.setAlpha(48)
         painter.setPen(QPen(glow, 1))

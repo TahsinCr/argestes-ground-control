@@ -1,0 +1,19 @@
+{
+  "teknofest.name": "Server name",
+  "teknofest.base_url": "Server address",
+  "teknofest.username": "Username",
+  "teknofest.password": "Password",
+  "teknofest.team": "Team number",
+  "teknofest.auto": "Connect automatically",
+  "teknofest.add": "Add",
+  "teknofest.remove": "Remove",
+  "teknofest.save": "Save",
+  "teknofest.connect": "Connect",
+  "teknofest.disconnect": "Disconnect",
+  "teknofest.connected": "Connected",
+  "teknofest.disconnected": "Disconnected",
+  "teknofest.invalid_url": "Enter a valid HTTP(S) address.",
+  "extension.siha_teknofest_server.name": "SIHA TEKNOFEST Server",
+  "extension.siha_teknofest_server.category": "Server",
+  "extension.siha_teknofest_server.description": "Server connections, telemetry delivery and SQLite history"
+}

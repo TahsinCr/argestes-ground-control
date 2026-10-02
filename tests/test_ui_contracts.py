@@ -34,19 +34,20 @@ from src.models.parameters import Parameter
 from src.models.settings import SettingsModel
 from src.models.telemetry import TelemetrySnapshot
 from src.ui.i18n import t
-from extensions.map.ui.tools import MAP_TOOLS
+from extensions.map_autonomy.ui.tools import MAP_TOOLS
 from src.ui.config.settings_schema import iter_fields
 from src.ui.themes.palette import DARK, LIGHT
 from src.ui.themes.manager import apply_theme
 from src.ui.themes.stylesheet import build_stylesheet
 from src.ui.views.settings_dialog import SettingsDialog
-from src.ui.widgets.attitude import AttitudeIndicator
-from src.ui.widgets.control_panels import TelemetryPanel
-from src.ui.widgets.common import BatteryMeter, SignalMeter
-from src.ui.widgets.battery_popup import BatterySettingsPopup
+from extensions.flight_dynamics.ui.panel import AttitudeIndicator
+from extensions.telemetry_display.ui.panel import TelemetryPanel
+from src.ui.widgets.common import SignalMeter
+from extensions.battery.ui.meter import BatteryMeter
+from extensions.battery.ui.settings_popup import BatterySettingsPopup
 from src.ui.widgets.logs import EventLogPanel
-from src.ui.widgets.parameters import ParametersPanel
-from extensions.map.ui.panel import MapPanel, MapWebBridge
+from extensions.parameters.ui.panel import ParametersPanel
+from extensions.map_autonomy.ui.panel import MapPanel, MapWebBridge
 from src.ui.widgets.activity_bar import ActivityBar
 from src.ui.widgets.title_bar import AppTitleBar, FramelessResizeController
 from src.container import create_container
@@ -71,7 +72,7 @@ class UiContractTests(unittest.TestCase):
                 window._size_default_docks()
                 self.app.processEvents()
                 panels = window.workspace.panels
-                widths = [panels[key].width() for key in ("flight", "telemetry", "commands")]
+                widths = [panels[key].width() for key in ("flight_dynamics.view", "telemetry_display.view", "quick_commands.view")]
                 self.assertTrue(all(300 <= width <= 340 for width in widths), widths)
                 self.assertLessEqual(max(widths) - min(widths), 1)
                 self.assertGreater(window.primary_dock.height(), panels["logs"].height())
@@ -95,16 +96,16 @@ class UiContractTests(unittest.TestCase):
                 window.show()
                 self.app.processEvents()
                 self.assertIsNotNone(window.primary_dock)
-                window._apply_extension_change("map", False)
+                window._apply_extension_change("map_autonomy", False)
                 self.app.processEvents()
                 self.assertIsNone(window.primary_dock)
-                self.assertNotIn("map.view", window.workspace.panels)
+                self.assertNotIn("map_autonomy.view", window.workspace.panels)
                 self.assertIn("logs", window.workspace.panels)
                 window._reset_workspace()
-                window._apply_extension_change("map", True)
+                window._apply_extension_change("map_autonomy", True)
                 self.app.processEvents()
                 self.assertIsNotNone(window.primary_dock)
-                self.assertIn("map.view", window.workspace.panels)
+                self.assertIn("map_autonomy.view", window.workspace.panels)
                 fake = SimpleNamespace(devices=lambda: (), state=JoystickState(),
                                        reconnect=lambda: None, disconnect=lambda: None)
                 from src.services.settings import SettingsService
@@ -225,9 +226,9 @@ class UiContractTests(unittest.TestCase):
                 window = ui.resolve(MainWindow)
                 window.show()
                 self.app.processEvents()
-                self.assertIn("map.view", window.workspace.panels)
-                self.assertIs(window.workspace.panels["map.view"], window.primary_dock)
-                self.assertIn("map.view", window.activity_bar.panel_buttons)
+                self.assertIn("map_autonomy.view", window.workspace.panels)
+                self.assertIs(window.workspace.panels["map_autonomy.view"], window.primary_dock)
+                self.assertIn("map_autonomy.view", window.activity_bar.panel_buttons)
                 self.assertNotIn("extensions", window.workspace.panels)
                 self.assertIs(window.sidebar.parentWidget(), window.content_splitter)
                 self.assertIs(window.workspace.parentWidget(), window.content_splitter)
@@ -237,7 +238,7 @@ class UiContractTests(unittest.TestCase):
                 self.assertTrue(all(
                     dock.isHidden()
                     for key, dock in window.workspace.panels.items()
-                    if key != "map.view"
+                    if key != "map_autonomy.view"
                 ))
                 self.assertFalse(window.primary_dock.isHidden())
                 window._reset_workspace()
@@ -248,9 +249,12 @@ class UiContractTests(unittest.TestCase):
                 window._edit_layout_action.trigger()
                 self.assertTrue(window.workspace.edit_mode)
                 self.assertIsNone(window.log_dock.titleBarWidget())
-                window._show_sidebar_view("extensions")
+                window.open_extensions()
                 self.app.processEvents()
-                self.assertFalse(window.sidebar.isHidden())
+                self.assertTrue(window.extension_dialog.isVisible())
+                self.assertTrue(window.sidebar.isHidden())
+                window.extension_dialog.hide()
+                window._set_extension_sidebar_visible(True)
                 window.content_splitter.setSizes([380, 700])
                 self.app.processEvents()
                 before = window.content_splitter.sizes()[0]
@@ -363,25 +367,23 @@ class UiContractTests(unittest.TestCase):
         bar.deleteLater()
         self.app.processEvents()
 
-    def test_settings_dialog_validates_battery_voltage_fields_as_one_profile(self) -> None:
-        dialog = SettingsDialog(SettingsModel(), "tr", DARK)
-        full = dialog._widgets["backend.battery_telemetry.full_voltage"]
-        minimum = dialog._widgets["backend.battery_telemetry.reserve_voltage"]
-        minimum_percent = dialog._widgets[
-            "backend.battery_telemetry.reserve_percent"
-        ]
-        full.setValue(14.0)
-        minimum.setValue(13.0)
-        minimum_percent.setValue(12.0)
-
-        updated = dialog.to_settings().backend.battery_telemetry
-
-        self.assertEqual(updated.full_voltage, 14.0)
-        self.assertEqual(updated.reserve_voltage, 13.0)
-        self.assertEqual(updated.reserve_percent, 12.0)
-        full.setValue(12.0)
+    def test_settings_dialog_validates_battery_voltage_fields_as_one_profile(self):
+        dialog = BatterySettingsPopup(DARK, language="tr")
+        dialog.show_settings(SettingsModel(), TelemetrySnapshot.zero())
+        dialog.full_voltage.setValue(14.0)
+        dialog.minimum_voltage.setValue(13.0)
+        dialog.minimum_percent.setValue(12.0)
+        payload = SettingsModel().to_dict()
+        for key,value in dialog.values().items():
+            if key in payload["backend"]["battery_telemetry"]:
+                payload["backend"]["battery_telemetry"][key]=value
+        updated=SettingsModel.from_dict(payload).backend.battery_telemetry
+        self.assertEqual(updated.full_voltage,14.0)
+        self.assertEqual(updated.reserve_voltage,13.0)
+        self.assertEqual(updated.reserve_percent,12.0)
+        payload["backend"]["battery_telemetry"]["full_voltage"]=12.0
         with self.assertRaises(ValueError):
-            dialog.to_settings()
+            SettingsModel.from_dict(payload)
         dialog.close()
         dialog.deleteLater()
         self.app.processEvents()

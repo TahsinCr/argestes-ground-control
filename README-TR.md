@@ -7,9 +7,10 @@
 
 Eklenti ana makinesine sahip masaüstü yer kontrol uygulaması. Dahili MAVLink
 protokol eklentisi ve isteğe bağlı Araç Bağlantısı eklentisi mevcut araç bağlantısı,
-telemetri/GPS, otopilot ve parametre işlevlerini sağlar. İsteğe bağlı kamera
-eklentisi çoklu kamera panelini, kaydı ve canlı yayın çıkışını getirir. Ortak uygulamada görev
-planlama, harita, loglar, batarya ve cihaz durumu korunur.
+telemetri/GPS ve otopilot işlevlerini sağlar. Harita/otonomi, parametreler, batarya,
+araç dinamiği, yapılandırılabilir telemetri, hızlı komutlar, kamera, joystick ve
+sunucu işlevleri eklentilere aittir. Ortak uygulama yerleşim, ayarlar, loglama,
+eklenti yaşam döngüsü ve normalize veri sözleşmelerini yönetir.
 
 Uygulama araçtan bağımsız ortak bir yer kontrol temeli olarak geliştirilmektedir.
 
@@ -24,10 +25,14 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
+pip install -r extensions/mavlink/requirements.txt
+pip install -r extensions/map_autonomy/requirements.txt
 python main.py
 ```
 
-Uygulama Python 3.11+, Qt 6, `pymavlink` ve `pyserial` gerektirir. Linux'ta
+Uygulama Python 3.11+ ve Qt 6 gerektirir. Protokol ve WebEngine bağımlılıkları
+ilgili eklentinin requirements dosyasından kurulur. Uygulamayı aynı sanal ortamdan
+başlatın; Qt ile Qt WebEngine sürümlerini uyumlu tutun. Linux'ta
 başlatmadan önce PyQt6 ve Qt WebEngine için gereken sistem paketlerini kurun.
 
 ## MAVLink bağlantıları
@@ -55,7 +60,7 @@ arayüz ikinci bir okuyucu oluşturmaz ve ham paket kodlamaz.
 ```text
 Qt arayüzü → UI adaptörleri → uygulama sözleşmeleri → eklenti ana makinesi
                          │                              └── extensions/
-                         └── ayarlar, loglar, planlayıcı, harita ve batarya
+                         └── yerleşim, ayarlar, loglar ve normalize veri hub'ları
 ```
 
 `src/container.py` composition root'tur. `src/extension/api` sürümlü eklenti
@@ -66,15 +71,18 @@ ve çözümlenmiş telemetri verisini sağlar. Araç Bağlantısı eklentisi ba�
 yaşam döngüsünü ve profil düzenlemeyi protokolden bağımsız `ConnectionSource`
 ve `ConnectionProfiles` sözleşmeleriyle yönetir. En az bir protokol sağlayıcısı etkin
 kalmalıdır. Kamera ve Araç Bağlantısı eklentileri uygulama kapanmadan açılıp
-kapatılabilir; yalnız kendi servisleri ve arayüz katkıları yeniden kurulur. Sol etkinlik
-çubuğunda arama, kategori/durum filtresi ve eklenti kontrolleri vardır. Mevcut
+kapatılabilir; yalnız kendi servisleri ve arayüz katkıları yeniden kurulur. Ayarlar
+yanındaki Eklentiler düğmesi pencereye göre boyutlanan arama, kategori/durum
+filtreli dialog açar. Sekme kabuğu ileride mağazayı da barındırabilir; şu an mağaza
+eklenmemiştir. Mevcut
 MAVLink ayarları `data/settings.json` içinde korunur; eklenti durumu ve kendi
 ayarları aynı dosyanın `extensions.<kimlik>.enabled` ve
 `extensions.<kimlik>.config` alanlarında tutulur; devre dışı bırakılınca silinmez.
 Eski `data/extensions/` config dosyaları içe alındıktan sonra kaldırılır;
 ilgisiz veri dosyalarına dokunulmaz.
-Ham mesaj abonelikleri, heartbeat çözümlemesi ve parametre mesajlarının işlenmesi
-protokol paketine aittir; ortak `VehicleService` bunları zorunlu kılmaz.
+Ham mesaj abonelikleri ve heartbeat çözümlemesi protokol paketine, parametre
+mesajlarının işlenmesi parametre eklentisinin protokol adaptörüne aittir;
+ortak `VehicleService` bunları zorunlu kılmaz.
 MAVLink çözümlenmiş veri akışını, GPS ve otopilot göstergelerini yönetir.
 Araç Bağlantısı bağlantı çipini ve kalite göstergesini sağlar;
 kamera durum kontrolleri kamera paketinde kalır.
@@ -83,7 +91,9 @@ sol bağlantı grubuna veya bataryanın yanına yerleştirir. Bağlantı, GPS ve
 otopilot göstergeleri yalnız durum gösterir; tıklayınca pencere açmaz.
 Bağlantı profilleri Araç Bağlantısı eklentisinin ayarlarından düzenlenir. MAVLink'in
 gelişmiş ayarları ortak ayarlar penceresi yerine Eklentiler panelindeki kendi
-ayarlar eyleminden açılır.
+ayarlar eyleminden açılır. Dialect seçicisi kurulu pymavlink dialect'lerini listeler;
+değişiklik bağlı hattı arka planda yeniden yapılandırır, kapalı bir hattı kendiliğinden
+etkinleştirmez.
 Her eklenti `i18n/tr.json` ve `i18n/en.json` dil paketlerini kendi içinde taşır.
 Kurulu paketler doğrulanıp bir kez birleştirilir; çeviri sırasında disk okunmaz.
 Yinelenen anahtarlar reddedilir, keşif yenilemesinde katalog yeniden oluşturulur.
@@ -128,15 +138,17 @@ yerleşim dalları kendi boyutlarını korur.
 
 ## İsteğe bağlı entegrasyonlar
 
-* **Harita** kendi panelini, web dosyalarını, tercihlerini ve görev görünümünü
-  sağlar. Normalize telemetri ve seyrüsefer servislerini kullanır; şu an sağlayıcı
+* **Harita ve Otonomi** (`map_autonomy`) panel, web dosyaları, tile cache,
+  planlayıcı, tercihler ve görev görünümünün sahibidir. Geliştirici API'si
+  `extensions.map_autonomy.api.planner.PlannerMapApi` konumundadır.
+  Normalize telemetri ve seyrüsefer servislerini kullanır; şu an sağlayıcı
   MAVLink'tir. Uygulama yeniden başlatılmadan kapatılıp açılabilir.
 * **Joystick** RC1–RC16 atama, PWM kalibrasyonu, otomatik algılama ve buton
   aksiyonlarını getirir. Varsayılan olarak kapalıdır ve şu an MAVLink RC adaptörü
   seçilir. Kumandanın aktivasyonu eklentinin etkin olmasından ayrıdır; kapatılınca
   RC override bırakılır. Protokol seçimi cihaz/UI kodundan ayrı tutulur ve
   `src.extension.api.protocol.ActiveProtocol` üzerinden yapılır.
-* **TEKNOFEST** bağımsız HTTP sunucu profilleri, sabit 1 Hz telemetri zamanlaması,
+* **SİHA TEKNOFEST Sunucusu** (`siha_teknofest_server`) bağımsız HTTP sunucu profilleri, sabit 1 Hz telemetri zamanlaması,
   sunucu saati, QR/HSS sorguları ve gerçek kilitlenme/kamikaze sonuçlarını gönderme
   metotlarını sağlar. Normalize telemetri kullanır; MAVLink kimliğine bağlı değildir.
   Sunucu alışverişleri WAL kullanan `data/teknofest/history.sqlite3` veritabanına
@@ -152,7 +164,7 @@ yerleşim dalları kendi boyutlarını korur.
   "extensions": {
     "camera": { "enabled": false, "config": {} },
     "joystick": { "enabled": false, "config": {} },
-    "teknofest": { "enabled": false, "config": { "servers": [] } }
+    "siha_teknofest_server": { "enabled": false, "config": { "servers": [] } }
   }
 }
 ```
@@ -160,6 +172,17 @@ yerleşim dalları kendi boyutlarını korur.
 Eski typed backend alanları uyumluluk için korunur. MAVLink paketi protokol
 ayarlarını ve bağlantı profillerini ortak eklenti bölümüne yansıtır; eski
 düzenleyiciler diğer eklentilerin configlerini ezmez.
+
+Araç dinamiği, telemetri göstergesi, hızlı komutlar ve batarya ayrı paketlerdir;
+normalize veri veya genel komut yeteneklerini kullanır. Telemetri ayarlarından
+görünecek alanlar seçilir. Parametre paketi şu an `mavlink.parameters` yeteneğini
+gerektirir; MAVLink adaptörü kendi içindedir. `VehicleService` RC ve görev metotlarını
+zorunlu kılmaz; `src.extension.api.vehicle` içindeki `RcControl` ve `MissionControl`
+portları ayrı sunulur. Yeni protokol için gereken port/adaptör ve yetenek eklenir;
+özellik arayüzüne taşıma protokolü sızdırılmaz. Üretim mock telemetri kaldırılmıştır;
+testler kendi sahtelerini enjekte eder. Eski `map` ve `teknofest` tercihleri kapalı
+durum ve bilinmeyen ayarlar korunarak taşınır. Yerleşimde Qt'nin kaydedilmiş bölme
+ve sekme durumu esastır; açılışta eski piksel boyutları bunun üzerine uygulanmaz.
 
 ## Ayarlar, loglar ve testler
 

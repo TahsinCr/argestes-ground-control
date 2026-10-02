@@ -1,0 +1,19 @@
+{
+  "teknofest.name": "Sunucu adı",
+  "teknofest.base_url": "Sunucu adresi",
+  "teknofest.username": "Kullanıcı adı",
+  "teknofest.password": "Parola",
+  "teknofest.team": "Takım numarası",
+  "teknofest.auto": "Otomatik bağlan",
+  "teknofest.add": "Ekle",
+  "teknofest.remove": "Sil",
+  "teknofest.save": "Kaydet",
+  "teknofest.connect": "Bağlan",
+  "teknofest.disconnect": "Bağlantıyı kes",
+  "teknofest.connected": "Bağlı",
+  "teknofest.disconnected": "Bağlı değil",
+  "teknofest.invalid_url": "Geçerli bir HTTP(S) adresi girin.",
+  "extension.siha_teknofest_server.name": "SİHA TEKNOFEST Sunucusu",
+  "extension.siha_teknofest_server.category": "Sunucu",
+  "extension.siha_teknofest_server.description": "Sunucu bağlantıları, telemetri gönderimi ve SQLite geçmişi"
+}

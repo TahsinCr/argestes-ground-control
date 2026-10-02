@@ -1,5 +1,15 @@
 """Provider-neutral vehicle connection profile editor."""
-from PyQt6.QtWidgets import QVBoxLayout, QWidget, QDialog, QFormLayout, QLineEdit, QSpinBox, QDialogButtonBox, QMessageBox
+
+from PyQt6.QtWidgets import (
+    QVBoxLayout,
+    QWidget,
+    QDialog,
+    QFormLayout,
+    QLineEdit,
+    QSpinBox,
+    QDialogButtonBox,
+    QMessageBox,
+)
 from src.models.connections import ConnectionProfile
 from src.extension.api.contracts import ConnectionProfiles
 from uuid import uuid4
@@ -15,8 +25,12 @@ class ConnectionEditor(QWidget):
     def __init__(self, context, parent, theme, language):
         super().__init__(parent)
         self.hide()
-        self.settings_service = QtSettingsService(context.services.resolve(SettingsService), self)
-        self.connection_service = QtConnectionControlService(context.services.resolve(ConnectionControlService), self)
+        self.settings_service = QtSettingsService(
+            context.services.resolve(SettingsService), self
+        )
+        self.connection_service = QtConnectionControlService(
+            context.services.resolve(ConnectionControlService), self
+        )
         self.profiles = context.services.resolve(ConnectionProfiles)
         self.language = language
         self.profiles_panel = ConnectionsPanel(theme, self, language=language)
@@ -40,10 +54,12 @@ class ConnectionEditor(QWidget):
 
     def _operation_finished(self, *_args):
         status = self.connection_service.status("telemetry")
-        self.profiles_panel.finish_connection(active_identifier=self.profiles.active_identifier,
-                                              connected=status.connected,
-                                              running=bool(status.options.get("running", status.connected)),
-                                              detail=status.detail)
+        self.profiles_panel.finish_connection(
+            active_identifier=self.profiles.active_identifier,
+            connected=status.connected,
+            running=bool(status.options.get("running", status.connected)),
+            detail=status.detail,
+        )
 
     def prepare_shutdown(self):
         self.profiles_panel.close()
@@ -111,12 +127,23 @@ class ConnectionEditor(QWidget):
         form = QFormLayout(dialog)
         name = QLineEdit(profile.name, dialog)
         endpoint = QLineEdit(profile.endpoint, dialog)
-        baud = QSpinBox(dialog); baud.setRange(1200, 4_000_000); baud.setValue(profile.baud)
-        timeout = QSpinBox(dialog); timeout.setRange(1, 120); timeout.setValue(profile.heartbeat_timeout)
-        form.addRow(t("connection.profile.name", self.language), name); form.addRow(t("connection.label.address", self.language), endpoint)
-        form.addRow("Baud", baud); form.addRow(t("connection.label.timeout", self.language), timeout)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel, dialog)
-        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject)
+        baud = QSpinBox(dialog)
+        baud.setRange(1200, 4_000_000)
+        baud.setValue(profile.baud)
+        timeout = QSpinBox(dialog)
+        timeout.setRange(1, 120)
+        timeout.setValue(profile.heartbeat_timeout)
+        form.addRow(t("connection.profile.name", self.language), name)
+        form.addRow(t("connection.label.address", self.language), endpoint)
+        form.addRow("Baud", baud)
+        form.addRow(t("connection.label.timeout", self.language), timeout)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel,
+            dialog,
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
         form.addRow(buttons)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -128,13 +155,20 @@ class ConnectionEditor(QWidget):
             heartbeat_timeout=timeout.value(),
             auto_connect=profile.auto_connect,
         )
-        profiles = [updated if item.identifier == profile.identifier else item for item in existing]
+        profiles = [
+            updated if item.identifier == profile.identifier else item
+            for item in existing
+        ]
         if not any(item.identifier == updated.identifier for item in existing):
             profiles.append(updated)
         self._save_profiles(tuple(profiles), updated.identifier)
 
     def _save_profiles(self, profiles, active_identifier: str | None = None) -> None:
         try:
-            self.settings_service.save_async(self.profiles.settings_payload(profiles, active_identifier))
+            self.settings_service.save_async(
+                self.profiles.settings_payload(profiles, active_identifier)
+            )
         except (TypeError, ValueError) as exc:
-            QMessageBox.warning(self, t("extension.vehicle_connection.name", self.language), str(exc))
+            QMessageBox.warning(
+                self, t("extension.vehicle_connection.name", self.language), str(exc)
+            )

@@ -9,15 +9,11 @@ from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
-    QFrame,
     QFormLayout,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QMessageBox,
-    QPushButton,
     QScrollArea,
     QSpinBox,
     QVBoxLayout,
@@ -32,8 +28,15 @@ from src.ui.widgets.title_bar import AppTitleBar
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, settings: SettingsModel, language: str, theme: ThemePalette, parent=None,
-                 *, sections: tuple[SectionSpec, ...] | None = None) -> None:
+    def __init__(
+        self,
+        settings: SettingsModel,
+        language: str,
+        theme: ThemePalette,
+        parent=None,
+        *,
+        sections: tuple[SectionSpec, ...] | None = None,
+    ) -> None:
         super().__init__(parent)
         self._ui_language = language
         self._theme = theme
@@ -71,15 +74,18 @@ class SettingsDialog(QDialog):
         shell_layout.addWidget(scroll, 1)
 
         footer = QHBoxLayout()
-        self.clear_cache_button = QPushButton(t("dialog.settings.clear_cache", language), self)
-        footer.addWidget(self.clear_cache_button)
         footer.addStretch(1)
         self.buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel,
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        self.buttons.button(QDialogButtonBox.StandardButton.Save).setText(t("dialog.settings.save", language))
-        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(t("dialog.settings.cancel", language))
+        self.buttons.button(QDialogButtonBox.StandardButton.Save).setText(
+            t("dialog.settings.save", language)
+        )
+        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(
+            t("dialog.settings.cancel", language)
+        )
         self.buttons.accepted.connect(self._accept_if_valid)
         self.buttons.rejected.connect(self.reject)
         footer.addWidget(self.buttons)

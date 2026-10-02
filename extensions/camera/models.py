@@ -108,7 +108,15 @@ class VideoSourceConfig(Model):
             raise ValueError("Video bağlantı kimliği geçersiz")
         if not name:
             raise ValueError("Video bağlantı adı boş olamaz")
-        if source_type not in {"mock", "http", "rtsp", "udp", "usb", "file", "pipeline"}:
+        if source_type not in {
+            "mock",
+            "http",
+            "rtsp",
+            "udp",
+            "usb",
+            "file",
+            "pipeline",
+        }:
             raise ValueError(f"Desteklenmeyen video kaynağı: {source_type}")
         if codec not in {"h264", "h265", "mjpeg"}:
             raise ValueError(f"Desteklenmeyen video codec: {codec}")
@@ -175,7 +183,9 @@ class VideoShareConfig(Model):
             raise ValueError("Video paylaşım FPS değeri 15..120 aralığında olmalı")
         if output_type == "record" and source_id == "panel":
             raise ValueError("Kayıt çıkışı belirli bir kameraya bağlanmalı")
-        if network_interface and not re.fullmatch(r"[A-Za-z0-9_.:-]+", network_interface):
+        if network_interface and not re.fullmatch(
+            r"[A-Za-z0-9_.:-]+", network_interface
+        ):
             raise ValueError("Video paylaşım ağ arayüzü geçersiz")
         object.__setattr__(self, "identifier", identifier)
         object.__setattr__(self, "name", name)

@@ -38,7 +38,9 @@ class Point(Model):
         lat1, lat2 = math.radians(self.latitude), math.radians(other.latitude)
         delta_lon = math.radians(other.longitude - self.longitude)
         y = math.sin(delta_lon) * math.cos(lat2)
-        x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(delta_lon)
+        x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(
+            lat2
+        ) * math.cos(delta_lon)
         return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
 
     def to_list(self) -> list[float]:

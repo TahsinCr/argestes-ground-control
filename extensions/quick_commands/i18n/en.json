@@ -1,0 +1,5 @@
+{
+  "extension.quick_commands.name": "Quick Commands",
+  "extension.quick_commands.description": "Commands and modes from the active provider",
+  "extension.quick_commands.category": "Vehicle"
+}

@@ -11,7 +11,7 @@ from src.container import create_container
 from src.extension.api import ExtensionManifest, ExtensionRegistrar
 from src.extension.host import ExtensionError, ExtensionHost
 from src.services.abstracts.telemetry import TelemetryService
-from src.services.vehicle.telemetry_base import MutableTelemetryService
+from src.services.telemetry import MutableTelemetryService
 from extensions.mavlink.runtime import MavlinkTelemetryRuntime
 from extensions.vehicle_connection.runtime import ConnectionRuntime
 

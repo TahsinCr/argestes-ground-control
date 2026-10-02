@@ -1,0 +1,1 @@
+{"identifier":"quick_commands","name":"Quick Commands","description":"Commands and modes exposed by the active protocol provider","category":"Vehicle","version":"1.0.0","api_major":1,"entry_point":"extensions.quick_commands.plugin:create_extension","requires":["vehicle.commands","vehicle.telemetry.source"],"provides":["ui.quick_commands"],"default_enabled":true,"settings":{}}

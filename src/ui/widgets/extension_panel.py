@@ -3,12 +3,47 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-                             QFormLayout, QHBoxLayout, QLabel, QLineEdit,
-                             QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+    QTabWidget,
+)
 
 from src.extension.host import ExtensionError, ExtensionHost
 from src.ui.i18n import t, reload_language_packs
+
+
+class ExtensionDialog(QDialog):
+    """Responsive management shell; future catalog tabs reuse the browser UI."""
+
+    def __init__(self, host, language, parent=None, **callbacks):
+        super().__init__(parent)
+        self.setWindowTitle("Extensions" if language == "en" else "Eklentiler")
+        self.setMinimumSize(480, 360)
+        layout = QVBoxLayout(self)
+        self.tabs = QTabWidget(self)
+        self.browser = ExtensionPanel(host, language, self.tabs, **callbacks)
+        self.tabs.addTab(self.browser, "Installed" if language == "en" else "Yüklü")
+        layout.addWidget(self.tabs)
+
+    def resize_for(self, window):
+        self.resize(
+            max(480, min(960, int(window.width() * 0.7))),
+            max(360, min(760, int(window.height() * 0.8))),
+        )
+        center = window.frameGeometry().center()
+        self.move(center.x() - self.width() // 2, center.y() - self.height() // 2)
 
 
 class ExtensionPanel(QWidget):
@@ -18,12 +53,21 @@ class ExtensionPanel(QWidget):
         return getattr(manifest, field) if translated == f"[{key}]" else translated
 
     def _category_name(self, name):
-        entry = next(item for item in self.host.list_extensions() if item.manifest.category == name)
+        entry = next(
+            item
+            for item in self.host.list_extensions()
+            if item.manifest.category == name
+        )
         return self._metadata(entry.manifest, "category")
 
-    def __init__(self, host: ExtensionHost, language: str, parent: QWidget | None = None,
-                 apply_change: Callable[[str, bool], None] | None = None,
-                 reload_extension: Callable[[str], None] | None = None) -> None:
+    def __init__(
+        self,
+        host: ExtensionHost,
+        language: str,
+        parent: QWidget | None = None,
+        apply_change: Callable[[str, bool], None] | None = None,
+        reload_extension: Callable[[str], None] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.host = host
         self.language = language
@@ -34,22 +78,35 @@ class ExtensionPanel(QWidget):
         self.heading = QLabel("EXTENSIONS" if language == "en" else "EKLENTİLER")
         heading_row = QHBoxLayout()
         heading_row.addWidget(self.heading, 1)
-        self.discover_button = QPushButton("Refresh" if language == "en" else "Yenile", self)
+        self.discover_button = QPushButton(
+            "Refresh" if language == "en" else "Yenile", self
+        )
         self.discover_button.clicked.connect(self._refresh_discovery)
         heading_row.addWidget(self.discover_button)
         layout.addLayout(heading_row)
         self.search = QLineEdit(self)
-        self.search.setPlaceholderText("Search extensions" if language == "en" else "Eklenti ara")
+        self.search.setPlaceholderText(
+            "Search extensions" if language == "en" else "Eklenti ara"
+        )
         self.search.textChanged.connect(self.refresh)
         layout.addWidget(self.search)
         self.filter = QComboBox(self)
-        self.filter.addItems((["All", "Enabled", "Disabled"] if language == "en"
-                              else ["Tümü", "Etkin", "Devre dışı"]))
+        self.filter.addItems(
+            (
+                ["All", "Enabled", "Disabled"]
+                if language == "en"
+                else ["Tümü", "Etkin", "Devre dışı"]
+            )
+        )
         self.filter.currentIndexChanged.connect(self.refresh)
         layout.addWidget(self.filter)
         self.category = QComboBox(self)
-        self.category.addItem("All categories" if language == "en" else "Tüm kategoriler", "")
-        for name in sorted({entry.manifest.category for entry in host.list_extensions()}):
+        self.category.addItem(
+            "All categories" if language == "en" else "Tüm kategoriler", ""
+        )
+        for name in sorted(
+            {entry.manifest.category for entry in host.list_extensions()}
+        ):
             self.category.addItem(self._category_name(name), name)
         self.category.currentIndexChanged.connect(self.refresh)
         layout.addWidget(self.category)
@@ -69,25 +126,38 @@ class ExtensionPanel(QWidget):
     def refresh(self, *_args) -> None:
         while self.cards_layout.count():
             item = self.cards_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
         query = self.search.text().casefold().strip()
         entries = self.host.list_extensions()
         self.restart_label.setText(
-            ("Settings need extension reload" if self.language == "en"
-             else "Ayarlar için eklentiyi yeniden yükleyin")
-            if any(item.pending_restart for item in entries) else ""
+            (
+                "Settings need extension reload"
+                if self.language == "en"
+                else "Ayarlar için eklentiyi yeniden yükleyin"
+            )
+            if any(item.pending_restart for item in entries)
+            else ""
         )
         for item in entries:
             manifest = item.manifest
-            name, detail = self._metadata(manifest, "name"), self._metadata(manifest, "description")
+            name, detail = (
+                self._metadata(manifest, "name"),
+                self._metadata(manifest, "description"),
+            )
             if query and query not in f"{name} {detail} {manifest.name}".casefold():
                 continue
             if self.filter.currentIndex() == 1 and not item.enabled:
                 continue
             if self.filter.currentIndex() == 2 and item.enabled:
                 continue
-            if self.category.currentData() and self.category.currentData() != manifest.category:
+            if (
+                self.category.currentData()
+                and self.category.currentData() != manifest.category
+            ):
                 continue
             card = QWidget(self.cards)
             card.setObjectName("ExtensionCard")
@@ -99,21 +169,36 @@ class ExtensionPanel(QWidget):
             description.setWordWrap(True)
             card_layout.addWidget(description)
             row = QHBoxLayout()
-            toggle = QPushButton(("Disable" if item.enabled else "Enable") if self.language == "en"
-                                 else ("Devre dışı bırak" if item.enabled else "Etkinleştir"), card)
-            toggle.clicked.connect(lambda _checked=False, key=manifest.identifier, value=not item.enabled:
-                                   self._toggle(key, value))
+            toggle = QPushButton(
+                ("Disable" if item.enabled else "Enable")
+                if self.language == "en"
+                else ("Devre dışı bırak" if item.enabled else "Etkinleştir"),
+                card,
+            )
+            toggle.clicked.connect(
+                lambda _checked=False, key=manifest.identifier, value=not item.enabled: (
+                    self._toggle(key, value)
+                )
+            )
             row.addWidget(toggle)
-            settings = QPushButton("Settings" if self.language == "en" else "Ayarlar", card)
+            settings = QPushButton(
+                "Settings" if self.language == "en" else "Ayarlar", card
+            )
             settings.setEnabled(item.enabled or bool(manifest.settings))
-            settings.clicked.connect(lambda _checked=False, key=manifest.identifier, anchor=settings:
-                                     self._settings(key, anchor))
+            settings.clicked.connect(
+                lambda _checked=False, key=manifest.identifier, anchor=settings: (
+                    self._settings(key, anchor)
+                )
+            )
             row.addWidget(settings)
             if item.enabled and self.host.can_reload(manifest.identifier):
                 reload_button = QPushButton("↻", card)
                 reload_button.setFixedWidth(30)
-                reload_button.setToolTip("Reload extension" if self.language == "en"
-                                         else "Eklentiyi yeniden yükle")
+                reload_button.setToolTip(
+                    "Reload extension"
+                    if self.language == "en"
+                    else "Eklentiyi yeniden yükle"
+                )
                 reload_button.clicked.connect(
                     lambda _checked=False, key=manifest.identifier: self._reload(key)
                 )
@@ -126,13 +211,23 @@ class ExtensionPanel(QWidget):
         self.language = language
         self.heading.setText("EXTENSIONS" if language == "en" else "EKLENTİLER")
         self.discover_button.setText("Refresh" if language == "en" else "Yenile")
-        self.search.setPlaceholderText("Search extensions" if language == "en" else "Eklenti ara")
-        labels = ["All", "Enabled", "Disabled"] if language == "en" else ["Tümü", "Etkin", "Devre dışı"]
+        self.search.setPlaceholderText(
+            "Search extensions" if language == "en" else "Eklenti ara"
+        )
+        labels = (
+            ["All", "Enabled", "Disabled"]
+            if language == "en"
+            else ["Tümü", "Etkin", "Devre dışı"]
+        )
         for index, label in enumerate(labels):
             self.filter.setItemText(index, label)
-        self.category.setItemText(0, "All categories" if language == "en" else "Tüm kategoriler")
+        self.category.setItemText(
+            0, "All categories" if language == "en" else "Tüm kategoriler"
+        )
         for index in range(1, self.category.count()):
-            self.category.setItemText(index, self._category_name(self.category.itemData(index)))
+            self.category.setItemText(
+                index, self._category_name(self.category.itemData(index))
+            )
         self.refresh()
 
     def _toggle(self, identifier: str, enabled: bool) -> None:
@@ -142,7 +237,9 @@ class ExtensionPanel(QWidget):
             else:
                 self.host.set_enabled(identifier, enabled)
         except (ExtensionError, OSError, RuntimeError, ValueError) as exc:
-            QMessageBox.warning(self, "Extension" if self.language == "en" else "Eklenti", str(exc))
+            QMessageBox.warning(
+                self, "Extension" if self.language == "en" else "Eklenti", str(exc)
+            )
         self.refresh()
 
     def _reload(self, identifier: str) -> None:
@@ -152,7 +249,9 @@ class ExtensionPanel(QWidget):
             else:
                 self.host.reload(identifier)
         except (ExtensionError, OSError, RuntimeError, ValueError) as exc:
-            QMessageBox.warning(self, "Extension" if self.language == "en" else "Eklenti", str(exc))
+            QMessageBox.warning(
+                self, "Extension" if self.language == "en" else "Eklenti", str(exc)
+            )
         self.refresh()
 
     def _refresh_discovery(self) -> None:
@@ -160,10 +259,16 @@ class ExtensionPanel(QWidget):
             self.host.refresh_extensions()
             reload_language_packs()
         except (ExtensionError, OSError, ValueError) as exc:
-            QMessageBox.warning(self, "Extension" if self.language == "en" else "Eklenti", str(exc))
+            QMessageBox.warning(
+                self, "Extension" if self.language == "en" else "Eklenti", str(exc)
+            )
             return
-        known = {self.category.itemData(index) for index in range(self.category.count())}
-        for name in sorted({entry.manifest.category for entry in self.host.list_extensions()} - known):
+        known = {
+            self.category.itemData(index) for index in range(self.category.count())
+        }
+        for name in sorted(
+            {entry.manifest.category for entry in self.host.list_extensions()} - known
+        ):
             self.category.addItem(self._category_name(name), name)
         self.refresh()
 
@@ -172,8 +277,11 @@ class ExtensionPanel(QWidget):
         if contribution is not None:
             contribution.action(anchor or self)
             return
-        manifest = next(item.manifest for item in self.host.list_extensions()
-                        if item.manifest.identifier == identifier)
+        manifest = next(
+            item.manifest
+            for item in self.host.list_extensions()
+            if item.manifest.identifier == identifier
+        )
         dialog = QDialog(self)
         dialog.setWindowTitle(self._metadata(manifest, "name"))
         layout = QVBoxLayout(dialog)
@@ -189,12 +297,21 @@ class ExtensionPanel(QWidget):
             controls[key] = widget
             form.addRow(spec.get("label", key), widget)
         if not controls:
-            layout.addWidget(QLabel("No additional settings" if self.language == "en"
-                                    else "Ek ayar bulunmuyor", dialog))
+            layout.addWidget(
+                QLabel(
+                    "No additional settings"
+                    if self.language == "en"
+                    else "Ek ayar bulunmuyor",
+                    dialog,
+                )
+            )
         else:
             layout.addLayout(form)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save |
-                                   QDialogButtonBox.StandardButton.Cancel, parent=dialog)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
@@ -204,8 +321,13 @@ class ExtensionPanel(QWidget):
             updated = {}
             for key, widget in controls.items():
                 kind = manifest.settings[key].get("type")
-                updated[key] = (widget.isChecked() if kind == "boolean" else
-                                int(widget.text()) if kind == "integer" else widget.text())
+                updated[key] = (
+                    widget.isChecked()
+                    if kind == "boolean"
+                    else int(widget.text())
+                    if kind == "integer"
+                    else widget.text()
+                )
             self.host.save_settings(identifier, updated)
             if self.reload_extension is not None and self.host.is_active(identifier):
                 self.reload_extension(identifier)

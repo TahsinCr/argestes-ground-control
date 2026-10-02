@@ -1,4 +1,5 @@
 """Protocol-owned GPS and autopilot health; indicators never open popups."""
+
 from src.services.abstracts.telemetry import TelemetryService
 from src.ui.adapters.services import QtTelemetryService
 from src.ui.i18n import t
@@ -10,7 +11,9 @@ class ProtocolStatusChip(StatusChip):
         self.channel = channel
         super().__init__(t(f"status.{channel}", language), parent)
         self.set_theme(theme)
-        self.bridge = QtTelemetryService(context.services.resolve(TelemetryService), self)
+        self.bridge = QtTelemetryService(
+            context.services.resolve(TelemetryService), self
+        )
         self.bridge.telemetry_updated.connect(self._snapshot)
         self._snapshot(self.bridge.current)
 
@@ -18,7 +21,13 @@ class ProtocolStatusChip(StatusChip):
         if self.channel == "autopilot":
             self.set_state("success" if snapshot.autopilot_link else "danger")
         else:
-            self.set_state("success" if snapshot.gps_fix not in {"", "NO_GPS", "NO_FIX"} else "warning")
+            self.set_state(
+                "danger"
+                if not snapshot.autopilot_link
+                else "warning"
+                if snapshot.gps_fix in {"", "NO_GPS", "NO_FIX", "NO GPS", "NO FIX"}
+                else "success"
+            )
 
     def set_language(self, language):
         self.set_label(t(f"status.{self.channel}", language))

@@ -64,6 +64,7 @@ class VehicleConnectionControlService(ConnectionControlService):
         self._initial_connect_pending = False
         self._recovery_inflight = False
         self._generation = 0
+        self._protocol_options = self._protocol_signature(self._settings.current)
 
     @property
     def changed(self) -> EventBus[ConnectionStatus]:
@@ -137,11 +138,19 @@ class VehicleConnectionControlService(ConnectionControlService):
         connected = self._vehicle.connected
         if key == "telemetry":
             ready = bool(connected and snapshot.telemetry_link)
-            summary = "Canlı MAVLink telemetrisi alınıyor" if ready else "MAVLink telemetrisi bayat veya yok"
+            summary = (
+                "Canlı MAVLink telemetrisi alınıyor"
+                if ready
+                else "MAVLink telemetrisi bayat veya yok"
+            )
             detail = self._telemetry_detail(snapshot, settings.heartbeat_timeout)
         elif key == "autopilot":
             ready = connected
-            summary = "Otopilot heartbeat bağlı" if ready else "Otopilot heartbeat bağlantısı yok"
+            summary = (
+                "Otopilot heartbeat bağlı"
+                if ready
+                else "Otopilot heartbeat bağlantısı yok"
+            )
             detail = (
                 f"Cihaz {vehicle_state.device_id} / SYS {vehicle_state.system_id} / "
                 f"COMP {vehicle_state.component_id}"
@@ -149,7 +158,11 @@ class VehicleConnectionControlService(ConnectionControlService):
                 else "Araç heartbeat paketi bekleniyor"
             )
         else:
-            ready = bool(connected and snapshot.has_valid_position and snapshot.has_fresh_gps(float(settings.heartbeat_timeout)))
+            ready = bool(
+                connected
+                and snapshot.has_valid_position
+                and snapshot.has_fresh_gps(float(settings.heartbeat_timeout))
+            )
             summary = "GPS verisi alınıyor" if ready else "GPS verisi bekleniyor"
             detail = snapshot.gps_fix or "NO FIX"
 
@@ -182,7 +195,9 @@ class VehicleConnectionControlService(ConnectionControlService):
                 self._generation += 1
                 self._recovery_inflight = True
             config = self._apply_profile_options(options)
-            self._event("connection.reconnect_requested", "Araç bağlantısı yeniden başlatılıyor")
+            self._event(
+                "connection.reconnect_requested", "Araç bağlantısı yeniden başlatılıyor"
+            )
             try:
                 self._vehicle.reconnect(config)
             except Exception as exc:
@@ -203,7 +218,9 @@ class VehicleConnectionControlService(ConnectionControlService):
             result = self.status(key)
             self._event(
                 "connection.reconnect_completed",
-                "Araç bağlantısı hazır" if result.connected else "Araç bağlantısı başlatıldı; telemetri bekleniyor",
+                "Araç bağlantısı hazır"
+                if result.connected
+                else "Araç bağlantısı başlatıldı; telemetri bekleniyor",
                 severity="success" if result.connected else "warning",
             )
             return result
@@ -219,7 +236,10 @@ class VehicleConnectionControlService(ConnectionControlService):
             self._reset_recovery()
         self._vehicle.stop()
         with self._operation_lock:
-            self._event("connection.disconnected", "Araç bağlantısı kullanıcı isteğiyle kapatıldı")
+            self._event(
+                "connection.disconnected",
+                "Araç bağlantısı kullanıcı isteğiyle kapatıldı",
+            )
             self._publish_vehicle_channels()
             return self.status(key)
 
@@ -235,6 +255,27 @@ class VehicleConnectionControlService(ConnectionControlService):
         self._publish_vehicle_channels()
 
     def _on_settings_changed(self, _settings: SettingsModel) -> None:
+        signature = self._protocol_signature(_settings)
+        changed = signature != self._protocol_options
+        self._protocol_options = signature
+        if changed and self._vehicle.connected:
+
+            def reconfigure():
+                with self._operation_lock:
+                    if not self._stop_event.is_set() and self._vehicle.connected:
+                        try:
+                            self._vehicle.reconnect(self._active_configuration())
+                        except Exception as exc:
+                            self._event(
+                                "connection.protocol_reconfigure_failed",
+                                str(exc),
+                                severity="danger",
+                            )
+
+            threading.Thread(
+                target=reconfigure, name="VehicleProtocolUpdate", daemon=True
+            ).start()
+            return
         if self._vehicle.connected:
             return
         # A user enabling auto-connect while the app is already open should
@@ -244,6 +285,30 @@ class VehicleConnectionControlService(ConnectionControlService):
             initial=bool(_settings.backend.mavlink.auto_connect),
         )
         self._publish_vehicle_channels()
+
+    @staticmethod
+    def _protocol_signature(settings):
+        config = settings.backend.mavlink
+        return (
+            config.dialect,
+            config.source_system,
+            config.source_component,
+            config.autoreconnect,
+        )
+
+    def _active_configuration(self):
+        config = self._settings.current.backend.mavlink
+        return VehicleConnectionConfig(
+            config.endpoint,
+            config.heartbeat_timeout,
+            config.baud,
+            {
+                "dialect": config.dialect,
+                "source_system": config.source_system,
+                "source_component": config.source_component,
+                "autoreconnect": config.autoreconnect,
+            },
+        )
 
     def _recovery_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -268,10 +333,18 @@ class VehicleConnectionControlService(ConnectionControlService):
         with self._state_lock:
             initial = self._initial_connect_pending
             generation = self._generation
-        if self._stop_event.is_set() or self._vehicle.connected or not self._connection_attempt_allowed(initial):
+        if (
+            self._stop_event.is_set()
+            or self._vehicle.connected
+            or not self._connection_attempt_allowed(initial)
+        ):
             return
         with self._operation_lock:
-            if self._stop_event.is_set() or self._vehicle.connected or not self._connection_attempt_allowed(initial):
+            if (
+                self._stop_event.is_set()
+                or self._vehicle.connected
+                or not self._connection_attempt_allowed(initial)
+            ):
                 return
             attempt = self._retry_attempt + 1
             with self._state_lock:
@@ -283,13 +356,15 @@ class VehicleConnectionControlService(ConnectionControlService):
                 details={"attempt": attempt},
             )
             try:
-                self._vehicle.reconnect()
+                self._vehicle.reconnect(self._active_configuration())
             except Exception as exc:
                 with self._state_lock:
                     self._retry_attempt = attempt
                     self._initial_connect_pending = False
                     self._recovery_inflight = False
-                    obsolete = generation != self._generation or self._stop_event.is_set()
+                    obsolete = (
+                        generation != self._generation or self._stop_event.is_set()
+                    )
                 if obsolete:
                     return
                 delay = self._retry_delay()
@@ -303,7 +378,9 @@ class VehicleConnectionControlService(ConnectionControlService):
             else:
                 with self._state_lock:
                     self._recovery_inflight = False
-                    obsolete = generation != self._generation or self._stop_event.is_set()
+                    obsolete = (
+                        generation != self._generation or self._stop_event.is_set()
+                    )
                 if obsolete:
                     self._vehicle.stop()
                     return
@@ -348,20 +425,41 @@ class VehicleConnectionControlService(ConnectionControlService):
     def _retry_delay(self) -> float:
         return min(self._MAX_RETRY_DELAY_S, float(2 ** max(0, self._retry_attempt - 1)))
 
-    def _apply_profile_options(self, options: dict[str, Any]) -> VehicleConnectionConfig:
+    def _apply_profile_options(
+        self, options: dict[str, Any]
+    ) -> VehicleConnectionConfig:
         current = self._settings.current
         mavlink = current.backend.mavlink
-        profile_id = str(options.get("profile_id", current.backend.active_mavlink_connection_id)).strip()
+        profile_id = str(
+            options.get("profile_id", current.backend.active_mavlink_connection_id)
+        ).strip()
         existing = next(
-            (item for item in current.backend.mavlink_connections if item.identifier == profile_id),
+            (
+                item
+                for item in current.backend.mavlink_connections
+                if item.identifier == profile_id
+            ),
             None,
         )
         profile = MavlinkConnectionConfig(
-            identifier=profile_id or (existing.identifier if existing is not None else MavlinkConnectionConfig().identifier),
-            name=str(options.get("profile_name", existing.name if existing is not None else "Telemetri")).strip() or "Telemetri",
+            identifier=profile_id
+            or (
+                existing.identifier
+                if existing is not None
+                else MavlinkConnectionConfig().identifier
+            ),
+            name=str(
+                options.get(
+                    "profile_name",
+                    existing.name if existing is not None else "Telemetri",
+                )
+            ).strip()
+            or "Telemetri",
             endpoint=str(options.get("endpoint", mavlink.endpoint)).strip(),
             baud=int(options.get("baud", mavlink.baud)),
-            heartbeat_timeout=int(float(options.get("timeout_s", mavlink.heartbeat_timeout))),
+            heartbeat_timeout=int(
+                float(options.get("timeout_s", mavlink.heartbeat_timeout))
+            ),
             auto_connect=bool(options.get("auto_connect", mavlink.auto_connect)),
         )
         profiles = [
@@ -372,15 +470,31 @@ class VehicleConnectionControlService(ConnectionControlService):
             profiles.append(profile)
         payload = current.to_dict()
         payload["backend"]["mavlink"] = asdict(profile.to_mavlink(mavlink))
-        payload["backend"]["mavlink_connections"] = [item.to_dict() for item in profiles]
+        payload["backend"]["mavlink_connections"] = [
+            item.to_dict() for item in profiles
+        ]
         payload["backend"]["active_mavlink_connection_id"] = profile.identifier
         self._settings.save(SettingsModel.from_dict(payload))
-        return VehicleConnectionConfig(profile.endpoint, profile.heartbeat_timeout, profile.baud)
+        return VehicleConnectionConfig(
+            profile.endpoint,
+            profile.heartbeat_timeout,
+            profile.baud,
+            {
+                "dialect": mavlink.dialect,
+                "source_system": mavlink.source_system,
+                "source_component": mavlink.source_component,
+                "autoreconnect": mavlink.autoreconnect,
+            },
+        )
 
     def _active_profile(self) -> MavlinkConnectionConfig:
         backend = self._settings.current.backend
         return next(
-            (item for item in backend.mavlink_connections if item.identifier == backend.active_mavlink_connection_id),
+            (
+                item
+                for item in backend.mavlink_connections
+                if item.identifier == backend.active_mavlink_connection_id
+            ),
             MavlinkConnectionConfig.from_mavlink(backend.mavlink),
         )
 
@@ -407,7 +521,9 @@ class VehicleConnectionControlService(ConnectionControlService):
     def _require_vehicle_channel(self, channel: str) -> str:
         key = self._normalize(channel)
         if key not in _VEHICLE_CHANNELS:
-            raise ValueError("Bu işlem yalnız araç MAVLink bağlantısı için kullanılabilir")
+            raise ValueError(
+                "Bu işlem yalnız araç MAVLink bağlantısı için kullanılabilir"
+            )
         return key
 
     def _event(

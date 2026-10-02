@@ -1,0 +1,1 @@
+{"identifier":"flight_dynamics","name":"Vehicle Dynamics","description":"Attitude, airspeed and altitude from normalized telemetry","category":"Vehicle","version":"1.0.0","api_major":1,"entry_point":"extensions.flight_dynamics.plugin:create_extension","requires":["vehicle.telemetry.source"],"provides":["ui.flight_dynamics"],"default_enabled":true,"settings":{}}

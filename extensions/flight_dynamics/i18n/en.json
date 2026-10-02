@@ -1,0 +1,5 @@
+{
+  "extension.flight_dynamics.name": "Vehicle Dynamics",
+  "extension.flight_dynamics.description": "Attitude, airspeed and altitude",
+  "extension.flight_dynamics.category": "Vehicle"
+}

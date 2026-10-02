@@ -9,7 +9,7 @@ from pathlib import Path
 from src.models.mission import MapContact, MapOverlay, MissionState
 from src.models.vehicle import VehicleConnectionState
 from src.services.abstracts.vehicle import MissionTransferInterrupted
-from src.services.planner import PlannerService
+from extensions.map_autonomy.services.planner import PlannerService
 
 
 class MissionTests(unittest.TestCase):

@@ -75,9 +75,7 @@ class VideoViewport(QWidget):
             Qt.WidgetAttribute.WA_TransparentForMouseEvents,
             False,
         )
-        self.source_label.setContextMenuPolicy(
-            Qt.ContextMenuPolicy.CustomContextMenu
-        )
+        self.source_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.source_label.installEventFilter(self)
         self.source_label.customContextMenuRequested.connect(
             lambda position: self.source_menu_requested.emit(
@@ -348,10 +346,7 @@ class VideoViewport(QWidget):
                 if stats.bitrate_kbps >= 1000.0
                 else f"{stats.bitrate_kbps:.0f} kbps"
             )
-            text = (
-                f"{stats.width}×{stats.height}  ·  "
-                f"{stats.fps:.1f} FPS  ·  {bitrate}"
-            )
+            text = f"{stats.width}×{stats.height}  ·  {stats.fps:.1f} FPS  ·  {bitrate}"
         self.stats_label.setText(text)
         if stats.connected:
             self.stats_label.setToolTip(
@@ -385,7 +380,9 @@ class VideoViewport(QWidget):
         self._render_stats()
 
     def _render_source_name(self) -> None:
-        available = max(70, int(self.width() * (0.48 if self._compact_overlays else 0.6)))
+        available = max(
+            70, int(self.width() * (0.48 if self._compact_overlays else 0.6))
+        )
         text = self.fontMetrics().elidedText(
             self._source_name,
             Qt.TextElideMode.ElideRight,
@@ -421,7 +418,9 @@ class VideoViewport(QWidget):
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            if self._aim_selecting and self._capture_aim(event.position().x(), event.position().y()):
+            if self._aim_selecting and self._capture_aim(
+                event.position().x(), event.position().y()
+            ):
                 event.accept()
                 return
             self.clicked.emit()
@@ -429,7 +428,9 @@ class VideoViewport(QWidget):
 
     def mouseMoveEvent(self, event) -> None:
         if self._aim_selecting:
-            self._aim_hover = self._normalized_aim(event.position().x(), event.position().y())
+            self._aim_hover = self._normalized_aim(
+                event.position().x(), event.position().y()
+            )
             self.update()
         super().mouseMoveEvent(event)
 
@@ -484,9 +485,7 @@ class VideoViewport(QWidget):
         stats_y = margin
         self.source_label.adjustSize()
         if (
-            self.source_label.width()
-            + self.stats_label.width()
-            + margin * 3
+            self.source_label.width() + self.stats_label.width() + margin * 3
             > self.width()
         ):
             stats_y = margin + self.source_label.height() + 5
@@ -542,8 +541,10 @@ class VideoViewport(QWidget):
 
         geometry = self.frame_geometry()
         painter.drawPixmap(geometry, self._pixmap, self._pixmap.rect())
-        point = self._aim_hover if self._aim_selecting else (
-            (self._aim_x, self._aim_y) if self._aim_enabled else None
+        point = (
+            self._aim_hover
+            if self._aim_selecting
+            else ((self._aim_x, self._aim_y) if self._aim_enabled else None)
         )
         visible = self._visible_frame_geometry()
         if point is not None and not visible.isEmpty():
@@ -740,7 +741,9 @@ class VideoPanel(PanelFrame):
     def set_recording_enabled(self, enabled: bool | None) -> None:
         self.viewport.set_recording_enabled(enabled)
 
-    def set_sources(self, sources: tuple[VideoSourceConfig, ...], active_identifier: str) -> None:
+    def set_sources(
+        self, sources: tuple[VideoSourceConfig, ...], active_identifier: str
+    ) -> None:
         previous_active = self._active_identifier
         self._sources = sources
         self._active_identifier = active_identifier
@@ -827,7 +830,10 @@ class VideoPanel(PanelFrame):
         if identifier == current_identifier:
             return
         source_index = self._display_identifiers.index(identifier)
-        self._display_identifiers[viewport_index], self._display_identifiers[source_index] = (
+        (
+            self._display_identifiers[viewport_index],
+            self._display_identifiers[source_index],
+        ) = (
             self._display_identifiers[source_index],
             self._display_identifiers[viewport_index],
         )

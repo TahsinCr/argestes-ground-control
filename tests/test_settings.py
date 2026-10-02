@@ -95,7 +95,7 @@ class SettingsTests(unittest.TestCase):
             settings_path = base_dir / "data" / "settings.json"
             cache_path = base_dir / "data" / "map-cache"
             self.assertTrue(settings_path.is_file())
-            self.assertTrue(cache_path.is_dir())
+            self.assertFalse(cache_path.exists(), "Shared settings must not create a map cache")
             payload = json.loads(settings_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 payload,

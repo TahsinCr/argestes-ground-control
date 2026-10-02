@@ -9,11 +9,16 @@ from PyQt6.QtCore import QPoint, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage
 from PyQt6.QtWidgets import QHBoxLayout, QMessageBox, QWidget
 
-from src.ui.i18n import t
 from src.ui.themes.style import ThemePalette
 from src.ui.widgets.common import StatusChip
 
-from extensions.camera.models import VideoFrame, VideoShareConfig, VideoShareState, VideoSourceConfig, VideoStreamStats
+from extensions.camera.models import (
+    VideoFrame,
+    VideoShareConfig,
+    VideoShareState,
+    VideoSourceConfig,
+    VideoStreamStats,
+)
 from extensions.camera.publishing import active_ipv4_interfaces
 from extensions.camera.runtime import CameraRuntime
 from .video import VideoPanel
@@ -75,8 +80,9 @@ class CameraFrameBridge(QWidget):
         }
         pixel_size = {"rgba8888": 4, "rgb888": 3, "bgr888": 3, "gray8": 1}
         stride = frame.stride or frame.width * pixel_size[frame.pixel_format]
-        return QImage(frame.data, frame.width, frame.height, stride,
-                      formats[frame.pixel_format]).copy()
+        return QImage(
+            frame.data, frame.width, frame.height, stride, formats[frame.pixel_format]
+        ).copy()
 
     def stop(self) -> None:
         self._timer.stop()
@@ -88,8 +94,13 @@ class CameraFrameBridge(QWidget):
 class CameraWorkspace(VideoPanel):
     reconnect_completed = pyqtSignal(bool, str)
 
-    def __init__(self, runtime: CameraRuntime, theme: ThemePalette,
-                 language: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        runtime: CameraRuntime,
+        theme: ThemePalette,
+        language: str,
+        parent: QWidget | None = None,
+    ) -> None:
         self.runtime = runtime
         super().__init__("", "", theme=theme, language=language, parent=parent)
         self._language = language
@@ -105,7 +116,9 @@ class CameraWorkspace(VideoPanel):
         self.sources_popup.sources_saved.connect(self._save_sources)
         self.sources_popup.source_connect_requested.connect(self._connect)
         self.shares_popup.shares_saved.connect(self._save_outputs)
-        self.reconnect_requested.connect(lambda: self._connect(self.runtime.settings.current.active_source_id))
+        self.reconnect_requested.connect(
+            lambda: self._connect(self.runtime.settings.current.active_source_id)
+        )
         self.recording_requested.connect(self._record_all)
         self.source_selected.connect(self._select_source)
         self.aim_changed.connect(self._save_aim)
@@ -115,13 +128,18 @@ class CameraWorkspace(VideoPanel):
     def _sync_settings(self) -> None:
         config = self.runtime.settings.current
         self.set_sources(config.sources, config.active_source_id)
-        self.set_recording_enabled(any(item.output_type == "record" and item.enabled
-                                       for item in config.outputs))
+        self.set_recording_enabled(
+            any(
+                item.output_type == "record" and item.enabled for item in config.outputs
+            )
+        )
         for item in self.runtime.video.source_stats:
             self.set_source_stats(item)
         self.set_stats(self.runtime.video.stats)
 
-    def _save_sources(self, sources: tuple[VideoSourceConfig, ...], active_id: str) -> None:
+    def _save_sources(
+        self, sources: tuple[VideoSourceConfig, ...], active_id: str
+    ) -> None:
         try:
             self.runtime.save_sources(sources, active_id)
         except (ValueError, OSError) as exc:
@@ -135,8 +153,12 @@ class CameraWorkspace(VideoPanel):
 
     def _save_aim(self, identifier: str, enabled: bool, x: float, y: float) -> None:
         config = self.runtime.settings.current
-        sources = tuple(replace(item, aim_enabled=enabled, aim_x=x, aim_y=y)
-                        if item.identifier == identifier else item for item in config.sources)
+        sources = tuple(
+            replace(item, aim_enabled=enabled, aim_x=x, aim_y=y)
+            if item.identifier == identifier
+            else item
+            for item in config.sources
+        )
         self._save_sources(sources, config.active_source_id)
 
     def _save_outputs(self, outputs: tuple[VideoShareConfig, ...]) -> None:
@@ -189,8 +211,9 @@ class CameraWorkspace(VideoPanel):
             self.sources_popup.update_source_stats(self.runtime.video.source_stats)
         if self.shares_popup.isVisible():
             config = self.runtime.settings.current
-            self.shares_popup.update_sources(config.sources, self.runtime.video.source_stats,
-                                             config.active_source_id)
+            self.shares_popup.update_sources(
+                config.sources, self.runtime.video.source_stats, config.active_source_id
+            )
 
     def _share_states(self, states: tuple[VideoShareState, ...]) -> None:
         if self.shares_popup.isVisible():
@@ -201,33 +224,48 @@ class CameraWorkspace(VideoPanel):
         popup.adjustSize()
         origin = anchor.mapToGlobal(QPoint(0, 0))
         screen = anchor.screen().availableGeometry()
-        popup.move(min(max(screen.left() + 6, origin.x()),
-                       screen.right() - popup.width() - 6),
-                   max(screen.top() + 6, origin.y() - popup.height() - 7))
+        popup.move(
+            min(max(screen.left() + 6, origin.x()), screen.right() - popup.width() - 6),
+            max(screen.top() + 6, origin.y() - popup.height() - 7),
+        )
         popup.show()
         popup.raise_()
 
     def show_sources_popup(self, anchor: QWidget) -> None:
         config = self.runtime.settings.current
-        self.sources_popup.show_sources(config.sources, active_identifier=config.active_source_id,
-                                        connected=self.runtime.video.connected,
-                                        source_stats=self.runtime.video.source_stats)
+        self.sources_popup.show_sources(
+            config.sources,
+            active_identifier=config.active_source_id,
+            connected=self.runtime.video.connected,
+            source_stats=self.runtime.video.source_stats,
+        )
         self._place_popup(self.sources_popup, anchor)
 
     def show_outputs_popup(self, anchor: QWidget) -> None:
         config = self.runtime.settings.current
-        self.shares_popup.show_shares(config.outputs, self.runtime.video.share_states,
-                                      network_interfaces=active_ipv4_interfaces(),
-                                      sources=config.sources,
-                                      source_stats=self.runtime.video.source_stats,
-                                      active_source_id=config.active_source_id)
+        self.shares_popup.show_shares(
+            config.outputs,
+            self.runtime.video.share_states,
+            network_interfaces=active_ipv4_interfaces(),
+            sources=config.sources,
+            source_stats=self.runtime.video.source_stats,
+            active_source_id=config.active_source_id,
+        )
         self._place_popup(self.shares_popup, anchor)
-        QTimer.singleShot(180, lambda: self.shares_popup.isVisible() and
-                          self.shares_popup.show_shares(
-                              config.outputs, self.runtime.video.share_states,
-                              network_interfaces=active_ipv4_interfaces(),
-                              sources=config.sources, source_stats=self.runtime.video.source_stats,
-                              active_source_id=config.active_source_id))
+        QTimer.singleShot(
+            180,
+            lambda: (
+                self.shares_popup.isVisible()
+                and self.shares_popup.show_shares(
+                    config.outputs,
+                    self.runtime.video.share_states,
+                    network_interfaces=active_ipv4_interfaces(),
+                    sources=config.sources,
+                    source_stats=self.runtime.video.source_stats,
+                    active_source_id=config.active_source_id,
+                )
+            ),
+        )
 
     def set_theme(self, theme: ThemePalette) -> None:
         super().set_theme(theme)
@@ -255,8 +293,13 @@ class CameraWorkspace(VideoPanel):
 
 
 class CameraStatusWidget(QWidget):
-    def __init__(self, workspace: CameraWorkspace, theme: ThemePalette,
-                 language: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        workspace: CameraWorkspace,
+        theme: ThemePalette,
+        language: str,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.workspace = workspace
         layout = QHBoxLayout(self)
@@ -268,8 +311,12 @@ class CameraStatusWidget(QWidget):
             chip.set_theme(theme)
             chip.set_state("danger")
             layout.addWidget(chip)
-        self.video_chip.clicked.connect(lambda: workspace.show_sources_popup(self.video_chip))
-        self.share_chip.clicked.connect(lambda: workspace.show_outputs_popup(self.share_chip))
+        self.video_chip.clicked.connect(
+            lambda: workspace.show_sources_popup(self.video_chip)
+        )
+        self.share_chip.clicked.connect(
+            lambda: workspace.show_outputs_popup(self.share_chip)
+        )
         workspace.bridge.stats_updated.connect(self._stats)
         workspace.bridge.share_states_changed.connect(self._shares)
         self.set_language(language)
@@ -279,14 +326,30 @@ class CameraStatusWidget(QWidget):
     def _stats(self, stats: VideoStreamStats) -> None:
         self.video_chip.set_state("success" if stats.connected else "danger")
         config = self.workspace.runtime.settings.current
-        source = next((item for item in config.sources if item.identifier == config.active_source_id), None)
-        self.video_chip.setToolTip(f"{source.name if source else 'Video Link'}\n"
-                                   f"{source.source_uri if source else ''}")
+        source = next(
+            (
+                item
+                for item in config.sources
+                if item.identifier == config.active_source_id
+            ),
+            None,
+        )
+        self.video_chip.setToolTip(
+            f"{source.name if source else 'Video Link'}\n"
+            f"{source.source_uri if source else ''}"
+        )
 
     def _shares(self, states: tuple[VideoShareState, ...]) -> None:
-        self.share_chip.set_state("success" if any(item.active for item in states) else "danger")
-        self.share_chip.setToolTip("\n".join(f"{item.identifier[:8]}: {item.detail}"
-                                           for item in states if item.detail))
+        self.share_chip.set_state(
+            "success" if any(item.active for item in states) else "danger"
+        )
+        self.share_chip.setToolTip(
+            "\n".join(
+                f"{item.identifier[:8]}: {item.detail}"
+                for item in states
+                if item.detail
+            )
+        )
 
     def set_theme(self, theme: ThemePalette) -> None:
         self.video_chip.set_theme(theme)

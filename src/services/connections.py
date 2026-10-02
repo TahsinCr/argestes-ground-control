@@ -1,7 +1,9 @@
 """Stable, protocol-neutral facade for an optional connection extension."""
+
 from src.core.events import EventBus
 from src.models.connections import ConnectionStatus
 from src.services.abstracts.connections import ConnectionControlService
+import threading
 
 
 class ConnectionHub(ConnectionControlService):
@@ -9,29 +11,42 @@ class ConnectionHub(ConnectionControlService):
         self._controller = None
         self._subscription = None
         self._changed = EventBus[ConnectionStatus]()
+        self._lock = threading.RLock()
+        self._generation = 0
 
     @property
     def changed(self):
         return self._changed
 
     def bind(self, controller):
-        if self._subscription is not None:
-            self._subscription.cancel()
-        self._controller = controller
-        self._subscription = controller.changed.subscribe(self._changed.publish) if controller else None
-        for channel in ("telemetry", "autopilot", "gps"):
-            self._changed.publish(self.status(channel))
+        with self._lock:
+            self._generation += 1
+            generation = self._generation
+            if self._subscription is not None:
+                self._subscription.cancel()
+            self._controller = controller
+
+            def forward(status):
+                with self._lock:
+                    if generation == self._generation:
+                        self._changed.publish(status)
+
+            self._subscription = (
+                controller.changed.subscribe(forward) if controller else None
+            )
 
     def start(self):
         pass
 
     def stop(self):
-        pass
+        self.bind(None)
 
     def status(self, channel):
         if self._controller is not None:
             return self._controller.status(channel)
-        return ConnectionStatus(channel, False, "Connection extension inactive", can_disconnect=False)
+        return ConnectionStatus(
+            channel, False, "Connection extension inactive", can_disconnect=False
+        )
 
     def _active(self):
         if self._controller is None:

@@ -20,8 +20,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from extensions.joystick.models import JoystickButtonConfig, JoystickChannelConfig, JoystickSettings
-from src.models.settings import SettingsModel
+from extensions.joystick.models import (
+    JoystickButtonConfig,
+    JoystickChannelConfig,
+    JoystickSettings,
+)
 from extensions.joystick.contracts import JoystickService
 from src.ui.i18n import t
 from src.ui.themes.style import ThemePalette
@@ -84,13 +87,21 @@ class JoystickDialog(QDialog):
         layout.setSpacing(9)
         layout.addLayout(self._build_device_bar())
         tabs = QTabWidget(body)
-        tabs.addTab(self._build_channel_table(), t("joystick.channels_tab", self._language))
-        tabs.addTab(self._build_button_table(), t("joystick.buttons_tab", self._language))
+        tabs.addTab(
+            self._build_channel_table(), t("joystick.channels_tab", self._language)
+        )
+        tabs.addTab(
+            self._build_button_table(), t("joystick.buttons_tab", self._language)
+        )
         layout.addWidget(tabs, 1)
         layout.addLayout(self._build_footer())
         root.addWidget(body, 1)
 
-        self._load(JoystickSettings.from_config(self._settings_service.extension_config("joystick")))
+        self._load(
+            JoystickSettings.from_config(
+                self._settings_service.extension_config("joystick")
+            )
+        )
         self._refresh_devices()
         self._live_timer = QTimer(self)
         self._live_timer.setInterval(50)
@@ -155,7 +166,9 @@ class JoystickDialog(QDialog):
             grid.addWidget(control, index + 1, 1)
             detect = QPushButton(t("joystick.auto_detect", self._language), content)
             detect.setProperty("compact", "true")
-            detect.clicked.connect(lambda _checked=False, channel=index: self._start_detect(channel))
+            detect.clicked.connect(
+                lambda _checked=False, channel=index: self._start_detect(channel)
+            )
             grid.addWidget(detect, index + 1, 2)
             pwm = QLabel("—", content)
             pwm.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -185,7 +198,9 @@ class JoystickDialog(QDialog):
             grid.addWidget(expo, index + 1, 8)
             reverse = QCheckBox(content)
             self._reverses.append(reverse)
-            grid.addWidget(reverse, index + 1, 9, alignment=Qt.AlignmentFlag.AlignCenter)
+            grid.addWidget(
+                reverse, index + 1, 9, alignment=Qt.AlignmentFlag.AlignCenter
+            )
         grid.setColumnStretch(1, 1)
         scroll.setWidget(content)
         return scroll
@@ -206,31 +221,53 @@ class JoystickDialog(QDialog):
         grid.setContentsMargins(8, 8, 8, 8)
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(6)
-        for column, key in enumerate(("joystick.button_header", "joystick.control", "joystick.detect", "joystick.output", "joystick.action", "joystick.action_settings")):
+        for column, key in enumerate(
+            (
+                "joystick.button_header",
+                "joystick.control",
+                "joystick.detect",
+                "joystick.output",
+                "joystick.action",
+                "joystick.action_settings",
+            )
+        ):
             label = QLabel(t(key, self._language), content)
             label.setProperty("role", "section-heading")
             grid.addWidget(label, 0, column)
         for index in range(10):
-            grid.addWidget(QLabel(t("joystick.button_number", self._language, number=index + 1), content), index + 1, 0)
+            grid.addWidget(
+                QLabel(
+                    t("joystick.button_number", self._language, number=index + 1),
+                    content,
+                ),
+                index + 1,
+                0,
+            )
             control = QComboBox(content)
             detect = QPushButton(t("joystick.auto_detect", self._language), content)
             detect.setProperty("compact", "true")
-            detect.clicked.connect(lambda _checked=False, row=index: self._start_button_detect(row))
+            detect.clicked.connect(
+                lambda _checked=False, row=index: self._start_button_detect(row)
+            )
             live = QLabel("—", content)
             live.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._button_controls.append(control)
             self._button_live.append(live)
             action = QComboBox(content)
             for key, code in (
-                ("joystick.action_none", ""), ("joystick.action_arm", "ARM"),
-                ("joystick.action_disarm", "DISARM"), ("joystick.action_mode", "SET_MODE"),
+                ("joystick.action_none", ""),
+                ("joystick.action_arm", "ARM"),
+                ("joystick.action_disarm", "DISARM"),
+                ("joystick.action_mode", "SET_MODE"),
                 ("joystick.action_servo", "SET_SERVO"),
             ):
                 action.addItem(t(key, self._language), code)
             settings = QPushButton(t("joystick.settings", self._language), content)
             settings.setProperty("compact", "true")
             settings.setEnabled(False)
-            settings.clicked.connect(lambda _checked=False, row=index: self._edit_button_settings(row))
+            settings.clicked.connect(
+                lambda _checked=False, row=index: self._edit_button_settings(row)
+            )
             action.currentIndexChanged.connect(
                 lambda _index, action=action, settings=settings: settings.setEnabled(
                     action.currentData() in {"SET_MODE", "SET_SERVO"}
@@ -277,7 +314,11 @@ class JoystickDialog(QDialog):
             self._reverses[index].setChecked(channel.reversed)
         for index, action_input in enumerate(self._button_actions):
             assignment = next(
-                (item for item in config.buttons if (item.slot or config.buttons.index(item) + 1) == index + 1),
+                (
+                    item
+                    for item in config.buttons
+                    if (item.slot or config.buttons.index(item) + 1) == index + 1
+                ),
                 None,
             )
             action = assignment.action if assignment else ""
@@ -322,10 +363,19 @@ class JoystickDialog(QDialog):
             combo.clear()
             combo.addItem(t("joystick.none", self._language), "")
             for index in range(int(axis_count)):
-                combo.addItem(t("joystick.axis", self._language, number=index + 1), f"axis:{index}")
+                combo.addItem(
+                    t("joystick.axis", self._language, number=index + 1),
+                    f"axis:{index}",
+                )
             for index in range(int(button_count)):
-                combo.addItem(t("joystick.button", self._language, number=index + 1), f"button:{index}")
-                combo.addItem(t("joystick.toggle", self._language, number=index + 1), f"toggle:{index}")
+                combo.addItem(
+                    t("joystick.button", self._language, number=index + 1),
+                    f"button:{index}",
+                )
+                combo.addItem(
+                    t("joystick.toggle", self._language, number=index + 1),
+                    f"toggle:{index}",
+                )
             index = combo.findData(selected)
             if selected and index < 0:
                 combo.addItem(
@@ -338,7 +388,12 @@ class JoystickDialog(QDialog):
         for row, combo in enumerate(self._button_controls):
             selected = combo.currentData()
             assignment = next(
-                (item for item in self._configured_buttons if (item.slot or self._configured_buttons.index(item) + 1) == row + 1),
+                (
+                    item
+                    for item in self._configured_buttons
+                    if (item.slot or self._configured_buttons.index(item) + 1)
+                    == row + 1
+                ),
                 None,
             )
             if selected is None and assignment is not None and assignment.button >= 0:
@@ -346,7 +401,9 @@ class JoystickDialog(QDialog):
             combo.clear()
             combo.addItem(t("joystick.none", self._language), None)
             for index in range(int(button_count)):
-                combo.addItem(t("joystick.button_number", self._language, number=index + 1), index)
+                combo.addItem(
+                    t("joystick.button_number", self._language, number=index + 1), index
+                )
             selected_index = combo.findData(selected)
             combo.setCurrentIndex(max(0, selected_index))
 
@@ -358,7 +415,9 @@ class JoystickDialog(QDialog):
         self._detecting_channel = channel
         self._detect_axis_baseline = state.axes
         self._detect_button_baseline = state.buttons
-        self.hint.setText(t("joystick.move_control", self._language, channel=channel + 1))
+        self.hint.setText(
+            t("joystick.move_control", self._language, channel=channel + 1)
+        )
 
     def _update_live_values(self) -> None:
         state = self._joystick.state
@@ -378,7 +437,11 @@ class JoystickDialog(QDialog):
             self._pwm_labels[index].setText("—" if pwm is None else str(pwm))
         for row, combo in enumerate(self._button_controls):
             button = combo.currentData()
-            pressed = button is not None and int(button) < len(state.buttons) and state.buttons[int(button)]
+            pressed = (
+                button is not None
+                and int(button) < len(state.buttons)
+                and state.buttons[int(button)]
+            )
             self._button_live[row].setText("1" if pressed else "0")
             self._button_live[row].setStyleSheet("color: #45c97a;" if pressed else "")
         if self._detecting_channel is not None:
@@ -387,12 +450,20 @@ class JoystickDialog(QDialog):
     def _detect_input(self, axes: tuple[float, ...], buttons: tuple[bool, ...]) -> None:
         if self._detecting_channel is not None and self._detecting_channel >= 0:
             for index, value in enumerate(axes):
-                baseline = self._detect_axis_baseline[index] if index < len(self._detect_axis_baseline) else 0.0
+                baseline = (
+                    self._detect_axis_baseline[index]
+                    if index < len(self._detect_axis_baseline)
+                    else 0.0
+                )
                 if abs(value - baseline) >= 0.35:
                     self._finish_detect(f"axis:{index}")
                     return
         for index, pressed in enumerate(buttons):
-            baseline = self._detect_button_baseline[index] if index < len(self._detect_button_baseline) else False
+            baseline = (
+                self._detect_button_baseline[index]
+                if index < len(self._detect_button_baseline)
+                else False
+            )
             if pressed and not baseline:
                 if self._detecting_channel is not None and self._detecting_channel < 0:
                     row = -self._detecting_channel - 1
@@ -438,7 +509,18 @@ class JoystickDialog(QDialog):
         if action == "SET_MODE":
             mode = QComboBox(dialog)
             mode.setEditable(True)
-            mode.addItems(("MANUAL", "STABILIZE", "ALT_HOLD", "LOITER", "GUIDED", "AUTO", "RTL", "LAND"))
+            mode.addItems(
+                (
+                    "MANUAL",
+                    "STABILIZE",
+                    "ALT_HOLD",
+                    "LOITER",
+                    "GUIDED",
+                    "AUTO",
+                    "RTL",
+                    "LAND",
+                )
+            )
             mode.setCurrentText(self._button_modes[row] or "GUIDED")
             form.addRow(t("joystick.mode", self._language), mode)
         elif action == "SET_SERVO":
@@ -490,7 +572,11 @@ class JoystickDialog(QDialog):
             ],
             buttons=[
                 JoystickButtonConfig(
-                    button=int(self._button_controls[index].currentData() if self._button_controls[index].currentData() is not None else -1),
+                    button=int(
+                        self._button_controls[index].currentData()
+                        if self._button_controls[index].currentData() is not None
+                        else -1
+                    ),
                     action=str(self._button_actions[index].currentData() or ""),
                     mode=self._button_modes[index],
                     servo=self._button_servos[index],
@@ -516,7 +602,11 @@ class JoystickDialog(QDialog):
 
     def _toggle_activation(self) -> None:
         if not self._enabled and not self.device_combo.currentData():
-            QMessageBox.warning(self, t("joystick.title", self._language), t("joystick.select_device", self._language))
+            QMessageBox.warning(
+                self,
+                t("joystick.title", self._language),
+                t("joystick.select_device", self._language),
+            )
             return
         try:
             self._enabled = not self._enabled
@@ -532,7 +622,12 @@ class JoystickDialog(QDialog):
         self._update_activation_text()
 
     def _update_activation_text(self) -> None:
-        self.activation_button.setText(t("joystick.deactivate" if self._enabled else "joystick.activate", self._language))
+        self.activation_button.setText(
+            t(
+                "joystick.deactivate" if self._enabled else "joystick.activate",
+                self._language,
+            )
+        )
         self.activation_button.setProperty("danger", self._enabled)
         self.activation_button.style().unpolish(self.activation_button)
         self.activation_button.style().polish(self.activation_button)

@@ -100,12 +100,15 @@ class JoystickSettings:
     enabled: bool = False
     device_path: str = ""
     send_rate_hz: int = 25
-    channels: list[JoystickChannelConfig] = field(default_factory=default_joystick_channels)
+    channels: list[JoystickChannelConfig] = field(
+        default_factory=default_joystick_channels
+    )
     buttons: list[JoystickButtonConfig] = field(default_factory=list)
 
     @classmethod
     def from_config(cls, values):
         from dataclasses import fields
+
         allowed = {item.name for item in fields(cls)}
         return cls(**{key: value for key, value in values.items() if key in allowed})
 
@@ -116,7 +119,9 @@ class JoystickSettings:
         if not 5 <= self.send_rate_hz <= 50:
             raise ValueError("Joystick gönderim hızı 5..50 Hz aralığında olmalı")
         parsed = [
-            item if isinstance(item, JoystickChannelConfig) else JoystickChannelConfig(**dict(item))
+            item
+            if isinstance(item, JoystickChannelConfig)
+            else JoystickChannelConfig(**dict(item))
             for item in self.channels
         ]
         by_channel = {item.channel: item for item in parsed}
@@ -127,13 +132,17 @@ class JoystickSettings:
             for index in range(1, 17)
         ]
         parsed_buttons = [
-            item if isinstance(item, JoystickButtonConfig) else JoystickButtonConfig(**dict(item))
+            item
+            if isinstance(item, JoystickButtonConfig)
+            else JoystickButtonConfig(**dict(item))
             for item in self.buttons
         ]
         assigned_buttons = [item.button for item in parsed_buttons if item.button >= 0]
         if len(set(assigned_buttons)) != len(assigned_buttons):
             raise ValueError("Joystick buton atamaları benzersiz olmalı")
-        self.buttons = sorted(parsed_buttons, key=lambda item: item.slot or item.button + 1)
+        self.buttons = sorted(
+            parsed_buttons, key=lambda item: item.slot or item.button + 1
+        )
 
 
 @dataclass(frozen=True, slots=True)

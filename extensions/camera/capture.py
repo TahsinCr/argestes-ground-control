@@ -289,7 +289,9 @@ class GStreamerVideoService(MutableVideoService):
         if transport_meter is not None:
             transport_pad = transport_meter.get_static_pad("src")
             if transport_pad is not None:
-                transport_pad.add_probe(Gst.PadProbeType.BUFFER, self._on_transport_buffer)
+                transport_pad.add_probe(
+                    Gst.PadProbeType.BUFFER, self._on_transport_buffer
+                )
         with self._measurement_lock:
             self._frame_times.clear()
             self._transport_samples.clear()
@@ -546,15 +548,14 @@ class GStreamerVideoService(MutableVideoService):
         jitter_score = 1.0
         if len(frame_times) >= 4:
             intervals = [
-                later - earlier
-                for earlier, later in zip(frame_times, frame_times[1:])
+                later - earlier for earlier, later in zip(frame_times, frame_times[1:])
             ]
             mean_interval = sum(intervals) / len(intervals)
             if mean_interval > 0.0:
                 variance = sum(
                     (interval - mean_interval) ** 2 for interval in intervals
                 ) / len(intervals)
-                jitter_ratio = variance ** 0.5 / mean_interval
+                jitter_ratio = variance**0.5 / mean_interval
                 jitter_score = max(0.0, 1.0 - min(1.0, jitter_ratio * 2.0))
         quality = int(round(100.0 * (delivery_score * 0.75 + jitter_score * 0.25)))
 
@@ -582,7 +583,9 @@ class GStreamerVideoService(MutableVideoService):
         if pipeline is None or Gst is None:
             return
         bus = pipeline.get_bus()
-        mask = Gst.MessageType.ERROR | Gst.MessageType.EOS | Gst.MessageType.STATE_CHANGED
+        mask = (
+            Gst.MessageType.ERROR | Gst.MessageType.EOS | Gst.MessageType.STATE_CHANGED
+        )
         while not self._stop_event.is_set():
             message = bus.timed_pop_filtered(250 * Gst.MSECOND, mask)
             if message is None:
@@ -600,7 +603,9 @@ class GStreamerVideoService(MutableVideoService):
                 self._set_connected(False)
                 self._stop_event.set()
             elif message.type == Gst.MessageType.EOS:
-                self._event("video.end_of_stream", "Video akışı sona erdi", severity="warning")
+                self._event(
+                    "video.end_of_stream", "Video akışı sona erdi", severity="warning"
+                )
                 self._set_connected(False)
                 self._stop_event.set()
             self._verify_negotiated_resolution()
@@ -625,7 +630,9 @@ class GStreamerVideoService(MutableVideoService):
     def _check_frame_timeout(self, now: float | None = None) -> None:
         if not self.connected or self._last_frame_at <= 0:
             return
-        elapsed = (time.monotonic() if now is None else float(now)) - self._last_frame_at
+        elapsed = (
+            time.monotonic() if now is None else float(now)
+        ) - self._last_frame_at
         current = self.stats
         measured_age = self._last_frame_pipeline_age_s + max(0.0, elapsed)
         if (
@@ -1004,7 +1011,10 @@ class MultiVideoService(VideoService):
             for config in self._share_configs
             if config.enabled and config.source_id != "panel"
         )
-        if any(config.enabled and config.source_id == "panel" for config in self._share_configs):
+        if any(
+            config.enabled and config.source_id == "panel"
+            for config in self._share_configs
+        ):
             desired.add(self._active_identifier)
         for identifier, source in self._sources.items():
             if identifier in desired:

@@ -11,7 +11,9 @@ from extensions.mavlink.connection_control import VehicleConnectionControlServic
 
 
 class _Settings:
-    def __init__(self, *, autoreconnect: bool = True, auto_connect: bool = False) -> None:
+    def __init__(
+        self, *, autoreconnect: bool = True, auto_connect: bool = False
+    ) -> None:
         self.changed = EventBus()
         self.current = SimpleNamespace(
             backend=SimpleNamespace(
@@ -21,6 +23,9 @@ class _Settings:
                     heartbeat_timeout=10,
                     auto_connect=auto_connect,
                     autoreconnect=autoreconnect,
+                    dialect="ardupilotmega",
+                    source_system=255,
+                    source_component=0,
                 ),
                 active_mavlink_connection_id="telemetry",
                 mavlink_connections=(),
@@ -68,6 +73,27 @@ class _FailingVehicle(_Vehicle):
 
 
 class VehicleConnectionControlTests(unittest.TestCase):
+    def test_dialect_change_reconfigures_connected_transport_in_background(self):
+        import threading
+        from unittest.mock import Mock
+
+        caller = threading.get_ident()
+        finished = threading.Event()
+        captured = []
+
+        def reconnect(config):
+            captured.append((threading.get_ident(), config))
+            finished.set()
+
+        self.vehicle.reconnect = Mock(side_effect=reconnect)
+        self.settings.current.backend.mavlink.dialect = "common"
+        self.settings.changed.publish(self.settings.current)
+        self.assertTrue(finished.wait(1))
+        self.assertNotEqual(captured[0][0], caller)
+        self.assertEqual(captured[0][1].options["dialect"], "common")
+        self.settings.changed.publish(self.settings.current)
+        self.vehicle.reconnect.assert_called_once()
+
     def setUp(self) -> None:
         self.settings = _Settings()
         self.vehicle = _Vehicle()
@@ -148,7 +174,10 @@ class VehicleConnectionControlTests(unittest.TestCase):
         # The call counter changes before the worker commits its backoff.
         while time.monotonic() < deadline:
             with self.service._state_lock:
-                if self.service._retry_attempt == 1 and self.service._next_retry_at is not None:
+                if (
+                    self.service._retry_attempt == 1
+                    and self.service._next_retry_at is not None
+                ):
                     break
             time.sleep(0.005)
 

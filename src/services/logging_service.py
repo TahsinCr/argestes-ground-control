@@ -42,11 +42,20 @@ class ServiceLogger:
             correlation_id=correlation_id,
         )
 
-    def debug(self, message: str) -> None: self.emit("debug", message)
-    def info(self, message: str) -> None: self.emit("info", message)
-    def success(self, message: str) -> None: self.emit("success", message)
-    def warning(self, message: str) -> None: self.emit("warning", message)
-    def error(self, message: str) -> None: self.emit("danger", message)
+    def debug(self, message: str) -> None:
+        self.emit("debug", message)
+
+    def info(self, message: str) -> None:
+        self.emit("info", message)
+
+    def success(self, message: str) -> None:
+        self.emit("success", message)
+
+    def warning(self, message: str) -> None:
+        self.emit("warning", message)
+
+    def error(self, message: str) -> None:
+        self.emit("danger", message)
 
 
 class ServiceLogHandler(logging.Handler):
@@ -143,7 +152,9 @@ class LoggingService(LogService):
         self.emit_entries((entry,))
 
     def emit_entries(self, entries: tuple[LogEntry, ...] | list[LogEntry]) -> None:
-        snapshots = tuple(replace(entry, details=dict(entry.details)) for entry in entries)
+        snapshots = tuple(
+            replace(entry, details=dict(entry.details)) for entry in entries
+        )
         if not snapshots:
             return
         with self._lock:
@@ -181,11 +192,16 @@ class LoggingService(LogService):
         if self._log_path is None:
             return
         payloads = tuple(
-            json.dumps(entry.to_dict(), ensure_ascii=False, default=str, separators=(",", ":"))
+            json.dumps(
+                entry.to_dict(), ensure_ascii=False, default=str, separators=(",", ":")
+            )
             for entry in entries
         )
         encoded_size = sum(len(payload.encode("utf-8")) + 1 for payload in payloads)
-        if self._log_path.exists() and self._log_path.stat().st_size + encoded_size > self._max_file_bytes:
+        if (
+            self._log_path.exists()
+            and self._log_path.stat().st_size + encoded_size > self._max_file_bytes
+        ):
             self._rotate_files()
         # Closing the handle makes each record immediately visible while the
         # kernel performs physical disk writeback. A synchronous fsync here
@@ -222,7 +238,9 @@ class LoggingService(LogService):
         for index in range(self._backup_count - 1, 0, -1):
             source = self._log_path.with_name(f"{self._log_path.name}.{index}")
             if source.exists():
-                source.replace(self._log_path.with_name(f"{self._log_path.name}.{index + 1}"))
+                source.replace(
+                    self._log_path.with_name(f"{self._log_path.name}.{index + 1}")
+                )
         if self._log_path.exists():
             self._log_path.replace(self._log_path.with_name(f"{self._log_path.name}.1"))
 
@@ -241,7 +259,9 @@ class ExtensionLoggingService(LoggingService):
         return self._service.for_extension(identifier)
 
     def emit_entries(self, entries):
-        self._service.emit_entries(tuple(replace(entry, extension_id=self._identifier) for entry in entries))
+        self._service.emit_entries(
+            tuple(replace(entry, extension_id=self._identifier) for entry in entries)
+        )
 
 
 QtLogHandler = ServiceLogHandler

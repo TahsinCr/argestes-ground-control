@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from typing import Any
 
 from src.core.abstracts import Model
 
@@ -11,6 +12,7 @@ class VehicleConnectionConfig:
     endpoint: str
     heartbeat_timeout_s: float
     baud: int = 115200
+    options: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.endpoint.strip():
@@ -39,12 +41,17 @@ class VehicleTransportStats(Model):
         )
         if any(int(value) < 0 for value in counts):
             raise ValueError("Taşıyıcı paket sayaçları negatif olamaz")
-        if self.delivery_quality is not None and not 0 <= int(self.delivery_quality) <= 100:
+        if (
+            self.delivery_quality is not None
+            and not 0 <= int(self.delivery_quality) <= 100
+        ):
             raise ValueError("Paket teslim kalitesi 0..100 aralığında olmalı")
         if self.round_trip_ms is not None and (
             not math.isfinite(float(self.round_trip_ms)) or self.round_trip_ms < 0.0
         ):
-            raise ValueError("MAVLink gidiş-dönüş süresi negatif veya sonlu olmayan değer olamaz")
+            raise ValueError(
+                "Bağlantı gidiş-dönüş süresi negatif veya sonlu olmayan değer olamaz"
+            )
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -95,12 +102,18 @@ class VehicleConnectionState(Model):
     component_id: int = 0
     vehicle_type: int | None = None
     autopilot_type: int | None = None
+    protocol: str = ""
+    identity: str = ""
 
     @property
     def device_id(self) -> str:
-        if self.system_id or self.component_id:
-            return f"mavlink:{self.system_id}:{self.component_id}"
-        return "disconnected"
+        if self.identity:
+            return self.identity
+        if self.protocol and (self.system_id or self.component_id):
+            return f"{self.protocol}:{self.system_id}:{self.component_id}"
+        if not self.connected:
+            return "disconnected"
+        return f"{self.protocol or 'vehicle'}:{self.endpoint}"
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

@@ -74,6 +74,7 @@ class TelemetrySnapshot(Model):
     estimated_dropped_packets: int = 0
     battery_current_amps: float | None = None
     battery_consumed_mah: int | None = None
+    battery_received_at: datetime | None = None
     barometric_pressure_hpa: float | None = None
     barometric_temperature_c: float | None = None
     differential_pressure_hpa: float | None = None
@@ -138,7 +139,11 @@ class TelemetrySnapshot(Model):
     ) -> bool:
         if max_age_s <= 0:
             raise ValueError("Telemetri tazelik süresi pozitif olmalı")
-        if not self.telemetry_link or not self.autopilot_link or not self.has_valid_position:
+        if (
+            not self.telemetry_link
+            or not self.autopilot_link
+            or not self.has_valid_position
+        ):
             return False
         if not isinstance(self.uav_time, datetime) or self.uav_time.tzinfo is None:
             return False
@@ -212,7 +217,9 @@ class TelemetrySnapshot(Model):
         if self.uav_time_received_at is not None:
             payload["uav_time_received_at"] = self.uav_time_received_at.isoformat()
         if self.link_quality_received_at is not None:
-            payload["link_quality_received_at"] = self.link_quality_received_at.isoformat()
+            payload["link_quality_received_at"] = (
+                self.link_quality_received_at.isoformat()
+            )
         if self.attitude_received_at is not None:
             payload["attitude_received_at"] = self.attitude_received_at.isoformat()
         if self.global_position_received_at is not None:

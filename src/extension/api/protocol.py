@@ -1,4 +1,5 @@
 """Selected protocol identity and per-extension adapter selection."""
+
 from dataclasses import dataclass
 from typing import Callable, TypeVar
 

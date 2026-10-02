@@ -1,0 +1,8 @@
+{
+  "identifier": "siha_teknofest_server", "name": "SIHA TEKNOFEST Server", "category": "Server",
+  "description": "Competition HTTP connections, telemetry delivery and SQLite history",
+  "version": "1.0.0", "api_major": 1,
+  "entry_point": "extensions.siha_teknofest_server.plugin:create_extension",
+  "requires": ["vehicle.telemetry.source"], "provides": ["competition.server"],
+  "default_enabled": false, "settings": {}
+}

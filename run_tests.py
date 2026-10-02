@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-CORE_TEST_RUNNER = PROJECT_ROOT / "src" / "core" / "tests" / "run.py"
+CORE_TEST_RUNNER = PROJECT_ROOT / "src" / "core" / "tests" / "__init__.py"
 CORE_ROOT = PROJECT_ROOT / "src" / "core"
 
 

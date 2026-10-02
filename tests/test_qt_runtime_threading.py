@@ -172,17 +172,11 @@ class QtRuntimeThreadingTests(unittest.TestCase):
 
     def test_backend_start_does_not_block_gui(self) -> None:
         backend = _BlockingBackend()
-        adapters = [_AdapterStub() for _index in range(8)]
+        adapters = [_AdapterStub() for _index in range(2)]
         runtime = QtRuntimeServices(
             backend=backend,
             log_service=adapters[0],
             settings_service=adapters[1],
-            telemetry_service=adapters[2],
-            planner_service=adapters[3],
-            command_service=adapters[4],
-            parameter_service=adapters[5],
-            tile_cache_service=adapters[6],
-            connection_service=adapters[7],
         )
         connection = self.app.aboutToQuit.connect(runtime.stop)
 

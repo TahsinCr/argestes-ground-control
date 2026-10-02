@@ -9,7 +9,7 @@ from src.core.events import EventBus
 from src.models.settings import SettingsModel
 from src.services.abstracts.settings import SettingsRepository
 from src.services.logging_service import ServiceLogger
-from src.services.storage import clear_directory_contents, ensure_directory, load_json_file, save_json_file
+from src.services.storage import ensure_directory, load_json_file, save_json_file
 
 
 class SettingsService(SettingsRepository):
@@ -17,7 +17,6 @@ class SettingsService(SettingsRepository):
 
     def __init__(self, base_dir: Path, logger: ServiceLogger | None = None) -> None:
         self._changed = EventBus[SettingsModel]()
-        self.cache_cleared = EventBus[None]()
         self.extensions_changed = EventBus[str]()
         self._base_dir = base_dir
         self._logger = logger
@@ -32,18 +31,46 @@ class SettingsService(SettingsRepository):
 
     def _migrate_extensions(self) -> None:
         directory = self._data_dir / "extensions"
-        states = load_json_file(directory / "state.json") if (directory / "state.json").exists() else {}
-        configs = {path.parent.name: load_json_file(path) for path in directory.glob("*/settings.json")}
+        states = (
+            load_json_file(directory / "state.json")
+            if (directory / "state.json").exists()
+            else {}
+        )
+        configs = {
+            path.parent.name: load_json_file(path)
+            for path in directory.glob("*/settings.json")
+        }
         backend = self._legacy_backend
         if "video_sources" in backend:
-            configs.setdefault("camera", {key: backend[key] for key in
-                               ("video_sources", "video_shares", "active_video_source_id") if key in backend})
+            configs.setdefault(
+                "camera",
+                {
+                    key: backend[key]
+                    for key in (
+                        "video_sources",
+                        "video_shares",
+                        "active_video_source_id",
+                    )
+                    if key in backend
+                },
+            )
         if "joystick" in backend:
             configs.setdefault("joystick", backend["joystick"])
         if "competition_servers" in backend:
             configs.setdefault("teknofest", {"servers": backend["competition_servers"]})
-        configs.setdefault("map", {key: getattr(self._settings.ui, key) for key in
-                                   ("map_layer", "map_center_min_zoom", "vehicle_trail_limit", "contact_trail_limit")})
+        configs.setdefault(
+            "map",
+            {
+                key: getattr(self._settings.ui, key)
+                for key in (
+                    "map_layer",
+                    "map_center_min_zoom",
+                    "vehicle_trail_limit",
+                    "contact_trail_limit",
+                )
+            },
+        )
+
         def migrate(settings):
             for identifier in set(states) | set(configs):
                 entry = settings.extensions.setdefault(identifier, {})
@@ -51,7 +78,22 @@ class SettingsService(SettingsRepository):
                     entry.setdefault("enabled", states[identifier])
                 if identifier in configs:
                     entry.setdefault("config", configs[identifier])
+            for old, new in (
+                ("map", "map_autonomy"),
+                ("teknofest", "siha_teknofest_server"),
+            ):
+                if old in settings.extensions:
+                    source = settings.extensions.pop(old)
+                    target = settings.extensions.setdefault(new, {})
+                    for key, value in source.items():
+                        if key == "config" and isinstance(value, dict):
+                            destination = target.setdefault("config", {})
+                            for setting, setting_value in value.items():
+                                destination.setdefault(setting, setting_value)
+                        else:
+                            target.setdefault(key, value)
             return settings
+
         self.update(migrate, notify=False)
         if not directory.exists():
             return
@@ -67,7 +109,9 @@ class SettingsService(SettingsRepository):
 
     def extension_config(self, identifier: str) -> dict:
         with self._lock:
-            return deepcopy(self._settings.extensions.get(identifier, {}).get("config", {}))
+            return deepcopy(
+                self._settings.extensions.get(identifier, {}).get("config", {})
+            )
 
     def bind_extension_settings(self, identifier, project, restore) -> None:
         """Bridge legacy typed fields without teaching the host a protocol schema."""
@@ -91,6 +135,7 @@ class SettingsService(SettingsRepository):
             if restore is not None and "config" in changes:
                 settings = restore(settings, entry["config"])
             return settings
+
         self.update(mutate, notify=False)
         self.extensions_changed.publish(identifier)
 
@@ -109,7 +154,6 @@ class SettingsService(SettingsRepository):
                 payload = load_json_file(self._settings_path)
                 self._legacy_backend = dict(payload.get("backend", {}))
                 settings = SettingsModel.from_dict(payload)
-                self._prepare_runtime_paths(settings)
                 return settings
             except (OSError, TypeError, ValueError) as exc:
                 if self._logger:
@@ -127,7 +171,6 @@ class SettingsService(SettingsRepository):
 
     def _restore_defaults(self, *, reason: str) -> SettingsModel:
         settings = SettingsModel.default(self._base_dir)
-        self._prepare_runtime_paths(settings)
         try:
             self.save(settings, notify=False)
         except OSError as exc:
@@ -154,16 +197,8 @@ class SettingsService(SettingsRepository):
                 )
         return settings
 
-    def _prepare_runtime_paths(self, settings: SettingsModel) -> None:
-        if not settings.backend.cache.path.strip():
-            settings.backend.cache.path = str(
-                self._base_dir / "data" / "map-cache"
-            )
-        ensure_directory(settings.backend.cache.path)
-
     def save(self, settings: SettingsModel, *, notify: bool = True) -> None:
         snapshot = SettingsModel.from_dict(settings.to_dict())
-        self._prepare_runtime_paths(snapshot)
         with self._lock:
             if hasattr(self, "_settings"):
                 snapshot.extensions = deepcopy(self._settings.extensions)
@@ -190,7 +225,6 @@ class SettingsService(SettingsRepository):
             if not isinstance(updated, SettingsModel):
                 raise TypeError("Ayar güncelleme işlevi SettingsModel döndürmeli")
             snapshot = SettingsModel.from_dict(updated.to_dict())
-            self._prepare_runtime_paths(snapshot)
             committed = self._commit_locked(snapshot)
             result = SettingsModel.from_dict(self._settings.to_dict())
         self._notify_commit(committed, notify=notify)
@@ -201,7 +235,9 @@ class SettingsService(SettingsRepository):
         snapshot: SettingsModel,
     ) -> tuple[SettingsModel | None, SettingsModel] | None:
         for identifier, project in self._extension_projections.items():
-            snapshot.extensions.setdefault(identifier, {}).setdefault("config", {}).update(project(snapshot))
+            snapshot.extensions.setdefault(identifier, {}).setdefault(
+                "config", {}
+            ).update(project(snapshot))
         previous = (
             SettingsModel.from_dict(self._settings.to_dict())
             if hasattr(self, "_settings")
@@ -233,19 +269,6 @@ class SettingsService(SettingsRepository):
                 f"{len(changed_paths)} ayar kalıcı olarak güncellendi",
                 severity="success",
                 details={"changed_paths": changed_paths},
-            )
-
-    def clear_cache(self) -> None:
-        cache_path = Path(self.current.backend.cache.path)
-        removed = sum(1 for _ in cache_path.rglob("*")) if cache_path.exists() else 0
-        clear_directory_contents(cache_path)
-        self.cache_cleared.publish(None)
-        if removed and self._logger:
-            self._logger.event(
-                "map_cache.cleared",
-                f"Harita önbelleğinden {removed} öğe silindi",
-                severity="success",
-                details={"removed_entries": removed},
             )
 
     @classmethod

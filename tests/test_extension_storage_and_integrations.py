@@ -19,7 +19,7 @@ from src.models.logs import LogEntry
 from src.models.telemetry import TelemetrySnapshot
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
-from extensions.teknofest.runtime import CompetitionDatabase, ServerSession, validate_servers
+from extensions.siha_teknofest_server.runtime import CompetitionDatabase, ServerSession, validate_servers
 
 
 class ExtensionStorageTests(unittest.TestCase):
@@ -45,13 +45,13 @@ class ExtensionStorageTests(unittest.TestCase):
             settings = SettingsService(Path(directory))
             threads = [threading.Thread(target=settings.update_extension,
                                         args=(identifier,), kwargs={"config": {"value": value}})
-                       for value, identifier in enumerate(("camera", "map", "joystick", "teknofest"))]
+                       for value, identifier in enumerate(("camera", "map", "joystick", "siha_teknofest_server"))]
             for thread in threads:
                 thread.start()
             for thread in threads:
                 thread.join()
             self.assertEqual([settings.extension_config(key)["value"] for key in
-                              ("camera", "map", "joystick", "teknofest")], [0, 1, 2, 3])
+                              ("camera", "map", "joystick", "siha_teknofest_server")], [0, 1, 2, 3])
 
     def test_shared_json_session_includes_injected_extension_origin(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -61,14 +61,14 @@ class ExtensionStorageTests(unittest.TestCase):
                 service.for_extension("camera").child("VIDEO").info("frame")
                 service.for_extension("joystick").emit_entry(LogEntry("RC", "input"))
                 handler = service.create_python_handler()
-                handler.emit(logging.LogRecord("extensions.teknofest.worker", logging.INFO,
-                                               "/tmp/extensions/teknofest/worker.py", 1, "server", (), None))
+                handler.emit(logging.LogRecord("extensions.siha_teknofest_server.worker", logging.INFO,
+                                               "/tmp/extensions/siha_teknofest_server/worker.py", 1, "server", (), None))
                 service.flush()
                 rows = json.loads(service.log_path.read_text())
                 self.assertTrue(service.log_path.name.startswith("gcs_"))
                 self.assertEqual(service.log_path.suffix, ".json")
                 self.assertEqual([row["extension_id"] for row in rows[-3:]],
-                                 ["camera", "joystick", "teknofest"])
+                                 ["camera", "joystick", "siha_teknofest_server"])
             finally:
                 container.shutdown()
 
@@ -83,10 +83,10 @@ class ExtensionStorageTests(unittest.TestCase):
             try:
                 host = container.resolve(ExtensionHost)
                 self.assertFalse(host.is_active("joystick"))
-                self.assertFalse(host.is_active("teknofest"))
-                self.assertTrue(host.is_active("map"))
+                self.assertFalse(host.is_active("siha_teknofest_server"))
+                self.assertTrue(host.is_active("map_autonomy"))
                 host.start()
-                for identifier in ("joystick", "teknofest"):
+                for identifier in ("joystick", "siha_teknofest_server"):
                     host.set_enabled(identifier, True)
                     self.assertTrue(host.is_active(identifier))
                     host.set_enabled(identifier, False)

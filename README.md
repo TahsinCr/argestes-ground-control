@@ -7,9 +7,10 @@
 
 A desktop ground-control application with an extension host. The built-in
 MAVLink protocol extension and optional Vehicle Connection extension provide the current
-vehicle connection, telemetry/GPS, autopilot and parameter behavior. An optional
-camera extension adds the multi-camera wall, recording and live video output.
-The common application retains mission planning, maps, logs and battery/device status.
+vehicle connection, telemetry/GPS and autopilot behavior. Feature packages provide
+map/autonomy, parameters, battery, flight dynamics, configurable telemetry, quick
+commands, cameras, joystick and competition servers. The common application owns
+the workspace, settings, logs, extension lifecycle and normalized data contracts.
 
 The application is maintained as a vehicle-neutral ground-control foundation.
 
@@ -24,10 +25,14 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
+pip install -r extensions/mavlink/requirements.txt
+pip install -r extensions/map_autonomy/requirements.txt
 python main.py
 ```
 
-The application requires Python 3.11+, Qt 6, `pymavlink` and `pyserial`.
+The application requires Python 3.11+ and Qt 6. Protocol and WebEngine dependencies
+are installed from their owning extension's requirements; use the same virtual
+environment to launch the application. Keep Qt and Qt WebEngine versions aligned.
 On Linux, install the system packages required by PyQt6 and Qt WebEngine before
 launching the application.
 
@@ -58,10 +63,12 @@ Qt UI → UI adapters → application contracts → extension host → extension
                             │                                  ├── mavlink/
                             │                                  ├── vehicle_connection/
                             │                                  ├── camera/
-                            │                                  ├── map/
+                            │                                  ├── map_autonomy/
                             │                                  ├── joystick/
-                            │                                  └── teknofest/
-                            └── settings, logs, planner, map cache and battery
+                            │                                  ├── siha_teknofest_server/
+                            │                                  ├── battery/, parameters/
+                            │                                  └── flight_dynamics/, telemetry_display/, quick_commands/
+                            └── workspace, settings, logs and normalized data hubs
 ```
 
 `src/container.py` is the composition root. `src/extension/api` defines the
@@ -73,14 +80,17 @@ extension owns connection lifecycle and profile editing through protocol-neutral
 `ConnectionSource` and `ConnectionProfiles` contracts. One protocol provider
 must remain enabled. Camera and Vehicle Connection
 switches apply immediately without restarting the application; only their owned
-services and UI are rebuilt. The left activity bar provides search,
-category/status filters and extension controls. Existing MAVLink configuration
+services and UI are rebuilt. The Extensions button beside Settings opens a
+responsive dialog with search, category/status filters and extension controls.
+Its installed-package view can share the tab shell with a future store; no store
+is included. Existing MAVLink configuration
 remains in `data/settings.json`; extension state and settings share its
 `extensions.<identifier>.enabled` and `extensions.<identifier>.config` fields.
 Disabling an extension never erases its settings. Legacy files in
 `data/extensions/` are imported before removal; unrelated data is left intact.
-Wire subscriptions, heartbeat decoding and parameter-message handling belong
-to the protocol package, not the shared `VehicleService` contract. MAVLink owns
+Wire subscriptions and heartbeat decoding belong to the protocol package;
+parameter-message handling belongs to the parameter package's protocol adapter,
+not the shared `VehicleService` contract. MAVLink owns
 its decoded feed, GPS and autopilot indicators. Vehicle Connection contributes
 the connection chip and quality meter;
 camera status controls belong to the camera package. Status contributions use
@@ -89,7 +99,9 @@ the left connection group or the group beside the battery. Connection, GPS and
 autopilot indicators are status-only; profile editing opens from Vehicle
 Connection's Extensions-panel settings action. MAVLink's
 advanced settings are available through its Extensions-panel settings action,
-not the common application settings dialog.
+not the common application settings dialog. The dialect selector lists installed
+pymavlink dialects; changing protocol options reconfigures an active connection
+on a background worker, without enabling an inactive connection automatically.
 Each extension owns `i18n/tr.json` and `i18n/en.json`. Installed catalogs are
 validated and merged once, then translations use cached dictionaries. Duplicate
 keys are rejected; discovery refresh rebuilds the catalogs without importing
@@ -130,14 +142,19 @@ top-bar menu to show or hide vehicle, bottom, and extension panels, then resize
 their dividers directly. View > Edit Layout temporarily reveals handles for
 moving, tabbing and floating panels; turn it off when finished. The View menu
 also provides Map Focus, Reset Layout, and a Dark/Light theme switch. Hiding or
-showing panels does not replace the saved arrangement.
+showing panels does not replace the saved arrangement. Each panel also has a
+compact hover-only grip and menu without permanently occupying its content area.
 Panel positions and visibility are saved in `data/workspace-layout.json` when
-the application closes. Empty spacer docks are not used: adjacent split panels
+the application closes, together with window geometry. Qt's saved split/tab state
+is authoritative at startup; independent size hints are not replayed over it.
+Empty spacer docks are not used: adjacent split panels
 fill their row or column, and unrelated split branches keep their own sizes.
 
 ## Optional integrations
 
-* **Map** owns the map widget, web assets, preferences and mission view. It uses
+* **Map & Autonomy** (`map_autonomy`) owns the map widget, web assets, tile cache,
+  planner, preferences and mission view. Its reusable API is
+  `extensions.map_autonomy.api.planner.PlannerMapApi`. It uses
   normalized telemetry and navigation services, currently provided by MAVLink.
   It can be disabled or re-enabled without restarting the application.
 * **Joystick** restores RC1–RC16 mapping, PWM calibration, input detection and
@@ -145,7 +162,7 @@ fill their row or column, and unrelated split branches keep their own sizes.
   RC adapter. Device activation is separate from enabling the extension;
   deactivation releases RC overrides. Protocol selection lives outside sampling
   and UI code, using `src.extension.api.protocol.ActiveProtocol`.
-* **TEKNOFEST** provides independently controlled HTTP server profiles, fixed
+* **SIHA TEKNOFEST Server** (`siha_teknofest_server`) provides independently controlled HTTP server profiles, fixed
   1 Hz telemetry scheduling, server clock tracking, QR/HSS requests and real
   lock/kamikaze result submission methods. It consumes normalized telemetry,
   not MAVLink messages, and does not require the MAVLink package by identity.
@@ -162,7 +179,7 @@ Configuration layout:
   "extensions": {
     "camera": { "enabled": false, "config": {} },
     "joystick": { "enabled": false, "config": {} },
-    "teknofest": { "enabled": false, "config": { "servers": [] } }
+    "siha_teknofest_server": { "enabled": false, "config": { "servers": [] } }
   }
 }
 ```
@@ -170,6 +187,17 @@ Configuration layout:
 Existing typed backend fields remain compatibility aliases. The MAVLink package
 projects its protocol settings and vehicle connection profiles into the shared
 extension section, so legacy editors cannot overwrite another extension's config.
+
+Flight dynamics, telemetry display, quick commands and battery are separate
+packages consuming normalized data or generic command capabilities. Telemetry
+display settings select visible fields. Parameters currently require the
+`mavlink.parameters` capability and keep their MAVLink adapter inside the package.
+`VehicleService` does not prescribe RC or mission methods: optional `RcControl`
+and `MissionControl` ports in `src.extension.api.vehicle` are advertised separately.
+To add another protocol, implement the required port/adapter and capability;
+feature UI code must not import its transport. Production mock telemetry has been
+removed; tests inject their own doubles. Old `map` and `teknofest` configuration
+keys migrate without losing disabled states or unknown settings.
 
 ## Settings, logs and tests
 

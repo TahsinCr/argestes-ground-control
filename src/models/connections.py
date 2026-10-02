@@ -17,6 +17,7 @@ class ConnectionProfile:
 
     def to_dict(self):
         from dataclasses import asdict
+
         return asdict(self)
 
 

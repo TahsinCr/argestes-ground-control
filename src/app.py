@@ -15,7 +15,7 @@ def _sanitize_graphics_environment() -> None:
 
 _sanitize_graphics_environment()
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtWidgets import QApplication
 
 from src.container import create_container
@@ -29,6 +29,7 @@ from src.ui.views.main_window import MainWindow
 
 
 def run() -> int:
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv)
     app.setApplicationName("Kırlangıç Team YKİ")
     app.setOrganizationName("Kırlangıç Team")

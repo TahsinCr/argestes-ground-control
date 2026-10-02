@@ -45,8 +45,16 @@ class MapOverlay(Model):
         for raw in self.points:
             if len(raw) < 2:
                 raise ValueError("Görev noktası enlem ve boylam içermeli")
-            point = Point(float(raw[0]), float(raw[1]), float(raw[2]) if len(raw) > 2 else 0.0)
-            normalized.append([point.latitude, point.longitude, *([point.altitude] if len(raw) > 2 else [])])
+            point = Point(
+                float(raw[0]), float(raw[1]), float(raw[2]) if len(raw) > 2 else 0.0
+            )
+            normalized.append(
+                [
+                    point.latitude,
+                    point.longitude,
+                    *([point.altitude] if len(raw) > 2 else []),
+                ]
+            )
         self.points = normalized
         if self.radius_m is not None:
             self.radius_m = float(self.radius_m)
@@ -74,13 +82,13 @@ class MapOverlay(Model):
     def is_source_managed(self) -> bool:
         """True when an external service owns this overlay's lifecycle."""
 
-        return bool(
-            self.metadata.get("read_only", False)
-        )
+        return bool(self.metadata.get("read_only", False))
 
     @property
     def is_archivable(self) -> bool:
-        return bool(self.metadata.get("persistent", True)) and not self.is_source_managed
+        return (
+            bool(self.metadata.get("persistent", True)) and not self.is_source_managed
+        )
 
     @property
     def is_vehicle_mission(self) -> bool:
@@ -169,8 +177,12 @@ class MissionState(Model):
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "MissionState":
         return cls(
-            overlays=[MapOverlay.from_dict(item) for item in payload.get("overlays", [])],
-            contacts=[MapContact.from_dict(item) for item in payload.get("contacts", [])],
+            overlays=[
+                MapOverlay.from_dict(item) for item in payload.get("overlays", [])
+            ],
+            contacts=[
+                MapContact.from_dict(item) for item in payload.get("contacts", [])
+            ],
             active_tool=str(payload.get("active_tool", "pan")),
             base_layer=str(payload.get("base_layer", "vector")),
             selected_overlay_id=payload.get("selected_overlay_id"),

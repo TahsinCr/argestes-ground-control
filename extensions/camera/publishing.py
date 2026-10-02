@@ -12,7 +12,12 @@ from urllib.parse import urlparse
 from typing import Any
 
 from src.core.events import EventBus, Subscription
-from extensions.camera.models import VideoFrame, VideoShareConfig, VideoShareState, VideoSourceFrame
+from extensions.camera.models import (
+    VideoFrame,
+    VideoShareConfig,
+    VideoShareState,
+    VideoSourceFrame,
+)
 from src.services.logging_service import ServiceLogger
 
 
@@ -121,7 +126,10 @@ class VideoSharePublisher:
 
     @property
     def states(self) -> tuple[VideoShareState, ...]:
-        return tuple(self._states.get(item.identifier, VideoShareState(item.identifier)) for item in self._configs)
+        return tuple(
+            self._states.get(item.identifier, VideoShareState(item.identifier))
+            for item in self._configs
+        )
 
     def set_server_time_provider(self, provider: Callable[[], datetime | None]) -> None:
         self._server_time = provider
@@ -138,8 +146,12 @@ class VideoSharePublisher:
             config.identifier: VideoShareState(
                 config.identifier,
                 status="waiting" if config.enabled else "inactive",
-                detail="Kamera karesi bekleniyor" if config.enabled else (
-                    "Kayıt devre dışı" if config.output_type == "record" else "Yayın devre dışı"
+                detail="Kamera karesi bekleniyor"
+                if config.enabled
+                else (
+                    "Kayıt devre dışı"
+                    if config.output_type == "record"
+                    else "Yayın devre dışı"
                 ),
             )
             for config in self._configs
@@ -181,7 +193,9 @@ class VideoSharePublisher:
                 config.identifier: VideoShareState(
                     config.identifier,
                     status="inactive",
-                    detail="Kayıt durduruldu" if config.output_type == "record" else "Yayın durduruldu",
+                    detail="Kayıt durduruldu"
+                    if config.output_type == "record"
+                    else "Yayın durduruldu",
                 )
                 for config in self._configs
             }
@@ -205,7 +219,9 @@ class VideoSharePublisher:
             self._latest_source_frame_at[item.source_id] = time.monotonic()
         self._frame_event.set()
 
-    def _run_target(self, config: VideoShareConfig, stop_event: threading.Event) -> None:
+    def _run_target(
+        self, config: VideoShareConfig, stop_event: threading.Event
+    ) -> None:
         pipeline: Any | None = None
         appsrc: Any | None = None
         try:
@@ -230,7 +246,9 @@ class VideoSharePublisher:
                 if clock_reference is None or clock_started_at is None:
                     return
             Gst = self._load_gstreamer()
-            output_path = self._recording_path(config) if config.output_type == "record" else None
+            output_path = (
+                self._recording_path(config) if config.output_type == "record" else None
+            )
             encoder_chain, encoder_name = self._encoder_chain(Gst, config)
             active_pipeline = Gst.parse_launch(
                 self._pipeline_description(
@@ -245,7 +263,10 @@ class VideoSharePublisher:
             clock = active_pipeline.get_by_name("yki_share_clock")
             if appsrc is None:
                 raise RuntimeError("Video paylaşım pipeline appsrc öğesi üretmedi")
-            if active_pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+            if (
+                active_pipeline.set_state(Gst.State.PLAYING)
+                == Gst.StateChangeReturn.FAILURE
+            ):
                 raise RuntimeError("Video paylaşım pipeline PLAYING durumuna geçemedi")
             compliance = []
             if not config.fixed_frame_rate:
@@ -290,11 +311,19 @@ class VideoSharePublisher:
                 frame = frame or previous
                 if frame is None:
                     continue
-                if (frame.width, frame.height) != (previous.width, previous.height) if previous else False:
-                    raise RuntimeError("Yayın sırasında çözünürlük değişti; paylaşım yeniden başlatılmalı")
+                if (
+                    (frame.width, frame.height) != (previous.width, previous.height)
+                    if previous
+                    else False
+                ):
+                    raise RuntimeError(
+                        "Yayın sırasında çözünürlük değişti; paylaşım yeniden başlatılmalı"
+                    )
                 if clock is not None:
                     if config.timestamp_enabled:
-                        assert clock_reference is not None and clock_started_at is not None
+                        assert (
+                            clock_reference is not None and clock_started_at is not None
+                        )
                         clock.set_property(
                             "text",
                             self._clock_text(clock_reference, clock_started_at),
@@ -313,10 +342,17 @@ class VideoSharePublisher:
                 previous = frame
                 sequence += 1
                 if config.output_type == "record":
-                    self._set_state(config.identifier, "active", detail, stop_event=stop_event)
+                    self._set_state(
+                        config.identifier, "active", detail, stop_event=stop_event
+                    )
         except Exception as exc:
             self._set_state(config.identifier, "error", str(exc), stop_event=stop_event)
-            self._event("video.share_failed", f"Video paylaşımı başlatılamadı: {config.name}: {exc}", "danger", {"share_id": config.identifier})
+            self._event(
+                "video.share_failed",
+                f"Video paylaşımı başlatılamadı: {config.name}: {exc}",
+                "danger",
+                {"share_id": config.identifier},
+            )
         finally:
             if pipeline is not None:
                 try:
@@ -354,15 +390,15 @@ class VideoSharePublisher:
             )
         return time.monotonic() - received_at <= _RECORDING_FRAME_STALE_S
 
-    def _wait_for_frame(self, config: VideoShareConfig, stop_event: threading.Event) -> VideoFrame | None:
+    def _wait_for_frame(
+        self, config: VideoShareConfig, stop_event: threading.Event
+    ) -> VideoFrame | None:
         while not stop_event.is_set():
             frame = self._current_frame(config)
             if frame is not None:
                 return frame
             source_name = (
-                "panel"
-                if config.source_id == "panel"
-                else config.source_id[:12]
+                "panel" if config.source_id == "panel" else config.source_id[:12]
             )
             self._set_state(
                 config.identifier,
@@ -437,14 +473,22 @@ class VideoSharePublisher:
         if config.output_type == "record":
             if output_path is None:
                 raise ValueError("Kayıt dosyası yolu oluşturulmadı")
-            parser = "h264parse" if config.codec in {"h264", "h264-baseline"} else "h265parse"
+            parser = (
+                "h264parse"
+                if config.codec in {"h264", "h264-baseline"}
+                else "h265parse"
+            )
             location = str(output_path).replace("\\", "\\\\").replace('"', '\\"')
             return (
                 f"{parser} ! mp4mux faststart=true ! "
                 f'filesink location="{location}" sync=false async=false'
             )
         if config.connection_type == "udp":
-            parsed = urlparse(config.endpoint if "://" in config.endpoint else f"udp://{config.endpoint}")
+            parsed = urlparse(
+                config.endpoint
+                if "://" in config.endpoint
+                else f"udp://{config.endpoint}"
+            )
             if not parsed.hostname or not parsed.port:
                 raise ValueError("UDP video paylaşım adresi host:port biçiminde olmalı")
             options = ""
@@ -453,7 +497,9 @@ class VideoSharePublisher:
             except ValueError:
                 is_multicast = False
             if is_multicast and config.network_interface:
-                address = dict(refresh_active_ipv4_interfaces()).get(config.network_interface)
+                address = dict(refresh_active_ipv4_interfaces()).get(
+                    config.network_interface
+                )
                 if address is None:
                     raise RuntimeError(
                         f"Seçilen multicast ağ arayüzü aktif değil: {config.network_interface}"
@@ -468,10 +514,10 @@ class VideoSharePublisher:
                 f"{options} sync=false async=false"
             )
         if config.connection_type == "srt":
-            return f"mpegtsmux ! srtsink uri=\"{config.endpoint}\""
+            return f'mpegtsmux ! srtsink uri="{config.endpoint}"'
         if config.connection_type == "rtmp":
-            return f"flvmux streamable=true ! rtmpsink location=\"{config.endpoint}\""
-        return f"{rtp_payloader} ! rtspclientsink location=\"{config.endpoint}\""
+            return f'flvmux streamable=true ! rtmpsink location="{config.endpoint}"'
+        return f'{rtp_payloader} ! rtspclientsink location="{config.endpoint}"'
 
     @staticmethod
     def _encoder_chain(Gst: Any, config: VideoShareConfig) -> tuple[str, str]:
@@ -480,13 +526,21 @@ class VideoSharePublisher:
             (
                 "nvv4l2h264enc" if h264 else "nvv4l2h265enc",
                 "nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! "
-                + ("nvv4l2h264enc insert-sps-pps=true iframeinterval=30" if h264 else "nvv4l2h265enc iframeinterval=30"),
+                + (
+                    "nvv4l2h264enc insert-sps-pps=true iframeinterval=30"
+                    if h264
+                    else "nvv4l2h265enc iframeinterval=30"
+                ),
                 "NVIDIA NVENC",
             ),
             (
                 "nvh264enc" if h264 else "nvh265enc",
                 "videoconvert ! video/x-raw,format=NV12 ! "
-                + ("nvh264enc gop-size=30 bframes=0" if h264 else "nvh265enc gop-size=30"),
+                + (
+                    "nvh264enc gop-size=30 bframes=0"
+                    if h264
+                    else "nvh265enc gop-size=30"
+                ),
                 "NVIDIA NVENC",
             ),
             (
@@ -498,7 +552,11 @@ class VideoSharePublisher:
             (
                 "vaapih264enc" if h264 else "vaapih265enc",
                 "videoconvert ! video/x-raw,format=NV12 ! "
-                + ("vaapih264enc keyframe-period=30" if h264 else "vaapih265enc keyframe-period=30"),
+                + (
+                    "vaapih264enc keyframe-period=30"
+                    if h264
+                    else "vaapih265enc keyframe-period=30"
+                ),
                 "VA-API",
             ),
         )
@@ -528,6 +586,7 @@ class VideoSharePublisher:
     def _load_gstreamer() -> Any:
         try:
             import gi
+
             gi.require_version("Gst", "1.0")
             from gi.repository import Gst
         except (ImportError, ValueError) as exc:
@@ -562,6 +621,8 @@ class VideoSharePublisher:
     def _publish_states(self) -> None:
         self._states_changed.publish(self.states)
 
-    def _event(self, action: str, message: str, severity: str, details: dict[str, object]) -> None:
+    def _event(
+        self, action: str, message: str, severity: str, details: dict[str, object]
+    ) -> None:
         if self._logger:
             self._logger.event(action, message, severity=severity, details=details)

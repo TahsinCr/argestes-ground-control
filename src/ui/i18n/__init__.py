@@ -20,7 +20,9 @@ def _load_language_pack(language: str) -> dict[str, str]:
         pack = _read_language_pack(path)
         collisions = set(pack) & set(merged)
         if collisions:
-            raise RuntimeError(f"Duplicate translation ownership: {path}: {sorted(collisions)}")
+            raise RuntimeError(
+                f"Duplicate translation ownership: {path}: {sorted(collisions)}"
+            )
         merged.update(pack)
     return merged
 
@@ -57,12 +59,15 @@ SUPPORTED_LANGUAGES = tuple(LANGUAGES)
 
 def reload_language_packs() -> None:
     """Atomically rebuild installed catalogs, never perform disk I/O in t()."""
-    packs = {language: _load_language_pack(language) for language in SUPPORTED_LANGUAGES}
+    packs = {
+        language: _load_language_pack(language) for language in SUPPORTED_LANGUAGES
+    }
     if set(packs["tr"]) != set(packs["en"]):
         raise RuntimeError("Extension language packs must have matching keys")
     for language, pack in packs.items():
         LANGUAGES[language].clear()
         LANGUAGES[language].update(pack)
+
 
 _turkish_keys = set(TURKISH)
 _english_keys = set(ENGLISH)
@@ -122,27 +127,15 @@ def localized_log_message(entry: Any, language: str) -> str:
         if code:
             command_key = f"{key}.{code}"
             if code == "mission_upload":
-                repeat_mode = (
-                    "loop"
-                    if bool(values.get("loop", False))
-                    else "once"
-                )
+                repeat_mode = "loop" if bool(values.get("loop", False)) else "once"
                 template_keys.append(f"{command_key}.{repeat_mode}")
             template_keys.append(command_key)
     elif action == "mission.upload_confirmed":
-        repeat_mode = (
-            "loop"
-            if bool(values.get("loop", False))
-            else "once"
-        )
+        repeat_mode = "loop" if bool(values.get("loop", False)) else "once"
         template_keys.append(f"{key}.{repeat_mode}")
     template_keys.extend((key, f"log.{action}"))
     template = next(
-        (
-            selected[candidate]
-            for candidate in template_keys
-            if candidate in selected
-        ),
+        (selected[candidate] for candidate in template_keys if candidate in selected),
         None,
     )
     if template is None and action.startswith("runtime."):
@@ -214,13 +207,22 @@ def connection_status_text(status: Any, language: str) -> tuple[str, str]:
                 quality = t("connection.detail.telemetry.quality_waiting", language)
             age = options.get("last_message_age_s")
             detail = (
-                t("connection.detail.telemetry.age", language, age=float(age), quality=quality)
+                t(
+                    "connection.detail.telemetry.age",
+                    language,
+                    age=float(age),
+                    quality=quality,
+                )
                 if age is not None
                 else t("connection.detail.telemetry.waiting", language, quality=quality)
             )
             round_trip_ms = options.get("round_trip_ms")
             latency = (
-                t("connection.detail.telemetry.latency", language, latency=float(round_trip_ms))
+                t(
+                    "connection.detail.telemetry.latency",
+                    language,
+                    latency=float(round_trip_ms),
+                )
                 if round_trip_ms is not None
                 else t("connection.detail.telemetry.latency_waiting", language)
             )

@@ -11,8 +11,16 @@ from pathlib import Path
 from typing import Any
 
 from src.core.dependency import BaseDependencyContainer
-from src.extension.api import API_MAJOR, ExtensionContext, ExtensionManifest, ExtensionRegistrar, SidebarContribution, VisualContribution, StatusContribution, SettingsContribution
-from src.services.storage import load_json_file, save_json_file
+from src.extension.api import (
+    API_MAJOR,
+    ExtensionContext,
+    ExtensionManifest,
+    ExtensionRegistrar,
+    SidebarContribution,
+    VisualContribution,
+    StatusContribution,
+    SettingsContribution,
+)
 from src.services.settings import SettingsService
 from src.services.logging_service import LoggingService
 from src.services.abstracts.logging import LogService
@@ -29,7 +37,11 @@ class ExtensionServices:
 
     def resolve(self, token):
         service = self._services.resolve(token)
-        return service.for_extension(self._identifier) if token in (LoggingService, LogService) else service
+        return (
+            service.for_extension(self._identifier)
+            if token in (LoggingService, LogService)
+            else service
+        )
 
 
 class ExtensionError(RuntimeError):
@@ -51,8 +63,11 @@ class ExtensionHost:
         self.container = container
         self._settings_service = container.resolve(SettingsService)
         # A malformed persisted switch must never silently re-enable a plugin.
-        self._stored = {key: entry["enabled"] for key, entry in
-                        self._settings_service.current.extensions.items() if "enabled" in entry}
+        self._stored = {
+            key: entry["enabled"]
+            for key, entry in self._settings_service.current.extensions.items()
+            if "enabled" in entry
+        }
         if "telemetry" in self._stored:
             if not isinstance(self._stored["telemetry"], bool):
                 raise ExtensionError("Invalid enabled state for telemetry")
@@ -62,7 +77,9 @@ class ExtensionHost:
             del migrated["telemetry"]
             self._save_states(migrated, remove="telemetry")
             self._stored = migrated
-        self._manifests = self._discover(Path(__file__).resolve().parents[3] / "extensions")
+        self._manifests = self._discover(
+            Path(__file__).resolve().parents[3] / "extensions"
+        )
         for key, value in self._stored.items():
             if key in self._manifests and not isinstance(value, bool):
                 raise ExtensionError(f"Invalid enabled state for {key}")
@@ -77,8 +94,12 @@ class ExtensionHost:
         self._status_widgets: list[StatusContribution] = []
         self._settings_actions: dict[str, SettingsContribution] = {}
         self._validate(self._enabled_ids())
-        self._save_states({key: self._stored.get(key, manifest.default_enabled)
-                           for key, manifest in self._manifests.items()})
+        self._save_states(
+            {
+                key: self._stored.get(key, manifest.default_enabled)
+                for key, manifest in self._manifests.items()
+            }
+        )
 
     def _save_states(self, states, *, remove=None):
         def mutate(settings):
@@ -89,8 +110,11 @@ class ExtensionHost:
             if remove is not None:
                 old = settings.extensions.pop(remove, {})
                 if old.get("config"):
-                    settings.extensions.setdefault("vehicle_connection", {}).setdefault("config", old["config"])
+                    settings.extensions.setdefault("vehicle_connection", {}).setdefault(
+                        "config", old["config"]
+                    )
             return settings
+
         self._settings_service.update(mutate, notify=False)
 
     @staticmethod
@@ -102,10 +126,12 @@ class ExtensionHost:
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 manifest = ExtensionManifest(
-                    identifier=payload["identifier"], name=payload["name"],
+                    identifier=payload["identifier"],
+                    name=payload["name"],
                     description=payload.get("description", ""),
                     category=payload.get("category", "Other"),
-                    version=payload["version"], entry_point=payload["entry_point"],
+                    version=payload["version"],
+                    entry_point=payload["entry_point"],
                     api_major=payload.get("api_major", API_MAJOR),
                     provides=tuple(payload.get("provides", ())),
                     requires=tuple(payload.get("requires", ())),
@@ -115,17 +141,22 @@ class ExtensionHost:
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 raise ExtensionError(f"Invalid manifest: {path}: {exc}") from exc
             if not re.fullmatch(r"[a-z][a-z0-9_]*", manifest.identifier):
-                raise ExtensionError(f"Invalid extension identifier: {manifest.identifier}")
+                raise ExtensionError(
+                    f"Invalid extension identifier: {manifest.identifier}"
+                )
             if path.parent.name != manifest.identifier or manifest.identifier in found:
                 raise ExtensionError(f"Extension identifier/path conflict: {path}")
             if manifest.api_major != API_MAJOR:
-                raise ExtensionError(f"Incompatible extension API: {manifest.identifier}")
+                raise ExtensionError(
+                    f"Incompatible extension API: {manifest.identifier}"
+                )
             found[manifest.identifier] = manifest
         return found
 
     def _enabled_ids(self) -> set[str]:
         return {
-            key for key, manifest in self._manifests.items()
+            key
+            for key, manifest in self._manifests.items()
             if bool(self._stored.get(key, manifest.default_enabled))
         }
 
@@ -137,7 +168,9 @@ class ExtensionHost:
                     raise ExtensionError(f"Capability conflict: {capability}")
                 providers[capability] = key
         if self.REQUIRED_CAPABILITY not in providers:
-            raise ExtensionError("At least one vehicle protocol extension must remain enabled")
+            raise ExtensionError(
+                "At least one vehicle protocol extension must remain enabled"
+            )
         ordered: list[str] = []
         visiting: set[str] = set()
 
@@ -161,16 +194,24 @@ class ExtensionHost:
 
     def list_extensions(self) -> list[ExtensionState]:
         enabled = self._enabled_ids()
-        return [ExtensionState(manifest, key in enabled,
-                               (key in enabled) != (key in self._active_ids) or key in self._dirty_settings)
-                for key, manifest in sorted(self._manifests.items())]
+        return [
+            ExtensionState(
+                manifest,
+                key in enabled,
+                (key in enabled) != (key in self._active_ids)
+                or key in self._dirty_settings,
+            )
+            for key, manifest in sorted(self._manifests.items())
+        ]
 
     def refresh_extensions(self) -> None:
         """Discover newly installed packages without activating them implicitly."""
         found = self._discover(Path(__file__).resolve().parents[3] / "extensions")
         missing = self._active_ids - set(found)
         if missing:
-            raise ExtensionError(f"Active extension package missing: {', '.join(sorted(missing))}")
+            raise ExtensionError(
+                f"Active extension package missing: {', '.join(sorted(missing))}"
+            )
         added = set(found) - set(self._manifests)
         if added:
             updated = {**self._stored, **{key: False for key in added}}
@@ -199,7 +240,8 @@ class ExtensionHost:
         if self.REQUIRED_CAPABILITY in manifest.provides:
             return False
         return not any(
-            key != identifier and key in self._active_ids
+            key != identifier
+            and key in self._active_ids
             and set(other.requires).intersection(manifest.provides)
             for key, other in self._manifests.items()
         )
@@ -213,14 +255,19 @@ class ExtensionHost:
         else:
             candidate.discard(identifier)
         self._validate(candidate)
-        if enabled == (identifier in self._active_ids) and self._stored.get(identifier) == enabled:
+        if (
+            enabled == (identifier in self._active_ids)
+            and self._stored.get(identifier) == enabled
+        ):
             return
         was_active = identifier in self._active_ids
         if enabled and not was_active:
             self._load_one(identifier)
         elif not enabled and was_active:
             self._unload_one(identifier)
-        previous = self._stored.get(identifier, self._manifests[identifier].default_enabled)
+        previous = self._stored.get(
+            identifier, self._manifests[identifier].default_enabled
+        )
         self._stored[identifier] = enabled
         try:
             self._save_states(self._stored)
@@ -248,9 +295,13 @@ class ExtensionHost:
                 raise ValueError(f"{key} must be boolean")
             if kind == "string" and not isinstance(value, str):
                 raise ValueError(f"{key} must be string")
-            if kind == "integer" and (not isinstance(value, int) or isinstance(value, bool)):
+            if kind == "integer" and (
+                not isinstance(value, int) or isinstance(value, bool)
+            ):
                 raise ValueError(f"{key} must be integer")
-        self._settings_service.update_extension(identifier, config={**self.settings(identifier), **values})
+        self._settings_service.update_extension(
+            identifier, config={**self.settings(identifier), **values}
+        )
         self._dirty_settings.add(identifier)
 
     def configure(self) -> None:
@@ -264,7 +315,11 @@ class ExtensionHost:
             raise ExtensionError(f"Invalid entry point: {manifest.entry_point}")
         plugin = getattr(importlib.import_module(module_name), factory_name)()
         registrar = ExtensionRegistrar()
-        context = ExtensionContext(self.base_dir, self.settings(identifier), ExtensionServices(self.container, identifier))
+        context = ExtensionContext(
+            self.base_dir,
+            self.settings(identifier),
+            ExtensionServices(self.container, identifier),
+        )
         plugin.configure(registrar, context)
         for binding in registrar.bindings:
             if self.container.container.has(binding.token):
@@ -272,14 +327,20 @@ class ExtensionHost:
         registered: list[Any] = []
         try:
             for binding in registrar.bindings:
+
                 def scoped_factory(_binding=binding, **kwargs):
                     for name, token in _binding.dependencies.items():
                         if token in (LoggingService, LogService):
                             kwargs[name] = kwargs[name].for_extension(identifier)
                     return _binding.factory(**kwargs)
+
                 scoped_factory.__signature__ = inspect.signature(binding.factory)
-                self.container.singleton(binding.token, factory=scoped_factory,
-                                         dependencies=binding.dependencies, priority=10)
+                self.container.singleton(
+                    binding.token,
+                    factory=scoped_factory,
+                    dependencies=binding.dependencies,
+                    priority=10,
+                )
                 registered.append(binding.token)
             if self._lifecycle_started and hasattr(plugin, "start"):
                 try:
@@ -295,11 +356,31 @@ class ExtensionHost:
         self._owned_tokens[identifier] = tuple(registered)
         for view in registrar.sidebar_views:
             key = f"{identifier}.{view.identifier}"
-            self._sidebar_views.append(SidebarContribution(key, view.title, view.factory))
+            self._sidebar_views.append(
+                SidebarContribution(key, view.title, view.factory)
+            )
         for view in registrar.visual_views:
-            self._visual_views.append(VisualContribution(f"{identifier}.{view.identifier}", view.factory, view.primary, view.legacy_key))
+            self._visual_views.append(
+                VisualContribution(
+                    f"{identifier}.{view.identifier}",
+                    view.factory,
+                    view.primary,
+                    view.legacy_key,
+                    view.region,
+                    view.title,
+                    view.initial_visible,
+                    view.order,
+                    view.preferred_height,
+                )
+            )
         for widget in registrar.status_widgets:
-            self._status_widgets.append(StatusContribution(f"{identifier}.{widget.identifier}", widget.factory, widget.placement))
+            self._status_widgets.append(
+                StatusContribution(
+                    f"{identifier}.{widget.identifier}",
+                    widget.factory,
+                    widget.placement,
+                )
+            )
         if registrar.settings_action is not None:
             self._settings_actions[identifier] = registrar.settings_action
         self._running.append((identifier, plugin, context))
@@ -317,9 +398,21 @@ class ExtensionHost:
         for token in reversed(self._owned_tokens.pop(identifier, ())):
             self.container.unregister(token)
         prefix = identifier + "."
-        self._sidebar_views = [view for view in self._sidebar_views if not view.identifier.startswith(prefix)]
-        self._visual_views = [view for view in self._visual_views if not view.identifier.startswith(prefix)]
-        self._status_widgets = [widget for widget in self._status_widgets if not widget.identifier.startswith(prefix)]
+        self._sidebar_views = [
+            view
+            for view in self._sidebar_views
+            if not view.identifier.startswith(prefix)
+        ]
+        self._visual_views = [
+            view
+            for view in self._visual_views
+            if not view.identifier.startswith(prefix)
+        ]
+        self._status_widgets = [
+            widget
+            for widget in self._status_widgets
+            if not widget.identifier.startswith(prefix)
+        ]
         self._settings_actions.pop(identifier, None)
         self._running.remove(entry)
         self._active_ids.remove(identifier)
@@ -329,7 +422,9 @@ class ExtensionHost:
         if identifier not in self._active_ids:
             return
         if not self.can_reload(identifier):
-            raise ExtensionError(f"{identifier} has live protocol/dependents; cannot reload it in isolation")
+            raise ExtensionError(
+                f"{identifier} has live protocol/dependents; cannot reload it in isolation"
+            )
         self._unload_one(identifier)
         try:
             self._load_one(identifier)

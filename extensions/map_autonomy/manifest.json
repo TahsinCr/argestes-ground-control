@@ -1,0 +1,8 @@
+{
+  "identifier": "map_autonomy", "name": "Map & Autonomy", "category": "Navigation",
+  "description": "Map and mission planning; currently supplied by MAVLink navigation",
+  "version": "1.0.0", "api_major": 1,
+  "entry_point": "extensions.map_autonomy.plugin:create_extension",
+  "requires": ["vehicle.navigation"], "provides": ["navigation.map"],
+  "default_enabled": true, "settings": {}
+}

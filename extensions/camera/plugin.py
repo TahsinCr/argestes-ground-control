@@ -14,13 +14,28 @@ class CameraExtension:
         self._workspace = None
         self._runtime: CameraRuntime | None = None
 
-    def configure(self, registrar: ExtensionRegistrar, context: ExtensionContext) -> None:
-        registrar.singleton(CameraRuntime, lambda logging, settings: CameraRuntime(context.base_dir, logging, settings),
-                            dependencies={"logging": LoggingService, "settings": SettingsService})
-        registrar.visual_view("wall", lambda parent, theme, language:
-                              self._create_workspace(context, parent, theme, language))
-        registrar.status_widget("connections", lambda parent, theme, language:
-                                self._create_status(parent, theme, language))
+    def configure(
+        self, registrar: ExtensionRegistrar, context: ExtensionContext
+    ) -> None:
+        registrar.singleton(
+            CameraRuntime,
+            lambda logging, settings: CameraRuntime(
+                context.base_dir, logging, settings
+            ),
+            dependencies={"logging": LoggingService, "settings": SettingsService},
+        )
+        registrar.visual_view(
+            "wall",
+            lambda parent, theme, language: self._create_workspace(
+                context, parent, theme, language
+            ),
+        )
+        registrar.status_widget(
+            "connections",
+            lambda parent, theme, language: self._create_status(
+                parent, theme, language
+            ),
+        )
         registrar.settings_ui(self._open_settings)
 
     def _open_settings(self, anchor) -> None:
@@ -40,8 +55,9 @@ class CameraExtension:
     def _create_workspace(self, context: ExtensionContext, parent, theme, language):
         from .ui.workspace import CameraWorkspace
 
-        self._workspace = CameraWorkspace(context.services.resolve(CameraRuntime),
-                                          theme, language, parent)
+        self._workspace = CameraWorkspace(
+            context.services.resolve(CameraRuntime), theme, language, parent
+        )
         return self._workspace
 
     def _create_status(self, parent, theme, language):

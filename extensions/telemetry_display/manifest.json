@@ -1,0 +1,1 @@
+{"identifier":"telemetry_display","name":"Vehicle Telemetry","description":"Configurable normalized telemetry fields","category":"Vehicle","version":"1.0.0","api_major":1,"entry_point":"extensions.telemetry_display.plugin:create_extension","requires":["vehicle.telemetry.source"],"provides":["ui.telemetry"],"default_enabled":true,"settings":{}}

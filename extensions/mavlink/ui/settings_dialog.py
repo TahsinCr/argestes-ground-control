@@ -8,6 +8,26 @@ from .settings_schema import SETTINGS_SECTIONS
 class MavlinkSettingsDialog(SettingsDialog):
     def __init__(self, settings, language, theme, parent=None):
         super().__init__(settings, language, theme, parent, sections=SETTINGS_SECTIONS)
+        import pkgutil
+
+        try:
+            from pymavlink.dialects import v20
+
+            dialects = sorted(
+                module.name
+                for module in pkgutil.iter_modules(v20.__path__)
+                if not module.name.startswith("_")
+            )
+        except ImportError:
+            dialects = ["ardupilotmega", "common"]
+        combo = self._widgets["backend.mavlink.dialect"]
+        combo.clear()
+        for dialect in dialects:
+            combo.addItem(dialect, dialect)
+        current = settings.backend.mavlink.dialect
+        if combo.findData(current) < 0:
+            combo.addItem(current, current)
+        combo.setCurrentIndex(combo.findData(current))
 
     def to_settings(self):
         payload = self._settings.to_dict()

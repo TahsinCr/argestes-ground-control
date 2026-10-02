@@ -1,0 +1,1 @@
+{"identifier":"battery","name":"Battery","description":"Battery display and alarms from normalized telemetry","category":"Vehicle","version":"1.0.0","api_major":1,"entry_point":"extensions.battery.plugin:create_extension","requires":["vehicle.telemetry.source","vehicle.commands"],"provides":["ui.battery"],"default_enabled":true,"settings":{}}

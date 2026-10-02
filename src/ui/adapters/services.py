@@ -5,26 +5,20 @@ import threading
 import time
 import traceback
 from collections.abc import Callable
-from datetime import UTC, datetime
 from typing import Any
 
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen
 
 from src.core.events import Subscription
 from src.models.logs import LogEntry
 from src.models.connections import ConnectionStatus
-from src.models.mission import MapContact, MapOverlay, MissionState
 from src.models.settings import SettingsModel
 from src.models.telemetry import TelemetrySnapshot
 from src.services.abstracts.commands import CommandService
 from src.services.abstracts.connections import ConnectionControlService
-from src.services.planner import PlannerService
-from src.services.abstracts.parameters import ParameterService
 from src.services.abstracts.telemetry import TelemetryService
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
-from src.services.tile_cache import TileCacheServer
 
 
 class _QtAdapter(QObject):
@@ -216,12 +210,21 @@ class QtLoggingService(_QtAdapter):
         super().close()
 
     @property
-    def history(self): return self.backend.history
-    def child(self, source: str): return self.backend.child(source)
+    def history(self):
+        return self.backend.history
+
+    def child(self, source: str):
+        return self.backend.child(source)
+
     def log(self, source: str, message: str, severity: str = "info") -> None:
         self.backend.log(source, message, severity)
-    def emit_entry(self, entry: LogEntry) -> None: self.backend.emit_entry(entry)
-    def reemit_history(self) -> None: self.backend.reemit_history()
+
+    def emit_entry(self, entry: LogEntry) -> None:
+        self.backend.emit_entry(entry)
+
+    def reemit_history(self) -> None:
+        self.backend.reemit_history()
+
     def create_python_handler(self, source: str = "PYLOG"):
         return self.backend.create_python_handler(source)
 
@@ -229,7 +232,6 @@ class QtLoggingService(_QtAdapter):
 class QtSettingsService(_QtAdapter):
     _POPUP_SAVE_DEBOUNCE_S = 0.12
     settings_changed = pyqtSignal(object)
-    cache_cleared = pyqtSignal()
     save_failed = pyqtSignal(str)
 
     def __init__(self, backend: SettingsService, parent: QObject | None = None) -> None:
@@ -239,11 +241,14 @@ class QtSettingsService(_QtAdapter):
         self._save_lock = threading.Lock()
         self._save_worker_running = False
         self._subscribe(backend.changed, self.settings_changed.emit)
-        self._subscribe(backend.cache_cleared, lambda _value: self.cache_cleared.emit())
 
     @property
-    def current(self) -> SettingsModel: return self.backend.current
-    def save(self, settings: SettingsModel) -> None: self.backend.save(settings)
+    def current(self) -> SettingsModel:
+        return self.backend.current
+
+    def save(self, settings: SettingsModel) -> None:
+        self.backend.save(settings)
+
     def save_async(self, settings: SettingsModel) -> None:
         """Persist the latest popup change without blocking the Qt event loop.
 
@@ -278,10 +283,12 @@ class QtSettingsService(_QtAdapter):
                 self.backend.save(pending)
             except Exception as exc:
                 self._post(self.save_failed.emit, str(exc))
-    def patch(self, **changes: object) -> None: self.backend.patch(**changes)
-    def set_value(self, path: str, value: object) -> None: self.backend.set_value(path, value)
-    def clear_cache(self) -> None:
-        self._start_worker(self.backend.clear_cache, name="SettingsCacheClear")
+
+    def patch(self, **changes: object) -> None:
+        self.backend.patch(**changes)
+
+    def set_value(self, path: str, value: object) -> None:
+        self.backend.set_value(path, value)
 
 
 class QtTelemetryService(_QtAdapter):
@@ -292,7 +299,9 @@ class QtTelemetryService(_QtAdapter):
     # the remaining panels only need the freshest snapshot once per UI frame.
     _UI_FRAME_INTERVAL_MS = 33
 
-    def __init__(self, backend: TelemetryService, parent: QObject | None = None) -> None:
+    def __init__(
+        self, backend: TelemetryService, parent: QObject | None = None
+    ) -> None:
         super().__init__(parent)
         self.backend = backend
         self._latest_lock = threading.Lock()
@@ -391,43 +400,17 @@ class QtTelemetryService(_QtAdapter):
         super().close()
 
     @property
-    def current(self) -> TelemetrySnapshot: return self.backend.current
-    def start(self) -> None: self.backend.start()
-    def stop(self) -> None: self.backend.stop()
-    def push(self, snapshot: TelemetrySnapshot) -> None: self.backend.push(snapshot)
+    def current(self) -> TelemetrySnapshot:
+        return self.backend.current
 
+    def start(self) -> None:
+        self.backend.start()
 
-class QtPlannerService(_QtAdapter):
-    planner_changed = pyqtSignal(object)
+    def stop(self) -> None:
+        self.backend.stop()
 
-    def __init__(self, backend: PlannerService, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self.backend = backend
-        self._subscribe(backend.changed, self.planner_changed.emit)
-
-    @property
-    def state(self) -> MissionState: return self.backend.state
-    @property
-    def api(self): return getattr(self.backend, "api", None)
-    def start(self) -> None: self.backend.start()
-    def stop(self) -> None: self.backend.stop()
-    def set_default_radii(self, values: dict) -> None: self.backend.set_default_radii(values)
-    def set_base_layer(self, layer: str) -> None: self.backend.set_base_layer(layer)
-    def set_active_tool(self, tool: str) -> None: self.backend.set_active_tool(tool)
-    def set_mission_loop(self, enabled: bool) -> None: self.backend.set_mission_loop(enabled)
-    def set_overlays(self, overlays) -> None: self.backend.set_overlays(overlays)
-    def upsert_overlay(self, overlay: MapOverlay) -> None: self.backend.upsert_overlay(overlay)
-    def remove_overlay(self, overlay_id: str) -> None: self.backend.remove_overlay(overlay_id)
-    def clear_dynamic_overlays(self) -> None: self.backend.clear_dynamic_overlays()
-    def clear_all(self) -> None: self.backend.clear_all()
-    def select_overlay(self, overlay_id: str | None) -> None: self.backend.select_overlay(overlay_id)
-    def load_state(self, state: MissionState) -> None: self.backend.load_state(state)
-    def request_vehicle_sync(self) -> bool: return self.backend.request_vehicle_sync()
-    def replace_local_plan(self, overlays, *, mission_loop: bool) -> None:
-        self.backend.replace_local_plan(overlays, mission_loop=mission_loop)
-    def upsert_contact(self, contact: MapContact) -> None: self.backend.upsert_contact(contact)
-    def remove_contact(self, contact_id: str) -> None: self.backend.remove_contact(contact_id)
-    def clear_contacts(self) -> None: self.backend.clear_contacts()
+    def push(self, snapshot: TelemetrySnapshot) -> None:
+        self.backend.push(snapshot)
 
 
 class QtCommandService(_QtAdapter):
@@ -545,99 +528,3 @@ class QtConnectionControlService(_QtAdapter):
             )
             return
         self._post(self.operation_finished.emit, channel, True, message, status)
-
-class QtParameterService(_QtAdapter):
-    parameters_changed = pyqtSignal(object)
-    _UI_UPDATE_INTERVAL_MS = 100
-
-    def __init__(self, backend: ParameterService, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self.backend = backend
-        self._parameter_lock = threading.Lock()
-        self._latest_parameters = None
-        self._parameter_update_scheduled = False
-        self._subscriptions.append(backend.changed.subscribe(self._capture_parameters))
-        self._parameter_timer = QTimer(self)
-        self._parameter_timer.setSingleShot(True)
-        self._parameter_timer.setInterval(self._UI_UPDATE_INTERVAL_MS)
-        self._parameter_timer.timeout.connect(self._emit_latest_parameters)
-
-    def _capture_parameters(self, parameters) -> None:
-        should_schedule = False
-        with self._parameter_lock:
-            self._latest_parameters = parameters
-            if not self._parameter_update_scheduled:
-                self._parameter_update_scheduled = True
-                should_schedule = True
-        if should_schedule:
-            self._post(self._start_parameter_timer)
-
-    @pyqtSlot()
-    def _start_parameter_timer(self) -> None:
-        if not self._closed and not self._parameter_timer.isActive():
-            self._parameter_timer.start()
-
-    @pyqtSlot()
-    def _emit_latest_parameters(self) -> None:
-        with self._parameter_lock:
-            parameters = self._latest_parameters
-            self._latest_parameters = None
-            self._parameter_update_scheduled = False
-        if parameters is not None:
-            self.parameters_changed.emit(parameters)
-
-    def close(self) -> None:
-        self._parameter_timer.stop()
-        with self._parameter_lock:
-            self._latest_parameters = None
-            self._parameter_update_scheduled = False
-        super().close()
-
-    @property
-    def current(self): return self.backend.current
-    def replace(self, parameters) -> None: self.backend.replace(parameters)
-    def upsert(self, parameter) -> None: self.backend.upsert(parameter)
-    def update_values(self, changes: dict[str, object]) -> threading.Thread:
-        return self._start_worker(
-            self._update_values,
-            name="QtParameterWrite",
-            args=(changes,),
-        )
-
-    def refresh(self) -> threading.Thread:
-        return self._start_worker(
-            self._refresh,
-            name="QtParameterRefresh",
-        )
-
-    def _update_values(self, changes: dict[str, object]) -> None:
-        try:
-            self.backend.update_values(changes)
-        except Exception:
-            # The domain service writes failures to the structured backend log.
-            return
-
-    def _refresh(self) -> None:
-        try:
-            self.backend.refresh()
-        except Exception:
-            return
-
-class QtTileCacheService(_QtAdapter):
-    cache_changed = pyqtSignal(int)
-
-    def __init__(self, backend: TileCacheServer, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self.backend = backend
-        self._subscribe(backend.cache_changed, self.cache_changed.emit)
-
-    @property
-    def base_url(self) -> str: return self.backend.base_url
-    @property
-    def index_path(self): return self.backend.index_path
-    def configure(self, **kwargs) -> None: self.backend.configure(**kwargs)
-    def start(self) -> None: self.backend.start()
-    def stop(self) -> None: self.backend.stop()
-    def clear(self) -> None: self.backend.clear()
-    def count_tiles(self) -> int: return self.backend.count_tiles()
-    def entries(self): return self.backend.entries()

@@ -6,16 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.services.runtime import RuntimeServices
-from src.ui.adapters.services import (
-    QtCommandService,
-    QtConnectionControlService,
-    QtLoggingService,
-    QtParameterService,
-    QtPlannerService,
-    QtSettingsService,
-    QtTelemetryService,
-    QtTileCacheService,
-)
+from src.ui.adapters.services import QtLoggingService, QtSettingsService
 
 
 @dataclass(slots=True, weakref_slot=True)
@@ -23,15 +14,13 @@ class QtRuntimeServices:
     backend: RuntimeServices
     log_service: QtLoggingService
     settings_service: QtSettingsService
-    telemetry_service: QtTelemetryService
-    planner_service: QtPlannerService
-    command_service: QtCommandService
-    parameter_service: QtParameterService
-    tile_cache_service: QtTileCacheService
-    connection_service: QtConnectionControlService
     _start_thread: threading.Thread | None = field(default=None, init=False, repr=False)
-    _lifecycle_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
-    _stopping: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _lifecycle_lock: threading.RLock = field(
+        default_factory=threading.RLock, init=False, repr=False
+    )
+    _stopping: threading.Event = field(
+        default_factory=threading.Event, init=False, repr=False
+    )
     _active: bool = field(default=False, init=False, repr=False)
 
     @property
@@ -69,7 +58,11 @@ class QtRuntimeServices:
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=1.0)
         with self._lifecycle_lock:
-            if thread is self._start_thread and thread is not None and not thread.is_alive():
+            if (
+                thread is self._start_thread
+                and thread is not None
+                and not thread.is_alive()
+            ):
                 self._start_thread = None
 
     def _start_backend(self) -> None:
@@ -83,12 +76,6 @@ class QtRuntimeServices:
         return (
             self.log_service,
             self.settings_service,
-            self.telemetry_service,
-            self.planner_service,
-            self.command_service,
-            self.parameter_service,
-            self.tile_cache_service,
-            self.connection_service,
         )
 
 
