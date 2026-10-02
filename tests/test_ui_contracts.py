@@ -11,30 +11,25 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --no-sandbox")
 
-from PyQt6.QtCore import QPoint, Qt
-from PyQt6.QtGui import QContextMenuEvent, QImage, QPalette
+from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
+from PyQt6.QtGui import QContextMenuEvent, QMouseEvent, QPalette
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFrame,
     QLineEdit,
     QMenu,
     QSpinBox,
     QWidget,
 )
 
-from src.models.commands import CommandRequest, CommandResult
-from src.models.connections import ConnectionStatus
 from src.models.logs import LogEntry
 from src.models.mission import MapContact
 from src.models.parameters import Parameter
 from src.models.settings import SettingsModel
 from src.models.telemetry import TelemetrySnapshot
-from src.ui.i18n import t
-from extensions.map_autonomy.ui.tools import MAP_TOOLS
 from src.ui.config.settings_schema import iter_fields
 from src.ui.themes.palette import DARK, LIGHT
 from src.ui.themes.manager import apply_theme
@@ -733,6 +728,67 @@ class UiContractTests(unittest.TestCase):
         window.close()
         window.deleteLater()
         self.app.processEvents()
+
+    def test_idle_mouse_move_cancels_abandoned_window_resize_and_pending_updates(self):
+        window = QWidget()
+        window.resize(640, 480)
+        window.show()
+        self.app.processEvents()
+        controller = FramelessResizeController(window, window)
+        try:
+            for edges in (Qt.Edge.LeftEdge, Qt.Edge.RightEdge):
+                before = window.geometry()
+                start = window.mapToGlobal(QPoint(0, 120))
+                controller._begin_manual_resize(edges, start)
+                controller._queue_resize(start + QPoint(80, 0))
+                idle = QMouseEvent(
+                    QEvent.Type.MouseMove,
+                    QPointF(160, 120),
+                    QPointF(start + QPoint(160, 0)),
+                    Qt.MouseButton.NoButton,
+                    Qt.MouseButton.NoButton,
+                    Qt.KeyboardModifier.NoModifier,
+                )
+                QApplication.sendEvent(window, idle)
+                QTest.qWait(30)
+                self.assertEqual(window.geometry(), before)
+                self.assertFalse(controller._resizing)
+                self.assertIsNone(controller._pending_resize_pos)
+                self.assertFalse(controller._resize_timer.isActive())
+        finally:
+            controller._remove_filter()
+            window.close()
+            window.deleteLater()
+
+    def test_release_outside_window_cancels_resize_without_applying_idle_position(self):
+        window, outside = QWidget(), QWidget()
+        window.resize(640, 480)
+        window.show()
+        outside.show()
+        self.app.processEvents()
+        controller = FramelessResizeController(window, window)
+        try:
+            before = window.geometry()
+            start = window.mapToGlobal(QPoint(0, 120))
+            controller._begin_manual_resize(Qt.Edge.LeftEdge, start)
+            controller._queue_resize(start - QPoint(100, 0))
+            release = QMouseEvent(
+                QEvent.Type.MouseButtonRelease,
+                QPointF(5, 5),
+                QPointF(outside.mapToGlobal(QPoint(5, 5))),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            QApplication.sendEvent(outside, release)
+            QTest.qWait(30)
+            self.assertEqual(window.geometry(), before)
+            self.assertFalse(controller._resizing)
+        finally:
+            controller._remove_filter()
+            for widget in (window, outside):
+                widget.close()
+                widget.deleteLater()
 
     def test_flight_dynamics_compass_uses_cardinal_directions(self) -> None:
         expected = {

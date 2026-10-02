@@ -15,9 +15,98 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QLabel, QTabWidget
 
 from src.ui.widgets.panel_workspace import PanelWorkspace
+from src.ui.themes.style import DARK, LIGHT, build_stylesheet
 
 
 class PanelWorkspaceTests(unittest.TestCase):
+    def test_hover_between_stacked_panels_does_not_change_sizes_or_size_hints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = PanelWorkspace(Path(directory) / "layout.json")
+            workspace.setStyleSheet(build_stylesheet(DARK))
+            docks = [
+                workspace.add_panel(
+                    key, key, QLabel(key), Qt.DockWidgetArea.LeftDockWidgetArea
+                )
+                for key in ("flight", "telemetry", "commands")
+            ]
+            for first, second in zip(docks, docks[1:]):
+                workspace.splitDockWidget(first, second, Qt.Orientation.Vertical)
+            workspace.add_panel(
+                "map", "map", QLabel("map"), Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            workspace.show()
+            for size, theme in (
+                ((740, 540), DARK), ((680, 480), LIGHT), ((780, 560), DARK)
+            ):
+                workspace.setStyleSheet(build_stylesheet(theme))
+                workspace.resize(*size)
+                self.app.processEvents()
+                workspace.enable_panel_size_restore(capture_current=True)
+                before = [(dock.geometry(), dock.minimumSizeHint()) for dock in docks]
+                remembered = dict(workspace._panel_sizes)
+                for dock in docks * 2:
+                    controls = workspace._hover_controls[workspace._panel_keys[dock]]
+                    self.assertIs(controls.parentWidget(), dock)
+                    QApplication.sendEvent(dock, QEvent(QEvent.Type.Enter))
+                    self.app.processEvents()
+                    controls.animation.setCurrentTime(130)
+                    QTest.qWait(20)
+                    expected = QPoint((dock.width() - controls.width()) // 2, 4)
+                    self.assertEqual(controls.pos(), expected)
+                    idle = QMouseEvent(
+                        QEvent.Type.MouseMove,
+                        QPointF(80, 60),
+                        QPointF(dock.mapToGlobal(QPoint(80, 60))),
+                        Qt.MouseButton.NoButton,
+                        Qt.MouseButton.NoButton,
+                        Qt.KeyboardModifier.NoModifier,
+                    )
+                    QApplication.sendEvent(dock, idle)
+                    controls.reveal(False)
+                    controls.animation.setCurrentTime(130)
+                    self.app.processEvents()
+                    self.assertFalse(controls.isHidden())
+                    self.assertEqual(controls.effect.opacity(), 0)
+                    self.assertTrue(
+                        controls.testAttribute(
+                            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+                        )
+                    )
+                    self.assertEqual(
+                        [
+                            (panel.geometry(), panel.minimumSizeHint())
+                            for panel in docks
+                        ],
+                        before,
+                    )
+                    self.assertEqual(workspace._panel_sizes, remembered)
+            workspace.close()
+
+    def test_idle_mouse_move_discards_stale_panel_resize_and_drag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = PanelWorkspace(Path(directory) / "layout.json")
+            dock = workspace.add_panel(
+                "map", "map", QLabel("map"), Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            workspace.show()
+            self.app.processEvents()
+            workspace._panel_resize = object()
+            workspace._drag_start = (dock, QPoint(1, 1))
+            before = dock.geometry()
+            idle = QMouseEvent(
+                QEvent.Type.MouseMove,
+                QPointF(60, 60),
+                QPointF(dock.mapToGlobal(QPoint(60, 60))),
+                Qt.MouseButton.NoButton,
+                Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            workspace.eventFilter(workspace, idle)
+            self.assertIsNone(workspace._panel_resize)
+            self.assertIsNone(workspace._drag_start)
+            self.assertEqual(dock.geometry(), before)
+            workspace.close()
+
     def test_restart_preserves_nested_splits_without_reapplying_sizes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "layout.json"
@@ -121,7 +210,10 @@ class PanelWorkspaceTests(unittest.TestCase):
                 drag.assert_called_once_with(dock)
             QApplication.sendEvent(dock, QEvent(QEvent.Type.Leave))
             QTest.qWait(160)
-            self.assertTrue(controls.isHidden())
+            self.assertEqual(controls.effect.opacity(), 0)
+            self.assertTrue(
+                controls.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            )
             workspace.close()
 
     def test_left_column_spans_beside_bottom_panel_after_layout_restore(self) -> None:

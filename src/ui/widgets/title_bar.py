@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer
-from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPen
+from PyQt6.QtGui import QColor, QFont, QIcon, QMouseEvent, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -166,6 +166,25 @@ class FramelessResizeController(QObject):
         self._layout_edge_handles()
 
     def eventFilter(self, obj, event) -> bool:
+        if self._resizing and (
+            (
+                obj is self._window
+                and event.type() in {QEvent.Type.WindowDeactivate, QEvent.Type.Hide}
+            )
+            or (
+                isinstance(event, QMouseEvent)
+                and event.type() == QEvent.Type.MouseMove
+                and not event.buttons() & Qt.MouseButton.LeftButton
+            )
+            or (
+                isinstance(event, QMouseEvent)
+                and event.type() == QEvent.Type.MouseButtonRelease
+                and not event.buttons() & Qt.MouseButton.LeftButton
+                and obj is not self._window
+                and (not isinstance(obj, QWidget) or obj.window() is not self._window)
+            )
+        ):
+            self._cancel_manual_resize()
         if obj is self._window and event.type() in {
             QEvent.Type.Resize,
             QEvent.Type.Show,
@@ -181,6 +200,7 @@ class FramelessResizeController(QObject):
                 self._clear_cursor()
             return False
         if self._window.isMaximized() or self._window.isFullScreen():
+            self._cancel_manual_resize()
             self._clear_cursor()
             return False
         if event.type() == QEvent.Type.MouseMove:
@@ -305,6 +325,12 @@ class FramelessResizeController(QObject):
         self._pending_resize_pos = None
         if position is not None:
             self._resize_to(position)
+        self._cancel_manual_resize()
+
+    def _cancel_manual_resize(self) -> None:
+        """Drop an abandoned gesture without applying the latest idle pointer."""
+        self._resize_timer.stop()
+        self._pending_resize_pos = None
         self._resizing = False
         self._resize_edges = None
 

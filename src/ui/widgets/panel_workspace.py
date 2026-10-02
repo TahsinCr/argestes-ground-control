@@ -79,6 +79,8 @@ class _PanelGrip(QToolButton):
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
+        if not event.buttons() & Qt.MouseButton.LeftButton:
+            self.start = None
         if self.start is not None and event.buttons() & Qt.MouseButton.LeftButton:
             if (
                 event.globalPosition().toPoint() - self.start
@@ -98,6 +100,8 @@ class _PanelControls(QWidget):
     """Hover-only controls animated independently of expensive panel content."""
 
     def __init__(self, workspace, dock) -> None:
+        # Keep the overlay mounted: show/hide invalidates Qt's dock layout and
+        # can progressively redistribute split widths even on idle hover.
         super().__init__(dock)
         self.workspace, self.dock = workspace, dock
         self.setObjectName("panelHoverControls")
@@ -127,7 +131,34 @@ class _PanelControls(QWidget):
         self.animation.setDuration(130)
         self.animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.animation.finished.connect(self._finished)
-        self.hide()
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.show()
+
+    def reposition(self) -> None:
+        self.move(max(0, (self.dock.width() - self.width()) // 2), 4)
+
+    def dismiss(self) -> None:
+        self.animation.stop()
+        self.animation.setEndValue(0.0)
+        self.effect.setOpacity(0.0)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def enterEvent(self, event) -> None:
+        self.reveal(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self.defer_hover_check()
+        super().leaveEvent(event)
+
+    def defer_hover_check(self) -> None:
+        QTimer.singleShot(0, self._check_hover)
+
+    def _check_hover(self) -> None:
+        if not self.dock.isVisible():
+            self.dismiss()
+        else:
+            self.reveal(self.dock.underMouse() or self.underMouse())
 
     def reveal(self, visible: bool) -> None:
         end = 1.0 if visible else 0.0
@@ -135,8 +166,8 @@ class _PanelControls(QWidget):
             return
         self.animation.stop()
         if visible:
-            self.move(max(0, (self.dock.width() - self.width()) // 2), 4)
-            self.show()
+            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+            self.reposition()
             self.raise_()
         self.animation.setStartValue(self.effect.opacity())
         self.animation.setEndValue(end)
@@ -144,14 +175,14 @@ class _PanelControls(QWidget):
 
     def _finished(self) -> None:
         if self.effect.opacity() == 0:
-            self.hide()
+            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
     def open_menu(self) -> None:
         self.workspace._show_panel_menu(
             self.dock,
             self.dock.mapFromGlobal(self.mapToGlobal(QPoint(0, self.height()))),
         )
-        self.reveal(self.dock.underMouse())
+        self._check_hover()
 
 
 class _PanelDropOverlay(QWidget):
@@ -534,6 +565,10 @@ class PanelWorkspace(QMainWindow):
         return dock
 
     def eventFilter(self, watched, event) -> bool:
+        if isinstance(event, QMouseEvent) and event.type() == QEvent.Type.MouseMove:
+            if not event.buttons() & Qt.MouseButton.LeftButton:
+                self._panel_resize = None
+                self._drag_start = None
         if watched is self and isinstance(event, QMouseEvent):
             if event.type() == QEvent.Type.MouseButtonPress:
                 if event.button() == Qt.MouseButton.LeftButton:
@@ -562,10 +597,12 @@ class PanelWorkspace(QMainWindow):
             controls = self._hover_controls[self._panel_keys[watched]]
             if event.type() == QEvent.Type.Enter:
                 controls.reveal(True)
-            elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
-                controls.reveal(False)
-            elif event.type() == QEvent.Type.Resize:
-                controls.move(max(0, (watched.width() - controls.width()) // 2), 4)
+            elif event.type() == QEvent.Type.Leave:
+                controls.defer_hover_check()
+            elif event.type() == QEvent.Type.Hide:
+                controls.dismiss()
+            elif event.type() in (QEvent.Type.Resize, QEvent.Type.Move):
+                controls.reposition()
             if isinstance(event, QMouseEvent):
                 if event.type() == QEvent.Type.MouseButtonPress:
                     if (
@@ -965,7 +1002,10 @@ class PanelWorkspace(QMainWindow):
         self._panel_default_areas.pop(key, None)
         self._panel_sizes.pop(key, None)
         self._quiet_titles.pop(key, None)
-        self._hover_controls.pop(key, None)
+        controls = self._hover_controls.pop(key, None)
+        if controls is not None:
+            controls.dismiss()
+            controls.deleteLater()
         self._panel_hidden.pop(key, None)
         dock.removeEventFilter(self)
         widget = dock.widget()

@@ -3,6 +3,19 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Workspace fixes
+
+* Fixed the left panel column widening while the pointer moved between panels.
+  Hover controls now remain mounted and fade without show/hide layout changes;
+  invisible controls pass pointer input through to the underlying panel.
+  Their appearance, drag handle and settings menu remain unchanged.
+* Cancel abandoned panel and frameless-window resize gestures on buttonless
+  movement. Releases outside the window discard pending resize updates instead
+  of applying an unrelated pointer position. Saved layouts are not reset.
+* Added hover and interrupted-resize regression coverage. The combined suite
+  passes 561 tests; repeated hover transitions kept panel widths stable at three
+  window sizes in both offscreen Qt and a native Wayland window.
+
 ### Architecture and workspace
 
 * Updated Core to the 1.9.1 upstream line while preserving cancellable MAVLink
