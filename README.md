@@ -97,9 +97,9 @@ camera status controls belong to the camera package. Status contributions use
 `registrar.status_widget(..., placement="connections" | "metrics")` to select
 the left connection group or the group beside the battery. Connection, GPS and
 autopilot indicators are status-only; profile editing opens from Vehicle
-Connection's Extensions-panel settings action. MAVLink's
-advanced settings are available through its Extensions-panel settings action,
-not the common application settings dialog. The dialect selector lists installed
+Connection's category in Settings. Every extension's settings, including MAVLink's
+advanced options, are available only in the common Settings dialog. Existing
+bottom-bar camera connection/output popups remain available. The dialect selector lists installed
 pymavlink dialects; changing protocol options reconfigures an active connection
 on a background worker, without enabling an inactive connection automatically.
 Each extension owns `i18n/tr.json` and `i18n/en.json`. Installed catalogs are
@@ -123,29 +123,40 @@ and `provides`/`requires` list capability identifiers. Its factory returns an
 object with `configure(registrar, context)` and optional `start(context)` and
 `stop()` hooks. `registrar.singleton(token, factory, dependencies=...)` supplies
 services to the application; duplicate service ownership is rejected. See the
-built-in extensions for working examples. An extension can also call
-`registrar.sidebar_view(identifier, title, factory)` during configuration;
-the factory receives the Qt parent and creates a left-sidebar widget on the UI
-thread. This keeps presentation contributions out of Core and avoids importing
-disabled extension UI modules.
-Extensions can also contribute a visual workspace widget, footer status widget,
-or settings action through `visual_view`, `status_widget`, and `settings_ui`.
-The camera extension uses these to keep capture and output controls out of the
-common window.
+built-in extensions for working examples. `registrar.visual_view(...)` contributes
+an ordinary workspace panel; `status_widget(...)` contributes a footer indicator.
+`registrar.settings_page(factory)` supplies one extension-owned settings widget.
+Its factory receives a Qt parent and runs lazily on the UI thread when the user
+selects that extension's Settings category. A page may implement
+`prepare_shutdown()` to release subscriptions, timers or workers when Settings
+closes. Disabled extensions use a typed configuration editor without importing
+their UI or starting their services. The former `sidebar_view` and `settings_ui`
+contributions have been removed; migrate them to `visual_view` and `settings_page`.
+The extension browser manages activation and discovery, not duplicate settings.
 
 ## Workspace
 
 The map stays at the center. Flight dynamics, vehicle telemetry, quick commands,
 logs, parameters, and extension-provided views are independent panels.
-Normal mode keeps panel headers out of the way: use View > Panels in the
-top-bar menu to show or hide vehicle, bottom, and extension panels, then resize
-their dividers directly. View > Edit Layout temporarily reveals handles for
-moving, tabbing and floating panels; turn it off when finished. The View menu
-also provides Map Focus, Reset Layout, and a Dark/Light theme switch. Hiding or
-showing panels does not replace the saved arrangement. Each panel also has a
-compact hover-only grip and menu without permanently occupying its content area.
-Panel positions and visibility are saved in `data/workspace-layout.json` when
-the application closes, together with window geometry. Qt's saved split/tab state
+Use View > Panels to show or hide individual panels, and their dividers to resize
+them. A compact hover-only grip and menu handles moving, tabbing and floating;
+there is no separate Edit Layout mode. Map Focus, Reset Layout and Dark/Light
+theme choices remain in View.
+
+The activity bar's upper section selects saved views; its lower, distinct section
+toggles panel categories belonging to the active view. The plus button below the
+views creates either item with a shared name and searchable standard-icon picker.
+A new view starts empty with concise panel instructions. A new category enters
+panel-selection mode: click visible panels, then Add or Cancel at the lower right.
+Selection intercepts panel clicks, so it cannot trigger vehicle commands. Partially
+visible categories open all their available members; fully open categories close
+together. Right-click a view or category to rename, change its icon or delete it;
+the last view cannot be deleted.
+
+Each view saves its own split/tab layout, panel sizes, visibility and categories in
+`data/workspace-layout.json`, with debounced writes and a final save on close.
+Switching views does not resize the application window. Existing single-layout
+files are migrated to an initial view. Qt's saved split/tab state
 is authoritative at startup; independent size hints are not replayed over it.
 Empty spacer docks are not used: adjacent split panels
 fill their row or column, and unrelated split branches keep their own sizes.

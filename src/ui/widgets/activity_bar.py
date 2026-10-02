@@ -1,253 +1,170 @@
-from __future__ import annotations
+"""View selection above, per-view panel categories below."""
 
-from PyQt6.QtCore import QPointF, QRectF, pyqtSignal, Qt
-from PyQt6.QtGui import QContextMenuEvent, QPainter, QPalette, QPen, QPolygonF
-from PyQt6.QtWidgets import QMenu, QToolButton, QVBoxLayout, QWidget
-
-from src.ui.i18n import t
-
-
-class _ActivityButton(QToolButton):
-    side_by_side_requested = pyqtSignal(str)
-
-    def __init__(
-        self,
-        key: str,
-        parent: QWidget | None = None,
-        *,
-        checkable: bool = True,
-        language: str = "tr",
-    ) -> None:
-        super().__init__(parent)
-        self.key = key
-        self.language = language
-        self.setObjectName("ActivityBarButton")
-        self.setFixedSize(48, 46)
-        self.setCheckable(checkable)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-
-    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
-        if self.key not in {"logs", "parameters"} or self.isChecked():
-            event.ignore()
-            return
-        menu = QMenu(self)
-        action = menu.addAction(t("activity.open_beside", self.language))
-        if menu.exec(event.globalPos()) is action:
-            self.setChecked(True)
-            self.side_by_side_requested.emit(self.key)
-
-    def paintEvent(self, event) -> None:
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(self.palette().color(QPalette.ColorRole.ButtonText), 1.7))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        x = (self.width() - 20) / 2
-        y = (self.height() - 20) / 2
-
-        if self.key == "flight_panels":
-            painter.drawRoundedRect(QRectF(x + 2, y + 2, 16, 16), 1.5, 1.5)
-            painter.drawLine(QPointF(x + 8, y + 2), QPointF(x + 8, y + 18))
-        elif self.key == "extensions":
-            for left, top in ((3, 3), (12, 3), (3, 12), (12, 12)):
-                painter.drawRoundedRect(QRectF(x + left, y + top, 6, 6), 1, 1)
-        elif self.key.startswith("extension:"):
-            painter.drawRoundedRect(QRectF(x + 2, y + 2, 16, 16), 2, 2)
-            painter.drawLine(QPointF(x + 5, y + 7), QPointF(x + 15, y + 7))
-        elif self.key == "logs":
-            for offset, width in ((4, 13), (9, 16), (14, 11)):
-                painter.drawEllipse(QPointF(x + 3, y + offset), 0.8, 0.8)
-                painter.drawLine(
-                    QPointF(x + 7, y + offset), QPointF(x + width, y + offset)
-                )
-        elif self.key == "parameters":
-            for offset, knob in ((4, 10), (10, 5), (16, 13)):
-                painter.drawLine(
-                    QPointF(x + 3, y + offset), QPointF(x + 17, y + offset)
-                )
-                painter.drawEllipse(QPointF(x + knob, y + offset), 2, 2)
-        elif self.key.startswith("panel:"):
-            panel_key = self.key.removeprefix("panel:")
-            if panel_key == "map":
-                painter.drawPolygon(
-                    QPolygonF(
-                        [
-                            QPointF(x + 2, y + 5),
-                            QPointF(x + 8, y + 3),
-                            QPointF(x + 14, y + 5),
-                            QPointF(x + 18, y + 3),
-                            QPointF(x + 18, y + 16),
-                            QPointF(x + 14, y + 18),
-                            QPointF(x + 8, y + 16),
-                            QPointF(x + 2, y + 18),
-                        ]
-                    )
-                )
-                painter.drawLine(QPointF(x + 8, y + 3), QPointF(x + 8, y + 16))
-                painter.drawLine(QPointF(x + 14, y + 5), QPointF(x + 14, y + 18))
-            elif panel_key.startswith("camera"):
-                painter.drawRoundedRect(QRectF(x + 2, y + 6, 16, 12), 2, 2)
-                painter.drawRect(QRectF(x + 6, y + 3, 6, 3))
-                painter.drawEllipse(QPointF(x + 10, y + 12), 3, 3)
-            else:
-                painter.drawRoundedRect(QRectF(x + 2, y + 2, 16, 16), 2, 2)
-                painter.drawLine(QPointF(x + 5, y + 7), QPointF(x + 15, y + 7))
-                painter.drawLine(QPointF(x + 5, y + 11), QPointF(x + 15, y + 11))
-        painter.end()
+from PyQt6.QtCore import Qt, pyqtSignal, QSize
+from PyQt6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QToolButton,
+    QFrame,
+    QMenu,
+    QScrollArea,
+    QButtonGroup,
+)
+from src.ui.widgets.workspace_dialog import standard_icon
 
 
 class ActivityBar(QWidget):
-    """Compact activity rail for showing and arranging the main work panels."""
+    view_requested = pyqtSignal(str)
+    category_requested = pyqtSignal(str)
+    create_requested = pyqtSignal(str)
+    edit_requested = pyqtSignal(str, bool)
+    remove_requested = pyqtSignal(str, bool)
 
-    flight_sidebar_toggled = pyqtSignal(bool)
-    bottom_panel_toggled = pyqtSignal(str, bool)
-    bottom_panel_side_by_side_requested = pyqtSignal(str)
-    sidebar_view_requested = pyqtSignal(str)
-    panel_visibility_requested = pyqtSignal(str, bool)
-
-    _BOTTOM_PANELS = ("logs", "parameters")
-
-    def __init__(self, language: str, parent: QWidget | None = None) -> None:
+    def __init__(self, language, parent=None):
         super().__init__(parent)
         self.language = language
         self.setObjectName("ActivityBar")
         self.setFixedWidth(48)
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 4)
-        layout.setSpacing(2)
-        self._layout = layout
-        self.extension_view_buttons: dict[str, _ActivityButton] = {}
-        self.panel_buttons: dict[str, _ActivityButton] = {}
-
-        self.sidebar_button = self._make_button("flight_panels")
-        self.sidebar_button.setChecked(True)
-        layout.addWidget(self.sidebar_button)
-        self.sidebar_button.clicked.connect(self.flight_sidebar_toggled.emit)
-        self.sidebar_button.clicked.connect(self._on_flight_clicked)
-        self.extensions_button = self._make_button("extensions")
-        self.extensions_button.hide()
-        self.extensions_button.clicked.connect(self._on_extensions_clicked)
-
+        layout.setSpacing(4)
+        self.view_buttons = {}
+        self._view_group = QButtonGroup(self)
+        self._view_group.setExclusive(True)
+        self.category_buttons = {}
+        self._top, self._top_layout = self._section(layout)
+        self.add_button = QToolButton(self)
+        self.add_button.setText("+")
+        self.add_button.setObjectName("ActivityBarButton")
+        self.add_button.setFixedSize(44, 36)
+        self.add_button.clicked.connect(self._create_menu)
+        layout.addWidget(self.add_button, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addStretch(1)
-        self.buttons: dict[str, _ActivityButton] = {}
-        self.buttons["logs"] = self._make_button("logs")
-        self.buttons["parameters"] = self._make_button("parameters")
-        self.buttons["logs"].setChecked(True)
-        for key in self._BOTTOM_PANELS:
-            button = self.buttons[key]
-            button.side_by_side_requested.connect(
-                self.bottom_panel_side_by_side_requested.emit
-            )
-            button.clicked.connect(
-                lambda checked=False, name=key: self._on_panel_clicked(name, checked)
-            )
-            layout.addWidget(button)
+        line = QFrame(self)
+        line.setFrameShape(QFrame.Shape.HLine)
+        layout.addWidget(line)
+        self._bottom, self._bottom_layout = self._section(layout)
+        self.set_language(language)
 
-    def _make_button(self, key: str, *, checkable: bool = True) -> _ActivityButton:
-        button = _ActivityButton(key, self, checkable=checkable, language=self.language)
-        label = t(f"activity.{key}", self.language)
-        button.setAccessibleName(label)
-        button.setToolTip(label)
-        return button
+    def _section(self, layout):
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setMaximumHeight(240)
+        body = QWidget(scroll)
+        column = QVBoxLayout(body)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(2)
+        column.setAlignment(Qt.AlignmentFlag.AlignTop)
+        scroll.setWidget(body)
+        layout.addWidget(scroll)
+        return scroll, column
 
-    def _on_panel_clicked(self, key: str, checked: bool) -> None:
-        if checked:
-            other_key = "parameters" if key == "logs" else "logs"
-            self.buttons[other_key].setChecked(False)
-        self.bottom_panel_toggled.emit(key, checked)
-
-    def _on_extensions_clicked(self, checked: bool) -> None:
-        if checked:
-            self.sidebar_button.setChecked(False)
-            for button in self.extension_view_buttons.values():
-                button.setChecked(False)
-        self.sidebar_view_requested.emit("extensions" if checked else "")
-
-    def _on_flight_clicked(self, checked: bool) -> None:
-        if checked:
-            self.extensions_button.setChecked(False)
-            for button in self.extension_view_buttons.values():
-                button.setChecked(False)
-        self.sidebar_view_requested.emit("flight" if checked else "")
-
-    def add_extension_view(self, identifier: str, title: str) -> None:
-        button = _ActivityButton(
-            f"extension:{identifier}", self, language=self.language
+    def _create_menu(self):
+        english = self.language == "en"
+        menu = QMenu(self)
+        menu.addAction(
+            "New view" if english else "Görünüm ekle",
+            lambda: self.create_requested.emit("view"),
         )
-        button.setAccessibleName(title)
-        button.setToolTip(title)
-        self.extension_view_buttons[identifier] = button
-        self._layout.insertWidget(2 + len(self.extension_view_buttons) - 1, button)
-        button.clicked.connect(
-            lambda checked, key=identifier: self._on_extension_view_clicked(
-                key, checked
+        menu.addAction(
+            "New category" if english else "Kategori ekle",
+            lambda: self.create_requested.emit("category"),
+        )
+        menu.exec(self.add_button.mapToGlobal(self.add_button.rect().bottomRight()))
+
+    def _context_menu(self, identifier, category, button):
+        english = self.language == "en"
+        menu = QMenu(self)
+        menu.addAction(
+            "Edit" if english else "Düzenle",
+            lambda: self.edit_requested.emit(identifier, category),
+        )
+        menu.addAction(
+            "Delete" if english else "Sil",
+            lambda: self.remove_requested.emit(identifier, category),
+        )
+        menu.exec(button.mapToGlobal(button.rect().bottomRight()))
+
+    def _reconcile(self, items, buttons, layout, *, category):
+        ids = {item["id"] for item in items}
+        for key in list(buttons):
+            if key not in ids:
+                button = buttons.pop(key)
+                layout.removeWidget(button)
+                button.hide()
+                button.deleteLater()
+        for index, item in enumerate(items):
+            identifier = item["id"]
+            button = buttons.get(identifier)
+            if button is None:
+                button = QToolButton(self)
+                button.setObjectName("ActivityBarButton")
+                button.setFixedSize(44, 42 if not category else 36)
+                button.setIconSize(
+                    QSize(22 if not category else 18, 22 if not category else 18)
+                )
+                button.setCheckable(not category)
+                if not category:
+                    self._view_group.addButton(button)
+                button.setProperty("category", category)
+                button.clicked.connect(
+                    lambda _=False, key=identifier: (
+                        self.category_requested if category else self.view_requested
+                    ).emit(key)
+                )
+                button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                button.customContextMenuRequested.connect(
+                    lambda _, key=identifier, b=button: self._context_menu(
+                        key, category, b
+                    )
+                )
+                buttons[identifier] = button
+            button.setIcon(
+                standard_icon(item.get("icon", "SP_FileDialogDetailedView"), button)
             )
+            button.setToolTip(item["name"])
+            button.setAccessibleName(item["name"])
+            layout.insertWidget(index, button)
+        (self._bottom if category else self._top).setFixedHeight(
+            min(240, max(1, len(items) * (38 if category else 44)))
         )
 
-    def remove_extension_view(self, identifier: str) -> None:
-        button = self.extension_view_buttons.pop(identifier, None)
-        if button is not None:
-            self._layout.removeWidget(button)
-            button.hide()
-            button.deleteLater()
-
-    def add_panel_button(self, key: str, title: str) -> _ActivityButton:
-        button = self.panel_buttons.get(key)
-        if button is not None:
-            self.set_panel_title(key, title)
-            return button
-        button = _ActivityButton(f"panel:{key}", self, language=self.language)
-        self.panel_buttons[key] = button
-        self.set_panel_title(key, title)
-        button.clicked.connect(
-            lambda checked, panel_key=key: self.panel_visibility_requested.emit(
-                panel_key, checked
-            )
+    def refresh(self, controller):
+        self._reconcile(
+            controller.views, self.view_buttons, self._top_layout, category=False
         )
-        index = 2 + len(self.extension_view_buttons) + len(self.panel_buttons) - 1
-        self._layout.insertWidget(index, button)
-        return button
+        groups = controller.active["categories"] if controller.active else []
+        self._reconcile(
+            groups, self.category_buttons, self._bottom_layout, category=True
+        )
+        for key, button in self.view_buttons.items():
+            button.setChecked(key == controller.active_id)
+        for group in groups:
+            docks = [
+                controller.workspace.panels[key]
+                for key in group["panels"]
+                if key in controller.workspace.panels
+            ]
+            opened = sum(not dock.isHidden() for dock in docks)
+            button = self.category_buttons[group["id"]]
+            button.setEnabled(bool(docks))
+            status = (
+                "open"
+                if docks and opened == len(docks)
+                else "partial"
+                if opened
+                else "closed"
+            )
+            if button.property("groupState") != status:
+                button.setProperty("groupState", status)
+                button.style().unpolish(button)
+                button.style().polish(button)
 
-    def remove_panel_button(self, key: str) -> None:
-        button = self.panel_buttons.pop(key, None)
-        if button is not None:
-            self._layout.removeWidget(button)
-            button.hide()
-            button.deleteLater()
-
-    def set_panel_title(self, key: str, title: str) -> None:
-        button = self.panel_buttons.get(key)
-        if button is not None:
-            button.setAccessibleName(title)
-            button.setToolTip(title)
-
-    def set_panel_checked(self, key: str, checked: bool) -> None:
-        button = self.panel_buttons.get(key)
-        if button is not None:
-            button.setChecked(checked)
-
-    def _on_extension_view_clicked(self, identifier: str, checked: bool) -> None:
-        if checked:
-            self.sidebar_button.setChecked(False)
-            self.extensions_button.setChecked(False)
-            for key, button in self.extension_view_buttons.items():
-                if key != identifier:
-                    button.setChecked(False)
-        self.sidebar_view_requested.emit(identifier if checked else "")
-
-    def set_bottom_panel_checked(self, key: str, checked: bool) -> None:
-        if key in self.buttons:
-            self.buttons[key].setChecked(checked)
-
-    def set_language(self, language: str) -> None:
+    def set_language(self, language):
         self.language = language
-        for key, button in (
-            ("flight_panels", self.sidebar_button),
-            ("extensions", self.extensions_button),
-            *self.buttons.items(),
-        ):
-            label = t(f"activity.{key}", language)
-            button.language = language
-            button.setAccessibleName(label)
-            button.setToolTip(label)
+        self.add_button.setToolTip(
+            "Add view or category" if language == "en" else "Görünüm veya kategori ekle"
+        )

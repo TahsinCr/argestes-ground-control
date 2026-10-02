@@ -16,7 +16,7 @@ class JoystickExtension:
             ),
             dependencies={"settings": SettingsService, "logging": LoggingService},
         )
-        registrar.settings_ui(self.settings)
+        registrar.settings_page(self.settings)
 
     def start(self, context):
         context.services.resolve(JoystickService).start()
@@ -37,10 +37,10 @@ class JoystickExtension:
             palette_for(current.ui.theme),
             anchor,
         )
-        try:
-            dialog.exec()
-        finally:
-            dialog.deleteLater()
+        from src.ui.widgets.settings_page import embed_dialog
+
+        dialog.prepare_shutdown = dialog._live_timer.stop
+        return embed_dialog(dialog)
 
 
 def create_extension():

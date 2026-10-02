@@ -90,8 +90,9 @@ kamera durum kontrolleri kamera paketinde kalır.
 sol bağlantı grubuna veya bataryanın yanına yerleştirir. Bağlantı, GPS ve
 otopilot göstergeleri yalnız durum gösterir; tıklayınca pencere açmaz.
 Bağlantı profilleri Araç Bağlantısı eklentisinin ayarlarından düzenlenir. MAVLink'in
-gelişmiş ayarları ortak ayarlar penceresi yerine Eklentiler panelindeki kendi
-ayarlar eyleminden açılır. Dialect seçicisi kurulu pymavlink dialect'lerini listeler;
+gelişmiş ayarları dahil tüm eklenti ayarları, yalnız ortak Ayarlar penceresinde
+kendi kategorilerinde düzenlenir. Alt bardaki mevcut kamera bağlantı/yayın
+popup'ları korunur. Dialect seçicisi kurulu pymavlink dialect'lerini listeler;
 değişiklik bağlı hattı arka planda yeniden yapılandırır, kapalı bir hattı kendiliğinden
 etkinleştirmez.
 Her eklenti `i18n/tr.json` ve `i18n/en.json` dil paketlerini kendi içinde taşır.
@@ -113,26 +114,41 @@ tanımlanır. Fabrika `configure(registrar, context)` ve isteğe bağlı
 `start(context)`/`stop()` metotlarına sahip nesne döndürür.
 `registrar.singleton(token, factory, dependencies=...)` ile servis sağlanır;
 aynı servisin birden fazla eklenti tarafından kaydedilmesi reddedilir. Dahili
-eklentiler çalışan örnek olarak kullanılabilir. Eklenti ayrıca
-`registrar.sidebar_view(kimlik, başlık, factory)` ile sol yan panel katkısı
-ekleyebilir. `factory`, Qt üst widget'ını alır ve paneli UI iş parçacığında
-oluşturur; devre dışı eklentinin arayüz kodu içe aktarılmaz.
-`visual_view`, `status_widget` ve `settings_ui` ile eklenti ana çalışma alanına,
-alt durum çubuğuna ve kendi ayarlarına arayüz katkısı sağlayabilir. Kamera
-eklentisi bu sınırları kullanır; kamera işlevleri ortak pencereye gömülü değildir.
+eklentiler çalışan örnek olarak kullanılabilir. `registrar.visual_view(...)`
+ortak yerleşimde bir panel, `status_widget(...)` alt barda gösterge sağlar.
+`registrar.settings_page(factory)` eklentiye ait tek ayar sayfasını tanımlar.
+Fabrika Qt üst widget'ını alır; yalnız kullanıcı ilgili Ayarlar kategorisini
+seçtiğinde UI iş parçacığında çağrılır. Sayfa, kapanışta abonelik/timer/worker
+temizliği için `prepare_shutdown()` sağlayabilir. Devre dışı eklentinin kodu
+yüklenmeden ve servisi başlatılmadan tipli config editörü sunulur.
+Eski `sidebar_view` ve `settings_ui` katkıları kaldırıldı; bunların yerine
+`visual_view` ve `settings_page` kullanılmalıdır. Eklenti yönetimi yalnız
+etkinleştirme ve keşif yapar; ikinci bir ayar yolu oluşturmaz.
 
 ## Çalışma alanı
 
 Harita merkezde kalır. Araç dinamiği, telemetri, hızlı komutlar, loglar,
 parametreler ve eklentilerin getirdiği görünümler bağımsız panellerdir.
-Normal kullanımda panel başlıkları görünmez; üst çubuktaki Görünüm > Paneller
-menüsünden panelleri araç, alt panel ve eklenti gruplarına göre gösterip
-gizleyebilir, ayraçlardan boyutlandırabilirsin. Görünüm menüsündeki Yerleşimi
-düzenle seçeneği taşıma, sekmeleme ve ayrı pencereye alma tutamaklarını geçici
-olarak açar. Aynı menü haritaya odaklanma, varsayılan yerleşim ve Koyu/Açık
-tema seçeneklerini de içerir. Panel açıp kapatmak kayıtlı yerleşimi değiştirmez.
-Görünürlük ve yerleşim uygulama kapanırken
-`data/workspace-layout.json` içine kaydedilir. Boş alan oluşturan sahte dock'lar
+Görünüm > Paneller menüsünden panelleri açıp kapatabilir, ayraçlardan
+boyutlandırabilirsin. Taşıma, sekmeleme ve ayrı pencereye alma için panelin
+üzerindeyken beliren küçük tutamak/menü kullanılır; ayrı bir Yerleşimi düzenle
+modu yoktur. Haritaya odaklanma, varsayılan yerleşim ve Koyu/Açık tema aynı
+Görünüm menüsünde kalır.
+
+Sol barın üst bölümü kayıtlı görünümleri seçer; farklı stilli alt bölüm aktif
+görünüme ait panel kategorilerini topluca açıp kapatır. Görünümlerin altındaki
+artı düğmesi, ortak isim ve aranabilir standart ikon seçicisiyle görünüm veya
+kategori oluşturur. Yeni görünüm boş başlar ve panel kullanımını anlatan kısa
+yönergeler gösterir. Kategori oluştururken açık panellerin üzerine tıklayıp
+sağ alttaki Ekle veya İptal düğmesini kullanırsın. Bu sırada panel içindeki
+araç komutları çalıştırılmaz. Kısmen açık kategori tüm mevcut üyelerini açar;
+tamamen açık kategori birlikte kapanır. Sağ tık ile isim/ikon değiştirilebilir
+veya öğe silinebilir; son görünüm silinemez.
+
+Her görünümün split/sekme düzeni, boyutları, görünür panelleri ve kategorileri
+`data/workspace-layout.json` içinde gecikmeli birleştirilmiş yazımlarla ve
+kapanışta kaydedilir. Görünüm değişimi pencereyi yeniden boyutlandırmaz.
+Eski tek yerleşim dosyası başlangıç görünümüne taşınır. Boş alan oluşturan sahte dock'lar
 kullanılmaz; bölmenin gerçek satır/sütun ilişkisi boyutları belirler. İlgisiz
 yerleşim dalları kendi boyutlarını korur.
 

@@ -18,14 +18,22 @@ from src.extension.host import ExtensionHost
 
 
 class CameraExtensionTests(unittest.TestCase):
-    def test_camera_is_optional_and_does_not_auto_connect_without_profile_flag(self) -> None:
+    def test_camera_is_optional_and_does_not_auto_connect_without_profile_flag(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             container = create_container(root)
             try:
                 host = container.resolve(ExtensionHost)
                 self.assertFalse(host.is_active("camera"))
-                self.assertFalse([item for item in host.visual_views() if item.identifier.startswith('camera.')])
+                self.assertFalse(
+                    [
+                        item
+                        for item in host.visual_views()
+                        if item.identifier.startswith("camera.")
+                    ]
+                )
                 host.set_enabled("camera", True)
             finally:
                 container.shutdown()
@@ -33,8 +41,17 @@ class CameraExtensionTests(unittest.TestCase):
             try:
                 host = container.resolve(ExtensionHost)
                 self.assertTrue(host.is_active("camera"))
-                self.assertIsNotNone(host.settings_action("camera"))
-                self.assertEqual(len([item for item in host.status_widgets() if item.identifier.startswith("camera.")]), 1)
+                self.assertIsNotNone(host.settings_contribution("camera"))
+                self.assertEqual(
+                    len(
+                        [
+                            item
+                            for item in host.status_widgets()
+                            if item.identifier.startswith("camera.")
+                        ]
+                    ),
+                    1,
+                )
                 runtime = container.resolve(CameraRuntime)
                 runtime.start()
                 self.assertFalse(runtime.video._started)
@@ -42,20 +59,43 @@ class CameraExtensionTests(unittest.TestCase):
             finally:
                 container.shutdown()
 
-    def test_camera_configuration_migrates_legacy_profiles_and_keeps_outputs(self) -> None:
+    def test_camera_configuration_migrates_legacy_profiles_and_keeps_outputs(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             settings = root / "data/settings.json"
             settings.parent.mkdir(parents=True)
-            source = VideoSourceConfig(identifier="front", name="Ön", source_type="udp",
-                                       source_uri="127.0.0.1:5600", codec="h264")
-            output = VideoShareConfig(identifier="live", name="Yayın", endpoint="239.1.1.1:10021",
-                                      source_id="front", output_type="stream", enabled=False)
+            source = VideoSourceConfig(
+                identifier="front",
+                name="Ön",
+                source_type="udp",
+                source_uri="127.0.0.1:5600",
+                codec="h264",
+            )
+            output = VideoShareConfig(
+                identifier="live",
+                name="Yayın",
+                endpoint="239.1.1.1:10021",
+                source_id="front",
+                output_type="stream",
+                enabled=False,
+            )
             import json
             from dataclasses import asdict
-            settings.write_text(json.dumps({"backend": {
-                "video_sources": [asdict(source)], "active_video_source_id": "front",
-                "video_shares": [asdict(output)]}}), encoding="utf-8")
+
+            settings.write_text(
+                json.dumps(
+                    {
+                        "backend": {
+                            "video_sources": [asdict(source)],
+                            "active_video_source_id": "front",
+                            "video_shares": [asdict(output)],
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
             store = CameraSettingsStore(root)
             self.assertEqual(store.current.sources[0].name, "Ön")
             self.assertEqual(store.current.outputs[0].identifier, "live")
@@ -75,21 +115,40 @@ class CameraExtensionTests(unittest.TestCase):
             try:
                 runtime = container.resolve(CameraRuntime)
                 current = runtime.settings.current
-                second = VideoSourceConfig(identifier="rear", name="Arka", source_type="usb",
-                                           source_uri="/dev/video2", codec="mjpeg")
-                runtime.save_sources((*current.sources, second), current.active_source_id)
+                second = VideoSourceConfig(
+                    identifier="rear",
+                    name="Arka",
+                    source_type="usb",
+                    source_uri="/dev/video2",
+                    codec="mjpeg",
+                )
+                runtime.save_sources(
+                    (*current.sources, second), current.active_source_id
+                )
                 runtime.record_all(True)
-                outputs = [item for item in runtime.settings.current.outputs if item.output_type == "record"]
-                self.assertEqual({item.source_id for item in outputs}, {"video-primary", "rear"})
-                self.assertTrue(all(item.fps == 30 and item.enabled for item in outputs))
+                outputs = [
+                    item
+                    for item in runtime.settings.current.outputs
+                    if item.output_type == "record"
+                ]
+                self.assertEqual(
+                    {item.source_id for item in outputs}, {"video-primary", "rear"}
+                )
+                self.assertTrue(
+                    all(item.fps == 30 and item.enabled for item in outputs)
+                )
                 runtime.record_all(False)
-                self.assertTrue(all(not item.enabled for item in runtime.settings.current.outputs))
+                self.assertTrue(
+                    all(not item.enabled for item in runtime.settings.current.outputs)
+                )
                 runtime.stop()
             finally:
                 container.shutdown()
 
-    def test_enabled_camera_restores_archived_wall_and_connection_controls(self) -> None:
-        script = '''
+    def test_enabled_camera_restores_archived_wall_and_connection_controls(
+        self,
+    ) -> None:
+        script = """
 import tempfile
 from pathlib import Path
 from PyQt6.QtCore import Qt
@@ -120,9 +179,9 @@ with tempfile.TemporaryDirectory() as directory:
     status = window._extension_status_by_id["camera.connections"]
     assert status.video_chip.text_label.text() == "VIDEO"
     assert status.share_chip.text_label.text() == "VIDEO SHARE"
-    assert backend.resolve(ExtensionHost).settings_action("camera") is not None
+    assert backend.resolve(ExtensionHost).settings_contribution("camera") is not None
     camera_dock = window.workspace.panels["camera.wall"]
-    assert "camera.wall" in window.activity_bar.panel_buttons
+    assert camera_dock.toggleViewAction().isCheckable()
     window.show()
     app.processEvents()
     assert camera_dock.geometry().x() > window.primary_dock.geometry().x()
@@ -132,13 +191,13 @@ with tempfile.TemporaryDirectory() as directory:
     assert 'camera.wall' not in window._extension_visual_by_id
     assert not any(key.startswith("camera.") for key in window._extension_status_by_id)
     assert not any(key.startswith("camera.") for key in window.workspace.panels)
-    assert "camera.wall" not in window.activity_bar.panel_buttons
+    assert "camera.wall" not in window.workspace.panels
     assert not backend.resolve(ExtensionHost).is_active("camera")
     window.extension_panel._toggle("camera", True)
     assert 'camera.wall' in window._extension_visual_by_id
     assert len([key for key in window._extension_status_by_id if key.startswith("camera.")]) == 1
     camera_dock = window.workspace.panels["camera.wall"]
-    assert "camera.wall" in window.activity_bar.panel_buttons
+    assert camera_dock.toggleViewAction().isCheckable()
     assert camera_dock in window.workspace.tabifiedDockWidgets(window.primary_dock)
     window.extension_panel._toggle("vehicle_connection", False)
     assert not any(key.startswith("vehicle_connection.") for key in window._extension_status_by_id)
@@ -153,9 +212,14 @@ with tempfile.TemporaryDirectory() as directory:
     backend.resolve(ExtensionHost).stop()
     backend.shutdown()
 print("camera-ui-ok")
-'''
-        result = subprocess.run([sys.executable, "-c", script], capture_output=True,
-                                text=True, timeout=15, check=False)
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("camera-ui-ok", result.stdout)
 

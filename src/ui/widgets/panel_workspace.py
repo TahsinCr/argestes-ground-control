@@ -15,6 +15,7 @@ from PyQt6.QtCore import (
     QRect,
     QTimer,
     Qt,
+    pyqtSignal,
 )
 from PyQt6.QtGui import QColor, QDrag, QMouseEvent, QPainter, QPalette, QPen
 from PyQt6.QtWidgets import (
@@ -155,7 +156,7 @@ class _PanelControls(QWidget):
         QTimer.singleShot(0, self._check_hover)
 
     def _check_hover(self) -> None:
-        if not self.dock.isVisible():
+        if not self.dock.isVisible() or self.workspace.property("selectingPanels"):
             self.dismiss()
         else:
             self.reveal(self.dock.underMouse() or self.underMouse())
@@ -299,6 +300,7 @@ class _PanelResize:
 
 
 class PanelWorkspace(QMainWindow):
+    layout_changed = pyqtSignal()
     """Dockable shell around the unchanged content widgets."""
 
     STATE_VERSION = 6
@@ -331,6 +333,12 @@ class PanelWorkspace(QMainWindow):
         self._panel_default_areas: dict[str, Qt.DockWidgetArea] = {}
         self._panel_sizes: dict[str, tuple[int, int]] = {}
         self._size_restore_pending = False
+        self._size_restore_timer = QTimer(self)
+        self._size_restore_timer.setSingleShot(True)
+        self._size_restore_timer.timeout.connect(self._restore_panel_sizes)
+        self._visibility_timer = QTimer(self)
+        self._visibility_timer.setSingleShot(True)
+        self._visibility_timer.timeout.connect(self._finish_panel_visibility_change)
         self._restoring_panel_sizes = False
         self._panel_size_restore_enabled = False
         self.edit_mode = False
@@ -351,6 +359,32 @@ class PanelWorkspace(QMainWindow):
     def _configure_dock_corners(self) -> None:
         self.setCorner(Qt.Corner.TopLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
         self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if any(not dock.isHidden() for dock in self.panels.values()):
+            return
+        painter = QPainter(self)
+        painter.setPen(self.palette().color(QPalette.ColorRole.PlaceholderText))
+        english = self.language == "en"
+        title = "Build your workspace" if english else "Çalışma alanınızı oluşturun"
+        body = (
+            "Open or hide panels from View → Panels.\nArrange panels using their top drag handle."
+            if english
+            else "Görünüm → Paneller menüsünden panel açıp kapatabilirsiniz.\nPanelleri üst tutamacından sürükleyerek yerleştirin."
+        )
+        center = self.rect().adjusted(35, 0, -35, 0)
+        font = painter.font()
+        font.setPointSize(18)
+        painter.setFont(font)
+        painter.drawText(
+            center.adjusted(0, -70, 0, -70), Qt.AlignmentFlag.AlignCenter, title
+        )
+        font.setPointSize(11)
+        painter.setFont(font)
+        painter.drawText(
+            center.adjusted(0, 25, 0, 25), Qt.AlignmentFlag.AlignCenter, body
+        )
 
     def _separator_at(self, point: QPoint) -> _PanelResize | None:
         docks = [
@@ -453,6 +487,7 @@ class PanelWorkspace(QMainWindow):
             return
         # Keep the shared pair's total constant; never borrow from a third dock.
         self.resizeDocks([first, second], [size, total - size], state.orientation)
+        self.layout_changed.emit()
 
     def _resize_limits(
         self, dock: QDockWidget, orientation: Qt.Orientation
@@ -596,7 +631,8 @@ class PanelWorkspace(QMainWindow):
         ):
             controls = self._hover_controls[self._panel_keys[watched]]
             if event.type() == QEvent.Type.Enter:
-                controls.reveal(True)
+                if not self.property("selectingPanels"):
+                    controls.reveal(True)
             elif event.type() == QEvent.Type.Leave:
                 controls.defer_hover_check()
             elif event.type() == QEvent.Type.Hide:
@@ -672,7 +708,7 @@ class PanelWorkspace(QMainWindow):
                         self._remember_panel_size(panel_key, panel)
                 self._size_restore_pending = True
                 self._restoring_panel_sizes = True
-                QTimer.singleShot(0, self._finish_panel_visibility_change)
+                self._visibility_timer.start(0)
         else:
             self._schedule_panel_size_restore()
 
@@ -694,7 +730,7 @@ class PanelWorkspace(QMainWindow):
             return
         self._size_restore_pending = True
         self._restoring_panel_sizes = True
-        QTimer.singleShot(0, self._restore_panel_sizes)
+        self._size_restore_timer.start(0)
 
     def enable_panel_size_restore(self, *, capture_current: bool = False) -> None:
         self._panel_size_restore_enabled = True
@@ -939,6 +975,7 @@ class PanelWorkspace(QMainWindow):
         self._release_width_row(self._panel_keys[dock])
         self.addDockWidget(area, dock)
         self._schedule_width_sync()
+        self.layout_changed.emit()
         return True
 
     def place_panel(
@@ -962,6 +999,7 @@ class PanelWorkspace(QMainWindow):
             self.tabifyDockWidget(target, dock)
             dock.show()
             dock.raise_()
+            self.layout_changed.emit()
             return True
         if dock.isFloating() or self.dockWidgetArea(dock) != area:
             self.move_panel_to_area(dock, area)
@@ -975,6 +1013,7 @@ class PanelWorkspace(QMainWindow):
         self.splitDockWidget(first, second, orientation)
         dock.show()
         dock.raise_()
+        self.layout_changed.emit()
         return True
 
     def remove_panel(self, key: str) -> QWidget | None:
@@ -1015,28 +1054,36 @@ class PanelWorkspace(QMainWindow):
         dock.deleteLater()
         return widget
 
-    def save_layout(self) -> bool:
+    def capture_layout(self) -> dict:
+        """Capture dock topology without changing panel or window geometry."""
+        for key, dock in self.panels.items():
+            if dock.isVisible() and not self._restoring_panel_sizes:
+                self._remember_panel_size(key, dock)
+        return {
+            "version": self.STATE_VERSION,
+            "state": base64.b64encode(bytes(self.saveState(self.STATE_VERSION))).decode(
+                "ascii"
+            ),
+            "panel_sizes": {
+                key: {"width": width, "height": height}
+                for key, (width, height) in self._panel_sizes.items()
+            },
+            "panel_widths": dict(self._independent_widths),
+            "visible_panels": [
+                key for key, dock in self.panels.items() if not dock.isHidden()
+            ],
+        }
+
+    def save_layout(self, *, views: dict | None = None) -> bool:
         temporary = self.state_path.with_suffix(".tmp")
         try:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
-            for key, dock in self.panels.items():
-                if dock.isVisible() and not self._restoring_panel_sizes:
-                    self._remember_panel_size(key, dock)
-            state = base64.b64encode(bytes(self.saveState(self.STATE_VERSION))).decode(
-                "ascii"
-            )
-            payload = {
-                "version": self.STATE_VERSION,
-                "state": state,
-                "panel_sizes": {
-                    key: {"width": width, "height": height}
-                    for key, (width, height) in self._panel_sizes.items()
-                },
-                "panel_widths": self._independent_widths,
-                "window_geometry": base64.b64encode(
-                    bytes(self.window().saveGeometry())
-                ).decode("ascii"),
-            }
+            payload = self.capture_layout()
+            payload["window_geometry"] = base64.b64encode(
+                bytes(self.window().saveGeometry())
+            ).decode("ascii")
+            if views is not None:
+                payload["views"] = views
             temporary.write_text(json.dumps(payload), encoding="utf-8")
             temporary.replace(self.state_path)
             return True
@@ -1047,14 +1094,21 @@ class PanelWorkspace(QMainWindow):
                 pass
             return False
 
-    def restore_layout(self) -> bool:
+    def restore_layout(
+        self, payload: dict | None = None, *, restore_window: bool = True
+    ) -> bool:
         try:
-            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+            self._size_restore_timer.stop()
+            self._visibility_timer.stop()
+            self._size_restore_pending = False
+            self._restoring_panel_sizes = False
+            if payload is None:
+                payload = json.loads(self.state_path.read_text(encoding="utf-8"))
             state_version = payload.get("version")
             if state_version not in (*self.LEGACY_STATE_VERSIONS, self.STATE_VERSION):
                 return False
             state = QByteArray.fromBase64(payload["state"].encode("ascii"))
-            if isinstance(payload.get("window_geometry"), str):
+            if restore_window and isinstance(payload.get("window_geometry"), str):
                 self.window().restoreGeometry(
                     QByteArray.fromBase64(payload["window_geometry"].encode("ascii"))
                 )
@@ -1117,6 +1171,10 @@ class PanelWorkspace(QMainWindow):
                     self.removeDockWidget(spacer)
                     spacer.deleteLater()
             if restored:
+                visible = payload.get("visible_panels")
+                if isinstance(visible, list):
+                    for key, dock in self.panels.items():
+                        dock.setVisible(key in visible)
                 self._configure_dock_corners()
                 self.setTabPosition(
                     Qt.DockWidgetArea.AllDockWidgetAreas,

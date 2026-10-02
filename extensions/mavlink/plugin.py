@@ -104,7 +104,7 @@ class MavlinkExtension:
             "vehicle_connection", connection_project, connection_restore
         )
         registrar.singleton(ActiveProtocol, lambda: ActiveProtocol("mavlink"))
-        registrar.settings_ui(lambda anchor: self._open_settings(context, anchor))
+        registrar.settings_page(lambda parent: self._settings_page(context, parent))
         for channel in ("autopilot", "gps"):
             registrar.status_widget(
                 channel,
@@ -183,8 +183,7 @@ class MavlinkExtension:
         return ProtocolStatusChip(context, parent, theme, language, channel)
 
     @staticmethod
-    def _open_settings(context, anchor):
-        from PyQt6.QtWidgets import QDialog
+    def _settings_page(context, anchor):
         from src.ui.adapters.services import QtSettingsService
         from .ui.settings_dialog import MavlinkSettingsDialog
         from src.ui.themes.palette import palette_for
@@ -194,13 +193,14 @@ class MavlinkExtension:
         dialog = MavlinkSettingsDialog(
             current, current.ui.language, palette_for(current.ui.theme), anchor
         )
+        from src.ui.widgets.settings_page import embed_dialog
+
+        dialog._current_settings = lambda: settings.current
         adapter = QtSettingsService(settings, dialog)
-        try:
-            if dialog.exec() == QDialog.DialogCode.Accepted:
-                adapter.save_async(dialog.to_settings())
-        finally:
-            adapter.close()
-            dialog.deleteLater()
+        dialog.prepare_shutdown = adapter.close
+        return embed_dialog(
+            dialog, commit=lambda: adapter.save_async(dialog.to_settings())
+        )
 
 
 def create_extension() -> MavlinkExtension:

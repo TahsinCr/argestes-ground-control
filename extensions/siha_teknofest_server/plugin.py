@@ -5,10 +5,12 @@ class TeknofestExtension:
     def configure(self, registrar, context):
         self.context = context
         registrar.singleton(CompetitionRuntime, lambda: CompetitionRuntime(context))
-        registrar.sidebar_view(
-            "servers", "TEKNOFEST", lambda parent: self.panel(parent)
+        registrar.visual_view(
+            "servers",
+            lambda parent, theme, language: self.panel(parent),
+            title="TEKNOFEST",
         )
-        registrar.settings_ui(lambda anchor: self.settings(anchor))
+        registrar.settings_page(self.panel)
 
     def start(self, context):
         context.services.resolve(CompetitionRuntime).start()
@@ -20,20 +22,6 @@ class TeknofestExtension:
         from .ui import ServerPanel
 
         return ServerPanel(self.context, parent)
-
-    def settings(self, anchor):
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout
-
-        dialog = QDialog(anchor)
-        panel = self.panel(dialog)
-        layout = QVBoxLayout(dialog)
-        layout.addWidget(panel)
-        dialog.resize(600, 500)
-        try:
-            dialog.exec()
-        finally:
-            panel.prepare_shutdown()
-            dialog.deleteLater()
 
 
 def create_extension():

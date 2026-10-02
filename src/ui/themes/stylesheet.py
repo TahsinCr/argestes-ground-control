@@ -22,6 +22,43 @@ def build_stylesheet(theme: ThemePalette) -> str:
     QMainWindow#PanelWorkspace {{
         background: {theme.background_alt};
     }}
+    #ActivityBar QToolButton[category="true"] {{
+        margin: 3px;
+        border-radius: 5px;
+        background: {theme.surface};
+        border: 1px solid {theme.border};
+    }}
+    #ActivityBar QToolButton[groupState="open"] {{
+        border-color: {theme.accent};
+        background: {theme.surface_hover};
+    }}
+    #ActivityBar QToolButton[groupState="partial"] {{
+        border-style: dashed;
+        border-color: {theme.muted_text};
+    }}
+    #PanelSelectionSurface {{
+        background: rgba(100, 100, 100, 35);
+        border: 2px dashed {theme.border_strong};
+        border-radius: 4px;
+        color: {theme.text};
+        font-size: 15px;
+    }}
+    #PanelSelectionSurface:checked {{
+        background: rgba(100, 100, 100, 75);
+        border: 2px solid {theme.accent};
+    }}
+    #PanelSelectionLabel {{
+        background: {theme.surface_alt};
+        color: {theme.text};
+        border: 1px solid {theme.border};
+        border-radius: 6px;
+        padding: 6px 12px;
+    }}
+    #PanelSelectionActions {{
+        background: {theme.surface};
+        border: 1px solid {theme.border_strong};
+        border-radius: 6px;
+    }}
     QMainWindow#PanelWorkspace QDockWidget {{
         color: {theme.text};
         font-size: 11px;

@@ -3,6 +3,37 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Saved views and unified settings
+
+* Replaced the activity bar's per-panel shortcuts with saved views above and
+  view-specific panel categories below. The shared name/icon picker supports
+  searchable Qt standard icons. New views start with an empty workspace and
+  concise panel instructions; view and category entries can be renamed or removed.
+* Added click-to-select category creation with explicit Add/Cancel controls.
+  Selection shields panel content from clicks, including vehicle commands.
+  Groups preserve split/tab placement when reopened and do not close unrelated
+  panels; later placement edits invalidate stale group snapshots.
+* Persisted each view's layout, sizes, tabs, visibility and categories in the
+  existing workspace file. Legacy layouts become an initial view. Switching
+  views leaves window dimensions alone and cancels pending old resize callbacks.
+* Removed View > Edit Layout and the obsolete extension-sidebar/settings-action
+  APIs. Panels use the existing hover grip and shared dock infrastructure;
+  TEKNOFEST's server panel is now an ordinary workspace contribution.
+* Centralized extension configuration in Settings, with lazy extension-owned
+  pages and typed configuration editors for inactive packages. The extension
+  browser no longer duplicates settings. Bottom-bar connection/output popups
+  remain intact and share the camera editors used by Settings.
+* Added `registrar.settings_page(factory)` and explicit page shutdown hooks.
+  General settings saves start from the latest model so extension changes made
+  in the same dialog are retained. Hidden camera and joystick pages avoid
+  unnecessary live updates; network interfaces are not enumerated per frame.
+* Replaced the footer extension glyph with a theme-aware vector icon, separated
+  view/category styling, and added readable panel-selection labels for both themes.
+* Added regression coverage for blank views, category visibility, split/tab sizing,
+  restart persistence, safe selection and lazy extension settings. The combined
+  test suite passes 577 tests; dark/light settings and workspace screenshots were
+  checked with an offscreen Qt smoke run. Live hardware was not exercised.
+
 ### Workspace fixes
 
 * Fixed the left panel column widening while the pointer moved between panels.

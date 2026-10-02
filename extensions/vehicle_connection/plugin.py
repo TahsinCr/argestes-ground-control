@@ -28,40 +28,34 @@ class VehicleConnectionExtension:
             ),
             placement="metrics",
         )
-        registrar.settings_ui(lambda anchor: self._open_settings(context, anchor))
+        registrar.settings_page(lambda parent: self._settings_page(context, parent))
+
+    @staticmethod
+    def _settings_page(context, parent):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtWidgets import QLabel, QVBoxLayout
+        from src.services.settings import SettingsService
+        from src.ui.themes.palette import palette_for
+        from .ui.connection_editor import ConnectionEditor
+
+        current = context.services.resolve(SettingsService).current
+        if not context.services.container.has(ConnectionProfiles):
+            return QLabel("Etkin protokol bağlantı profillerini desteklemiyor.", parent)
+        editor = ConnectionEditor(
+            context, parent, palette_for(current.ui.theme), current.ui.language
+        )
+        editor.profiles_panel.setWindowFlags(Qt.WindowType.Widget)
+        editor.profiles_panel.back_button.hide()
+        layout = QVBoxLayout(editor)
+        layout.addWidget(editor.profiles_panel)
+        editor.profiles_panel.show()
+        return editor
 
     @staticmethod
     def _status(context, parent, theme, language, **options):
         from .ui.status import ConnectionStatusWidget
 
         return ConnectionStatusWidget(context, parent, theme, language, **options)
-
-    @staticmethod
-    def _open_settings(context, anchor):
-        from src.services.settings import SettingsService
-        from src.ui.themes.palette import palette_for
-
-        settings = context.services.resolve(SettingsService).current
-        if not context.services.container.has(ConnectionProfiles):
-            from PyQt6.QtWidgets import QMessageBox
-            from src.ui.i18n import t
-
-            QMessageBox.information(
-                anchor,
-                t("extension.vehicle_connection.name", settings.ui.language),
-                t("connection.profiles.unsupported", settings.ui.language),
-            )
-            return
-        from .ui.connection_editor import ConnectionEditor
-
-        editor = ConnectionEditor(
-            context, anchor, palette_for(settings.ui.theme), settings.ui.language
-        )
-        try:
-            editor.open(anchor)
-        finally:
-            editor.prepare_shutdown()
-            editor.deleteLater()
 
     def start(self, context):
         context.services.resolve(ConnectionRuntime).start()

@@ -49,13 +49,6 @@ class ServiceBinding:
 
 
 @dataclass(frozen=True, slots=True)
-class SidebarContribution:
-    identifier: str
-    title: str
-    factory: Callable[[Any], Any]
-
-
-@dataclass(frozen=True, slots=True)
 class VisualContribution:
     identifier: str
     factory: Callable[[Any], Any]
@@ -77,7 +70,7 @@ class StatusContribution:
 
 @dataclass(frozen=True, slots=True)
 class SettingsContribution:
-    action: Callable[[Any], None]
+    page_factory: Callable[[Any], Any]
 
 
 class ExtensionRegistrar:
@@ -85,10 +78,9 @@ class ExtensionRegistrar:
 
     def __init__(self) -> None:
         self.bindings: list[ServiceBinding] = []
-        self.sidebar_views: list[SidebarContribution] = []
         self.visual_views: list[VisualContribution] = []
         self.status_widgets: list[StatusContribution] = []
-        self.settings_action: SettingsContribution | None = None
+        self.settings_contribution: SettingsContribution | None = None
 
     def singleton(
         self,
@@ -100,16 +92,6 @@ class ExtensionRegistrar:
         if any(binding.token == token for binding in self.bindings):
             raise ValueError(f"Duplicate extension service: {token}")
         self.bindings.append(ServiceBinding(token, factory, dict(dependencies or {})))
-
-    def sidebar_view(
-        self, identifier: str, title: str, factory: Callable[[Any], Any]
-    ) -> None:
-        """Contribute a lazily created left-sidebar QWidget without importing Qt here."""
-        if not re.fullmatch(r"[a-z][a-z0-9_]*", identifier):
-            raise ValueError(f"Invalid sidebar identifier: {identifier}")
-        if any(view.identifier == identifier for view in self.sidebar_views):
-            raise ValueError(f"Duplicate sidebar view: {identifier}")
-        self.sidebar_views.append(SidebarContribution(identifier, title, factory))
 
     def visual_view(
         self,
@@ -159,11 +141,11 @@ class ExtensionRegistrar:
             raise ValueError(f"Duplicate status widget: {identifier}")
         self.status_widgets.append(StatusContribution(identifier, factory, placement))
 
-    def settings_ui(self, action: Callable[[Any], None]) -> None:
-        """Register one extension-owned settings action; its argument is the UI anchor."""
-        if self.settings_action is not None:
-            raise ValueError("Duplicate extension settings action")
-        self.settings_action = SettingsContribution(action)
+    def settings_page(self, factory: Callable[[Any], Any]) -> None:
+        """Contribute a lazy extension-owned QWidget to the common Settings shell."""
+        if self.settings_contribution is not None:
+            raise ValueError("Duplicate extension settings contribution")
+        self.settings_contribution = SettingsContribution(page_factory=factory)
 
 
 class TelemetrySource(Protocol):

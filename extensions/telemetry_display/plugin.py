@@ -12,7 +12,7 @@ class TelemetryDisplayExtension:
             order=200,
             preferred_height=280,
         )
-        registrar.settings_ui(lambda anchor: self.settings(context, anchor))
+        registrar.settings_page(lambda anchor: self.settings(context, anchor))
 
     @staticmethod
     def create(context, parent, theme, language):
@@ -40,7 +40,7 @@ class TelemetryDisplayExtension:
 
     @staticmethod
     def settings(context, anchor):
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QCheckBox, QDialogButtonBox
+        from PyQt6.QtWidgets import QVBoxLayout, QCheckBox, QDialogButtonBox
         from .ui.panel import TelemetryPanel
         from src.ui.i18n import t
         from src.services.settings import SettingsService
@@ -50,12 +50,14 @@ class TelemetryDisplayExtension:
         selected = settings.extension_config("telemetry_display").get(
             "fields", [item[0] for item in fields]
         )
-        dialog = QDialog(anchor)
+        from src.ui.widgets.settings_page import SettingsPageDialog, embed_dialog
+
+        dialog = SettingsPageDialog(anchor)
         dialog.setWindowTitle("Telemetri alanları")
         layout = QVBoxLayout(dialog)
         controls = {}
         for key, label in fields:
-            checkbox = QCheckBox(t(label), dialog)
+            checkbox = QCheckBox(t(label, settings.current.ui.language), dialog)
             checkbox.setChecked(key in selected)
             controls[key] = checkbox
             layout.addWidget(checkbox)
@@ -66,14 +68,16 @@ class TelemetryDisplayExtension:
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+
+        def apply():
             settings.update_extension(
                 "telemetry_display",
                 config={
                     "fields": [key for key, box in controls.items() if box.isChecked()]
                 },
             )
-        dialog.deleteLater()
+
+        return embed_dialog(dialog, commit=apply)
 
 
 def create_extension():

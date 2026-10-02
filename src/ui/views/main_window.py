@@ -9,8 +9,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QMainWindow,
     QPushButton,
-    QSplitter,
-    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -80,37 +78,27 @@ class MainWindow(QMainWindow):
         row.setSpacing(0)
         self.activity_bar = ActivityBar(self.language, content)
         row.addWidget(self.activity_bar)
-        self.content_splitter = QSplitter(Qt.Orientation.Horizontal, content)
-        self.content_splitter.setChildrenCollapsible(False)
-        self.content_splitter.setHandleWidth(4)
-        self._sidebar_last_width = 320
-        self._sidebar_explicitly_visible = False
-        self.sidebar = QStackedWidget(self.content_splitter)
-        self.sidebar.setObjectName("ExtensionSidebar")
-        self.sidebar.setMinimumWidth(280)
-        self._extension_sidebar_widgets = {}
         self.workspace = PanelWorkspace(
             self.base_dir / "data" / "workspace-layout.json",
-            self.content_splitter,
+            content,
             language=self.language,
         )
-        self.content_splitter.addWidget(self.sidebar)
-        self.content_splitter.addWidget(self.workspace)
-        self.content_splitter.setStretchFactor(0, 0)
-        self.content_splitter.setStretchFactor(1, 1)
-        self.sidebar.hide()
-        row.addWidget(self.content_splitter, 1)
+        from src.ui.workspace_views import WorkspaceViews
+
+        self.workspace_views = WorkspaceViews(self.workspace, self)
+        self._panel_selection = None
+        row.addWidget(self.workspace, 1)
         layout.addWidget(content, 1)
         self._build_workspace()
-        self.activity_bar.sidebar_view_requested.connect(self._show_sidebar_view)
-        self.activity_bar.flight_sidebar_toggled.connect(self._toggle_flight_panels)
-        self.activity_bar.panel_visibility_requested.connect(
-            self._set_workspace_panel_visibility
+        self.workspace_views.track_panel(self.log_dock)
+        self.workspace_views.changed.connect(self._sync_activity_buttons)
+        self.activity_bar.view_requested.connect(self.workspace_views.switch)
+        self.activity_bar.category_requested.connect(
+            self.workspace_views.toggle_category
         )
-        self.activity_bar.bottom_panel_toggled.connect(self._on_bottom_panel_toggled)
-        self.activity_bar.bottom_panel_side_by_side_requested.connect(
-            self._open_bottom_panel_beside
-        )
+        self.activity_bar.create_requested.connect(self._create_workspace_item)
+        self.activity_bar.edit_requested.connect(self._edit_workspace_item)
+        self.activity_bar.remove_requested.connect(self._remove_workspace_item)
         self._build_view_menu()
         self.status_bar = QWidget(central)
         self.status_bar.setObjectName("BottomStatusBar")
@@ -126,7 +114,10 @@ class MainWindow(QMainWindow):
         self._status_metrics_anchor = QWidget(self.status_bar)
         self._status_metrics_anchor.setFixedWidth(0)
         footer.addWidget(self._status_metrics_anchor)
-        self.extensions_button = QPushButton("▦", self.status_bar)
+        self.extensions_button = QPushButton(self.status_bar)
+        from src.ui.widgets.workspace_dialog import extension_icon
+
+        self.extensions_button.setIcon(extension_icon(self))
         self.extensions_button.setObjectName("SettingsIconButton")
         self.extensions_button.setProperty("compact", "true")
         self.extensions_button.setAccessibleName(
@@ -156,56 +147,6 @@ class MainWindow(QMainWindow):
             reload_extension=self._reload_extension,
         )
         self.extension_panel = self.extension_dialog.browser
-        for contribution in self.extension_host.sidebar_views():
-            widget = contribution.factory(self.sidebar)
-            self.sidebar.addWidget(widget)
-            self._extension_sidebar_widgets[contribution.identifier] = widget
-            self.activity_bar.add_extension_view(
-                contribution.identifier, contribution.title
-            )
-
-    def _show_sidebar_view(self, view):
-        widget = self._extension_sidebar_widgets.get(view)
-        if widget is None:
-            self._set_extension_sidebar_visible(False)
-            return
-        self.sidebar.setCurrentWidget(widget)
-        self._set_extension_sidebar_visible(True)
-
-    def _set_extension_sidebar_visible(self, visible: bool) -> None:
-        if visible == self._sidebar_explicitly_visible:
-            return
-        if not visible:
-            width = self.sidebar.width()
-            if width >= self.sidebar.minimumWidth():
-                self._sidebar_last_width = width
-            self._sidebar_explicitly_visible = False
-            self.sidebar.hide()
-            return
-        self._sidebar_explicitly_visible = True
-        self.sidebar.show()
-        width = max(280, self._sidebar_last_width)
-        QTimer.singleShot(
-            0,
-            lambda remembered=width: self.content_splitter.setSizes(
-                [remembered, max(1, self.content_splitter.width() - remembered)]
-            ),
-        )
-
-    def _toggle_flight_panels(self, visible: bool) -> None:
-        if visible:
-            self._set_extension_sidebar_visible(False)
-        for dock in self._flight_docks:
-            dock.setVisible(visible)
-
-    def _register_workspace_panel_button(self, key: str, title: str, dock) -> None:
-        button = self.activity_bar.add_panel_button(key, title)
-        button.setChecked(not dock.isHidden())
-        dock.visibilityChanged.connect(
-            lambda _visible, panel_key=key, panel=dock: (
-                self.activity_bar.set_panel_checked(panel_key, not panel.isHidden())
-            )
-        )
 
     def _set_workspace_panel_visibility(self, key: str, visible: bool) -> None:
         dock = self.workspace.panels.get(key)
@@ -242,14 +183,6 @@ class MainWindow(QMainWindow):
         for contribution in self.extension_host.status_widgets():
             if contribution.identifier.startswith(prefix):
                 self._add_status_contribution(contribution)
-        for contribution in self.extension_host.sidebar_views():
-            if contribution.identifier.startswith(prefix):
-                widget = contribution.factory(self.sidebar)
-                self.sidebar.addWidget(widget)
-                self._extension_sidebar_widgets[contribution.identifier] = widget
-                self.activity_bar.add_extension_view(
-                    contribution.identifier, contribution.title
-                )
         self._refresh_panel_menu()
 
     def _add_status_contribution(self, contribution) -> None:
@@ -289,7 +222,6 @@ class MainWindow(QMainWindow):
                         self._capture_visual_dock_preference(key, dock)
                     )
                 self.workspace.remove_panel(key)
-                self.activity_bar.remove_panel_button(key)
                 if widget is self.primary_view:
                     self.primary_view = self.primary_dock = None
                 widget.hide()
@@ -304,14 +236,6 @@ class MainWindow(QMainWindow):
                 if self.parameters_dock is dock:
                     self.parameters_dock = None
         self._refresh_panel_menu()
-        for key, widget in tuple(self._extension_sidebar_widgets.items()):
-            if key.startswith(prefix):
-                if self.sidebar.currentWidget() is widget:
-                    self._set_extension_sidebar_visible(False)
-                self.sidebar.removeWidget(widget)
-                self.activity_bar.remove_extension_view(key)
-                widget.deleteLater()
-                del self._extension_sidebar_widgets[key]
 
     def _build_workspace(self):
         self.primary_view = self.primary_dock = None
@@ -394,10 +318,12 @@ class MainWindow(QMainWindow):
             self._flight_docks = (*self._flight_docks, dock)
         if contribution.legacy_key == "parameters":
             self.parameters_dock = dock
-        else:
-            self._register_workspace_panel_button(key, dock.windowTitle(), dock)
-        dock.visibilityChanged.connect(lambda _: self._sync_activity_buttons())
-        dock.setVisible(contribution.initial_visible)
+        self.workspace_views.track_panel(dock)
+        dock.setVisible(
+            contribution.initial_visible
+            if self.workspace_views.active is None
+            else key in self.workspace_views.active["layout"].get("visible_panels", [])
+        )
         if contribution.primary:
             self.primary_view, self.primary_dock = widget, dock
         self._extension_visual_widgets.append(widget)
@@ -413,39 +339,98 @@ class MainWindow(QMainWindow):
         self.extension_dialog.raise_()
         self.extension_dialog.activateWindow()
 
-    def _on_bottom_panel_toggled(self, panel, checked):
-        selected = self.log_dock if panel == "logs" else self.parameters_dock
-        other = self.parameters_dock if panel == "logs" else self.log_dock
-        if selected is None:
-            return
-        if checked:
-            if other is not None:
-                other.hide()
-            selected.show()
-            selected.raise_()
-        else:
-            selected.hide()
+    def _create_workspace_item(self, kind):
+        from src.ui.widgets.workspace_dialog import WorkspaceItemDialog
+        from PyQt6.QtWidgets import QMessageBox
 
-    def _open_bottom_panel_beside(self, panel):
-        selected = self.log_dock if panel == "logs" else self.parameters_dock
-        other = self.parameters_dock if panel == "logs" else self.log_dock
-        if selected is None:
+        category = kind == "category"
+        if category and not any(
+            panel.isVisible() for panel in self.workspace.panels.values()
+        ):
+            QMessageBox.information(
+                self,
+                "Category" if self.language == "en" else "Kategori",
+                "First open a panel from View → Panels."
+                if self.language == "en"
+                else "Önce Görünüm → Paneller menüsünden bir panel açın.",
+            )
             return
-        if other is None or other.isHidden():
-            self._on_bottom_panel_toggled(panel, True)
+        dialog = WorkspaceItemDialog(self.language, self, category=category)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            name, icon = dialog.values()
+            if category:
+                self._begin_panel_selection(name, icon)
+            else:
+                self.workspace_views.create(name, icon)
+        dialog.deleteLater()
+
+    def _begin_panel_selection(self, name, icon):
+        from src.ui.widgets.panel_selection import PanelSelection
+
+        self._cancel_panel_selection()
+        self.workspace.setProperty("selectingPanels", True)
+        self.activity_bar.setEnabled(False)
+        self.status_bar.setEnabled(False)
+        self.title_bar._menu_bar.setEnabled(False)
+        for controls in self.workspace._hover_controls.values():
+            controls.dismiss()
+        self._panel_selection = PanelSelection(self.workspace, self.language)
+        self._panel_selection.completed.connect(
+            lambda keys: self._complete_panel_selection(name, icon, keys)
+        )
+        self._panel_selection.cancelled.connect(self._cancel_panel_selection)
+
+    def _complete_panel_selection(self, name, icon, keys):
+        self._cancel_panel_selection()
+        self.workspace_views.add_category(name, icon, keys)
+
+    def _cancel_panel_selection(self):
+        if self._panel_selection is not None:
+            self._panel_selection.dispose()
+            self._panel_selection = None
+        self.workspace.setProperty("selectingPanels", False)
+        self.activity_bar.setEnabled(True)
+        self.status_bar.setEnabled(True)
+        self.title_bar._menu_bar.setEnabled(True)
+
+    def _edit_workspace_item(self, identifier, category):
+        from src.ui.widgets.workspace_dialog import WorkspaceItemDialog
+
+        items = (
+            self.workspace_views.active["categories"]
+            if category and self.workspace_views.active
+            else self.workspace_views.views
+        )
+        item = next((value for value in items if value["id"] == identifier), None)
+        if item is None:
             return
-        self.workspace.place_panel(other, selected, "right")
-        selected.show()
+        dialog = WorkspaceItemDialog(self.language, self, category=category, item=item)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            item["name"], item["icon"] = dialog.values()
+            self.workspace_views.changed.emit()
+            self.workspace_views.save()
+        dialog.deleteLater()
+
+    def _remove_workspace_item(self, identifier, category):
+        from PyQt6.QtWidgets import QMessageBox
+
+        if not category and len(self.workspace_views.views) <= 1:
+            return
+        if (
+            QMessageBox.question(
+                self,
+                "Delete" if self.language == "en" else "Sil",
+                "Remove this item?" if self.language == "en" else "Bu öğe silinsin mi?",
+            )
+            == QMessageBox.StandardButton.Yes
+        ):
+            self.workspace_views.remove(identifier, category=category)
 
     def _build_view_menu(self) -> None:
         menu = self.title_bar._menu_bar.actions()[3].menu()
         self._panel_menu = menu.addMenu("Paneller")
         self._refresh_panel_menu()
         menu.addSeparator()
-        self._edit_layout_action = menu.addAction("Yerleşimi düzenle")
-        self._edit_layout_action.setCheckable(True)
-        self._edit_layout_action.toggled.connect(self._set_layout_edit_mode)
-        self._edit_layout_action.setShortcut("Ctrl+Alt+L")
         self._focus_action = menu.addAction("Haritaya odaklan", self._focus_map)
         self._reset_action = menu.addAction(
             "Varsayılan yerleşimi geri yükle", self._reset_workspace
@@ -465,8 +450,35 @@ class MainWindow(QMainWindow):
 
     def _populate_panel_actions(self, menu):
         menu.clear()
-        for key, dock in self.workspace.panels.items():
-            menu.addAction(dock.toggleViewAction())
+        seen = set()
+        groups = (
+            self.workspace_views.active["categories"]
+            if self.workspace_views.active
+            else []
+        )
+        for group in groups:
+            keys = [
+                key
+                for key in group["panels"]
+                if key in self.workspace.panels and key not in seen
+            ]
+            if keys:
+                submenu = menu.addMenu(group["name"])
+                for key in keys:
+                    submenu.addAction(self.workspace.panels[key].toggleViewAction())
+                    seen.add(key)
+        remaining = [
+            (key, dock)
+            for key, dock in self.workspace.panels.items()
+            if key not in seen
+        ]
+        target = (
+            menu.addMenu("Other panels" if self.language == "en" else "Diğer paneller")
+            if groups and remaining
+            else menu
+        )
+        for key, dock in remaining:
+            target.addAction(dock.toggleViewAction())
 
     def _visual_title(self, identifier: str) -> str:
         name = identifier.split(".")[0]
@@ -479,9 +491,6 @@ class MainWindow(QMainWindow):
     def _retranslate_view_menu(self) -> None:
         english = self.language == "en"
         self._panel_menu.setTitle("Panels" if english else "Paneller")
-        self._edit_layout_action.setText(
-            "Edit Layout" if english else "Yerleşimi düzenle"
-        )
         self._focus_action.setText(
             "Focus Main View" if english else "Ana görünüme odaklan"
         )
@@ -502,11 +511,6 @@ class MainWindow(QMainWindow):
         }
         for key, dock in self.workspace.panels.items():
             dock.setWindowTitle(labels.get(key, self._visual_title(key)))
-            if key in self.activity_bar.panel_buttons:
-                self.activity_bar.set_panel_title(key, dock.windowTitle())
-
-    def _set_layout_edit_mode(self, enabled: bool) -> None:
-        self.workspace.set_edit_mode(enabled)
 
     def _set_theme_choice(self, theme_name: str) -> None:
         if self._settings.theme == theme_name:
@@ -518,16 +522,11 @@ class MainWindow(QMainWindow):
     def _focus_map(self) -> None:
         if self.primary_dock is None:
             return
-        self._set_extension_sidebar_visible(False)
         for dock in self.workspace.panels.values():
             dock.hide()
         if self.primary_dock is not None:
             self.primary_dock.show()
             self.primary_dock.raise_()
-        self.activity_bar.sidebar_button.setChecked(False)
-        self.activity_bar.extensions_button.setChecked(False)
-        for key in self.activity_bar.buttons:
-            self.activity_bar.set_bottom_panel_checked(key, False)
 
     def _reset_workspace(self):
         regions = {"left": [], "bottom": [self.log_dock], "workspace": []}
@@ -697,7 +696,30 @@ class MainWindow(QMainWindow):
         if not self.workspace.restore_layout():
             self._size_default_docks()
             self.workspace.enable_panel_size_restore(capture_current=True)
-        self._sync_activity_buttons()
+        groups = [
+            {
+                "id": "vehicle",
+                "name": "Vehicle" if self.language == "en" else "Araç",
+                "icon": "SP_ComputerIcon",
+                "panels": [self.workspace._panel_keys[d] for d in self._flight_docks],
+            },
+            {
+                "id": "logs",
+                "name": "Logs" if self.language == "en" else "Loglar",
+                "icon": "SP_FileDialogListView",
+                "panels": ["logs"],
+            },
+        ]
+        if self.parameters_dock:
+            groups.append(
+                {
+                    "id": "parameters",
+                    "name": "Parameters" if self.language == "en" else "Parametreler",
+                    "icon": "SP_FileDialogDetailedView",
+                    "panels": [self.workspace._panel_keys[self.parameters_dock]],
+                }
+            )
+        self.workspace_views.initialize(groups)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -706,17 +728,10 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._restore_workspace)
 
     def _sync_activity_buttons(self):
-        self.activity_bar.sidebar_button.setChecked(
-            any(not dock.isHidden() for dock in self._flight_docks)
-        )
-        self.activity_bar.set_bottom_panel_checked("logs", not self.log_dock.isHidden())
-        self.activity_bar.buttons["parameters"].setVisible(
-            self.parameters_dock is not None
-        )
-        self.activity_bar.set_bottom_panel_checked(
-            "parameters",
-            self.parameters_dock is not None and not self.parameters_dock.isHidden(),
-        )
+        if hasattr(self, "workspace_views"):
+            self.activity_bar.refresh(self.workspace_views)
+            self.workspace.update()
+            self._refresh_panel_menu()
 
     def _connect_signals(self):
         self.log_service.entries_emitted.connect(self.log_panel.add_entries)
@@ -724,7 +739,18 @@ class MainWindow(QMainWindow):
         self.log_service.reemit_history()
 
     def open_settings(self):
-        dialog = SettingsDialog(self._settings, self.language, self.theme, self)
+        dialog = SettingsDialog(
+            self._settings,
+            self.language,
+            self.theme,
+            self,
+            extension_host=self.extension_host,
+            current_settings=lambda: self.settings_service.current,
+        )
+        dialog.resize(
+            max(620, min(1100, int(self.width() * 0.85))),
+            max(360, min(850, int(self.height() * 0.85))),
+        )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.settings_service.save_async(dialog.to_settings())
         dialog.deleteLater()
@@ -745,6 +771,9 @@ class MainWindow(QMainWindow):
         self._retranslate_view_menu()
         self.activity_bar.set_language(self.language)
         self.extension_panel.set_language(self.language)
+        from src.ui.widgets.workspace_dialog import extension_icon
+
+        self.extensions_button.setIcon(extension_icon(self))
         self.extensions_button.setToolTip(t("activity.extensions", self.language))
         self.settings_button.setToolTip(t("status.settings", self.language))
         self.extension_dialog.setWindowTitle(t("activity.extensions", self.language))
@@ -768,6 +797,7 @@ class MainWindow(QMainWindow):
         if self._workspace_disconnected:
             return
         self._workspace_disconnected = True
+        self._cancel_panel_selection()
         for widget in (
             *self._extension_visual_widgets,
             *self._extension_status_widgets,
@@ -777,7 +807,7 @@ class MainWindow(QMainWindow):
                 shutdown()
 
     def closeEvent(self, event) -> None:
-        self.workspace.save_layout()
+        self.workspace_views.save()
         self.prepare_shutdown()
         self.shutdown_requested.emit()
         super().closeEvent(event)

@@ -18,6 +18,8 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QVBoxLayout,
     QWidget,
+    QListWidget,
+    QStackedWidget,
 )
 
 from src.ui.i18n import t
@@ -36,11 +38,16 @@ class SettingsDialog(QDialog):
         parent=None,
         *,
         sections: tuple[SectionSpec, ...] | None = None,
+        extension_host=None,
+        current_settings=None,
     ) -> None:
         super().__init__(parent)
         self._ui_language = language
         self._theme = theme
         self._settings = settings
+        self._current_settings = current_settings
+        self._extension_host = extension_host
+        self._extension_pages = {}
         self._sections = SETTINGS_SECTIONS if sections is None else sections
         self._widgets: dict[str, QWidget] = {}
         self.setObjectName("FramelessDialog")
@@ -71,7 +78,29 @@ class SettingsDialog(QDialog):
             content_layout.addWidget(self._build_section(section, settings))
         content_layout.addStretch(1)
         scroll.setWidget(content)
-        shell_layout.addWidget(scroll, 1)
+        if extension_host is None:
+            shell_layout.addWidget(scroll, 1)
+        else:
+            self.resize(980, 740)
+            row = QHBoxLayout()
+            self.categories = QListWidget(self)
+            self.categories.setMaximumWidth(220)
+            self.categories.addItem("General" if language == "en" else "Genel")
+            self.pages = QStackedWidget(self)
+            self.pages.addWidget(scroll)
+            self._extension_items = list(extension_host.list_extensions())
+            for item in self._extension_items:
+                key = f"extension.{item.manifest.identifier}.name"
+                translated = t(key, language)
+                self.categories.addItem(
+                    item.manifest.name if translated == f"[{key}]" else translated
+                )
+                self.pages.addWidget(QWidget(self.pages))
+            self.categories.currentRowChanged.connect(self._select_category)
+            self.categories.setCurrentRow(0)
+            row.addWidget(self.categories)
+            row.addWidget(self.pages, 1)
+            shell_layout.addLayout(row, 1)
 
         footer = QHBoxLayout()
         footer.addStretch(1)
@@ -167,7 +196,8 @@ class SettingsDialog(QDialog):
         raise TypeError(f"Unsupported settings widget for path: {path}")
 
     def to_settings(self) -> SettingsModel:
-        payload = self._settings.to_dict()
+        current = self._current_settings() if self._current_settings else self._settings
+        payload = current.to_dict()
         for field in (field for section in self._sections for field in section.fields):
             target = payload
             path_parts = field.path.split(".")
@@ -178,6 +208,55 @@ class SettingsDialog(QDialog):
         # battery minimum/maximum voltage must not fail against stale values
         # merely because one happens to be processed first.
         return SettingsModel.from_dict(payload)
+
+    def _select_category(self, index):
+        if index < 0:
+            return
+        if hasattr(self, "buttons"):
+            self.buttons.button(QDialogButtonBox.StandardButton.Save).setVisible(
+                index == 0
+            )
+            self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(
+                t("dialog.settings.cancel", self._ui_language)
+                if index == 0
+                else "Close"
+                if self._ui_language == "en"
+                else "Kapat"
+            )
+        if index and index not in self._extension_pages:
+            from src.ui.widgets.settings_page import ConfigSettingsPage
+
+            item = self._extension_items[index - 1]
+            contribution = self._extension_host.settings_contribution(
+                item.manifest.identifier
+            )
+            if contribution is not None and contribution.page_factory is not None:
+                widget = contribution.page_factory(self.pages)
+                if not isinstance(widget, QWidget):
+                    raise TypeError("Extension settings page must return QWidget")
+            else:
+                widget = ConfigSettingsPage(
+                    self._extension_host, item.manifest, self._ui_language, self.pages
+                )
+            container = self.pages.widget(index)
+            layout = QVBoxLayout(container)
+            scroll = QScrollArea(container)
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(widget)
+            layout.addWidget(scroll)
+            self._extension_pages[index] = widget
+        self.pages.setCurrentIndex(index)
+
+    def done(self, result):
+        if self.property("embeddedSettings"):
+            if result == QDialog.DialogCode.Accepted:
+                self.accepted.emit()
+            return
+        for page in self._extension_pages.values():
+            shutdown = getattr(page, "prepare_shutdown", None)
+            if callable(shutdown):
+                shutdown()
+        super().done(result)
 
     def _accept_if_valid(self) -> None:
         try:

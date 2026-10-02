@@ -1,6 +1,6 @@
 """Extension-owned preferences adapted to the established map widget API."""
 
-from PyQt6.QtWidgets import QDialog, QFormLayout, QComboBox, QSpinBox, QDialogButtonBox
+from PyQt6.QtWidgets import QFormLayout, QComboBox, QSpinBox, QDialogButtonBox
 from src.ui.adapters.services import QtSettingsService
 from src.ui.i18n import t
 from PyQt6.QtCore import pyqtSignal
@@ -59,7 +59,9 @@ def configure(settings, anchor, cache=None):
 
     current = MapSettings(settings, cache=cache)
     language = settings.current.ui.language
-    dialog = QDialog(anchor)
+    from src.ui.widgets.settings_page import SettingsPageDialog
+
+    dialog = SettingsPageDialog(anchor)
     dialog.setWindowTitle(t("extension.map_autonomy.name", language))
     form = QFormLayout(dialog)
     layer = QComboBox(dialog)
@@ -100,17 +102,25 @@ def configure(settings, anchor, cache=None):
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
     form.addRow(buttons)
-    try:
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            values = {key: field.value() for key, field in fields.items()}
-            values["map_layer"] = layer.currentData()
-            values["cache"] = {
-                "enabled": cache_enabled.isChecked(),
-                "limit_mb": cache_limit.value(),
-                "path": cache_path.text().strip(),
-            }
-            settings.update_extension("map_autonomy", config=values)
-    finally:
+
+    def apply():
+        values = {key: field.value() for key, field in fields.items()}
+        values["map_layer"] = layer.currentData()
+        values["cache"] = {
+            "enabled": cache_enabled.isChecked(),
+            "limit_mb": cache_limit.value(),
+            "path": cache_path.text().strip(),
+        }
+        current._start_worker(
+            lambda: settings.update_extension("map_autonomy", config=values),
+            name="MapPreferences",
+        )
+
+    def close():
         current.close()
         current.deleteLater()
-        dialog.deleteLater()
+
+    dialog.prepare_shutdown = close
+    from src.ui.widgets.settings_page import embed_dialog
+
+    return embed_dialog(dialog, commit=apply)

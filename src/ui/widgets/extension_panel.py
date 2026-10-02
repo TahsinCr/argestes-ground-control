@@ -4,11 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from PyQt6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -181,16 +178,6 @@ class ExtensionPanel(QWidget):
                 )
             )
             row.addWidget(toggle)
-            settings = QPushButton(
-                "Settings" if self.language == "en" else "Ayarlar", card
-            )
-            settings.setEnabled(item.enabled or bool(manifest.settings))
-            settings.clicked.connect(
-                lambda _checked=False, key=manifest.identifier, anchor=settings: (
-                    self._settings(key, anchor)
-                )
-            )
-            row.addWidget(settings)
             if item.enabled and self.host.can_reload(manifest.identifier):
                 reload_button = QPushButton("↻", card)
                 reload_button.setFixedWidth(30)
@@ -270,69 +257,4 @@ class ExtensionPanel(QWidget):
             {entry.manifest.category for entry in self.host.list_extensions()} - known
         ):
             self.category.addItem(self._category_name(name), name)
-        self.refresh()
-
-    def _settings(self, identifier: str, anchor: QWidget | None = None) -> None:
-        contribution = self.host.settings_action(identifier)
-        if contribution is not None:
-            contribution.action(anchor or self)
-            return
-        manifest = next(
-            item.manifest
-            for item in self.host.list_extensions()
-            if item.manifest.identifier == identifier
-        )
-        dialog = QDialog(self)
-        dialog.setWindowTitle(self._metadata(manifest, "name"))
-        layout = QVBoxLayout(dialog)
-        form = QFormLayout()
-        values = self.host.settings(identifier)
-        controls: dict[str, QWidget] = {}
-        for key, spec in manifest.settings.items():
-            if spec.get("type") == "boolean":
-                widget = QCheckBox(dialog)
-                widget.setChecked(bool(values.get(key)))
-            else:
-                widget = QLineEdit(str(values.get(key, "")), dialog)
-            controls[key] = widget
-            form.addRow(spec.get("label", key), widget)
-        if not controls:
-            layout.addWidget(
-                QLabel(
-                    "No additional settings"
-                    if self.language == "en"
-                    else "Ek ayar bulunmuyor",
-                    dialog,
-                )
-            )
-        else:
-            layout.addLayout(form)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save
-            | QDialogButtonBox.StandardButton.Cancel,
-            parent=dialog,
-        )
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-        if dialog.exec() != QDialog.DialogCode.Accepted or not controls:
-            return
-        try:
-            updated = {}
-            for key, widget in controls.items():
-                kind = manifest.settings[key].get("type")
-                updated[key] = (
-                    widget.isChecked()
-                    if kind == "boolean"
-                    else int(widget.text())
-                    if kind == "integer"
-                    else widget.text()
-                )
-            self.host.save_settings(identifier, updated)
-            if self.reload_extension is not None and self.host.is_active(identifier):
-                self.reload_extension(identifier)
-            elif self.host.is_active(identifier):
-                self.host.reload(identifier)
-        except (ExtensionError, RuntimeError, ValueError, OSError) as exc:
-            QMessageBox.warning(self, self._metadata(manifest, "name"), str(exc))
         self.refresh()

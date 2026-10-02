@@ -291,6 +291,7 @@ class JoystickDialog(QDialog):
         self.hint.setWordWrap(True)
         layout.addWidget(self.hint, 1)
         cancel = QPushButton(t("dialog.settings.cancel", self._language), self)
+        self.cancel_button = cancel
         cancel.clicked.connect(self.reject)
         layout.addWidget(cancel)
         save = QPushButton(t("dialog.settings.save", self._language), self)
@@ -420,6 +421,8 @@ class JoystickDialog(QDialog):
         )
 
     def _update_live_values(self) -> None:
+        if self.property("embeddedSettings") and not self.isVisible():
+            return
         state = self._joystick.state
         if state.connected and state.transmitting:
             self.device_status.setText(t("joystick.transmitting", self._language))
@@ -641,6 +644,10 @@ class JoystickDialog(QDialog):
         self.accept()
 
     def done(self, result):
+        if self.property("embeddedSettings"):
+            if result == QDialog.DialogCode.Accepted:
+                self.accepted.emit()
+            return
         self._live_timer.stop()
         super().done(result)
 

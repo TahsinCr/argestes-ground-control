@@ -61,7 +61,7 @@ class MapExtension:
             cache,
             dependencies={"settings": SettingsService, "runtime": AsyncRuntime},
         )
-        registrar.settings_ui(lambda anchor: self.settings(context, anchor))
+        registrar.settings_page(lambda anchor: self.settings(context, anchor))
         registrar.visual_view(
             "view",
             lambda parent, theme, language: self.create(
@@ -158,7 +158,7 @@ class MapExtension:
     def settings(context, anchor):
         from .ui.settings import configure
 
-        configure(
+        return configure(
             context.services.resolve(SettingsService),
             anchor,
             cache=context.services.resolve(TileCacheServer),

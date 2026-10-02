@@ -16,7 +16,6 @@ from src.extension.api import (
     ExtensionContext,
     ExtensionManifest,
     ExtensionRegistrar,
-    SidebarContribution,
     VisualContribution,
     StatusContribution,
     SettingsContribution,
@@ -89,10 +88,9 @@ class ExtensionHost:
         self._lifecycle_started = False
         self._active_ids: set[str] = set()
         self._dirty_settings: set[str] = set()
-        self._sidebar_views: list[SidebarContribution] = []
         self._visual_views: list[VisualContribution] = []
         self._status_widgets: list[StatusContribution] = []
-        self._settings_actions: dict[str, SettingsContribution] = {}
+        self._settings_contributions: dict[str, SettingsContribution] = {}
         self._validate(self._enabled_ids())
         self._save_states(
             {
@@ -219,17 +217,14 @@ class ExtensionHost:
             self._stored = updated
         self._manifests = found
 
-    def sidebar_views(self) -> tuple[SidebarContribution, ...]:
-        return tuple(self._sidebar_views)
-
     def visual_views(self) -> tuple[VisualContribution, ...]:
         return tuple(self._visual_views)
 
     def status_widgets(self) -> tuple[StatusContribution, ...]:
         return tuple(self._status_widgets)
 
-    def settings_action(self, identifier: str) -> SettingsContribution | None:
-        return self._settings_actions.get(identifier)
+    def settings_contribution(self, identifier: str) -> SettingsContribution | None:
+        return self._settings_contributions.get(identifier)
 
     def is_active(self, identifier: str) -> bool:
         """Report what was actually loaded at startup, not a pending toggle."""
@@ -354,11 +349,6 @@ class ExtensionHost:
                 self.container.unregister(token)
             raise
         self._owned_tokens[identifier] = tuple(registered)
-        for view in registrar.sidebar_views:
-            key = f"{identifier}.{view.identifier}"
-            self._sidebar_views.append(
-                SidebarContribution(key, view.title, view.factory)
-            )
         for view in registrar.visual_views:
             self._visual_views.append(
                 VisualContribution(
@@ -381,8 +371,8 @@ class ExtensionHost:
                     widget.placement,
                 )
             )
-        if registrar.settings_action is not None:
-            self._settings_actions[identifier] = registrar.settings_action
+        if registrar.settings_contribution is not None:
+            self._settings_contributions[identifier] = registrar.settings_contribution
         self._running.append((identifier, plugin, context))
         self._active_ids.add(identifier)
         if self._lifecycle_started:
@@ -398,11 +388,6 @@ class ExtensionHost:
         for token in reversed(self._owned_tokens.pop(identifier, ())):
             self.container.unregister(token)
         prefix = identifier + "."
-        self._sidebar_views = [
-            view
-            for view in self._sidebar_views
-            if not view.identifier.startswith(prefix)
-        ]
         self._visual_views = [
             view
             for view in self._visual_views
@@ -413,7 +398,7 @@ class ExtensionHost:
             for widget in self._status_widgets
             if not widget.identifier.startswith(prefix)
         ]
-        self._settings_actions.pop(identifier, None)
+        self._settings_contributions.pop(identifier, None)
         self._running.remove(entry)
         self._active_ids.remove(identifier)
 

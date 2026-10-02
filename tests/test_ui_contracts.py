@@ -12,7 +12,7 @@ os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --no-sandbox")
 
 from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
-from PyQt6.QtGui import QContextMenuEvent, QMouseEvent, QPalette
+from PyQt6.QtGui import QMouseEvent, QPalette
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
     QApplication,
@@ -20,7 +20,8 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QLineEdit,
-    QMenu,
+    QLabel,
+    QPushButton,
     QSpinBox,
     QWidget,
 )
@@ -67,11 +68,22 @@ class UiContractTests(unittest.TestCase):
                 window._size_default_docks()
                 self.app.processEvents()
                 panels = window.workspace.panels
-                widths = [panels[key].width() for key in ("flight_dynamics.view", "telemetry_display.view", "quick_commands.view")]
+                widths = [
+                    panels[key].width()
+                    for key in (
+                        "flight_dynamics.view",
+                        "telemetry_display.view",
+                        "quick_commands.view",
+                    )
+                ]
                 self.assertTrue(all(300 <= width <= 340 for width in widths), widths)
                 self.assertLessEqual(max(widths) - min(widths), 1)
-                self.assertGreater(window.primary_dock.height(), panels["logs"].height())
-                self.assertAlmostEqual(window.primary_dock.width(), panels["logs"].width(), delta=2)
+                self.assertGreater(
+                    window.primary_dock.height(), panels["logs"].height()
+                )
+                self.assertAlmostEqual(
+                    window.primary_dock.width(), panels["logs"].width(), delta=2
+                )
             finally:
                 window.close()
                 window.deleteLater()
@@ -83,6 +95,7 @@ class UiContractTests(unittest.TestCase):
         from extensions.joystick.models import JoystickSettings, JoystickState
         from extensions.joystick.ui.dialog import JoystickDialog
         from types import SimpleNamespace
+
         with tempfile.TemporaryDirectory() as directory:
             backend = create_container(Path(directory))
             ui = UiContainer(backend.container, base_dir=Path(directory), theme=DARK)
@@ -101,14 +114,24 @@ class UiContractTests(unittest.TestCase):
                 self.app.processEvents()
                 self.assertIsNotNone(window.primary_dock)
                 self.assertIn("map_autonomy.view", window.workspace.panels)
-                fake = SimpleNamespace(devices=lambda: (), state=JoystickState(),
-                                       reconnect=lambda: None, disconnect=lambda: None)
+                fake = SimpleNamespace(
+                    devices=lambda: (),
+                    state=JoystickState(),
+                    reconnect=lambda: None,
+                    disconnect=lambda: None,
+                )
                 from src.services.settings import SettingsService
+
                 settings = backend.resolve(SettingsService)
                 dialog = JoystickDialog(settings, fake, "tr", DARK, window)
-                config = JoystickSettings.from_config({"channels": [{"channel": 1, "control": "axis:0"}]})
+                config = JoystickSettings.from_config(
+                    {"channels": [{"channel": 1, "control": "axis:0"}]}
+                )
                 dialog._persist(config)
-                self.assertEqual(settings.extension_config("joystick")["channels"][0]["control"], "axis:0")
+                self.assertEqual(
+                    settings.extension_config("joystick")["channels"][0]["control"],
+                    "axis:0",
+                )
                 dialog.close()
                 dialog.deleteLater()
                 window.close()
@@ -146,15 +169,124 @@ class UiContractTests(unittest.TestCase):
             "text": QLineEdit,
         }
         for field in fields:
-            self.assertIsInstance(dialog._widgets[field.path], expected_widget_types[field.kind])
+            self.assertIsInstance(
+                dialog._widgets[field.path], expected_widget_types[field.kind]
+            )
         dialog._widgets["ui.theme"].setCurrentIndex(1)
         self.assertEqual(dialog.to_settings().ui.theme, "light")
         dialog.close()
         dialog.deleteLater()
         self.app.processEvents()
 
-    def test_mavlink_extension_settings_preserve_common_and_profile_values(self) -> None:
+    def test_extension_settings_pages_are_lazy_embedded_and_single_entry(self):
+        from PyQt6.QtWidgets import QDialogButtonBox
+
+        with tempfile.TemporaryDirectory() as directory:
+            backend = create_container(Path(directory))
+            ui = UiContainer(backend.container, base_dir=Path(directory), theme=DARK)
+            window = ui.resolve(MainWindow)
+            dialog = SettingsDialog(
+                window._settings,
+                "tr",
+                DARK,
+                window,
+                extension_host=window.extension_host,
+                current_settings=lambda: window.settings_service.current,
+            )
+            try:
+                self.assertFalse(dialog._extension_pages)
+                ids = [item.manifest.identifier for item in dialog._extension_items]
+                for index, identifier in enumerate(ids, 1):
+                    dialog.categories.setCurrentRow(index)
+                    self.app.processEvents()
+                    page = dialog._extension_pages[index]
+                    self.assertFalse(page.isWindow(), identifier)
+                    self.assertIs(page.window(), dialog, identifier)
+                    self.assertTrue(
+                        dialog.buttons.button(
+                            QDialogButtonBox.StandardButton.Save
+                        ).isHidden()
+                    )
+                    self.assertEqual(
+                        dialog.buttons.button(
+                            QDialogButtonBox.StandardButton.Cancel
+                        ).text(),
+                        "Kapat",
+                    )
+                dialog.categories.setCurrentRow(0)
+                self.assertFalse(
+                    dialog.buttons.button(
+                        QDialogButtonBox.StandardButton.Save
+                    ).isHidden()
+                )
+                self.assertIn("mavlink", ids)
+                protocol_page = dialog._extension_pages[ids.index("mavlink") + 1]
+                self.assertIn("backend.mavlink.dialect", protocol_page._widgets)
+                labels = [
+                    button.text()
+                    for button in window.extension_panel.findChildren(QPushButton)
+                ]
+                self.assertNotIn("Ayarlar", labels)
+                self.assertNotIn("Settings", labels)
+                self.assertFalse(window.extensions_button.icon().isNull())
+                window.settings_service.backend.update_extension(
+                    "telemetry_display", config={"fields": ["roll"]}
+                )
+                self.assertEqual(
+                    dialog.to_settings().extensions["telemetry_display"]["config"][
+                        "fields"
+                    ],
+                    ["roll"],
+                )
+            finally:
+                dialog.reject()
+                dialog.deleteLater()
+                window.close()
+                ui.shutdown()
+                backend.shutdown()
+
+    def test_category_selection_does_not_change_panel_geometry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            backend = create_container(Path(directory))
+            ui = UiContainer(backend.container, base_dir=Path(directory), theme=DARK)
+            window = ui.resolve(MainWindow)
+            window.show()
+            self.app.processEvents()
+            before = {
+                key: dock.geometry() for key, dock in window.workspace.panels.items()
+            }
+            window._begin_panel_selection("Tools", "SP_ComputerIcon")
+            self.app.processEvents()
+            selection = window._panel_selection
+            key = next(
+                key for key, dock in window.workspace.panels.items() if dock.isVisible()
+            )
+            surface = next(
+                surface
+                for surface in selection.surfaces
+                if surface.parentWidget() is window.workspace.panels[key]
+            )
+            surface.click()
+            selection.add.click()
+            QTest.qWait(40)
+            self.assertIsNone(window._panel_selection)
+            self.assertEqual(
+                window.workspace_views.active["categories"][-1]["panels"], [key]
+            )
+            self.assertEqual(
+                {key: dock.geometry() for key, dock in window.workspace.panels.items()},
+                before,
+            )
+            self.assertTrue(window.activity_bar.isEnabled())
+            window.close()
+            ui.shutdown()
+            backend.shutdown()
+
+    def test_mavlink_extension_settings_preserve_common_and_profile_values(
+        self,
+    ) -> None:
         from extensions.mavlink.ui.settings_dialog import MavlinkSettingsDialog
+
         original = SettingsModel()
         dialog = MavlinkSettingsDialog(original, "tr", DARK)
         self.assertIn("backend.mavlink.endpoint", dialog._widgets)
@@ -163,8 +295,15 @@ class UiContractTests(unittest.TestCase):
         result = dialog.to_settings()
         self.assertEqual(result.backend.mavlink.endpoint, "udpin:0.0.0.0:14600")
         self.assertEqual(result.ui, original.ui)
-        self.assertEqual(result.backend.active_mavlink_connection_id, original.backend.active_mavlink_connection_id)
-        active = next(item for item in result.backend.mavlink_connections if item.identifier == result.backend.active_mavlink_connection_id)
+        self.assertEqual(
+            result.backend.active_mavlink_connection_id,
+            original.backend.active_mavlink_connection_id,
+        )
+        active = next(
+            item
+            for item in result.backend.mavlink_connections
+            if item.identifier == result.backend.active_mavlink_connection_id
+        )
         self.assertEqual(active.endpoint, "udpin:0.0.0.0:14600")
         dialog.close()
         dialog.deleteLater()
@@ -174,11 +313,18 @@ class UiContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             backend = create_container(Path(directory))
             try:
-                ui = UiContainer(backend.container, base_dir=Path(directory), theme=DARK)
+                ui = UiContainer(
+                    backend.container, base_dir=Path(directory), theme=DARK
+                )
                 window = ui.resolve(MainWindow)
-                connection = window._extension_status_by_id["vehicle_connection.connection"].indicator
-                indicators = (connection, window._extension_status_by_id["mavlink.gps"],
-                              window._extension_status_by_id["mavlink.autopilot"])
+                connection = window._extension_status_by_id[
+                    "vehicle_connection.connection"
+                ].indicator
+                indicators = (
+                    connection,
+                    window._extension_status_by_id["mavlink.gps"],
+                    window._extension_status_by_id["mavlink.autopilot"],
+                )
                 for indicator in indicators:
                     self.assertEqual(indicator.receivers(indicator.clicked), 0)
                     indicator.clicked.emit()
@@ -200,12 +346,24 @@ class UiContractTests(unittest.TestCase):
                 backend.shutdown()
             backend = create_container(Path(directory))
             try:
-                ui = UiContainer(backend.container, base_dir=Path(directory), theme=DARK)
+                ui = UiContainer(
+                    backend.container, base_dir=Path(directory), theme=DARK
+                )
                 window = ui.resolve(MainWindow)
                 footer = window.status_bar.layout()
-                self.assertFalse(any(key.startswith("vehicle_connection.") for key in window._extension_status_by_id))
-                self.assertGreaterEqual(footer.indexOf(window._extension_status_by_id["mavlink.autopilot"]), 0)
-                self.assertGreaterEqual(footer.indexOf(window._extension_status_by_id["mavlink.gps"]), 0)
+                self.assertFalse(
+                    any(
+                        key.startswith("vehicle_connection.")
+                        for key in window._extension_status_by_id
+                    )
+                )
+                self.assertGreaterEqual(
+                    footer.indexOf(window._extension_status_by_id["mavlink.autopilot"]),
+                    0,
+                )
+                self.assertGreaterEqual(
+                    footer.indexOf(window._extension_status_by_id["mavlink.gps"]), 0
+                )
                 window.close()
                 ui.shutdown()
                 window.deleteLater()
@@ -217,50 +375,53 @@ class UiContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             backend = create_container(Path(directory))
             try:
-                ui = UiContainer(backend.container, base_dir=Path(directory), theme=DARK)
+                ui = UiContainer(
+                    backend.container, base_dir=Path(directory), theme=DARK
+                )
                 window = ui.resolve(MainWindow)
                 window.show()
                 self.app.processEvents()
                 self.assertIn("map_autonomy.view", window.workspace.panels)
-                self.assertIs(window.workspace.panels["map_autonomy.view"], window.primary_dock)
-                self.assertIn("map_autonomy.view", window.activity_bar.panel_buttons)
+                self.assertIs(
+                    window.workspace.panels["map_autonomy.view"], window.primary_dock
+                )
+                self.assertTrue(window.activity_bar.view_buttons)
                 self.assertNotIn("extensions", window.workspace.panels)
-                self.assertIs(window.sidebar.parentWidget(), window.content_splitter)
-                self.assertIs(window.workspace.parentWidget(), window.content_splitter)
-                self.assertTrue(window.sidebar.isHidden())
                 self.assertIsNotNone(window.log_dock.titleBarWidget())
                 window._focus_map()
-                self.assertTrue(all(
-                    dock.isHidden()
-                    for key, dock in window.workspace.panels.items()
-                    if key != "map_autonomy.view"
-                ))
+                self.assertTrue(
+                    all(
+                        dock.isHidden()
+                        for key, dock in window.workspace.panels.items()
+                        if key != "map_autonomy.view"
+                    )
+                )
                 self.assertFalse(window.primary_dock.isHidden())
                 window._reset_workspace()
                 self.assertFalse(window.primary_dock.isHidden())
                 self.assertFalse(window.log_dock.isHidden())
                 self.assertFalse(window._flight_docks[0].isHidden())
                 self.assertTrue(window.parameters_dock.isHidden())
-                window._edit_layout_action.trigger()
-                self.assertTrue(window.workspace.edit_mode)
-                self.assertIsNone(window.log_dock.titleBarWidget())
+                self.assertFalse(
+                    any(
+                        action.text() in {"Yerleşimi düzenle", "Edit Layout"}
+                        for action in window.title_bar._menu_bar.actions()[3]
+                        .menu()
+                        .actions()
+                    )
+                )
+                original = window.workspace_views.active_id
+                identifier = window.workspace_views.create("Test", "SP_DesktopIcon")
+                self.assertTrue(
+                    all(dock.isHidden() for dock in window.workspace.panels.values())
+                )
+                self.assertEqual(window.workspace_views.active_id, identifier)
+                window.workspace_views.switch(original)
+                self.assertFalse(window.primary_dock.isHidden())
                 window.open_extensions()
                 self.app.processEvents()
                 self.assertTrue(window.extension_dialog.isVisible())
-                self.assertTrue(window.sidebar.isHidden())
                 window.extension_dialog.hide()
-                window._set_extension_sidebar_visible(True)
-                window.content_splitter.setSizes([380, 700])
-                self.app.processEvents()
-                before = window.content_splitter.sizes()[0]
-                window._set_extension_sidebar_visible(False)
-                window._set_extension_sidebar_visible(True)
-                self.app.processEvents()
-                self.assertAlmostEqual(
-                    window.content_splitter.sizes()[0], before, delta=2
-                )
-                window._edit_layout_action.trigger()
-                self.assertFalse(window.workspace.edit_mode)
                 window.close()
                 ui.shutdown()
                 window.deleteLater()
@@ -277,12 +438,23 @@ class UiContractTests(unittest.TestCase):
             [action.text() for action in title_bar._menu_bar.actions()],
             ["File", "Edit", "Selection", "View", "Go", "Run", "Terminal", "Help"],
         )
-        self.assertTrue(all(not action.menu().actions() for action in title_bar._menu_bar.actions()))
+        self.assertTrue(
+            all(not action.menu().actions() for action in title_bar._menu_bar.actions())
+        )
 
         title_bar.set_menu_language("tr")
         self.assertEqual(
             [action.text() for action in title_bar._menu_bar.actions()],
-            ["Dosya", "Düzen", "Seçim", "Görünüm", "Git", "Çalıştır", "Terminal", "Yardım"],
+            [
+                "Dosya",
+                "Düzen",
+                "Seçim",
+                "Görünüm",
+                "Git",
+                "Çalıştır",
+                "Terminal",
+                "Yardım",
+            ],
         )
         title_bar.close()
         window.close()
@@ -290,77 +462,55 @@ class UiContractTests(unittest.TestCase):
         window.deleteLater()
         self.app.processEvents()
 
-    def test_activity_bar_controls_sidebar_and_bottom_panels(self) -> None:
-        bar = ActivityBar("tr")
-        views: list[str] = []
-        bar.sidebar_view_requested.connect(views.append)
-        sidebar_visibility: list[bool] = []
-        panel_visibility: list[tuple[str, bool]] = []
-        side_by_side: list[str] = []
-        workspace_visibility: list[tuple[str, bool]] = []
-        bar.flight_sidebar_toggled.connect(sidebar_visibility.append)
-        bar.bottom_panel_toggled.connect(
-            lambda panel, visible: panel_visibility.append((panel, visible))
-        )
-        bar.bottom_panel_side_by_side_requested.connect(side_by_side.append)
-        bar.panel_visibility_requested.connect(
-            lambda key, visible: workspace_visibility.append((key, visible))
-        )
-        map_button = bar.add_panel_button("map", "Harita")
-        camera_button = bar.add_panel_button("camera.wall", "Kamera")
-        bar.resize(48, 400)
-        bar.show()
-        self.app.processEvents()
+    def test_activity_bar_separates_views_and_dynamic_categories(self):
+        from src.ui.widgets.panel_workspace import PanelWorkspace
+        from src.ui.workspace_views import WorkspaceViews
 
-        bar.extensions_button.click()
-        self.assertEqual(views[-1], "extensions")
-        self.assertFalse(bar.sidebar_button.isChecked())
-        bar.sidebar_button.click()
-        self.assertEqual(views[-1], "flight")
-        self.assertFalse(bar.extensions_button.isChecked())
-        bar.add_extension_view("example.dashboard", "Dashboard")
-        bar.extension_view_buttons["example.dashboard"].click()
-        self.assertEqual(views[-1], "example.dashboard")
-        self.assertFalse(bar.sidebar_button.isChecked())
-        bar.sidebar_button.click()
-        sidebar_visibility.clear()
-
-        self.assertEqual(bar.width(), 48)
-        self.assertEqual(tuple(bar.buttons), ("logs", "parameters"))
-        self.assertEqual(tuple(bar.panel_buttons), ("map", "camera.wall"))
-        map_button.click()
-        camera_button.click()
-        self.assertEqual(workspace_visibility, [("map", True), ("camera.wall", True)])
-        bar.remove_panel_button("camera.wall")
-        self.assertNotIn("camera.wall", bar.panel_buttons)
-        self.assertEqual(bar.sidebar_button.toolTip(), "Uçuş paneli")
-        self.assertTrue(bar.sidebar_button.isChecked())
-        self.assertTrue(bar.buttons["logs"].isChecked())
-        self.assertFalse(bar.buttons["parameters"].isChecked())
-        bar.sidebar_button.click()
-        self.assertEqual(sidebar_visibility, [False])
-        bar.buttons["parameters"].click()
-        self.assertEqual(panel_visibility, [("parameters", True)])
-        self.assertFalse(bar.buttons["logs"].isChecked())
-        bar.buttons["parameters"].click()
-        self.assertEqual(panel_visibility[-1], ("parameters", False))
-        with patch.object(
-            QMenu,
-            "exec",
-            new=lambda menu, _position: menu.actions()[0],
-        ):
-            context_event = QContextMenuEvent(
-                QContextMenuEvent.Reason.Mouse, QPoint(1, 1), QPoint(1, 1)
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = PanelWorkspace(Path(directory) / "layout.json")
+            dock = workspace.add_panel(
+                "logs", "Logs", QLabel("Logs"), Qt.DockWidgetArea.BottomDockWidgetArea
             )
-            bar.buttons["parameters"].contextMenuEvent(context_event)
-        self.assertEqual(side_by_side, ["parameters"])
-        self.assertTrue(bar.buttons["parameters"].isChecked())
-
-        bar.set_language("en")
-        self.assertEqual(bar.buttons["parameters"].toolTip(), "Parameters")
-        bar.close()
-        bar.deleteLater()
-        self.app.processEvents()
+            workspace.show()
+            self.app.processEvents()
+            controller = WorkspaceViews(workspace)
+            controller.initialize(
+                [
+                    {
+                        "id": "logs",
+                        "name": "Loglar",
+                        "icon": "SP_FileDialogListView",
+                        "panels": ["logs"],
+                    }
+                ]
+            )
+            bar = ActivityBar("tr")
+            bar.view_requested.connect(controller.switch)
+            bar.category_requested.connect(controller.toggle_category)
+            controller.changed.connect(lambda: bar.refresh(controller))
+            bar.refresh(controller)
+            bar.resize(48, 480)
+            bar.show()
+            self.app.processEvents()
+            self.assertEqual(bar.width(), 48)
+            self.assertEqual(len(bar.view_buttons), 1)
+            bar.view_buttons[controller.active_id].click()
+            self.assertTrue(bar.view_buttons[controller.active_id].isChecked())
+            self.assertEqual(list(bar.category_buttons), ["logs"])
+            bar.category_buttons["logs"].click()
+            self.assertTrue(dock.isHidden())
+            bar.category_buttons["logs"].click()
+            self.assertFalse(dock.isHidden())
+            initial = controller.active_id
+            controller.create("Boş", "SP_DesktopIcon")
+            self.assertEqual(len(bar.view_buttons), 2)
+            self.assertFalse(bar.category_buttons)
+            bar.view_buttons[initial].click()
+            self.assertEqual(list(bar.category_buttons), ["logs"])
+            self.assertFalse(dock.isHidden())
+            bar.close()
+            workspace.close()
+            bar.deleteLater()
 
     def test_settings_dialog_validates_battery_voltage_fields_as_one_profile(self):
         dialog = BatterySettingsPopup(DARK, language="tr")
@@ -369,14 +519,14 @@ class UiContractTests(unittest.TestCase):
         dialog.minimum_voltage.setValue(13.0)
         dialog.minimum_percent.setValue(12.0)
         payload = SettingsModel().to_dict()
-        for key,value in dialog.values().items():
+        for key, value in dialog.values().items():
             if key in payload["backend"]["battery_telemetry"]:
-                payload["backend"]["battery_telemetry"][key]=value
-        updated=SettingsModel.from_dict(payload).backend.battery_telemetry
-        self.assertEqual(updated.full_voltage,14.0)
-        self.assertEqual(updated.reserve_voltage,13.0)
-        self.assertEqual(updated.reserve_percent,12.0)
-        payload["backend"]["battery_telemetry"]["full_voltage"]=12.0
+                payload["backend"]["battery_telemetry"][key] = value
+        updated = SettingsModel.from_dict(payload).backend.battery_telemetry
+        self.assertEqual(updated.full_voltage, 14.0)
+        self.assertEqual(updated.reserve_voltage, 13.0)
+        self.assertEqual(updated.reserve_percent, 12.0)
+        payload["backend"]["battery_telemetry"]["full_voltage"] = 12.0
         with self.assertRaises(ValueError):
             SettingsModel.from_dict(payload)
         dialog.close()
@@ -527,8 +677,7 @@ class UiContractTests(unittest.TestCase):
         panel.level_filter.setCurrentIndex(panel.level_filter.findData("info"))
         self.assertEqual(panel.table.rowCount(), 4)
         visible_levels = {
-            panel.table.item(row, 1).text()
-            for row in range(panel.table.rowCount())
+            panel.table.item(row, 1).text() for row in range(panel.table.rowCount())
         }
         self.assertNotIn("Debug", visible_levels)
         self.assertEqual(
@@ -621,9 +770,7 @@ class UiContractTests(unittest.TestCase):
 
         panel._rebuild_table = count_rebuild
         panel.set_parameters([first, second])
-        panel.set_parameters(
-            [Parameter("FIRST", 3.0, "-", "vehicle", ""), second]
-        )
+        panel.set_parameters([Parameter("FIRST", 3.0, "-", "vehicle", ""), second])
 
         self.assertEqual(rebuilds, 0)
         self.assertEqual(panel.table.rowCount(), 2)
@@ -809,6 +956,7 @@ class UiContractTests(unittest.TestCase):
             },
             expected,
         )
+
     def test_flight_dynamics_smooths_samples_and_holds_short_gaps(self) -> None:
         indicator = AttitudeIndicator(DARK)
         first = TelemetrySnapshot.zero().copy(
@@ -837,10 +985,12 @@ class UiContractTests(unittest.TestCase):
         )
         indicator._animation_step(0.07)
         self.assertLess(
-            abs(AttitudeIndicator._shortest_angle_delta(
-                indicator._display_values["heading"],
-                1.0,
-            )),
+            abs(
+                AttitudeIndicator._shortest_angle_delta(
+                    indicator._display_values["heading"],
+                    1.0,
+                )
+            ),
             2.0,
         )
         self.assertGreater(indicator._display_values["pitch"], 0.0)
@@ -930,7 +1080,9 @@ class UiContractTests(unittest.TestCase):
         indicator.deleteLater()
         self.app.processEvents()
 
-    def test_flight_dynamics_prioritizes_latest_sample_over_long_smoothing(self) -> None:
+    def test_flight_dynamics_prioritizes_latest_sample_over_long_smoothing(
+        self,
+    ) -> None:
         indicator = AttitudeIndicator(DARK)
         indicator._display_values["pitch"] = 0.0
         indicator._target_values["pitch"] = 12.0
@@ -1037,7 +1189,9 @@ class UiContractTests(unittest.TestCase):
         indicator.deleteLater()
         self.app.processEvents()
 
-    def test_telemetry_panel_uses_consistent_flight_readouts_without_speed(self) -> None:
+    def test_telemetry_panel_uses_consistent_flight_readouts_without_speed(
+        self,
+    ) -> None:
         panel = TelemetryPanel("", "", DARK)
         panel.update_snapshot(
             TelemetrySnapshot.zero().copy(
@@ -1109,6 +1263,7 @@ class UiContractTests(unittest.TestCase):
         panel.close()
         panel.deleteLater()
         self.app.processEvents()
+
 
 if __name__ == "__main__":
     unittest.main()

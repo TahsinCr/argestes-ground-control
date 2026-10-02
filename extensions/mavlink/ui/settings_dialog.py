@@ -30,7 +30,8 @@ class MavlinkSettingsDialog(SettingsDialog):
         combo.setCurrentIndex(combo.findData(current))
 
     def to_settings(self):
-        payload = self._settings.to_dict()
+        current = self._current_settings() if self._current_settings else self._settings
+        payload = current.to_dict()
         for section in self._sections:
             for field in section.fields:
                 target = payload

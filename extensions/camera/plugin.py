@@ -36,21 +36,12 @@ class CameraExtension:
                 parent, theme, language
             ),
         )
-        registrar.settings_ui(self._open_settings)
+        registrar.settings_page(self._settings_page)
 
-    def _open_settings(self, anchor) -> None:
-        from PyQt6.QtWidgets import QMenu
+    def _settings_page(self, parent):
+        from .ui.settings import CameraSettingsPage
 
-        if self._workspace is None:
-            return
-        menu = QMenu(anchor)
-        sources = menu.addAction("Kamera bağlantıları")
-        outputs = menu.addAction("Yayın ve kayıt çıkışları")
-        chosen = menu.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))
-        if chosen is sources:
-            self._workspace.show_sources_popup(anchor)
-        elif chosen is outputs:
-            self._workspace.show_outputs_popup(anchor)
+        return CameraSettingsPage(self._workspace, parent)
 
     def _create_workspace(self, context: ExtensionContext, parent, theme, language):
         from .ui.workspace import CameraWorkspace

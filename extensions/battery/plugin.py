@@ -29,7 +29,7 @@ class BatteryExtension:
             ),
             placement="metrics",
         )
-        registrar.settings_ui(lambda anchor: self.open_settings(context, anchor))
+        registrar.settings_page(lambda parent: self._settings_page(context, parent))
 
     def start(self, context):
         from src.extension.api.telemetry import TelemetryPipeline
@@ -92,12 +92,11 @@ class BatteryExtension:
 
         feed.telemetry_updated.connect(update)
         update(feed.current)
-        meter.clicked.connect(lambda: BatteryExtension.open_settings(context, meter))
         meter.prepare_shutdown = lambda: (meter.set_alarm(False), feed.close())
         return meter
 
     @staticmethod
-    def open_settings(context, anchor):
+    def _settings_page(context, anchor):
         from .ui.settings_popup import BatterySettingsPopup
         from src.services.settings import SettingsService
         from src.services.abstracts.telemetry import TelemetryService
@@ -123,8 +122,10 @@ class BatteryExtension:
             dialog.set_result(True, "Ayarlar kaydedildi")
 
         dialog.save_requested.connect(save)
-        dialog.exec()
-        dialog.deleteLater()
+        from src.ui.widgets.settings_page import embed_dialog
+
+        dialog.all_settings_button.hide()
+        return embed_dialog(dialog)
 
 
 def create_extension():
