@@ -3,6 +3,28 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Workspace navigation polish
+
+* Unified workspace icons with a small, theme-aware outline catalog. Saved Qt
+  icon identifiers still work, but render in the same monochrome style rather
+  than inheriting mismatched platform colors. Raster output is initialized
+  transparently and handles high-DPI scaling.
+* Simplified the activity bar: views retain a quiet active accent, categories
+  use small open/partial markers instead of competing outlined boxes, and the
+  add action has a properly sized icon. Tooltips identify views and report how
+  many category panels are open. The active view stays reachable when the list
+  scrolls; panel content and saved layout geometry are unchanged.
+* Reused existing buttons, icons and layout slots during state refreshes instead
+  of reinserting unchanged widgets. Temporary context menus are released after
+  use. The shared name/icon picker now starts with readable workspace glyphs
+  while retaining the complete Qt standard-icon catalog.
+* Added monochrome/theme-switch and repeated-refresh regression tests. The
+  combined suite passes 581 tests; dark/light Qt screenshots were reviewed.
+* Restricted the frameless resize filter to the events it actually handles.
+  It no longer calls `QWidget.window()` on style/child notifications during
+  widget construction, avoiding unsafe native access and unnecessary global
+  event-filter work.
+
 ### Saved views and unified settings
 
 * Replaced the activity bar's per-panel shortcuts with saved views above and

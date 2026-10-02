@@ -140,6 +140,20 @@ class WindowControlButton(QPushButton):
 
 
 class FramelessResizeController(QObject):
+    _RESIZE_EVENTS = frozenset(
+        {
+            QEvent.Type.MouseMove,
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.MouseButtonRelease,
+            QEvent.Type.Leave,
+            QEvent.Type.WindowDeactivate,
+            QEvent.Type.Hide,
+            QEvent.Type.Resize,
+            QEvent.Type.Show,
+            QEvent.Type.WindowStateChange,
+        }
+    )
+
     def __init__(self, window: QWidget, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._window = window
@@ -166,6 +180,10 @@ class FramelessResizeController(QObject):
         self._layout_edge_handles()
 
     def eventFilter(self, obj, event) -> bool:
+        # Global filters see style/child notifications while QWidget is still
+        # being constructed. Its native window() is not safe to query there.
+        if event.type() not in self._RESIZE_EVENTS:
+            return False
         if self._resizing and (
             (
                 obj is self._window

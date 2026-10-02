@@ -236,6 +236,74 @@ class WorkspaceViewTests(unittest.TestCase):
         self.assertEqual(dialog.values()[0], "Mission")
         dialog.deleteLater()
 
+    def test_workspace_icons_are_monochrome_and_follow_theme(self):
+        from PyQt6.QtGui import QPalette
+        from src.ui.widgets.workspace_icons import ICON_NAMES, workspace_icon
+        from src.ui.themes.manager import apply_theme
+
+        for theme in ("dark", "light"):
+            apply_theme(self.app, theme)
+            for name in (*ICON_NAMES, "SP_DesktopIcon", "SP_MessageBoxWarning"):
+                icon = workspace_icon(name)
+                pixmap = icon.pixmap(24, 24)
+                self.assertFalse(pixmap.isNull(), name)
+                image = pixmap.toImage()
+                colors = [
+                    image.pixelColor(x, y)
+                    for x in range(image.width())
+                    for y in range(image.height())
+                    if image.pixelColor(x, y).alpha() > 150
+                ]
+                self.assertTrue(colors, (theme, name))
+                expected = self.app.palette().color(QPalette.ColorRole.ButtonText)
+                for color in colors:
+                    self.assertLessEqual(
+                        max(
+                            abs(color.red() - expected.red()),
+                            abs(color.green() - expected.green()),
+                            abs(color.blue() - expected.blue()),
+                        ),
+                        2,
+                        (theme, name),
+                    )
+        apply_theme(self.app, "dark")
+
+    def test_activity_refresh_reuses_buttons_and_layout_order(self):
+        from src.ui.widgets.activity_bar import ActivityBar
+        from src.ui.themes.manager import apply_theme
+
+        bar = ActivityBar("en")
+        bar.refresh(self.controller)
+        button = bar.view_buttons[self.controller.active_id]
+        for _ in range(10):
+            bar.refresh(self.controller)
+        self.assertIs(bar.view_buttons[self.controller.active_id], button)
+        self.assertEqual(bar._top_layout.count(), 1)
+        self.assertEqual(bar._top_layout.indexOf(button), 0)
+        self.assertIsNone(bar.add_button.text() or None)
+        previous = button.icon().cacheKey()
+        apply_theme(self.app, "light")
+        self.app.processEvents()
+        self.assertNotEqual(button.icon().cacheKey(), previous)
+        self.assertIs(bar.view_buttons[self.controller.active_id], button)
+        apply_theme(self.app, "dark")
+        bar.deleteLater()
+
+    def test_active_view_remains_reachable_in_a_long_navigation_list(self):
+        from src.ui.widgets.activity_bar import ActivityBar
+
+        bar = ActivityBar("en")
+        bar.resize(48, 500)
+        bar.show()
+        for index in range(10):
+            self.controller.create(f"View {index}", "layout")
+        bar.refresh(self.controller)
+        QTest.qWait(30)
+        self.assertGreater(bar._top.verticalScrollBar().value(), 0)
+        self.assertTrue(bar.view_buttons[self.controller.active_id].isChecked())
+        bar.close()
+        bar.deleteLater()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -56,6 +56,28 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class UiContractTests(unittest.TestCase):
+    def test_frameless_filter_ignores_construction_and_style_events(self):
+        window = QWidget()
+        controller = FramelessResizeController(window)
+
+        class ConstructingWidget(QWidget):
+            def window(self):
+                raise AssertionError("Window queried during construction notification")
+
+        probe = ConstructingWidget()
+        try:
+            for kind in (
+                QEvent.Type.StyleChange,
+                QEvent.Type.PaletteChange,
+                QEvent.Type.ChildAdded,
+                QEvent.Type.LayoutRequest,
+            ):
+                self.assertFalse(controller.eventFilter(probe, QEvent(kind)))
+        finally:
+            controller._remove_filter()
+            window.deleteLater()
+            probe.deleteLater()
+
     def test_initial_workspace_geometry_fills_split_regions(self):
         with tempfile.TemporaryDirectory() as directory:
             backend = create_container(Path(directory))

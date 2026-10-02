@@ -23,18 +23,37 @@ def build_stylesheet(theme: ThemePalette) -> str:
         background: {theme.background_alt};
     }}
     #ActivityBar QToolButton[category="true"] {{
-        margin: 3px;
-        border-radius: 5px;
-        background: {theme.surface};
-        border: 1px solid {theme.border};
+        margin: 2px 4px;
+        border-radius: 6px;
+        background: transparent;
+        border: none;
     }}
-    #ActivityBar QToolButton[groupState="open"] {{
-        border-color: {theme.accent};
+    #ActivityBar QToolButton[category="true"]:hover {{
         background: {theme.surface_hover};
     }}
-    #ActivityBar QToolButton[groupState="partial"] {{
-        border-style: dashed;
-        border-color: {theme.muted_text};
+    #WorkspaceBarSection {{
+        background: transparent;
+    }}
+    QListWidget#WorkspaceIconPicker::item {{
+        border: 1px solid transparent;
+        border-radius: 6px;
+        margin: 2px;
+        padding: 3px;
+    }}
+    QListWidget#WorkspaceIconPicker::item:hover {{
+        background: {theme.surface_hover};
+    }}
+    QListWidget#WorkspaceIconPicker::item:selected {{
+        background: {theme.surface_hover};
+        color: {theme.text};
+        border: 1px solid {theme.accent};
+    }}
+    #WorkspaceSectionDivider {{
+        color: {theme.border_subtle};
+        background: {theme.border_subtle};
+        border: none;
+        max-height: 1px;
+        margin: 6px 10px;
     }}
     #PanelSelectionSurface {{
         background: rgba(100, 100, 100, 35);
@@ -133,6 +152,7 @@ def build_stylesheet(theme: ThemePalette) -> str:
         color: {theme.text};
     }}
     QToolButton#ActivityBarButton:checked {{
+        background: {theme.surface_hover};
         color: {theme.text};
         border-left: 2px solid {theme.accent};
     }}
