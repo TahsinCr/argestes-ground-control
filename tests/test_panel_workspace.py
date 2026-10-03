@@ -12,13 +12,51 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt
 from PyQt6.QtGui import QDropEvent, QMouseEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QLabel, QTabWidget
+from PyQt6.QtWidgets import QApplication, QLabel, QStyle, QTabWidget
 
-from src.ui.widgets.panel_workspace import PanelWorkspace
 from src.ui.themes.style import DARK, LIGHT, build_stylesheet
+from src.ui.widgets.panel_workspace import PanelWorkspace
 
 
 class PanelWorkspaceTests(unittest.TestCase):
+    def test_splitting_tab_group_does_not_add_source_as_another_tab(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = PanelWorkspace(Path(directory) / "layout.json")
+            workspace.resize(1000, 700)
+            docks = [
+                workspace.add_panel(
+                    key, key, QLabel(key), Qt.DockWidgetArea.RightDockWidgetArea
+                )
+                for key in ("map", "logs", "camera")
+            ]
+            workspace.show()
+            self.app.processEvents()
+            anchor, peer, source = docks
+            for dock in docks:
+                self.assertEqual(
+                    dock.style().styleHint(
+                        QStyle.StyleHint.SH_Widget_Animation_Duration, None, dock
+                    ),
+                    0,
+                )
+            for relation in ("below", "right", "above", "left") * 5:
+                workspace.place_panel(anchor, peer, "tab")
+                workspace.place_panel(anchor, source, "tab")
+                self.app.processEvents()
+                workspace.place_panel(anchor, source, relation)
+                self.app.processEvents()
+                self.assertIn(peer, workspace.tabifiedDockWidgets(anchor))
+                self.assertNotIn(source, workspace.tabifiedDockWidgets(anchor))
+                if relation == "below":
+                    self.assertGreater(source.y(), anchor.y())
+                elif relation == "above":
+                    self.assertLess(source.y(), anchor.y())
+                elif relation == "right":
+                    self.assertGreater(source.x(), anchor.x())
+                else:
+                    self.assertLess(source.x(), anchor.x())
+            workspace.close()
+
     def test_hover_between_stacked_panels_does_not_change_sizes_or_size_hints(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = PanelWorkspace(Path(directory) / "layout.json")
@@ -36,7 +74,9 @@ class PanelWorkspaceTests(unittest.TestCase):
             )
             workspace.show()
             for size, theme in (
-                ((740, 540), DARK), ((680, 480), LIGHT), ((780, 560), DARK)
+                ((740, 540), DARK),
+                ((680, 480), LIGHT),
+                ((780, 560), DARK),
             ):
                 workspace.setStyleSheet(build_stylesheet(theme))
                 workspace.resize(*size)
@@ -671,8 +711,10 @@ class PanelWorkspaceTests(unittest.TestCase):
             )
             overlay.dropEvent(event)
             self.assertTrue(event.isAccepted())
+            self.assertNotIn(camera, workspace.tabifiedDockWidgets(map_dock))
             overlay.hide()
             workspace._drag_source = None
+            workspace._apply_drop(*workspace._pending_drop)
             self.app.processEvents()
             self.assertIn(camera, workspace.tabifiedDockWidgets(map_dock))
             self.assertEqual(

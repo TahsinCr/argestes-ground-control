@@ -151,7 +151,7 @@ class CameraExtensionTests(unittest.TestCase):
         script = """
 import tempfile
 from pathlib import Path
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QCoreApplication, QEvent, Qt
 from PyQt6.QtWidgets import QApplication
 from extensions.camera.ui.video import VideoPanel
 from src.container import create_container
@@ -208,6 +208,8 @@ with tempfile.TemporaryDirectory() as directory:
     assert "vehicle_connection.quality" in window._extension_status_by_id
     window.close()
     ui.shutdown()
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     backend.resolve(TelemetryService).stop()
     backend.resolve(ExtensionHost).stop()
     backend.shutdown()

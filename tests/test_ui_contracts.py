@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
@@ -19,38 +19,37 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QLineEdit,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSpinBox,
     QWidget,
 )
 
+from extensions.battery.ui.meter import BatteryMeter
+from extensions.battery.ui.settings_popup import BatterySettingsPopup
+from extensions.flight_dynamics.ui.panel import AttitudeIndicator
+from extensions.map_autonomy.ui.panel import MapPanel, MapWebBridge
+from extensions.parameters.ui.panel import ParametersPanel
+from extensions.telemetry_display.ui.panel import TelemetryPanel
+from src.container import create_container
+from src.extension.host import ExtensionHost
 from src.models.logs import LogEntry
 from src.models.mission import MapContact
 from src.models.parameters import Parameter
 from src.models.settings import SettingsModel
 from src.models.telemetry import TelemetrySnapshot
 from src.ui.config.settings_schema import iter_fields
-from src.ui.themes.palette import DARK, LIGHT
-from src.ui.themes.manager import apply_theme
-from src.ui.themes.stylesheet import build_stylesheet
-from src.ui.views.settings_dialog import SettingsDialog
-from extensions.flight_dynamics.ui.panel import AttitudeIndicator
-from extensions.telemetry_display.ui.panel import TelemetryPanel
-from src.ui.widgets.common import SignalMeter
-from extensions.battery.ui.meter import BatteryMeter
-from extensions.battery.ui.settings_popup import BatterySettingsPopup
-from src.ui.widgets.logs import EventLogPanel
-from extensions.parameters.ui.panel import ParametersPanel
-from extensions.map_autonomy.ui.panel import MapPanel, MapWebBridge
-from src.ui.widgets.activity_bar import ActivityBar
-from src.ui.widgets.title_bar import AppTitleBar, FramelessResizeController
-from src.container import create_container
-from src.extension.host import ExtensionHost
 from src.ui.container import UiContainer
+from src.ui.themes.manager import apply_theme
+from src.ui.themes.palette import DARK, LIGHT
+from src.ui.themes.stylesheet import build_stylesheet
 from src.ui.views.main_window import MainWindow
-
+from src.ui.views.settings_dialog import SettingsDialog
+from src.ui.widgets.activity_bar import ActivityBar
+from src.ui.widgets.common import SignalMeter
+from src.ui.widgets.logs import EventLogPanel
+from src.ui.widgets.title_bar import AppTitleBar, FramelessResizeController
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -114,9 +113,10 @@ class UiContractTests(unittest.TestCase):
                 backend.shutdown()
 
     def test_map_hot_toggle_and_joystick_config_preserve_other_panels(self):
+        from types import SimpleNamespace
+
         from extensions.joystick.models import JoystickSettings, JoystickState
         from extensions.joystick.ui.dialog import JoystickDialog
-        from types import SimpleNamespace
 
         with tempfile.TemporaryDirectory() as directory:
             backend = create_container(Path(directory))
@@ -331,7 +331,45 @@ class UiContractTests(unittest.TestCase):
         dialog.deleteLater()
         self.app.processEvents()
 
-    def test_footer_connection_and_protocol_indicators_do_not_open_popups(self) -> None:
+    def test_teknofest_is_a_status_popup_not_a_workspace_panel(self):
+        with tempfile.TemporaryDirectory() as directory:
+            backend = create_container(Path(directory))
+            ui = UiContainer(backend.container, base_dir=Path(directory), theme=DARK)
+            window = ui.resolve(MainWindow)
+            try:
+                window._apply_extension_change("siha_teknofest_server", True)
+                self.app.processEvents()
+                self.assertFalse(
+                    any(
+                        key.startswith("siha_teknofest_server.")
+                        for key in window.workspace.panels
+                    )
+                )
+                owner = window._extension_status_by_id[
+                    "siha_teknofest_server.connection"
+                ]
+                owner.indicator.clicked.emit()
+                self.app.processEvents()
+                self.assertIs(self.app.activePopupWidget(), owner.popup)
+                owner.panel.add()
+                owner.panel.add()
+                self.assertEqual(len(owner.panel.profiles), 2)
+                self.assertEqual(owner.panel.list.count(), 2)
+                owner.popup.close()
+                window._apply_extension_change("siha_teknofest_server", False)
+                self.assertNotIn(
+                    "siha_teknofest_server.connection", window._extension_status_by_id
+                )
+            finally:
+                window.close()
+                ui.shutdown()
+                window.deleteLater()
+                self.app.processEvents()
+                backend.shutdown()
+
+    def test_connection_chip_opens_profiles_but_protocol_chips_are_status_only(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             backend = create_container(Path(directory))
             try:
@@ -343,7 +381,6 @@ class UiContractTests(unittest.TestCase):
                     "vehicle_connection.connection"
                 ].indicator
                 indicators = (
-                    connection,
                     window._extension_status_by_id["mavlink.gps"],
                     window._extension_status_by_id["mavlink.autopilot"],
                 )
@@ -352,6 +389,12 @@ class UiContractTests(unittest.TestCase):
                     indicator.clicked.emit()
                 self.app.processEvents()
                 self.assertIsNone(self.app.activePopupWidget())
+                connection.clicked.emit()
+                self.app.processEvents()
+                owner = window._extension_status_by_id["vehicle_connection.connection"]
+                self.assertIsNotNone(owner.editor)
+                self.assertIs(self.app.activePopupWidget(), owner.editor.profiles_panel)
+                owner.editor.profiles_panel.close()
                 window.close()
                 ui.shutdown()
                 window.deleteLater()

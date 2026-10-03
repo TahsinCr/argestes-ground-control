@@ -13,8 +13,8 @@ from PyQt6.QtCore import (
     QPoint,
     QPropertyAnimation,
     QRect,
-    QTimer,
     Qt,
+    QTimer,
     pyqtSignal,
 )
 from PyQt6.QtGui import QColor, QDrag, QMouseEvent, QPainter, QPalette, QPen
@@ -30,7 +30,6 @@ from PyQt6.QtWidgets import (
     QToolButton,
     QWidget,
 )
-
 
 _PANEL_DRAG_MIME = "application/x-yki-panel-drag"
 _TARGET_LABELS = {
@@ -223,11 +222,9 @@ class _PanelDropOverlay(QWidget):
         target = self.workspace._drop_target(
             self.mapToGlobal(event.position().toPoint())
         )
-        if (
-            source is not None
-            and target is not None
-            and self.workspace._apply_drop(source, target)
-        ):
+        if source is not None and target is not None:
+            # Do not mutate Qt's dock layout inside its nested drag event loop.
+            self.workspace._pending_drop = (source, target)
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -318,6 +315,11 @@ class PanelWorkspace(QMainWindow):
         self.state_path = state_path
         self.language = language
         self.setObjectName("PanelWorkspace")
+        # Qt still creates zero-duration, deferred-delete dock animations when
+        # AnimatedDocks is disabled. Avoid that native lifetime path entirely.
+        self.setStyleSheet(
+            "QMainWindow#PanelWorkspace QWidget { widget-animation-duration: 0; }"
+        )
         self.setDockOptions(
             QMainWindow.DockOption.AllowNestedDocks
             | QMainWindow.DockOption.AllowTabbedDocks
@@ -600,6 +602,10 @@ class PanelWorkspace(QMainWindow):
         return dock
 
     def eventFilter(self, watched, event) -> bool:
+        # QObject can deliver child teardown events while Python's instance
+        # dictionary is already being cleared (and during partial construction).
+        if not hasattr(self, "_hover_controls"):
+            return False
         if isinstance(event, QMouseEvent) and event.type() == QEvent.Type.MouseMove:
             if not event.buttons() & Qt.MouseButton.LeftButton:
                 self._panel_resize = None
@@ -800,6 +806,7 @@ class PanelWorkspace(QMainWindow):
 
     def _start_panel_drag(self, dock: QDockWidget) -> None:
         self._drag_source = dock
+        self._pending_drop = None
         self._drop_overlay.setGeometry(self.rect())
         self._drop_overlay.active = None
         self._drop_overlay.show()
@@ -815,6 +822,11 @@ class PanelWorkspace(QMainWindow):
         finally:
             self._drop_overlay.hide()
             self._drag_source = None
+            drag.deleteLater()
+        pending = self._pending_drop
+        self._pending_drop = None
+        if pending is not None:
+            self._apply_drop(*pending)
 
     def _drop_zones(self, bounds: QRect) -> dict[str, QRect]:
         w, h = bounds.width(), bounds.height()
@@ -845,7 +857,12 @@ class PanelWorkspace(QMainWindow):
             return None, "below"
         source = source or self._drag_source
         for dock in reversed(tuple(self.panels.values())):
-            if dock is source or not dock.isVisible() or dock.isFloating():
+            if (
+                dock is source
+                or not dock.isVisible()
+                or dock.isFloating()
+                or dock.visibleRegion().isEmpty()
+            ):
                 continue
             point = dock.mapFromGlobal(global_position)
             if not dock.rect().contains(point):
@@ -994,6 +1011,7 @@ class PanelWorkspace(QMainWindow):
         self._release_width_row(target_key)
         self._release_width_row(dock_key)
         self._schedule_width_sync()
+        target_size = target.size()
         if relation == "tab":
             self.move_panel_to_area(dock, area)
             self.tabifyDockWidget(target, dock)
@@ -1001,18 +1019,42 @@ class PanelWorkspace(QMainWindow):
             dock.raise_()
             self.layout_changed.emit()
             return True
-        if dock.isFloating() or self.dockWidgetArea(dock) != area:
-            self.move_panel_to_area(dock, area)
+        # Qt splits a tabbed anchor by adding another tab instead. Detach its
+        # peers temporarily and restore them after splitting the actual anchor.
+        peers = [peer for peer in self.tabifiedDockWidgets(target) if peer is not dock]
+        peer_visibility = {peer: not peer.isHidden() for peer in peers}
+        for peer in peers:
+            # addDockWidget clears Qt's saved tab placeholder too; plain
+            # removeDockWidget leaves a singleton group marked as tabbed.
+            self.addDockWidget(area, peer)
+        self.addDockWidget(area, dock)
+        if dock.isFloating():
+            dock.setFloating(False)
         if relation in {"left", "right"}:
             orientation = Qt.Orientation.Horizontal
             before = relation == "left"
         else:
             orientation = Qt.Orientation.Vertical
             before = relation == "above"
-        first, second = (dock, target) if before else (target, dock)
-        self.splitDockWidget(first, second, orientation)
+        self.splitDockWidget(target, dock, orientation)
+        if before:
+            # The first split establishes the correct local anchor. Reversing
+            # it must not first add the source at the area's unrelated edge.
+            self.removeDockWidget(target)
+            self.splitDockWidget(dock, target, orientation)
+        for peer in peers:
+            self.tabifyDockWidget(target, peer)
+            peer.setVisible(peer_visibility[peer])
+        target.show()
+        target.raise_()
         dock.show()
         dock.raise_()
+        span = (
+            target_size.width()
+            if orientation == Qt.Orientation.Horizontal
+            else target_size.height()
+        )
+        self.resizeDocks([target, dock], [max(100, span // 2)] * 2, orientation)
         self.layout_changed.emit()
         return True
 

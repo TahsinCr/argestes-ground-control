@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -12,13 +14,15 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
-    QTabWidget,
 )
 
 from src.extension.host import ExtensionError, ExtensionHost
-from src.ui.i18n import t, reload_language_packs
+from src.ui.i18n import reload_language_packs, t
+from src.ui.themes.palette import palette_for
+from src.ui.widgets.title_bar import AppTitleBar
 
 
 class ExtensionDialog(QDialog):
@@ -26,13 +30,26 @@ class ExtensionDialog(QDialog):
 
     def __init__(self, host, language, parent=None, **callbacks):
         super().__init__(parent)
+        self.setObjectName("FramelessDialog")
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setWindowTitle("Extensions" if language == "en" else "Eklentiler")
         self.setMinimumSize(480, 360)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        dark = self.palette().window().color().lightness() < 128
+        theme = getattr(parent, "theme", palette_for("dark" if dark else "light"))
+        self.title_bar = AppTitleBar(self, theme, self)
+        self.title_bar.set_title(self.windowTitle())
+        layout.addWidget(self.title_bar)
         self.tabs = QTabWidget(self)
+        self.tabs.setObjectName("SettingsTabs")
         self.browser = ExtensionPanel(host, language, self.tabs, **callbacks)
         self.tabs.addTab(self.browser, "Installed" if language == "en" else "Yüklü")
         layout.addWidget(self.tabs)
+
+    def set_theme(self, theme):
+        self.title_bar.set_theme(theme)
 
     def resize_for(self, window):
         self.resize(
@@ -73,6 +90,7 @@ class ExtensionPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         self.heading = QLabel("EXTENSIONS" if language == "en" else "EKLENTİLER")
+        self.heading.setProperty("role", "title")
         heading_row = QHBoxLayout()
         heading_row.addWidget(self.heading, 1)
         self.discover_button = QPushButton(
@@ -86,7 +104,8 @@ class ExtensionPanel(QWidget):
             "Search extensions" if language == "en" else "Eklenti ara"
         )
         self.search.textChanged.connect(self.refresh)
-        layout.addWidget(self.search)
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(self.search, 1)
         self.filter = QComboBox(self)
         self.filter.addItems(
             (
@@ -96,7 +115,7 @@ class ExtensionPanel(QWidget):
             )
         )
         self.filter.currentIndexChanged.connect(self.refresh)
-        layout.addWidget(self.filter)
+        toolbar.addWidget(self.filter)
         self.category = QComboBox(self)
         self.category.addItem(
             "All categories" if language == "en" else "Tüm kategoriler", ""
@@ -106,7 +125,8 @@ class ExtensionPanel(QWidget):
         ):
             self.category.addItem(self._category_name(name), name)
         self.category.currentIndexChanged.connect(self.refresh)
-        layout.addWidget(self.category)
+        toolbar.addWidget(self.category)
+        layout.addLayout(toolbar)
         self.restart_label = QLabel("", self)
         self.restart_label.setWordWrap(True)
         layout.addWidget(self.restart_label)
@@ -116,6 +136,7 @@ class ExtensionPanel(QWidget):
         self.cards = QWidget(scroll)
         self.cards_layout = QVBoxLayout(self.cards)
         self.cards_layout.setContentsMargins(0, 0, 0, 0)
+        self.cards_layout.setSpacing(10)
         scroll.setWidget(self.cards)
         layout.addWidget(scroll, 1)
         self.refresh()
@@ -139,6 +160,7 @@ class ExtensionPanel(QWidget):
             if any(item.pending_restart for item in entries)
             else ""
         )
+        self.restart_label.setVisible(bool(self.restart_label.text()))
         for item in entries:
             manifest = item.manifest
             name, detail = (
@@ -159,13 +181,24 @@ class ExtensionPanel(QWidget):
             card = QWidget(self.cards)
             card.setObjectName("ExtensionCard")
             card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(6, 8, 6, 8)
+            card_layout.setContentsMargins(16, 14, 16, 14)
             title = QLabel(f"{name}  ·  {manifest.version}", card)
+            title.setWordWrap(True)
+            title.setProperty("role", "title")
             card_layout.addWidget(title)
             description = QLabel(detail, card)
             description.setWordWrap(True)
+            description.setProperty("role", "detail")
             card_layout.addWidget(description)
             row = QHBoxLayout()
+            state = QLabel(
+                ("Enabled" if item.enabled else "Disabled")
+                if self.language == "en"
+                else ("Etkin" if item.enabled else "Devre dışı"),
+                card,
+            )
+            state.setProperty("role", "detail")
+            row.addWidget(state, 1)
             toggle = QPushButton(
                 ("Disable" if item.enabled else "Enable")
                 if self.language == "en"
@@ -192,6 +225,15 @@ class ExtensionPanel(QWidget):
                 row.addWidget(reload_button)
             card_layout.addLayout(row)
             self.cards_layout.addWidget(card)
+        if not self.cards_layout.count():
+            empty = QLabel(
+                "No matching extensions"
+                if self.language == "en"
+                else "Eşleşen eklenti bulunamadı",
+                self.cards,
+            )
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.cards_layout.addWidget(empty)
         self.cards_layout.addStretch(1)
 
     def set_language(self, language: str) -> None:

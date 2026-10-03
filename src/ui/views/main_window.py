@@ -777,6 +777,8 @@ class MainWindow(QMainWindow):
         self.extensions_button.setToolTip(t("activity.extensions", self.language))
         self.settings_button.setToolTip(t("status.settings", self.language))
         self.extension_dialog.setWindowTitle(t("activity.extensions", self.language))
+        self.extension_dialog.title_bar.set_title(t("activity.extensions", self.language))
+        self.extension_dialog.set_theme(self.theme)
         self.extension_dialog.tabs.setTabText(
             0, "Installed" if self.language == "en" else "Yüklü"
         )

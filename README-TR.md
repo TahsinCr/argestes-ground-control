@@ -87,9 +87,10 @@ MAVLink çözümlenmiş veri akışını, GPS ve otopilot göstergelerini yönet
 Araç Bağlantısı bağlantı çipini ve kalite göstergesini sağlar;
 kamera durum kontrolleri kamera paketinde kalır.
 `registrar.status_widget(..., placement="connections" | "metrics")` katkıyı
-sol bağlantı grubuna veya bataryanın yanına yerleştirir. Bağlantı, GPS ve
-otopilot göstergeleri yalnız durum gösterir; tıklayınca pencere açmaz.
-Bağlantı profilleri Araç Bağlantısı eklentisinin ayarlarından düzenlenir. MAVLink'in
+sol bağlantı grubuna veya bataryanın yanına yerleştirir. Bağlantı göstergesi
+profil popup'ını açar; GPS ve otopilot göstergeleri yalnız durum gösterir.
+TEKNOFEST, çalışma alanı paneli yerine alt barda çoklu sunucu yönetimi
+popup'ı sunar. Bağlantı profilleri ortak Ayarlar'dan da düzenlenebilir. MAVLink'in
 gelişmiş ayarları dahil tüm eklenti ayarları, yalnız ortak Ayarlar penceresinde
 kendi kategorilerinde düzenlenir. Alt bardaki mevcut kamera bağlantı/yayın
 popup'ları korunur. Dialect seçicisi kurulu pymavlink dialect'lerini listeler;

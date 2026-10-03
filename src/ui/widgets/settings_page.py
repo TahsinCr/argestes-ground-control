@@ -59,6 +59,9 @@ class ConfigSettingsPage(QWidget):
         self.language = language
         root = QVBoxLayout(self)
         form = QFormLayout()
+        form.setSpacing(12)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         config = host.settings(manifest.identifier)
         for key in dict.fromkeys([*manifest.settings, *config]):
             spec = manifest.settings.get(key, {})

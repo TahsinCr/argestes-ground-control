@@ -1,24 +1,25 @@
 """Provider-neutral vehicle connection profile editor."""
 
+from uuid import uuid4
+
 from PyQt6.QtWidgets import (
-    QVBoxLayout,
-    QWidget,
     QDialog,
+    QDialogButtonBox,
     QFormLayout,
     QLineEdit,
-    QSpinBox,
-    QDialogButtonBox,
     QMessageBox,
+    QSpinBox,
+    QWidget,
 )
-from src.models.connections import ConnectionProfile
+
 from src.extension.api.contracts import ConnectionProfiles
-from uuid import uuid4
+from src.models.connections import ConnectionProfile
 from src.services.abstracts.connections import ConnectionControlService
 from src.services.settings import SettingsService
 from src.ui.adapters.services import QtConnectionControlService, QtSettingsService
-from .connections_popup import ConnectionsPanel
 from src.ui.i18n import t
-from PyQt6.QtCore import Qt
+
+from .connections_popup import ConnectionsPanel
 
 
 class ConnectionEditor(QWidget):
@@ -77,22 +78,11 @@ class ConnectionEditor(QWidget):
         )
 
     def open(self, anchor) -> None:
+        from src.ui.widgets.anchored_popup import open_above_anchor
+
         self._show_profiles()
-        dialog = QDialog(anchor)
-        dialog.setWindowTitle(t("extension.vehicle_connection.name", self.language))
-        layout = QVBoxLayout(dialog)
-        self.profiles_panel.setParent(dialog)
-        self.profiles_panel.setWindowFlags(Qt.WindowType.Widget)
-        layout.addWidget(self.profiles_panel)
-        dialog.resize(440, 440)
-        self.profiles_panel.back_button.clicked.connect(dialog.reject)
-        try:
-            dialog.exec()
-        finally:
-            self.profiles_panel.back_button.clicked.disconnect(dialog.reject)
-            self.profiles_panel.setParent(self)
-            self.profiles_panel.hide()
-            dialog.deleteLater()
+        self._popup_anchor = anchor
+        open_above_anchor(self.profiles_panel, anchor)
 
     def _connect_profile(self, profile: ConnectionProfile) -> None:
         status = self.connection_service.status("telemetry")
@@ -145,7 +135,11 @@ class ConnectionEditor(QWidget):
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         form.addRow(buttons)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        dialog.deleteLater()
+        if self.profiles_panel.isWindow() and hasattr(self, "_popup_anchor"):
+            self.open(self._popup_anchor)
+        if not accepted:
             return
         updated = ConnectionProfile(
             identifier=profile.identifier,

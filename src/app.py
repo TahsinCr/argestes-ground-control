@@ -87,3 +87,9 @@ def run() -> int:
         signal.signal(signal.SIGINT, previous_sigint_handler)
         signal.signal(signal.SIGTERM, previous_sigterm_handler)
         stop_runtime_once()
+        # Destroy Qt-owned widgets while Python wrappers and the application
+        # still exist, rather than relying on SIP's interpreter-exit cleanup.
+        from PyQt6.QtCore import QCoreApplication, QEvent
+
+        window.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)

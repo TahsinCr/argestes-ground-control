@@ -5,10 +5,9 @@ class TeknofestExtension:
     def configure(self, registrar, context):
         self.context = context
         registrar.singleton(CompetitionRuntime, lambda: CompetitionRuntime(context))
-        registrar.visual_view(
-            "servers",
-            lambda parent, theme, language: self.panel(parent),
-            title="TEKNOFEST",
+        registrar.status_widget(
+            "connection",
+            lambda parent, theme, language: self.status(parent, theme, language),
         )
         registrar.settings_page(self.panel)
 
@@ -22,6 +21,11 @@ class TeknofestExtension:
         from .ui import ServerPanel
 
         return ServerPanel(self.context, parent)
+
+    def status(self, parent, theme, language):
+        from .ui import ServerStatusWidget
+
+        return ServerStatusWidget(self.context, parent, theme, language)
 
 
 def create_extension():

@@ -3,6 +3,33 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Dock placement and connection UI fixes
+
+* Corrected edge drops onto existing tab groups: panels now split above, below,
+  left or right without unexpectedly becoming another tab. Existing group
+  members stay together. Only the center drop creates tabs, and obscured tabs
+  no longer compete with the visible drop target.
+* Apply dock placement after the drag loop exits. Disabled Qt's internal dock
+  geometry animations, including zero-duration deferred animations, while
+  keeping the hover-handle fade. Guarded teardown events and explicitly destroy
+  the window before Python's final Qt cleanup.
+* Restored the bottom-bar vehicle connection popup. GPS and autopilot remain
+  status-only. TEKNOFEST now contributes a server connection popup instead of a
+  workspace panel; multiple profiles, background connection work and SQL
+  recording remain available. Hidden server editors stop polling.
+* Removed empty settings categories, unified form growth and wrapping, and
+  removed popup-only size limits from embedded camera tabs. Connection and
+  camera editors receive the settings window's theme explicitly.
+* Refined extension management with the shared title bar, a compact search and
+  filter toolbar, readable theme-aware cards, explicit state labels and an empty
+  search result message. Installed extensions still use the same lifecycle API.
+* Added tab-group split stress coverage, deferred-drop assertions and bottom-bar
+  popup lifecycle tests. Configuration and archived source files are preserved.
+* Verification: all 583 tests pass, the dock split/tab stress test passes on
+  X11 as well as offscreen Qt, and compileall/diff checks pass. Dark/light
+  screenshots of extension management and connection/camera settings were
+  reviewed. These checks do not exercise a physical vehicle or remote server.
+
 ### Workspace navigation polish
 
 * Unified workspace icons with a small, theme-aware outline catalog. Saved Qt

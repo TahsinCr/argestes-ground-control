@@ -22,6 +22,7 @@ def build_stylesheet(theme: ThemePalette) -> str:
     QMainWindow#PanelWorkspace {{
         background: {theme.background_alt};
     }}
+    QMainWindow#PanelWorkspace QWidget {{ widget-animation-duration: 0; }}
     #ActivityBar QToolButton[category="true"] {{
         margin: 2px 4px;
         border-radius: 6px;
@@ -115,6 +116,22 @@ def build_stylesheet(theme: ThemePalette) -> str:
     QDialog#FramelessDialog {{
         background: {theme.surface};
         border: 1px solid {theme.border_strong};
+    }}
+    QWidget#ExtensionCard {{
+        background: {theme.surface_alt};
+        border: 1px solid {theme.border};
+        border-radius: 8px;
+    }}
+    QWidget#ExtensionCard QLabel {{ border: none; background: transparent; }}
+    QWidget#ExtensionCard QLabel[role=title] {{ color: {theme.text}; font-weight: 650; }}
+    QWidget#ExtensionCard QLabel[role=detail] {{ color: {theme.muted_text}; }}
+    QTabWidget#SettingsTabs::pane {{ border: none; background: {theme.surface}; }}
+    QTabWidget#SettingsTabs QTabBar::tab {{
+        background: {theme.surface}; color: {theme.muted_text};
+        padding: 10px 18px; border: none;
+    }}
+    QTabWidget#SettingsTabs QTabBar::tab:selected {{
+        color: {theme.text}; border-bottom: 2px solid {theme.accent};
     }}
     QSplitter::handle {{
         background: {theme.border};

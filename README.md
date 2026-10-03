@@ -95,9 +95,10 @@ its decoded feed, GPS and autopilot indicators. Vehicle Connection contributes
 the connection chip and quality meter;
 camera status controls belong to the camera package. Status contributions use
 `registrar.status_widget(..., placement="connections" | "metrics")` to select
-the left connection group or the group beside the battery. Connection, GPS and
-autopilot indicators are status-only; profile editing opens from Vehicle
-Connection's category in Settings. Every extension's settings, including MAVLink's
+the left connection group or the group beside the battery. The connection chip
+opens its profile popup; GPS and autopilot indicators remain status-only.
+TEKNOFEST provides a bottom-bar popup for multiple server profiles, not a
+workspace panel. Every extension's settings, including MAVLink's
 advanced options, are available only in the common Settings dialog. Existing
 bottom-bar camera connection/output popups remain available. The dialect selector lists installed
 pymavlink dialects; changing protocol options reconfigures an active connection

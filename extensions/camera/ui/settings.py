@@ -10,6 +10,8 @@ from extensions.camera.publishing import active_ipv4_interfaces
 class CameraSettingsPage(QTabWidget):
     def __init__(self, workspace, parent=None):
         super().__init__(parent)
+        self.setObjectName("SettingsTabs")
+        self.setUsesScrollButtons(True)
         self.workspace = workspace
         self._interfaces = active_ipv4_interfaces()
         self.sources = VideoConnectionsPopup(
@@ -20,6 +22,8 @@ class CameraSettingsPage(QTabWidget):
         )
         for editor in (self.sources, self.outputs):
             editor.setWindowFlags(Qt.WindowType.Widget)
+            editor.setMinimumSize(0, 0)
+            editor.setMaximumSize(16777215, 16777215)
             for name in ("back_button", "all_settings_button"):
                 button = getattr(editor, name, None)
                 if button:
@@ -37,6 +41,10 @@ class CameraSettingsPage(QTabWidget):
     def save_sources(self, sources, active):
         self.workspace._save_sources(sources, active)
         self.refresh()
+
+    def set_theme(self, theme):
+        self.sources.set_theme(theme)
+        self.outputs.set_theme(theme)
 
     def save_outputs(self, outputs):
         self.workspace._save_outputs(outputs)

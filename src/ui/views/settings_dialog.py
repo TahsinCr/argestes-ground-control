@@ -13,18 +13,18 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLineEdit,
+    QListWidget,
     QMessageBox,
     QScrollArea,
     QSpinBox,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
-    QListWidget,
-    QStackedWidget,
 )
 
-from src.ui.i18n import t
-from src.ui.config.settings_schema import FieldSpec, SETTINGS_SECTIONS, SectionSpec
 from src.models.settings import SettingsModel
+from src.ui.config.settings_schema import SETTINGS_SECTIONS, FieldSpec, SectionSpec
+from src.ui.i18n import t
 from src.ui.themes.style import ThemePalette
 from src.ui.widgets.title_bar import AppTitleBar
 
@@ -88,7 +88,14 @@ class SettingsDialog(QDialog):
             self.categories.addItem("General" if language == "en" else "Genel")
             self.pages = QStackedWidget(self)
             self.pages.addWidget(scroll)
-            self._extension_items = list(extension_host.list_extensions())
+            self._extension_items = [
+                item
+                for item in extension_host.list_extensions()
+                if extension_host.settings_contribution(item.manifest.identifier)
+                is not None
+                or item.manifest.settings
+                or extension_host.settings(item.manifest.identifier)
+            ]
             for item in self._extension_items:
                 key = f"extension.{item.manifest.identifier}.name"
                 translated = t(key, language)
@@ -126,6 +133,10 @@ class SettingsDialog(QDialog):
         form_layout = QFormLayout(box)
         form_layout.setContentsMargins(10, 10, 10, 10)
         form_layout.setSpacing(10)
+        form_layout.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        form_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
         for field in section.fields:
             widget = self._create_widget(field, settings)
@@ -238,9 +249,14 @@ class SettingsDialog(QDialog):
                 widget = ConfigSettingsPage(
                     self._extension_host, item.manifest, self._ui_language, self.pages
                 )
+            set_theme = getattr(widget, "set_theme", None)
+            if callable(set_theme):
+                set_theme(self._theme)
             container = self.pages.widget(index)
             layout = QVBoxLayout(container)
+            layout.setContentsMargins(0, 0, 0, 0)
             scroll = QScrollArea(container)
+            scroll.setFrameShape(QScrollArea.Shape.NoFrame)
             scroll.setWidgetResizable(True)
             scroll.setWidget(widget)
             layout.addWidget(scroll)
