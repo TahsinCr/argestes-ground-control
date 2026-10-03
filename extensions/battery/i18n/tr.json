@@ -1,4 +1,7 @@
 {
+  "battery.section.estimate": "Kaynak ve voltaj kalibrasyonu",
+  "battery.section.warning": "Düşük batarya uyarısı",
+  "battery.section.failsafe": "Emniyet davranışı",
   "battery.alarm.mode.percent": "Yüzde (%)",
   "battery.alarm.mode.voltage": "Voltaj (V)",
   "battery.tooltip.consumed": "Tüketim: {mah} mAh",

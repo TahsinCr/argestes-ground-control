@@ -1,20 +1,19 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-import re
-from typing import Any, Callable, TYPE_CHECKING
-from typing import Protocol
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from src.core.dependency import BaseDependencyContainer
 
 if TYPE_CHECKING:
-    from src.services.abstracts.telemetry import TelemetryService
-    from src.services.settings import SettingsService
-    from src.services.logging_service import LoggingService
-    from src.services.abstracts.connections import ConnectionControlService
     from src.models.connections import ConnectionProfile
     from src.models.settings import SettingsModel
+    from src.services.abstracts.connections import ConnectionControlService
+    from src.services.abstracts.telemetry import TelemetryService
+    from src.services.logging_service import LoggingService
+    from src.services.settings import SettingsService
 
 API_MAJOR = 1
 
@@ -66,6 +65,7 @@ class StatusContribution:
     identifier: str
     factory: Callable[[Any], Any]
     placement: str = "connections"
+    order: int = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +132,7 @@ class ExtensionRegistrar:
         factory: Callable[[Any], Any],
         *,
         placement: str = "connections",
+        order: int = 100,
     ) -> None:
         if placement not in {"connections", "metrics"}:
             raise ValueError(f"Invalid status placement: {placement}")
@@ -139,7 +140,9 @@ class ExtensionRegistrar:
             raise ValueError(f"Invalid status identifier: {identifier}")
         if any(widget.identifier == identifier for widget in self.status_widgets):
             raise ValueError(f"Duplicate status widget: {identifier}")
-        self.status_widgets.append(StatusContribution(identifier, factory, placement))
+        self.status_widgets.append(
+            StatusContribution(identifier, factory, placement, order)
+        )
 
     def settings_page(self, factory: Callable[[Any], Any]) -> None:
         """Contribute a lazy extension-owned QWidget to the common Settings shell."""

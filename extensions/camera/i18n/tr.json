@@ -1,5 +1,7 @@
 {
   "extension.camera.name": "Kamera",
+  "video.status.camera": "KAMERA",
+  "video.status.outputs": "YAYIN / KAYIT",
   "extension.camera.description": "Kamera bağlantıları, çoklu görüntü, kayıt ve yayın",
   "extension.camera.category": "Görüntü",
   "video.codec.h264": "H.264",

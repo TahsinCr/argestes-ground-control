@@ -35,6 +35,7 @@ class CameraExtension:
             lambda parent, theme, language: self._create_status(
                 parent, theme, language
             ),
+            order=200,
         )
         registrar.settings_page(self._settings_page)
 

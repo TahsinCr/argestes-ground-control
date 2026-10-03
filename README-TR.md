@@ -86,9 +86,14 @@ ortak `VehicleService` bunları zorunlu kılmaz.
 MAVLink çözümlenmiş veri akışını, GPS ve otopilot göstergelerini yönetir.
 Araç Bağlantısı bağlantı çipini ve kalite göstergesini sağlar;
 kamera durum kontrolleri kamera paketinde kalır.
-`registrar.status_widget(..., placement="connections" | "metrics")` katkıyı
+`registrar.status_widget(..., placement="connections" | "metrics", order=100)` katkıyı
 sol bağlantı grubuna veya bataryanın yanına yerleştirir. Bağlantı göstergesi
 profil popup'ını açar; GPS ve otopilot göstergeleri yalnız durum gösterir.
+Düşük `order` değerleri kendi grubunda önce gelir; kamera bağlantısı araç
+bağlantısının yanında, ana uygulamaya protokol bilgisi eklenmeden gösterilir.
+Panel menüsündeki boyut kilidi yerleşimle kaydedilir. Araç telemetrisi ayarlarında
+58 alan seçilebilir, sıralanabilir ve kategori gruplamalı/gruplamasız liste veya
+ızgara görünümüne yerleştirilebilir.
 TEKNOFEST, çalışma alanı paneli yerine alt barda çoklu sunucu yönetimi
 popup'ı sunar. Bağlantı profilleri ortak Ayarlar'dan da düzenlenebilir. MAVLink'in
 gelişmiş ayarları dahil tüm eklenti ayarları, yalnız ortak Ayarlar penceresinde

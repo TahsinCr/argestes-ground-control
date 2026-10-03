@@ -13,7 +13,14 @@
   "teknofest.connected": "Bağlı",
   "teknofest.disconnected": "Bağlı değil",
   "teknofest.invalid_url": "Geçerli bir HTTP(S) adresi girin.",
-  "extension.siha_teknofest_server.name": "SİHA TEKNOFEST Sunucusu",
+  "teknofest.edit": "Düzenle",
+  "teknofest.add_server": "+ Sunucu ekle",
+  "teknofest.auto_on": "OTO: AÇIK",
+  "teknofest.auto_off": "OTO: KAPALI",
+  "teknofest.connecting": "Bağlanıyor",
+  "teknofest.timeout": "Zaman aşımı",
+  "teknofest.profiles_hint": "Sunucuları ayrı ayrı bağlayabilir, otomatik bağlantı tercihlerini her profil için değiştirebilirsiniz.",
+  "extension.siha_teknofest_server.name": "SIHA Teknofest Sunucusu",
   "extension.siha_teknofest_server.category": "Sunucu",
   "extension.siha_teknofest_server.description": "Sunucu bağlantıları, telemetri gönderimi ve SQLite geçmişi"
 }

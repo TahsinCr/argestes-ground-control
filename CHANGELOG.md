@@ -3,6 +3,28 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Panel size locks and configurable extension views
+
+* Added a persistent size lock to each panel's hover menu. Locked content keeps
+  its pixel dimensions when the window resizes; unlocking restores its original
+  sizing constraints. Each saved workspace retains its own locks.
+* Fixed edge targeting when dragging a panel out of its own tab group. Edge
+  previews use the visible group's bounds rather than an obscured tab's geometry.
+* Restored the archived TEKNOFEST server-card popup and profile editor, preserving
+  independent background connections, automatic connection preferences and SQL
+  recording. The Turkish name is now SIHA Teknofest Sunucusu.
+* Added an ordered telemetry field editor with 58 available values, search,
+  drag/button reordering, list/grid layouts, one to four columns and optional
+  category grouping. Existing settings and unknown configuration keys survive.
+* Grouped battery calibration, warnings and failsafe settings into readable,
+  theme-aware sections without changing their behavior.
+* Added ordered footer contributions to the extension API. The camera chip now
+  reads KAMERA and follows vehicle connections; camera output controls remain
+  owned by the camera extension.
+* Verification: all 587 tests pass, compileall, targeted Ruff and whitespace
+  checks pass. Dark/light settings screenshots were reviewed. Physical cameras
+  and live competition servers were not exercised.
+
 ### Dock placement and connection UI fixes
 
 * Corrected edge drops onto existing tab groups: panels now split above, below,

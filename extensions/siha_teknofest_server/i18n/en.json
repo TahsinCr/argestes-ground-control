@@ -13,7 +13,14 @@
   "teknofest.connected": "Connected",
   "teknofest.disconnected": "Disconnected",
   "teknofest.invalid_url": "Enter a valid HTTP(S) address.",
-  "extension.siha_teknofest_server.name": "SIHA TEKNOFEST Server",
+  "teknofest.edit": "Edit",
+  "teknofest.add_server": "+ Add server",
+  "teknofest.auto_on": "AUTO: ON",
+  "teknofest.auto_off": "AUTO: OFF",
+  "teknofest.connecting": "Connecting",
+  "teknofest.timeout": "Timeout",
+  "teknofest.profiles_hint": "Connect servers independently and choose automatic connection per profile.",
+  "extension.siha_teknofest_server.name": "SIHA Teknofest Server",
   "extension.siha_teknofest_server.category": "Server",
   "extension.siha_teknofest_server.description": "Server connections, telemetry delivery and SQLite history"
 }

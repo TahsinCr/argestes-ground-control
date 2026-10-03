@@ -9,9 +9,6 @@ from PyQt6.QtCore import QPoint, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage
 from PyQt6.QtWidgets import QHBoxLayout, QMessageBox, QWidget
 
-from src.ui.themes.style import ThemePalette
-from src.ui.widgets.common import StatusChip
-
 from extensions.camera.models import (
     VideoFrame,
     VideoShareConfig,
@@ -21,6 +18,10 @@ from extensions.camera.models import (
 )
 from extensions.camera.publishing import active_ipv4_interfaces
 from extensions.camera.runtime import CameraRuntime
+from src.ui.i18n import t
+from src.ui.themes.style import ThemePalette
+from src.ui.widgets.common import StatusChip
+
 from .video import VideoPanel
 from .video_connections_popup import VideoConnectionsPopup
 from .video_share_popup import VideoSharePopup
@@ -356,5 +357,5 @@ class CameraStatusWidget(QWidget):
         self.share_chip.set_theme(theme)
 
     def set_language(self, language: str) -> None:
-        self.video_chip.set_label("VIDEO")
-        self.share_chip.set_label("VIDEO SHARE")
+        self.video_chip.set_label(t("video.status.camera", language))
+        self.share_chip.set_label(t("video.status.outputs", language))

@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -68,11 +69,6 @@ class BatterySettingsPopup(QDialog):
         status_layout.addWidget(self.detail_label)
         root.addWidget(status_box)
 
-        form = QFormLayout()
-        form.setContentsMargins(0, 0, 0, 0)
-        form.setHorizontalSpacing(10)
-        form.setVerticalSpacing(6)
-
         self.full_voltage = self._voltage_input()
         self.minimum_voltage = self._voltage_input()
         self.minimum_percent = self._percent_input(maximum=99.0)
@@ -92,7 +88,7 @@ class BatterySettingsPopup(QDialog):
         self.failsafe_enabled_label = QLabel(self)
         self.failsafe_mode_label = QLabel(self)
         self.failsafe_threshold_label = QLabel(self)
-        for label, widget in (
+        rows = (
             (self.full_voltage_label, self.full_voltage),
             (self.minimum_voltage_label, self.minimum_voltage),
             (self.minimum_percent_label, self.minimum_percent),
@@ -102,9 +98,24 @@ class BatterySettingsPopup(QDialog):
             (self.failsafe_enabled_label, self.failsafe_enabled),
             (self.failsafe_mode_label, self.failsafe_mode),
             (self.failsafe_threshold_label, self.failsafe_threshold),
+        )
+        self.setting_groups = {}
+        for key, group_rows in (
+            ("estimate", rows[:4]),
+            ("warning", rows[4:6]),
+            ("failsafe", rows[6:]),
         ):
-            form.addRow(label, widget)
-        root.addLayout(form)
+            box = QGroupBox(self)
+            self.setting_groups[key] = box
+            group_form = QFormLayout(box)
+            group_form.setSpacing(10)
+            group_form.setFieldGrowthPolicy(
+                QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+            )
+            group_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+            for label, widget in group_rows:
+                group_form.addRow(label, widget)
+            root.addWidget(box)
 
         self.result_label = QLabel(self)
         self.result_label.setProperty("role", "popup-detail")
@@ -202,6 +213,8 @@ class BatterySettingsPopup(QDialog):
 
     def set_language(self, language: str) -> None:
         self._language = language
+        for key, group in self.setting_groups.items():
+            group.setTitle(t("battery.section." + key, language))
         self.title_label.setText(t("battery.popup.title", language))
         self.full_voltage_label.setText(
             t("dialog.settings.battery_estimate_full_voltage", language)

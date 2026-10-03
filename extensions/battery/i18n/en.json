@@ -1,4 +1,7 @@
 {
+  "battery.section.estimate": "Source and voltage calibration",
+  "battery.section.warning": "Low battery warning",
+  "battery.section.failsafe": "Safety behavior",
   "battery.alarm.mode.percent": "Percentage (%)",
   "battery.alarm.mode.voltage": "Voltage (V)",
   "battery.tooltip.consumed": "Consumed: {mah} mAh",

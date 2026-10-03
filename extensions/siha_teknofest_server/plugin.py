@@ -8,6 +8,7 @@ class TeknofestExtension:
         registrar.status_widget(
             "connection",
             lambda parent, theme, language: self.status(parent, theme, language),
+            order=400,
         )
         registrar.settings_page(self.panel)
 

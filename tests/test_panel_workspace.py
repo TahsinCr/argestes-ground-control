@@ -19,6 +19,68 @@ from src.ui.widgets.panel_workspace import PanelWorkspace
 
 
 class PanelWorkspaceTests(unittest.TestCase):
+    def test_size_lock_survives_window_resize_and_layout_restore(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = PanelWorkspace(Path(directory) / "layout.json")
+            first = workspace.add_panel(
+                "first", "First", QLabel("First"), Qt.DockWidgetArea.LeftDockWidgetArea
+            )
+            workspace.add_panel(
+                "second",
+                "Second",
+                QLabel("Second"),
+                Qt.DockWidgetArea.RightDockWidgetArea,
+            )
+            workspace.resize(900, 600)
+            workspace.show()
+            self.app.processEvents()
+            workspace.set_panel_size_locked(first, True)
+            before = first.widget().size()
+            payload = workspace.capture_layout()
+            workspace.resize(1200, 850)
+            self.app.processEvents()
+            self.assertEqual(first.widget().size(), before)
+            workspace.restore_layout(payload, restore_window=False)
+            self.app.processEvents()
+            self.assertEqual(first.widget().size(), before)
+            workspace.set_panel_size_locked(first, False)
+            self.assertNotEqual(
+                first.widget().minimumSize(), first.widget().maximumSize()
+            )
+            workspace.close()
+
+    def test_visible_tab_can_split_out_at_its_own_group_edges(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = PanelWorkspace(Path(directory) / "layout.json")
+            first, second = [
+                workspace.add_panel(
+                    key, key, QLabel(key), Qt.DockWidgetArea.RightDockWidgetArea
+                )
+                for key in ("map", "camera")
+            ]
+            workspace.resize(1000, 600)
+            workspace.show()
+            for relation, point in (
+                ("below", QPoint(400, 490)),
+                ("right", QPoint(900, 300)),
+                ("above", QPoint(400, 70)),
+                ("left", QPoint(70, 300)),
+            ):
+                workspace.place_panel(first, second, "tab")
+                second.raise_()
+                self.app.processEvents()
+                target = workspace._drop_target(
+                    second.mapToGlobal(point), source=second
+                )
+                self.assertIsNotNone(target)
+                self.assertEqual(target, (first, relation))
+                bounds = workspace._drop_bounds(first)
+                self.assertGreater(bounds.width(), 900)
+                self.assertTrue(workspace._apply_drop(second, target))
+                self.app.processEvents()
+                self.assertNotIn(second, workspace.tabifiedDockWidgets(first))
+            workspace.close()
+
     def test_splitting_tab_group_does_not_add_source_as_another_tab(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = PanelWorkspace(Path(directory) / "layout.json")

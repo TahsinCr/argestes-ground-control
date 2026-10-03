@@ -14,14 +14,14 @@ from PyQt6.QtWidgets import (
 )
 
 from src.models.settings import SettingsModel
-from src.ui.i18n import t
 from src.ui.assets import application_icon
+from src.ui.i18n import t
 from src.ui.themes.style import apply_theme
 from src.ui.views.settings_dialog import SettingsDialog
-from src.ui.widgets.logs import EventLogPanel
 from src.ui.widgets.activity_bar import ActivityBar
-from src.ui.widgets.title_bar import AppTitleBar
+from src.ui.widgets.logs import EventLogPanel
 from src.ui.widgets.panel_workspace import PanelWorkspace
+from src.ui.widgets.title_bar import AppTitleBar
 
 
 @dataclass(frozen=True)
@@ -190,11 +190,19 @@ class MainWindow(QMainWindow):
         if not isinstance(widget, QWidget):
             raise TypeError("Extension status must return QWidget")
         footer = self.status_bar.layout()
+        widget.setProperty("statusPlacement", contribution.placement)
+        widget.setProperty("statusOrder", contribution.order)
         index = footer.indexOf(
             self._status_metrics_anchor
             if contribution.placement == "metrics"
             else self._status_connections_anchor
         )
+        for existing in self._extension_status_widgets:
+            if (
+                existing.property("statusPlacement") == contribution.placement
+                and existing.property("statusOrder") > contribution.order
+            ):
+                index = min(index, footer.indexOf(existing))
         footer.insertWidget(index, widget)
         self._extension_status_widgets.append(widget)
         self._extension_status_by_id[contribution.identifier] = widget
@@ -340,8 +348,9 @@ class MainWindow(QMainWindow):
         self.extension_dialog.activateWindow()
 
     def _create_workspace_item(self, kind):
-        from src.ui.widgets.workspace_dialog import WorkspaceItemDialog
         from PyQt6.QtWidgets import QMessageBox
+
+        from src.ui.widgets.workspace_dialog import WorkspaceItemDialog
 
         category = kind == "category"
         if category and not any(
@@ -777,7 +786,9 @@ class MainWindow(QMainWindow):
         self.extensions_button.setToolTip(t("activity.extensions", self.language))
         self.settings_button.setToolTip(t("status.settings", self.language))
         self.extension_dialog.setWindowTitle(t("activity.extensions", self.language))
-        self.extension_dialog.title_bar.set_title(t("activity.extensions", self.language))
+        self.extension_dialog.title_bar.set_title(
+            t("activity.extensions", self.language)
+        )
         self.extension_dialog.set_theme(self.theme)
         self.extension_dialog.tabs.setTabText(
             0, "Installed" if self.language == "en" else "Yüklü"

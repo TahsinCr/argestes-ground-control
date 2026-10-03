@@ -94,9 +94,13 @@ not the shared `VehicleService` contract. MAVLink owns
 its decoded feed, GPS and autopilot indicators. Vehicle Connection contributes
 the connection chip and quality meter;
 camera status controls belong to the camera package. Status contributions use
-`registrar.status_widget(..., placement="connections" | "metrics")` to select
+`registrar.status_widget(..., placement="connections" | "metrics", order=100)` to select
 the left connection group or the group beside the battery. The connection chip
 opens its profile popup; GPS and autopilot indicators remain status-only.
+Lower `order` values appear first within their group; camera connections sit
+beside vehicle connections without protocol-specific code in the application.
+Panel menus offer a persistent size lock. Vehicle telemetry settings select and
+order 58 fields, with list/grid layouts and optional category grouping.
 TEKNOFEST provides a bottom-bar popup for multiple server profiles, not a
 workspace panel. Every extension's settings, including MAVLink's
 advanced options, are available only in the common Settings dialog. Existing

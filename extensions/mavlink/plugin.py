@@ -111,6 +111,7 @@ class MavlinkExtension:
                 lambda parent, theme, language, selected=channel: self._status(
                     context, parent, theme, language, selected
                 ),
+                order=300,
             )
         registrar.singleton(
             VehicleStack,

@@ -177,8 +177,8 @@ with tempfile.TemporaryDirectory() as directory:
     assert tuple(camera.split_buttons) == (1, 2, 3, 4)
     assert len([key for key in window._extension_status_by_id if key.startswith("camera.")]) == 1
     status = window._extension_status_by_id["camera.connections"]
-    assert status.video_chip.text_label.text() == "VIDEO"
-    assert status.share_chip.text_label.text() == "VIDEO SHARE"
+    assert status.video_chip.text_label.text() == "KAMERA"
+    assert status.share_chip.text_label.text() == "YAYIN / KAYIT"
     assert backend.resolve(ExtensionHost).settings_contribution("camera") is not None
     camera_dock = window.workspace.panels["camera.wall"]
     assert camera_dock.toggleViewAction().isCheckable()

@@ -3,23 +3,29 @@
 from __future__ import annotations
 
 import json
-from contextlib import closing
 import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import UTC, datetime
 from http.cookiejar import CookieJar
-from urllib.request import Request, build_opener, HTTPCookieProcessor
+from urllib.request import HTTPCookieProcessor, Request, build_opener
+
 from src.core.events import EventBus
+
 from .models import (
+    CompetitionClockSample,
     CompetitionServerConfig,
     CompetitionServerTime,
-    CompetitionClockSample,
 )
 
 
 class ServerSession:
+    @property
+    def running(self):
+        return bool(self._thread and self._thread.is_alive())
+
     def __init__(self, config, snapshot, database, logger):
         self.config = dict(config)
         self.snapshot = snapshot
@@ -222,9 +228,9 @@ class CompetitionDatabase:
 
 class CompetitionRuntime:
     def __init__(self, context):
-        from src.services.settings import SettingsService
         from src.services.abstracts.telemetry import TelemetryService
         from src.services.logging_service import LoggingService
+        from src.services.settings import SettingsService
 
         self.settings = context.services.resolve(SettingsService)
         self.telemetry = context.services.resolve(TelemetryService)

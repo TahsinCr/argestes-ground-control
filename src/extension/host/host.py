@@ -16,13 +16,13 @@ from src.extension.api import (
     ExtensionContext,
     ExtensionManifest,
     ExtensionRegistrar,
-    VisualContribution,
-    StatusContribution,
     SettingsContribution,
+    StatusContribution,
+    VisualContribution,
 )
-from src.services.settings import SettingsService
-from src.services.logging_service import LoggingService
 from src.services.abstracts.logging import LogService
+from src.services.logging_service import LoggingService
+from src.services.settings import SettingsService
 
 
 class ExtensionServices:
@@ -369,6 +369,7 @@ class ExtensionHost:
                     f"{identifier}.{widget.identifier}",
                     widget.factory,
                     widget.placement,
+                    widget.order,
                 )
             )
         if registrar.settings_contribution is not None:

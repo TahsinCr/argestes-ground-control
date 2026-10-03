@@ -1,17 +1,20 @@
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QWidget,
-    QSizePolicy,
-    QVBoxLayout,
-    QLayout,
-    QLabel,
     QFrame,
     QGridLayout,
+    QLabel,
+    QLayout,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
 )
-from src.ui.widgets.common import PanelFrame
-from src.ui.themes.style import ThemePalette
-from src.ui.i18n import t
+
 from src.models.telemetry import TelemetrySnapshot
+from src.ui.i18n import t
+from src.ui.themes.style import ThemePalette
+from src.ui.widgets.common import PanelFrame
+
+from ..fields import EXTRA_FIELDS, format_field
 
 
 class TelemetryPanel(PanelFrame):
@@ -50,18 +53,72 @@ class TelemetryPanel(PanelFrame):
             ),
         ),
     )
+    DEFAULT_FIELDS = tuple(key for _, items in SECTION_SPECS for key, _ in items)
+    SECTION_SPECS = SECTION_SPECS + tuple(
+        (section, tuple((key, f"telemetry.field.{key}") for key in keys))
+        for section, keys in EXTRA_FIELDS.items()
+    )
 
     def set_visible_fields(self, fields=None):
-        selected = set(fields) if fields is not None else set(self.readouts)
+        self.configure_layout(
+            {"fields": fields if fields is not None else list(self.DEFAULT_FIELDS)}
+        )
+
+    def configure_layout(self, config):
+        fields = config.get("fields", self.DEFAULT_FIELDS)
+        if not isinstance(fields, (list, tuple)):
+            fields = self.DEFAULT_FIELDS
+        selected = list(
+            dict.fromkeys(
+                key for key in fields if isinstance(key, str) and key in self.readouts
+            )
+        )
+        try:
+            columns = max(1, min(4, int(config.get("columns", 2))))
+        except (TypeError, ValueError):
+            columns = 2
+        if config.get("layout") == "list":
+            columns = 1
+        groups = bool(config.get("grouped", True))
+        for grid in self.section_grids.values():
+            while grid.count():
+                grid.takeAt(0)
+            for column in range(8):
+                grid.setColumnStretch(column, 0)
         for key, readout in self.readouts.items():
-            readout.setVisible(key in selected)
-            self.readout_labels[key].setVisible(key in selected)
-        for section, items in self.SECTION_SPECS:
-            active = any(key in selected for key, _ in items)
-            title = self.section_titles[section]
-            title.setVisible(active)
-            index = self.content_layout.indexOf(title)
-            self.content_layout.itemAt(index + 1).widget().setVisible(active)
+            readout.hide()
+            self.readout_labels[key].hide()
+        first = next(iter(self.section_frames))
+        positions = {}
+        order = []
+        owners = {
+            key: section for section, items in self.SECTION_SPECS for key, _ in items
+        }
+        for key in selected:
+            section = owners[key] if groups else first
+            if section not in order:
+                order.append(section)
+            index = positions.get(section, 0)
+            positions[section] = index + 1
+            grid = self.section_grids[section]
+            label, value = self.readout_labels[key], self.readouts[key]
+            label.setParent(self.section_frames[section])
+            value.setParent(self.section_frames[section])
+            grid.addWidget(label, index // columns, (index % columns) * 2)
+            grid.addWidget(value, index // columns, (index % columns) * 2 + 1)
+            grid.setColumnStretch((index % columns) * 2 + 1, 1)
+            label.show()
+            value.show()
+        for section, frame in self.section_frames.items():
+            self.content_layout.removeWidget(frame)
+            self.content_layout.removeWidget(self.section_titles[section])
+            frame.setVisible(section in order)
+            self.section_titles[section].setVisible(groups and section in order)
+        for index, section in enumerate(order):
+            self.content_layout.insertWidget(index * 2, self.section_titles[section])
+            self.content_layout.insertWidget(
+                index * 2 + 1, self.section_frames[section]
+            )
 
     def __init__(
         self,
@@ -86,6 +143,8 @@ class TelemetryPanel(PanelFrame):
         self.readouts: dict[str, QLabel] = {}
         self.readout_labels: dict[str, QLabel] = {}
         self.section_titles: dict[str, QLabel] = {}
+        self.section_frames = {}
+        self.section_grids = {}
         self._readout_cache: dict[str, str] = {}
         for section_key, items in self.SECTION_SPECS:
             title_label = QLabel("", content)
@@ -95,6 +154,8 @@ class TelemetryPanel(PanelFrame):
             section = QFrame(content)
             section.setObjectName("TelemetrySection")
             grid = QGridLayout(section)
+            self.section_frames[section_key] = section
+            self.section_grids[section_key] = grid
             grid.setContentsMargins(7, 4, 7, 4)
             grid.setHorizontalSpacing(8)
             grid.setVerticalSpacing(3)
@@ -119,6 +180,7 @@ class TelemetryPanel(PanelFrame):
             self.content_layout.addWidget(section)
         self.content_layout.addStretch(1)
         self.set_language(self._language)
+        self.set_visible_fields()
 
     def set_theme(self, theme: ThemePalette) -> None:
         self._theme = theme
@@ -165,6 +227,13 @@ class TelemetryPanel(PanelFrame):
                 ),
                 "wind": f"{snapshot.wind_speed:0.1f} m/s · {snapshot.wind_heading:03.0f}°",
                 "ekf": "OK" if snapshot.ekf_ok else "WAIT",
+            }
+        )
+        self._set_readout_values(
+            {
+                key: format_field(snapshot, key)
+                for keys in EXTRA_FIELDS.values()
+                for key in keys
             }
         )
 

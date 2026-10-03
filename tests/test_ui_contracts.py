@@ -55,6 +55,54 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class UiContractTests(unittest.TestCase):
+    def test_telemetry_custom_layout_uses_selected_order_and_no_grid_holes(self):
+        panel = TelemetryPanel("", "", DARK)
+        self.assertGreaterEqual(len(panel.readouts), 50)
+        fields = ["battery_voltage", "latitude", "flight_mode"]
+        panel.configure_layout({"fields": fields, "layout": "list", "grouped": False})
+        grid = panel.section_grids["flight"]
+        for row, key in enumerate(fields):
+            self.assertIs(grid.itemAtPosition(row, 1).widget(), panel.readouts[key])
+        panel.configure_layout({"fields": fields, "columns": 3, "grouped": False})
+        for column, key in enumerate(fields):
+            self.assertIs(
+                grid.itemAtPosition(0, column * 2 + 1).widget(), panel.readouts[key]
+            )
+        panel.configure_layout({"fields": [], "columns": "bad"})
+        self.assertTrue(all(value.isHidden() for value in panel.readouts.values()))
+        panel.close()
+
+    def test_telemetry_settings_preserve_field_order_and_unknown_configuration(self):
+        from types import SimpleNamespace
+
+        from extensions.telemetry_display.ui.settings import TelemetrySettingsPage
+        from src.services.settings import SettingsService
+
+        with tempfile.TemporaryDirectory() as directory:
+            backend = create_container(Path(directory))
+            try:
+                settings = backend.resolve(SettingsService)
+                settings.update_extension(
+                    "telemetry_display",
+                    config={"fields": ["latitude", "battery_voltage"], "future": 42},
+                )
+                context = SimpleNamespace(services=backend)
+                page = TelemetrySettingsPage(context)
+                page.selected.setCurrentRow(0)
+                page.move(1)
+                page.columns.setValue(3)
+                page.grouped.setChecked(False)
+                page.apply()
+                saved = settings.extension_config("telemetry_display")
+                self.assertEqual(saved["fields"], ["battery_voltage", "latitude"])
+                self.assertEqual(saved["columns"], 3)
+                self.assertFalse(saved["grouped"])
+                self.assertEqual(saved["future"], 42)
+                page.deleteLater()
+                self.app.processEvents()
+            finally:
+                backend.shutdown()
+
     def test_frameless_filter_ignores_construction_and_style_events(self):
         window = QWidget()
         controller = FramelessResizeController(window)
@@ -351,10 +399,20 @@ class UiContractTests(unittest.TestCase):
                 owner.indicator.clicked.emit()
                 self.app.processEvents()
                 self.assertIs(self.app.activePopupWidget(), owner.popup)
-                owner.panel.add()
-                owner.panel.add()
+                from extensions.siha_teknofest_server.models import (
+                    CompetitionServerConfig,
+                )
+
+                owner.panel.save_profiles(
+                    [
+                        CompetitionServerConfig(name="First"),
+                        CompetitionServerConfig(name="Second"),
+                    ]
+                )
+                owner.panel.pending.result(timeout=3)
+                owner.panel.refresh()
                 self.assertEqual(len(owner.panel.profiles), 2)
-                self.assertEqual(owner.panel.list.count(), 2)
+                self.assertEqual(len(owner.popup._servers), 2)
                 owner.popup.close()
                 window._apply_extension_change("siha_teknofest_server", False)
                 self.assertNotIn(
@@ -1288,7 +1346,7 @@ class UiContractTests(unittest.TestCase):
         )
         self.assertFalse(hasattr(panel, "cards"))
         self.assertNotIn("airspeed", panel.readouts)
-        self.assertNotIn("ground_speed", panel.readouts)
+        self.assertTrue(panel.readouts["ground_speed"].isHidden())
         self.assertEqual(panel.readouts["flight_mode"].text(), "AUTO")
         self.assertEqual(panel.readouts["vehicle_state"].text(), "ARMED · ACTIVE")
         self.assertEqual(panel.readouts["altitude_agl"].text(), "84.2 m")

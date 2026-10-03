@@ -1,5 +1,7 @@
 {
   "extension.camera.name": "Camera",
+  "video.status.camera": "CAMERA",
+  "video.status.outputs": "OUTPUTS",
   "extension.camera.description": "Camera inputs, multi-camera wall, recording and streaming",
   "extension.camera.category": "Video",
   "video.codec.h264": "H.264",

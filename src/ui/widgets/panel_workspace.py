@@ -241,8 +241,7 @@ class _PanelDropOverlay(QWidget):
         badge_ink = QColor(27, 34, 43) if dark else QColor(255, 255, 255)
         dock, active_relation = self.active
         if dock is not None:
-            origin = self.mapFromGlobal(dock.mapToGlobal(QPoint()))
-            bounds = QRect(origin, dock.size()).intersected(self.rect())
+            bounds = self.workspace._drop_bounds(dock).intersected(self.rect())
             for relation, zone in self.workspace._drop_zones(bounds).items():
                 selected = active_relation == relation
                 border = QColor(ink)
@@ -334,6 +333,8 @@ class PanelWorkspace(QMainWindow):
         self._panel_options: dict[str, tuple[bool, bool, bool]] = {}
         self._panel_default_areas: dict[str, Qt.DockWidgetArea] = {}
         self._panel_sizes: dict[str, tuple[int, int]] = {}
+        self._locked_sizes = {}
+        self._unlocked_limits = {}
         self._size_restore_pending = False
         self._size_restore_timer = QTimer(self)
         self._size_restore_timer.setSingleShot(True)
@@ -856,6 +857,15 @@ class PanelWorkspace(QMainWindow):
         if local.y() >= self.height() - margin:
             return None, "below"
         source = source or self._drag_source
+        if source is not None:
+            peers = [
+                peer for peer in self.tabifiedDockWidgets(source) if not peer.isHidden()
+            ]
+            bounds = QRect(source.mapTo(self, QPoint()), source.size())
+            if peers and bounds.contains(local):
+                for relation, zone in self._drop_zones(bounds).items():
+                    if zone.contains(local):
+                        return (peers[0], relation) if relation != "tab" else None
         for dock in reversed(tuple(self.panels.values())):
             if (
                 dock is source
@@ -916,6 +926,31 @@ class PanelWorkspace(QMainWindow):
             return self.place_panel(anchor, source, relation)
         return self.move_panel_to_area(source, area)
 
+    def _drop_bounds(self, dock):
+        visible = next(
+            (
+                peer
+                for peer in [dock, *self.tabifiedDockWidgets(dock)]
+                if peer.isVisible() and not peer.visibleRegion().isEmpty()
+            ),
+            dock,
+        )
+        return QRect(visible.mapTo(self._drop_overlay, QPoint()), visible.size())
+
+    def set_panel_size_locked(self, dock, locked):
+        key = self._panel_keys[dock]
+        content = dock.widget()
+        if locked and key not in self._locked_sizes:
+            self._unlocked_limits[key] = (content.minimumSize(), content.maximumSize())
+            self._locked_sizes[key] = (content.width(), content.height())
+            content.setFixedSize(content.size())
+        elif not locked and key in self._locked_sizes:
+            minimum, maximum = self._unlocked_limits.pop(key)
+            content.setMinimumSize(minimum)
+            content.setMaximumSize(maximum)
+            self._locked_sizes.pop(key)
+        self.layout_changed.emit()
+
     def drop_panel_at(self, dock: QDockWidget, global_position: QPoint) -> bool:
         """Resolve drag drops to a panel center, edge, or workspace outer edge."""
         if (
@@ -929,6 +964,11 @@ class PanelWorkspace(QMainWindow):
     def _show_panel_menu(self, dock: QDockWidget, point) -> None:
         english = self.language == "en"
         menu = QMenu(dock)
+        lock = menu.addAction("Lock panel size" if english else "Boyutunu sabitle")
+        lock.setCheckable(True)
+        lock.setChecked(self._panel_keys[dock] in self._locked_sizes)
+        lock.toggled.connect(lambda checked: self.set_panel_size_locked(dock, checked))
+        menu.addSeparator()
         move = menu.addMenu("Move Panel" if english else "Paneli taşı")
         for title, area in (
             ("Left" if english else "Sola", Qt.DockWidgetArea.LeftDockWidgetArea),
@@ -980,6 +1020,7 @@ class PanelWorkspace(QMainWindow):
         menu.addSeparator()
         menu.addAction("Hide Panel" if english else "Paneli gizle", dock.hide)
         menu.exec(dock.mapToGlobal(point))
+        menu.deleteLater()
 
     def _tabify_panel(self, target: QDockWidget, dock: QDockWidget) -> None:
         self.place_panel(target, dock, "tab")
@@ -1059,6 +1100,8 @@ class PanelWorkspace(QMainWindow):
         return True
 
     def remove_panel(self, key: str) -> QWidget | None:
+        if key in self._locked_sizes:
+            self.set_panel_size_locked(self.panels[key], False)
         self._release_width_row(key)
         self._independent_widths.pop(key, None)
         self._width_limits.pop(key, None)
@@ -1111,6 +1154,7 @@ class PanelWorkspace(QMainWindow):
                 for key, (width, height) in self._panel_sizes.items()
             },
             "panel_widths": dict(self._independent_widths),
+            "locked_sizes": dict(self._locked_sizes),
             "visible_panels": [
                 key for key, dock in self.panels.items() if not dock.isHidden()
             ],
@@ -1150,6 +1194,8 @@ class PanelWorkspace(QMainWindow):
             if state_version not in (*self.LEGACY_STATE_VERSIONS, self.STATE_VERSION):
                 return False
             state = QByteArray.fromBase64(payload["state"].encode("ascii"))
+            for key in tuple(self._locked_sizes):
+                self.set_panel_size_locked(self.panels[key], False)
             if restore_window and isinstance(payload.get("window_geometry"), str):
                 self.window().restoreGeometry(
                     QByteArray.fromBase64(payload["window_geometry"].encode("ascii"))
@@ -1225,6 +1271,26 @@ class PanelWorkspace(QMainWindow):
                 if state_version == 1:
                     self._restore_map_into_legacy_workspace()
                 self._normalize_panel_areas()
+                locks = payload.get("locked_sizes", {})
+                for key, size in locks.items() if isinstance(locks, dict) else ():
+                    if (
+                        key in self.panels
+                        and isinstance(size, (list, tuple))
+                        and len(size) == 2
+                        and all(
+                            isinstance(n, int)
+                            and not isinstance(n, bool)
+                            and 0 < n < 16777215
+                            for n in size
+                        )
+                    ):
+                        content = self.panels[key].widget()
+                        self._unlocked_limits[key] = (
+                            content.minimumSize(),
+                            content.maximumSize(),
+                        )
+                        self._locked_sizes[key] = tuple(size)
+                        content.setFixedSize(*size)
                 self._sync_independent_widths(rebind=True)
                 self._panel_size_restore_enabled = True
                 # Qt state already contains split ratios and tab selection.

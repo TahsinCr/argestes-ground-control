@@ -1,5 +1,5 @@
 {
-  "identifier": "siha_teknofest_server", "name": "SIHA TEKNOFEST Server", "category": "Server",
+  "identifier": "siha_teknofest_server", "name": "SIHA Teknofest Server", "category": "Server",
   "description": "Competition HTTP connections, telemetry delivery and SQLite history",
   "version": "1.0.0", "api_major": 1,
   "entry_point": "extensions.siha_teknofest_server.plugin:create_extension",
