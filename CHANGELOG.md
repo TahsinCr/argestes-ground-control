@@ -3,6 +3,20 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Reliable panel drag previews
+
+* Replaced paint-visibility checks with a shared layout-geometry resolver for
+  panel drop targeting and previews. A covering drag overlay no longer makes
+  an active panel disappear from hit testing; inactive tabs remain excluded.
+* Added coverage for all five targets with the overlay visible and paint
+  visibility deliberately empty, including preview rendering.
+* Fixed preview coordinate conversion between sibling widgets, which could
+  misplace the guide on native Qt platforms. Native hover tests now wait for
+  window-manager resize events before comparing stable panel geometry.
+* Verification: 22 panel tests pass on X11 and 62 panel/UI tests pass offscreen.
+  The combined 588-test suite passes with faulthandler enabled; two earlier
+  combined runs hit an intermittent native Qt crash in a connection-popup test.
+
 ### Panel size locks and configurable extension views
 
 * Added a persistent size lock to each panel's hover menu. Locked content keeps

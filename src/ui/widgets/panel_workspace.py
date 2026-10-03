@@ -861,24 +861,19 @@ class PanelWorkspace(QMainWindow):
             peers = [
                 peer for peer in self.tabifiedDockWidgets(source) if not peer.isHidden()
             ]
-            bounds = QRect(source.mapTo(self, QPoint()), source.size())
-            if peers and bounds.contains(local):
+            bounds = self._panel_bounds(source)
+            if peers and bounds is not None and bounds.contains(local):
                 for relation, zone in self._drop_zones(bounds).items():
                     if zone.contains(local):
                         return (peers[0], relation) if relation != "tab" else None
         for dock in reversed(tuple(self.panels.values())):
-            if (
-                dock is source
-                or not dock.isVisible()
-                or dock.isFloating()
-                or dock.visibleRegion().isEmpty()
-            ):
+            if dock is source:
                 continue
-            point = dock.mapFromGlobal(global_position)
-            if not dock.rect().contains(point):
+            bounds = self._panel_bounds(dock)
+            if bounds is None or not bounds.contains(local):
                 continue
-            for relation, zone in self._drop_zones(dock.rect()).items():
-                if zone.contains(point):
+            for relation, zone in self._drop_zones(bounds).items():
+                if zone.contains(local):
                     return dock, relation
         return None
 
@@ -926,16 +921,23 @@ class PanelWorkspace(QMainWindow):
             return self.place_panel(anchor, source, relation)
         return self.move_panel_to_area(source, area)
 
+    def _panel_bounds(self, dock: QDockWidget) -> QRect | None:
+        """Layout visibility, independent of paint occlusion by the drag overlay.
+
+        Qt moves inactive tabs outside the workspace. Do not use visibleRegion:
+        a covering widget can empty it even for the active tab.
+        """
+        if not dock.isVisible() or dock.isFloating():
+            return None
+        bounds = QRect(dock.mapTo(self, QPoint()), dock.size())
+        return bounds if bounds.intersects(self.rect()) else None
+
     def _drop_bounds(self, dock):
-        visible = next(
-            (
-                peer
-                for peer in [dock, *self.tabifiedDockWidgets(dock)]
-                if peer.isVisible() and not peer.visibleRegion().isEmpty()
-            ),
-            dock,
-        )
-        return QRect(visible.mapTo(self._drop_overlay, QPoint()), visible.size())
+        for peer in [dock, *self.tabifiedDockWidgets(dock)]:
+            bounds = self._panel_bounds(peer)
+            if bounds is not None:
+                return bounds.translated(-self._drop_overlay.pos())
+        return QRect()
 
     def set_panel_size_locked(self, dock, locked):
         key = self._panel_keys[dock]

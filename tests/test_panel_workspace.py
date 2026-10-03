@@ -10,7 +10,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt
-from PyQt6.QtGui import QDropEvent, QMouseEvent
+from PyQt6.QtGui import QDragMoveEvent, QDropEvent, QMouseEvent, QRegion
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QLabel, QStyle, QTabWidget
 
@@ -19,6 +19,44 @@ from src.ui.widgets.panel_workspace import PanelWorkspace
 
 
 class PanelWorkspaceTests(unittest.TestCase):
+    def test_drag_targets_and_preview_survive_overlay_paint_occlusion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = PanelWorkspace(Path(directory) / "layout.json")
+            source = workspace.add_panel(
+                "source", "Source", QLabel("Source"), Qt.DockWidgetArea.LeftDockWidgetArea
+            )
+            target = workspace.add_panel(
+                "target", "Target", QLabel("Target"), Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            workspace.resize(1000, 700)
+            workspace.show()
+            if self.app.platformName() != "offscreen":
+                self.assertTrue(QTest.qWaitForWindowExposed(workspace))
+            self.app.processEvents()
+            workspace._drag_source = source
+            overlay = workspace._drop_overlay
+            overlay.setGeometry(workspace.rect())
+            overlay.show()
+            overlay.raise_()
+            mime = QMimeData()
+            mime.setData("application/x-yki-panel-drag", b"source")
+            # Paint visibility is not a reliable measure of layout visibility.
+            with patch.object(type(target), "visibleRegion", return_value=QRegion()):
+                bounds = workspace._drop_bounds(target)
+                self.assertFalse(bounds.isEmpty())
+                for relation, zone in workspace._drop_zones(bounds).items():
+                    event = QDragMoveEvent(
+                        zone.center(), Qt.DropAction.MoveAction, mime,
+                        Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                    )
+                    overlay.dragMoveEvent(event)
+                    self.assertTrue(event.isAccepted(), relation)
+                    self.assertEqual(overlay.active, (target, relation))
+                    self.assertFalse(overlay.grab().isNull())
+            overlay.hide()
+            workspace._drag_source = None
+            workspace.close()
+
     def test_size_lock_survives_window_resize_and_layout_restore(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = PanelWorkspace(Path(directory) / "layout.json")
@@ -142,7 +180,11 @@ class PanelWorkspaceTests(unittest.TestCase):
             ):
                 workspace.setStyleSheet(build_stylesheet(theme))
                 workspace.resize(*size)
-                self.app.processEvents()
+                # Native window-manager configure events arrive asynchronously.
+                if self.app.platformName() != "offscreen":
+                    QTest.qWait(30)
+                else:
+                    self.app.processEvents()
                 workspace.enable_panel_size_restore(capture_current=True)
                 before = [(dock.geometry(), dock.minimumSizeHint()) for dock in docks]
                 remembered = dict(workspace._panel_sizes)
