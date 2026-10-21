@@ -460,6 +460,60 @@ class PanelWorkspaceTests(unittest.TestCase):
             self.assertGreater(bottom.x(), left.geometry().right())
             workspace.close()
 
+    def test_bottom_panel_fills_workspace_when_right_column_is_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = PanelWorkspace(Path(directory) / "layout.json")
+            side = [
+                workspace.add_panel(
+                    key, key, QLabel(key), Qt.DockWidgetArea.LeftDockWidgetArea
+                )
+                for key in ("flight", "telemetry", "commands")
+            ]
+            workspace.splitDockWidget(side[0], side[1], Qt.Orientation.Vertical)
+            workspace.splitDockWidget(side[1], side[2], Qt.Orientation.Vertical)
+            map_dock = workspace.add_panel(
+                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            camera = workspace.add_panel(
+                "camera",
+                "Camera",
+                QLabel("Camera"),
+                Qt.DockWidgetArea.RightDockWidgetArea,
+            )
+            workspace.splitDockWidget(map_dock, camera, Qt.Orientation.Horizontal)
+            bottom = workspace.add_panel(
+                "logs", "Logs", QLabel("Logs"), Qt.DockWidgetArea.BottomDockWidgetArea
+            )
+            workspace.resize(1200, 800)
+            workspace.show()
+            self.app.processEvents()
+            self.assertEqual(
+                workspace.corner(Qt.Corner.BottomLeftCorner),
+                Qt.DockWidgetArea.LeftDockWidgetArea,
+            )
+
+            map_dock.hide()
+            camera.hide()
+            self.app.processEvents()
+
+            self.assertEqual(
+                workspace.corner(Qt.Corner.BottomLeftCorner),
+                Qt.DockWidgetArea.BottomDockWidgetArea,
+            )
+            self.assertEqual(bottom.geometry().left(), 0)
+            self.assertGreaterEqual(bottom.width(), workspace.width() - 2)
+            self.assertLess(
+                max(dock.geometry().bottom() for dock in side), bottom.geometry().top()
+            )
+
+            map_dock.show()
+            self.app.processEvents()
+            self.assertEqual(
+                workspace.corner(Qt.Corner.BottomLeftCorner),
+                Qt.DockWidgetArea.LeftDockWidgetArea,
+            )
+            workspace.close()
+
     def test_separator_resizes_only_neighbors_and_stops_at_minimum(self) -> None:
         for orientation in (Qt.Orientation.Horizontal, Qt.Orientation.Vertical):
             with (

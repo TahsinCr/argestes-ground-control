@@ -53,6 +53,10 @@ Release headings link each entry to its release date.
 * Fixed edge drops on tabbed panels choosing the workspace boundary before the
   actual tab group. Split drops at the group's outer edges now keep both panels
   attached and visible, including when the group touches the workspace edge.
+* Fixed bottom panels remaining restricted to the right-hand column after the
+  right-side panels are closed. The lower region now spans the workspace when
+  no right dock remains, and returns alongside a full-height left column when
+  the right side is reopened.
 * Corrected panel splitting and tab placement, including edge drops onto the
   panel's own tab group. Drop previews and hit testing now share panel geometry,
   independent of drag-overlay paint occlusion.
@@ -76,7 +80,7 @@ Release headings link each entry to its release date.
 
 ### Tests
 
-* The combined suite passes 588 tests. Panel and UI checks also pass on X11 and
+* The combined suite passes 591 tests. Panel and UI checks also pass on X11 and
   offscreen Qt; compileall, targeted lint and whitespace checks pass.
 * Dark and light UI screenshots were reviewed. No physical vehicle, camera or
   competition server was used for this verification.

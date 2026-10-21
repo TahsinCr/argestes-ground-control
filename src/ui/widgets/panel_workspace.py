@@ -361,7 +361,28 @@ class PanelWorkspace(QMainWindow):
 
     def _configure_dock_corners(self) -> None:
         self.setCorner(Qt.Corner.TopLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
-        self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
+        panels = getattr(self, "panels", {}).values()
+        has_bottom = any(
+            not dock.isHidden()
+            and not dock.isFloating()
+            and self.dockWidgetArea(dock) == Qt.DockWidgetArea.BottomDockWidgetArea
+            for dock in panels
+        )
+        has_right = any(
+            not dock.isHidden()
+            and not dock.isFloating()
+            and self.dockWidgetArea(dock) == Qt.DockWidgetArea.RightDockWidgetArea
+            for dock in panels
+        )
+        # Keep the left column full-height while the right column is in use.
+        # Once it is closed, let a visible bottom panel span the whole workspace
+        # instead of leaving the lower-left corner assigned to the side column.
+        bottom_left_area = (
+            Qt.DockWidgetArea.BottomDockWidgetArea
+            if has_bottom and not has_right
+            else Qt.DockWidgetArea.LeftDockWidgetArea
+        )
+        self.setCorner(Qt.Corner.BottomLeftCorner, bottom_left_area)
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -702,6 +723,7 @@ class PanelWorkspace(QMainWindow):
         if key in self._width_spacers:
             self._width_spacers[key].setVisible(not hidden)
         self._schedule_width_sync()
+        self._configure_dock_corners()
         if self._restoring_panel_sizes:
             return
         # An inactive tab is not closed. Restoring geometry here would undo
