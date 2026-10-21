@@ -46,6 +46,10 @@ Release headings link each entry to its release date.
 
 ### Fixed
 
+* Restored dragging the frameless application window from unused space in the
+  top menu bar. Menu actions and window controls remain interactive; when the
+  window manager cannot start a native move, the title bar falls back to manual
+  movement.
 * Corrected panel splitting and tab placement, including edge drops onto the
   panel's own tab group. Drop previews and hit testing now share panel geometry,
   independent of drag-overlay paint occlusion.

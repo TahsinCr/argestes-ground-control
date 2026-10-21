@@ -467,6 +467,9 @@ class AppTitleBar(QWidget):
 
         self.mark = AppMark(window.windowIcon(), self)
         self.mark.set_theme(theme)
+        self.mark.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
+        )
         layout.addWidget(self.mark)
 
         self.title_label = QLabel("", self)
@@ -510,6 +513,7 @@ class AppTitleBar(QWidget):
                 QSizePolicy.Policy.Expanding,
                 QSizePolicy.Policy.Fixed,
             )
+            self._menu_bar.installEventFilter(self)
             for key in self.MAIN_MENU_KEYS:
                 self._menu_bar.addMenu(t(key, language))
             self.layout().insertWidget(1, self._menu_bar, 1)
@@ -554,21 +558,78 @@ class AppTitleBar(QWidget):
             return
         super().mouseDoubleClickEvent(event)
 
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self._menu_bar:
+            event_type = event.type()
+            if isinstance(event, QMouseEvent):
+                if (
+                    event_type == QEvent.Type.MouseButtonPress
+                    and event.button() == Qt.MouseButton.LeftButton
+                    and self._menu_bar.actionAt(event.position().toPoint()) is None
+                ):
+                    if self._begin_window_drag(event):
+                        event.accept()
+                        return True
+                    self._menu_bar.grabMouse()
+                    event.accept()
+                    return True
+                elif (
+                    event_type == QEvent.Type.MouseMove
+                    and event.buttons() & Qt.MouseButton.LeftButton
+                    and self._drag_offset is not None
+                ):
+                    self._move_window(event)
+                    event.accept()
+                    return True
+                elif (
+                    event_type == QEvent.Type.MouseButtonRelease
+                    and event.button() == Qt.MouseButton.LeftButton
+                    and self._drag_offset is not None
+                ):
+                    self._drag_offset = None
+                    self._menu_bar.releaseMouse()
+                    event.accept()
+                    return True
+                elif (
+                    event_type == QEvent.Type.MouseButtonDblClick
+                    and event.button() == Qt.MouseButton.LeftButton
+                    and self._menu_bar.actionAt(event.position().toPoint()) is None
+                ):
+                    self.toggle_maximized()
+                    event.accept()
+                    return True
+        return super().eventFilter(watched, event)
+
+    def _request_system_move(self) -> bool:
+        if self._window.isMaximized():
+            return False
+        handle = self._window.windowHandle()
+        start_system_move = (
+            getattr(handle, "startSystemMove", None) if handle else None
+        )
+        return bool(start_system_move and start_system_move())
+
+    def _begin_window_drag(self, event: QMouseEvent) -> bool:
+        if self._request_system_move():
+            self._drag_offset = None
+            return True
+        self._drag_offset = (
+            event.globalPosition().toPoint()
+            - self._window.frameGeometry().topLeft()
+        )
+        return False
+
+    def _move_window(self, event: QMouseEvent) -> None:
+        if self._window.isMaximized():
+            self._window.showNormal()
+            self.sync_window_state()
+            self._drag_offset = QPoint(self._window.width() // 2, self.height() // 2)
+        if self._drag_offset is not None:
+            self._window.move(event.globalPosition().toPoint() - self._drag_offset)
+
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            if not self._window.isMaximized():
-                handle = self._window.windowHandle()
-                start_system_move = (
-                    getattr(handle, "startSystemMove", None) if handle else None
-                )
-                if start_system_move and start_system_move():
-                    self._drag_offset = None
-                    event.accept()
-                    return
-            self._drag_offset = (
-                event.globalPosition().toPoint()
-                - self._window.frameGeometry().topLeft()
-            )
+            self._begin_window_drag(event)
             event.accept()
             return
         super().mousePressEvent(event)
@@ -578,13 +639,7 @@ class AppTitleBar(QWidget):
             event.buttons() & Qt.MouseButton.LeftButton
             and self._drag_offset is not None
         ):
-            if self._window.isMaximized():
-                self._window.showNormal()
-                self.sync_window_state()
-                self._drag_offset = QPoint(
-                    self._window.width() // 2, self.height() // 2
-                )
-            self._window.move(event.globalPosition().toPoint() - self._drag_offset)
+            self._move_window(event)
             event.accept()
             return
         super().mouseMoveEvent(event)

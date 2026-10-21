@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSpinBox,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -584,6 +585,47 @@ class UiContractTests(unittest.TestCase):
         title_bar.deleteLater()
         window.deleteLater()
         self.app.processEvents()
+
+    def test_title_bar_blank_menu_area_moves_frameless_window(self) -> None:
+        window = QWidget()
+        window.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        window.resize(800, 500)
+        layout = QVBoxLayout(window)
+        layout.setContentsMargins(0, 0, 0, 0)
+        title_bar = AppTitleBar(window, DARK)
+        title_bar.enable_main_menu("en")
+        layout.addWidget(title_bar)
+        window.show()
+        self.app.processEvents()
+
+        menu_bar = title_bar._menu_bar
+        self.assertIsNotNone(menu_bar)
+        blank = QPoint(menu_bar.width() - 4, menu_bar.height() // 2)
+        self.assertIsNone(menu_bar.actionAt(blank))
+        global_start = menu_bar.mapToGlobal(blank)
+        move_to = global_start + QPoint(60, 35)
+
+        class _MousePosition:
+            def __init__(self, position):
+                self._position = position
+
+            def globalPosition(self):
+                return QPointF(self._position)
+
+        try:
+            with patch.object(title_bar, "_request_system_move", return_value=False):
+                self.assertFalse(
+                    title_bar._begin_window_drag(_MousePosition(global_start))
+                )
+                self.assertIsNotNone(title_bar._drag_offset)
+                before = window.pos()
+                title_bar._move_window(_MousePosition(move_to))
+                self.assertNotEqual(window.pos(), before)
+        finally:
+            window.close()
+            title_bar.deleteLater()
+            window.deleteLater()
+            self.app.processEvents()
 
     def test_activity_bar_separates_views_and_dynamic_categories(self):
         from src.ui.widgets.panel_workspace import PanelWorkspace
