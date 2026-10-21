@@ -119,6 +119,66 @@ class PanelWorkspaceTests(unittest.TestCase):
                 self.assertNotIn(second, workspace.tabifiedDockWidgets(first))
             workspace.close()
 
+    def test_outer_edge_drop_splits_a_tabbed_source_from_its_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = PanelWorkspace(Path(directory) / "layout.json")
+            map_panel = workspace.add_panel(
+                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            camera = workspace.add_panel(
+                "camera",
+                "Camera",
+                QLabel("Camera"),
+                Qt.DockWidgetArea.RightDockWidgetArea,
+            )
+            workspace.resize(1000, 600)
+            workspace.show()
+            self.app.processEvents()
+            workspace.place_panel(map_panel, camera, "tab")
+            camera.raise_()
+            self.app.processEvents()
+
+            for relation in ("left", "right", "above", "below"):
+                workspace.place_panel(map_panel, camera, "tab")
+                camera.raise_()
+                self.app.processEvents()
+                bounds = workspace._panel_bounds(camera)
+                edge_points = {
+                    "left": QPoint(bounds.left() + 2, bounds.center().y()),
+                    "right": QPoint(bounds.right() - 2, bounds.center().y()),
+                    "above": QPoint(bounds.center().x(), bounds.top() + 2),
+                    "below": QPoint(bounds.center().x(), bounds.bottom() - 2),
+                }
+                point = edge_points[relation]
+                workspace._drag_source = camera
+                overlay = workspace._drop_overlay
+                overlay.setGeometry(workspace.rect())
+                overlay.show()
+                mime = QMimeData()
+                mime.setData("application/x-yki-panel-drag", b"camera")
+                event = QDropEvent(
+                    QPointF(overlay.mapFromGlobal(workspace.mapToGlobal(point))),
+                    Qt.DropAction.MoveAction,
+                    mime,
+                    Qt.MouseButton.LeftButton,
+                    Qt.KeyboardModifier.NoModifier,
+                )
+                overlay.dropEvent(event)
+                self.assertTrue(event.isAccepted())
+                pending = workspace._pending_drop
+                self.assertEqual(pending, (camera, (map_panel, relation)))
+                overlay.hide()
+                workspace._drag_source = None
+                workspace._pending_drop = None
+                self.assertTrue(workspace._apply_drop(*pending))
+                self.app.processEvents()
+                self.assertNotIn(camera, workspace.tabifiedDockWidgets(map_panel))
+                self.assertTrue(map_panel.isVisible())
+                self.assertTrue(camera.isVisible())
+                self.assertTrue(workspace.rect().intersects(map_panel.geometry()))
+                self.assertTrue(workspace.rect().intersects(camera.geometry()))
+            workspace.close()
+
     def test_splitting_tab_group_does_not_add_source_as_another_tab(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = PanelWorkspace(Path(directory) / "layout.json")

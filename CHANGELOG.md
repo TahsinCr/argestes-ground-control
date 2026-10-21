@@ -50,6 +50,9 @@ Release headings link each entry to its release date.
   top menu bar. Menu actions and window controls remain interactive; when the
   window manager cannot start a native move, the title bar falls back to manual
   movement.
+* Fixed edge drops on tabbed panels choosing the workspace boundary before the
+  actual tab group. Split drops at the group's outer edges now keep both panels
+  attached and visible, including when the group touches the workspace edge.
 * Corrected panel splitting and tab placement, including edge drops onto the
   panel's own tab group. Drop previews and hit testing now share panel geometry,
   independent of drag-overlay paint occlusion.

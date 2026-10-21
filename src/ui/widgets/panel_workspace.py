@@ -847,15 +847,6 @@ class PanelWorkspace(QMainWindow):
         local = self.mapFromGlobal(global_position)
         if not self.rect().contains(local):
             return None
-        margin = max(24, min(48, self.width() // 30))
-        if local.x() >= self.width() - margin:
-            return None, "right"
-        if local.x() < margin:
-            return None, "left"
-        if local.y() < margin:
-            return None, "above"
-        if local.y() >= self.height() - margin:
-            return None, "below"
         source = source or self._drag_source
         if source is not None:
             peers = [
@@ -866,6 +857,16 @@ class PanelWorkspace(QMainWindow):
                 for relation, zone in self._drop_zones(bounds).items():
                     if zone.contains(local):
                         return (peers[0], relation) if relation != "tab" else None
+
+        margin = max(24, min(48, self.width() // 30))
+        if local.x() >= self.width() - margin:
+            return None, "right"
+        if local.x() < margin:
+            return None, "left"
+        if local.y() < margin:
+            return None, "above"
+        if local.y() >= self.height() - margin:
+            return None, "below"
         for dock in reversed(tuple(self.panels.values())):
             if dock is source:
                 continue
