@@ -1,24 +1,19 @@
 [![Python 3.11+][python-shield]][python-url]
 [![License][license-shield]][license-url]
 
-**English** | [Türkçe][lang-tr-url]
+**English** | [Türkçe](README-TR.md)
 
 # Kırlangıç Ground Control Station
 
-A desktop ground-control application with an extension host. The built-in
-MAVLink protocol extension and optional Vehicle Connection extension provide the current
-vehicle connection, telemetry/GPS and autopilot behavior. Feature packages provide
-map/autonomy, parameters, battery, flight dynamics, configurable telemetry, quick
-commands, cameras, joystick and competition servers. The common application owns
-the workspace, settings, logs, extension lifecycle and normalized data contracts.
+Kırlangıç is a desktop ground control station built around an extensible application host. The current vehicle stack uses MAVLink, while the application and feature packages are organized so that vehicle protocols and operator tools can evolve independently.
 
-The application is maintained as a vehicle-neutral ground-control foundation.
+The application owns shared workspace behavior, settings, logging, extension lifecycle and normalized data contracts. Extensions provide vehicle connections, maps, camera tools and other operator features.
 
 ## Quick start
 
 ```bash
 git clone --recurse-submodules \
-  https://github.com/Kirlangic-Team/ground-control-station.git
+  https://github.com/TahsinCr/ground-control-station.git
 cd ground-control-station
 git submodule update --init --recursive
 python3 -m venv .venv
@@ -30,206 +25,79 @@ pip install -r extensions/map_autonomy/requirements.txt
 python main.py
 ```
 
-The application requires Python 3.11+ and Qt 6. Protocol and WebEngine dependencies
-are installed from their owning extension's requirements; use the same virtual
-environment to launch the application. Keep Qt and Qt WebEngine versions aligned.
-On Linux, install the system packages required by PyQt6 and Qt WebEngine before
-launching the application.
+Python 3.11+ and Qt 6 are required. Install protocol and WebEngine dependencies from the requirements files belonging to those extensions, and run the application from the same virtual environment. Keep Qt and Qt WebEngine versions aligned. Linux may also require system packages for PyQt6 and Qt WebEngine.
 
-## MAVLink connections
+## Connecting a vehicle
 
-Create and select named MAVLink profiles from the telemetry connection control.
-Common endpoints include:
+Create or select a named profile from the vehicle connection control. Typical MAVLink endpoints are:
 
-```text
-Serial: /dev/ttyUSB0     baud: 57600
-UDP:    udpin:0.0.0.0:14550
-TCP:    tcp:127.0.0.1:5762
-```
+| Link | Endpoint | Example baud |
+| --- | --- | --- |
+| Serial | `/dev/ttyUSB0` | `57600` |
+| UDP input | `udpin:0.0.0.0:14550` | — |
+| TCP | `tcp:127.0.0.1:5762` | — |
 
-An open endpoint is not considered healthy until the vehicle heartbeat is
-received. `auto_connect` controls the initial attempt; `autoreconnect` controls
-recovery after a live link is lost. With both disabled, no background attempt
-is made. An explicit disconnect suppresses recovery until the operator
-reconnects.
+The connection is healthy after a vehicle heartbeat is received. `auto_connect` controls the initial connection attempt; `autoreconnect` controls recovery after an established link drops. If both are disabled, the application makes no automatic attempt. An operator disconnect suppresses recovery until the next explicit connection request.
 
-Only the shared MAVLink client/router reads the transport. Services consume
-its events; UI code does not create a second reader or encode raw packets.
+The shared MAVLink client and router are the only transport readers. Services consume their events; UI code does not create another reader or encode packets.
 
 ## Architecture
 
-```text
-Qt UI → UI adapters → application contracts → extension host → extensions/
-                            │                                  ├── mavlink/
-                            │                                  ├── vehicle_connection/
-                            │                                  ├── camera/
-                            │                                  ├── map_autonomy/
-                            │                                  ├── joystick/
-                            │                                  ├── siha_teknofest_server/
-                            │                                  ├── battery/, parameters/
-                            │                                  └── flight_dynamics/, telemetry_display/, quick_commands/
-                            └── workspace, settings, logs and normalized data hubs
-```
+### Application and extension host
 
-`src/container.py` is the composition root. `src/extension/api` defines the
-versioned extension contract; `src/extension/host` discovers static manifests,
-checks capabilities and composes enabled extensions. An extension may use the
-public `src.core` packages directly. Protocol adapters provide the common
-vehicle contracts and decoded telemetry. The separate Vehicle Connection
-extension owns connection lifecycle and profile editing through protocol-neutral
-`ConnectionSource` and `ConnectionProfiles` contracts. One protocol provider
-must remain enabled. Camera and Vehicle Connection
-switches apply immediately without restarting the application; only their owned
-services and UI are rebuilt. The Extensions button beside Settings opens a
-responsive dialog with search, category/status filters and extension controls.
-Its installed-package view can share the tab shell with a future store; no store
-is included. Existing MAVLink configuration
-remains in `data/settings.json`; extension state and settings share its
-`extensions.<identifier>.enabled` and `extensions.<identifier>.config` fields.
-Disabling an extension never erases its settings. Legacy files in
-`data/extensions/` are imported before removal; unrelated data is left intact.
-Wire subscriptions and heartbeat decoding belong to the protocol package;
-parameter-message handling belongs to the parameter package's protocol adapter,
-not the shared `VehicleService` contract. MAVLink owns
-its decoded feed, GPS and autopilot indicators. Vehicle Connection contributes
-the connection chip and quality meter;
-camera status controls belong to the camera package. Status contributions use
-`registrar.status_widget(..., placement="connections" | "metrics", order=100)` to select
-the left connection group or the group beside the battery. The connection chip
-opens its profile popup; GPS and autopilot indicators remain status-only.
-Lower `order` values appear first within their group; camera connections sit
-beside vehicle connections without protocol-specific code in the application.
-Panel menus offer a persistent size lock. Vehicle telemetry settings select and
-order 58 fields, with list/grid layouts and optional category grouping.
-TEKNOFEST provides a bottom-bar popup for multiple server profiles, not a
-workspace panel. Every extension's settings, including MAVLink's
-advanced options, are available only in the common Settings dialog. Existing
-bottom-bar camera connection/output popups remain available. The dialect selector lists installed
-pymavlink dialects; changing protocol options reconfigures an active connection
-on a background worker, without enabling an inactive connection automatically.
-Each extension owns `i18n/tr.json` and `i18n/en.json`. Installed catalogs are
-validated and merged once, then translations use cached dictionaries. Duplicate
-keys are rejected; discovery refresh rebuilds the catalogs without importing
-disabled extension code. Legacy `telemetry` enablement is migrated to
-`vehicle_connection`, preserving disabled state and existing connection profiles.
-The camera extension is disabled by default. Its source and output profiles are
-stored in `data/settings.json` under `extensions.camera.config`; legacy camera
-profiles in `data/settings.json` are imported without deleting that file.
-Camera connections, recording and live output controls are contributed by the
-extension and disappear from the common UI when it is disabled. Newly installed
-extensions can be discovered with Refresh; they remain off until explicitly
-enabled. Reload restarts only an isolated extension after settings changes.
-The active vehicle protocol cannot be reloaded in isolation while shared
-vehicle services use it.
+`src/container.py` composes the application. The versioned extension contract lives in `src/extension/api`; `src/extension/host` discovers manifests, checks capabilities and starts enabled packages. Extensions can use public `src.core` packages directly.
 
-An extension lives at `extensions/<identifier>/` with a `manifest.json` whose
-`api_major` is `1`, `entry_point` is `extensions.<identifier>.plugin:create_extension`,
-and `provides`/`requires` list capability identifiers. Its factory returns an
-object with `configure(registrar, context)` and optional `start(context)` and
-`stop()` hooks. `registrar.singleton(token, factory, dependencies=...)` supplies
-services to the application; duplicate service ownership is rejected. See the
-built-in extensions for working examples. `registrar.visual_view(...)` contributes
-an ordinary workspace panel; `status_widget(...)` contributes a footer indicator.
-`registrar.settings_page(factory)` supplies one extension-owned settings widget.
-Its factory receives a Qt parent and runs lazily on the UI thread when the user
-selects that extension's Settings category. A page may implement
-`prepare_shutdown()` to release subscriptions, timers or workers when Settings
-closes. Disabled extensions use a typed configuration editor without importing
-their UI or starting their services. The former `sidebar_view` and `settings_ui`
-contributions have been removed; migrate them to `visual_view` and `settings_page`.
-The extension browser manages activation and discovery, not duplicate settings.
+The application provides shared workspace, settings, logging and normalized data services. A protocol extension adapts its vehicle data to common contracts. The Vehicle Connection extension manages connection lifecycle and profiles through provider-neutral `ConnectionSource` and `ConnectionProfiles` contracts. At least one vehicle protocol provider must remain enabled.
+
+### Extension packages
+
+Each package lives under `extensions/<identifier>/` and has a `manifest.json` with its API version, entry point and provided or required capabilities. Its factory returns an object with `configure(registrar, context)` and optional `start(context)` and `stop()` methods. `registrar.singleton(...)` supplies application services; duplicate service ownership is rejected.
+
+Extensions contribute ordinary panels with `registrar.visual_view(...)`, footer indicators with `registrar.status_widget(...)`, and settings pages with `registrar.settings_page(factory)`. Settings pages load only when selected and may implement `prepare_shutdown()` to release timers, workers and subscriptions. Disabled extensions do not start services or import their UI. The extension browser manages discovery and activation; settings remain in the shared Settings window.
+
+The active protocol cannot be reloaded independently while shared vehicle services depend on it. Camera and Vehicle Connection can be enabled or disabled at runtime, rebuilding only their own services and UI.
+
+### Configuration and language
+
+Application settings and extension state live in `data/settings.json`. Each extension stores its state and configuration under `extensions.<identifier>.enabled` and `extensions.<identifier>.config`; disabling a package does not erase its settings. Legacy files under `data/extensions/` are imported before removal, without deleting unrelated data.
+
+Every extension owns `i18n/en.json` and `i18n/tr.json`. The host validates and merges installed catalogs once, caches them, and rejects duplicate keys.
 
 ## Workspace
 
-The map stays at the center. Flight dynamics, vehicle telemetry, quick commands,
-logs, parameters, and extension-provided views are independent panels.
-Use View > Panels to show or hide individual panels, and their dividers to resize
-them. A compact hover-only grip and menu handles moving, tabbing and floating;
-there is no separate Edit Layout mode. Map Focus, Reset Layout and Dark/Light
-theme choices remain in View.
+The workspace contains independent panels for the map, flight dynamics, vehicle telemetry, quick commands, logs, parameters and extension-provided views. Use **View → Panels** to show or hide panels. Drag the small handle above a panel to move, split or tab it; the adjacent menu offers placement and visibility actions. There is no separate layout-edit mode.
 
-The activity bar's upper section selects saved views; its lower, distinct section
-toggles panel categories belonging to the active view. The plus button below the
-views creates either item with a shared name and searchable standard-icon picker.
-A new view starts empty with concise panel instructions. A new category enters
-panel-selection mode: click visible panels, then Add or Cancel at the lower right.
-Selection intercepts panel clicks, so it cannot trigger vehicle commands. Partially
-visible categories open all their available members; fully open categories close
-together. Right-click a view or category to rename, change its icon or delete it;
-the last view cannot be deleted.
+The activity bar has saved views above and panel categories below. A view stores its own panel visibility, split and tab arrangement, sizes and categories in `data/workspace-layout.json`. Switching views does not resize the application. Existing single-layout files migrate to an initial view. Adjacent panels share the dimensions of their split, while separate branches can be resized independently.
 
-Each view saves its own split/tab layout, panel sizes, visibility and categories in
-`data/workspace-layout.json`, with debounced writes and a final save on close.
-Switching views does not resize the application window. Existing single-layout
-files are migrated to an initial view. Qt's saved split/tab state
-is authoritative at startup; independent size hints are not replayed over it.
-Empty spacer docks are not used: adjacent split panels
-fill their row or column, and unrelated split branches keep their own sizes.
+Panel menus can lock a panel's content size. This preference is saved with its view. A locked panel can limit how small the application window can become.
 
-## Optional integrations
+## Built-in and optional packages
 
-* **Map & Autonomy** (`map_autonomy`) owns the map widget, web assets, tile cache,
-  planner, preferences and mission view. Its reusable API is
-  `extensions.map_autonomy.api.planner.PlannerMapApi`. It uses
-  normalized telemetry and navigation services, currently provided by MAVLink.
-  It can be disabled or re-enabled without restarting the application.
-* **Joystick** restores RC1–RC16 mapping, PWM calibration, input detection and
-  button actions. It is disabled by default and currently selects the MAVLink
-  RC adapter. Device activation is separate from enabling the extension;
-  deactivation releases RC overrides. Protocol selection lives outside sampling
-  and UI code, using `src.extension.api.protocol.ActiveProtocol`.
-* **SIHA TEKNOFEST Server** (`siha_teknofest_server`) provides independently controlled HTTP server profiles, fixed
-  1 Hz telemetry scheduling, server clock tracking, QR/HSS requests and real
-  lock/kamikaze result submission methods. It consumes normalized telemetry,
-  not MAVLink messages, and does not require the MAVLink package by identity.
-  Server exchanges are recorded in `data/teknofest/history.sqlite3` using WAL;
-  login credentials are omitted. After the first valid position, the last
-  snapshot continues to be sent during vehicle loss, with estimated server time.
-  No server is contacted unless its profile has auto-connect enabled or the
-  operator explicitly connects. The extension itself is disabled by default.
+The MAVLink package provides the current protocol, decoded vehicle feed, GPS and autopilot indicators. Parameters use the `mavlink.parameters` capability and keep their protocol adapter in the parameter package. The common `VehicleService` does not require RC or mission methods; optional `RcControl` and `MissionControl` contracts are advertised separately.
 
-Configuration layout:
+Other packages include Map & Autonomy (`map_autonomy`), Camera, Joystick, Battery, Flight Dynamics, Telemetry Display, Quick Commands and SIHA Teknofest Server. Their settings are managed from their categories in the shared Settings window. Camera and competition server controls appear as bottom-bar popups when those packages are enabled.
 
-```json
-{
-  "extensions": {
-    "camera": { "enabled": false, "config": {} },
-    "joystick": { "enabled": false, "config": {} },
-    "siha_teknofest_server": { "enabled": false, "config": { "servers": [] } }
-  }
-}
-```
+Map & Autonomy owns the map, web assets, tile cache and mission planner. Joystick currently uses the MAVLink RC adapter; disabling joystick control releases RC overrides. Telemetry Display lets operators choose and order 58 fields and arrange them as a list or grouped grid. SIHA Teknofest Server supports separate HTTP profiles and records exchanges in `data/teknofest/history.sqlite3`; it sends no requests unless a profile is configured for automatic connection or the operator connects explicitly.
 
-Existing typed backend fields remain compatibility aliases. The MAVLink package
-projects its protocol settings and vehicle connection profiles into the shared
-extension section, so legacy editors cannot overwrite another extension's config.
-
-Flight dynamics, telemetry display, quick commands and battery are separate
-packages consuming normalized data or generic command capabilities. Telemetry
-display settings select visible fields. Parameters currently require the
-`mavlink.parameters` capability and keep their MAVLink adapter inside the package.
-`VehicleService` does not prescribe RC or mission methods: optional `RcControl`
-and `MissionControl` ports in `src.extension.api.vehicle` are advertised separately.
-To add another protocol, implement the required port/adapter and capability;
-feature UI code must not import its transport. Production mock telemetry has been
-removed; tests inject their own doubles. Old `map` and `teknofest` configuration
-keys migrate without losing disabled states or unknown settings.
+To support another vehicle protocol, implement its required adapter and capabilities. Feature UI should consume normalized data and must not depend on transport details. Production mock telemetry has been removed; tests provide their own doubles.
 
 ## Settings, logs and tests
 
-Settings are stored in `data/settings.json`; structured logs are stored in
-`data/logs/gcs_<session-date>_<session-time>.json`. Each session is a valid JSON
-array. All extensions use the same bounded-memory log service; the host adds
-`extension_id` to injected loggers and captures extension-origin Python logs.
-Run the application test suite with:
+Settings are stored in `data/settings.json`. Each session writes a JSON log to `data/logs/gcs_<session-date>_<session-time>.json`; extension entries retain their `extension_id` in the shared log.
+
+Run the test suite with:
 
 ```bash
 python run_tests.py
 ```
 
-Qt tests use the offscreen platform. Before field operation, verify the target
-MAVLink connection and mission-transfer behavior with the intended vehicle.
+Qt tests use the offscreen platform. Before field operation, verify the MAVLink link and mission-transfer behavior with the intended vehicle.
 
 ## License
 
 Copyright © 2026 TahsinCr.
+
+[python-shield]: https://img.shields.io/badge/Python-3.11%2B-blue
+[python-url]: https://www.python.org/downloads/
+[license-shield]: https://img.shields.io/badge/License-GPL--3.0-blue
+[license-url]: LICENSE

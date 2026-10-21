@@ -1,380 +1,80 @@
-# **Change Log**
-All notable changes to this project will be documented in this file.
+# Changelog
 
-## Unreleased
+Notable changes are grouped by type and listed in reverse chronological order.
+Release headings link each entry to its release date.
 
-### Reliable panel drag previews
-
-* Replaced paint-visibility checks with a shared layout-geometry resolver for
-  panel drop targeting and previews. A covering drag overlay no longer makes
-  an active panel disappear from hit testing; inactive tabs remain excluded.
-* Added coverage for all five targets with the overlay visible and paint
-  visibility deliberately empty, including preview rendering.
-* Fixed preview coordinate conversion between sibling widgets, which could
-  misplace the guide on native Qt platforms. Native hover tests now wait for
-  window-manager resize events before comparing stable panel geometry.
-* Verification: 22 panel tests pass on X11 and 62 panel/UI tests pass offscreen.
-  The combined 588-test suite passes with faulthandler enabled; two earlier
-  combined runs hit an intermittent native Qt crash in a connection-popup test.
-
-### Panel size locks and configurable extension views
-
-* Added a persistent size lock to each panel's hover menu. Locked content keeps
-  its pixel dimensions when the window resizes; unlocking restores its original
-  sizing constraints. Each saved workspace retains its own locks.
-* Fixed edge targeting when dragging a panel out of its own tab group. Edge
-  previews use the visible group's bounds rather than an obscured tab's geometry.
-* Restored the archived TEKNOFEST server-card popup and profile editor, preserving
-  independent background connections, automatic connection preferences and SQL
-  recording. The Turkish name is now SIHA Teknofest Sunucusu.
-* Added an ordered telemetry field editor with 58 available values, search,
-  drag/button reordering, list/grid layouts, one to four columns and optional
-  category grouping. Existing settings and unknown configuration keys survive.
-* Grouped battery calibration, warnings and failsafe settings into readable,
-  theme-aware sections without changing their behavior.
-* Added ordered footer contributions to the extension API. The camera chip now
-  reads KAMERA and follows vehicle connections; camera output controls remain
-  owned by the camera extension.
-* Verification: all 587 tests pass, compileall, targeted Ruff and whitespace
-  checks pass. Dark/light settings screenshots were reviewed. Physical cameras
-  and live competition servers were not exercised.
-
-### Dock placement and connection UI fixes
-
-* Corrected edge drops onto existing tab groups: panels now split above, below,
-  left or right without unexpectedly becoming another tab. Existing group
-  members stay together. Only the center drop creates tabs, and obscured tabs
-  no longer compete with the visible drop target.
-* Apply dock placement after the drag loop exits. Disabled Qt's internal dock
-  geometry animations, including zero-duration deferred animations, while
-  keeping the hover-handle fade. Guarded teardown events and explicitly destroy
-  the window before Python's final Qt cleanup.
-* Restored the bottom-bar vehicle connection popup. GPS and autopilot remain
-  status-only. TEKNOFEST now contributes a server connection popup instead of a
-  workspace panel; multiple profiles, background connection work and SQL
-  recording remain available. Hidden server editors stop polling.
-* Removed empty settings categories, unified form growth and wrapping, and
-  removed popup-only size limits from embedded camera tabs. Connection and
-  camera editors receive the settings window's theme explicitly.
-* Refined extension management with the shared title bar, a compact search and
-  filter toolbar, readable theme-aware cards, explicit state labels and an empty
-  search result message. Installed extensions still use the same lifecycle API.
-* Added tab-group split stress coverage, deferred-drop assertions and bottom-bar
-  popup lifecycle tests. Configuration and archived source files are preserved.
-* Verification: all 583 tests pass, the dock split/tab stress test passes on
-  X11 as well as offscreen Qt, and compileall/diff checks pass. Dark/light
-  screenshots of extension management and connection/camera settings were
-  reviewed. These checks do not exercise a physical vehicle or remote server.
-
-### Workspace navigation polish
-
-* Unified workspace icons with a small, theme-aware outline catalog. Saved Qt
-  icon identifiers still work, but render in the same monochrome style rather
-  than inheriting mismatched platform colors. Raster output is initialized
-  transparently and handles high-DPI scaling.
-* Simplified the activity bar: views retain a quiet active accent, categories
-  use small open/partial markers instead of competing outlined boxes, and the
-  add action has a properly sized icon. Tooltips identify views and report how
-  many category panels are open. The active view stays reachable when the list
-  scrolls; panel content and saved layout geometry are unchanged.
-* Reused existing buttons, icons and layout slots during state refreshes instead
-  of reinserting unchanged widgets. Temporary context menus are released after
-  use. The shared name/icon picker now starts with readable workspace glyphs
-  while retaining the complete Qt standard-icon catalog.
-* Added monochrome/theme-switch and repeated-refresh regression tests. The
-  combined suite passes 581 tests; dark/light Qt screenshots were reviewed.
-* Restricted the frameless resize filter to the events it actually handles.
-  It no longer calls `QWidget.window()` on style/child notifications during
-  widget construction, avoiding unsafe native access and unnecessary global
-  event-filter work.
-
-### Saved views and unified settings
-
-* Replaced the activity bar's per-panel shortcuts with saved views above and
-  view-specific panel categories below. The shared name/icon picker supports
-  searchable Qt standard icons. New views start with an empty workspace and
-  concise panel instructions; view and category entries can be renamed or removed.
-* Added click-to-select category creation with explicit Add/Cancel controls.
-  Selection shields panel content from clicks, including vehicle commands.
-  Groups preserve split/tab placement when reopened and do not close unrelated
-  panels; later placement edits invalidate stale group snapshots.
-* Persisted each view's layout, sizes, tabs, visibility and categories in the
-  existing workspace file. Legacy layouts become an initial view. Switching
-  views leaves window dimensions alone and cancels pending old resize callbacks.
-* Removed View > Edit Layout and the obsolete extension-sidebar/settings-action
-  APIs. Panels use the existing hover grip and shared dock infrastructure;
-  TEKNOFEST's server panel is now an ordinary workspace contribution.
-* Centralized extension configuration in Settings, with lazy extension-owned
-  pages and typed configuration editors for inactive packages. The extension
-  browser no longer duplicates settings. Bottom-bar connection/output popups
-  remain intact and share the camera editors used by Settings.
-* Added `registrar.settings_page(factory)` and explicit page shutdown hooks.
-  General settings saves start from the latest model so extension changes made
-  in the same dialog are retained. Hidden camera and joystick pages avoid
-  unnecessary live updates; network interfaces are not enumerated per frame.
-* Replaced the footer extension glyph with a theme-aware vector icon, separated
-  view/category styling, and added readable panel-selection labels for both themes.
-* Added regression coverage for blank views, category visibility, split/tab sizing,
-  restart persistence, safe selection and lazy extension settings. The combined
-  test suite passes 577 tests; dark/light settings and workspace screenshots were
-  checked with an offscreen Qt smoke run. Live hardware was not exercised.
-
-### Workspace fixes
-
-* Fixed the left panel column widening while the pointer moved between panels.
-  Hover controls now remain mounted and fade without show/hide layout changes;
-  invisible controls pass pointer input through to the underlying panel.
-  Their appearance, drag handle and settings menu remain unchanged.
-* Cancel abandoned panel and frameless-window resize gestures on buttonless
-  movement. Releases outside the window discard pending resize updates instead
-  of applying an unrelated pointer position. Saved layouts are not reset.
-* Added hover and interrupted-resize regression coverage. The combined suite
-  passes 561 tests; repeated hover transitions kept panel widths stable at three
-  window sizes in both offscreen Qt and a native Wayland window.
-
-### Architecture and workspace
-
-* Updated Core to the 1.9.1 upstream line while preserving cancellable MAVLink
-  connection setup. Consumers now use its typed connection backend and initial
-  heartbeat state instead of discarding the first handshake message.
-* Split battery, parameters, flight dynamics, telemetry display and quick commands
-  into independently owned extension packages, including their panels, lifecycle
-  and translations. The common window composes visual contributions rather than
-  constructing feature widgets. Disabled packages do not create their services.
-* Narrowed the common vehicle contract to connection state, capabilities and
-  generic command execution. Optional RC and mission ports are separate structural
-  contracts; new command codes do not require adding abstract methods. Parameter
-  handling now lives in the parameter package's MAVLink adapter.
-  Connection state also accepts a provider protocol and explicit device identity
-  instead of labelling every vehicle as MAVLink.
-* Moved the planner, tile cache, Qt adapters and PlannerMapApi into `map_autonomy`.
-  Shared settings no longer create map-cache directories. Renamed the competition
-  package to `siha_teknofest_server`; existing configs, unknown fields and disabled
-  preferences survive migration. Package directory names use underscores.
-* Removed production mock telemetry and null vehicle wiring. The application
-  retains a protocol-neutral latest-state hub, not a simulated data generator.
-  ConnectionHub accepts arbitrary provider channels and rejects detached-source
-  events without knowing GPS, autopilot or MAVLink channel names.
-* Added a normalized telemetry processing port. Battery voltage estimation is
-  installed and removed by the battery package; MAVLink only decodes raw readings.
-  Estimation samples fresh battery measurements rather than every unrelated packet.
-* Added configurable telemetry readouts and an installed-dialect selector. Changing
-  active MAVLink protocol options reconfigures the transport in a background worker;
-  it does not implicitly enable automatic connection for disabled profiles.
-* Moved extension management from the activity bar to a compact button beside
-  Settings. Its responsive dialog retains search and category/status filters, with
-  a reusable installed-view tab shell; no marketplace has been added.
-* Fixed workspace restart sizing by restoring window geometry and trusting Qt's
-  saved split/tab state. Opening the workspace no longer reapplies old pixel sizes
-  over nested splits. Hot-reloaded panels still keep their saved preferences.
-* Initialized shared OpenGL contexts before QApplication, added actionable WebEngine
-  import diagnostics and split Qt/MAVLink dependencies into their owning requirement
-  files. The map uses a memory-only Chromium profile; persistent tile caching is
-  owned solely by the map cache service. Live WebEngine and JavaScript initialization
-  were checked in the matching Qt virtual environment.
-* Closed SQLite history connections explicitly and removed stale extension cards
-  before deferred Qt deletion, avoiding lingering resources and overlapping widgets.
-* Removed map-cache startup from widget construction. The map extension owns its
-  listener lifecycle, updates the browser when its URL becomes available and cancels
-  pending clients on stop without stopping the shared async runtime. Failed telemetry
-  processors are isolated and logged once per continuous failure instead of flooding
-  the session log on every packet.
-* Fixed GPS footer health treating the normalized `NO FIX`/`NO GPS` values as a
-  valid fix. A disconnected vehicle is red; a connected source without a fix is
-  amber. Indicator appearance and status-only interaction remain unchanged.
-* Verification: the combined application/Core suite passes 557 tests; compileall,
-  undefined/unused-import checks and whitespace checks pass. Qt/WebEngine startup,
-  the JavaScript bridge and dark/light workspace rendering were checked offscreen.
-  Physical vehicle, camera and remote-service behavior was not exercised.
+## [Unreleased]
 
 ### Added
 
-* Added optional joystick and TEKNOFEST packages, with their own configuration
-  views and language catalogs. Joystick supports calibrated RC channels and
-  button actions through the active MAVLink adapter. TEKNOFEST supports separate
-  server sessions, clock synchronization, telemetry delivery, result submission
-  and SQLite exchange history without storing login request credentials.
-* Added active-protocol adapter selection so integrations can support another
-  provider without placing wire-protocol logic in their UI or device workers.
+* Added saved workspace views and view-specific panel categories. Each view keeps
+  its split and tab layout, visibility, sizes and categories; the former single
+  layout migrates to an initial view.
+* Added extension-owned settings pages, lazy loading and typed settings for
+  disabled extensions. Extension state and configuration share
+  `data/settings.json`.
+* Added independent packages for the map and autonomy tools, battery,
+  parameters, flight dynamics, telemetry display and quick commands. Added
+  optional joystick and SIHA Teknofest Server packages.
+* Added protocol-neutral vehicle, telemetry and command contracts, optional RC
+  and mission capabilities, and protocol selection for extension adapters.
+* Added configurable telemetry readouts, a MAVLink dialect selector, ordered
+  footer contributions, panel size locks and searchable view/category icons.
+* Added archived-style connection popups for vehicle and competition server
+  profiles, with background connections and exchange history.
 
 ### Changed
 
-* Consolidated extension enablement and configuration under `extensions` in
-  `data/settings.json`. Existing extension files are imported before removal;
-  concurrent edits and ordinary settings saves preserve other packages' data.
-* Moved the map widget, web assets, tools and translations into the map package.
-  The map can be disabled and restored without removing unrelated panels.
-* Unified session logging in `data/logs/gcs_<date>_<time>.json`. Application and
-  extension entries share one JSON log, and scoped loggers retain extension
-  identity even when individual messages do not specify it.
+* Moved MAVLink transport, connection recovery, heartbeat decoding and protocol
+  settings into the MAVLink extension. Vehicle Connection owns connection
+  lifecycle and profiles; GPS and autopilot indicators remain with MAVLink.
+* Moved map, planner, map API, web assets and tile cache into Map & Autonomy.
+  Camera connections, recording and live outputs belong to the camera extension.
+* Consolidated application and extension logging in
+  `data/logs/gcs_<date>_<time>.json`; extension records retain their identity.
+  Extension configuration and enablement use the shared settings file.
+* Refined the workspace and settings UI: saved views and categories have distinct
+  activity-bar sections, extension settings live in the common Settings window,
+  and panel controls use a compact hover handle and menu.
+* Improved light and dark theme styling, extension management, battery settings,
+  telemetry field selection, camera status labels and bottom-bar profile controls.
+* Updated the extension API with lazy settings pages, status placement and
+  ordering, lifecycle cleanup and capability-based contributions.
+* Reorganized the README files into shorter, parallel sections and replaced
+  the architecture diagram with a written description of application and
+  extension responsibilities. Clone links now use the repository's current owner.
 
 ### Fixed
 
-* Removed invisible spacer docks and fixed-width constraints that left unused
-  workspace regions. Split groups now fill their shared area while unrelated
-  branches retain their own resizing behavior. Legacy layouts are migrated.
-* Applied initial dock dimensions before remembering them, preventing stale
-  startup geometry from squeezing the map and expanding the bottom panel.
-* Made recovery and tooltip regression tests wait for completed asynchronous
-  work rather than observing an intermediate state.
+* Corrected panel splitting and tab placement, including edge drops onto the
+  panel's own tab group. Drop previews and hit testing now share panel geometry,
+  independent of drag-overlay paint occlusion.
+* Stabilized panel dimensions during hover, window resize, view changes and
+  workspace restoration. Removed spacer docks and corrected split sizing.
+* Fixed dock teardown and placement timing around Qt drag operations. Restricted
+  the frameless resize filter to relevant events and removed invalid widget
+  coordinate conversions.
+* Fixed MAVLink recovery, profile consistency, stale telemetry health indicators,
+  extension settings preservation, async shutdown and several panel/popup
+  lifecycle issues.
 
-### Fixed
+### Removed
 
-* Stopped treating inactive dock tabs as closed panels. Switching tabs no longer
-  reapplies saved geometry, and floating panels can be placed back beside a
-  dock in the same area. Closed panels are omitted from placement targets.
-* Kept advanced MAVLink connection edits consistent with the selected profile,
-  so settings normalization no longer silently restores its old endpoint.
+* Removed production mock telemetry, null vehicle wiring, obsolete edit-layout
+  controls, duplicate extension settings routes and legacy sidebar/settings
+  contribution hooks.
+* Removed feature-specific logic from the common application as those features
+  moved into extensions. Existing settings are migrated without dropping unknown
+  fields or disabled-state preferences.
 
-### Changed
+### Tests
 
-* Renamed the optional telemetry extension to Vehicle Connection. It now owns
-  connection lifecycle and profile editing through provider-neutral contracts;
-  MAVLink retains decoded telemetry, GPS and autopilot indicators. Existing
-  profiles and disabled-extension preferences survive the migration.
-* Made connection, GPS and autopilot footer indicators status-only without
-  changing their appearance. Connection profiles are edited through extension
-  settings instead of opening a popup from the footer.
-* Moved camera, connection and MAVLink translations into their owning packages.
-  Installed catalogs are validated and cached together; duplicate translation
-  ownership is rejected, and discovery refresh rebuilds the catalogs.
+* The combined suite passes 588 tests. Panel and UI checks also pass on X11 and
+  offscreen Qt; compileall, targeted lint and whitespace checks pass.
+* Dark and light UI screenshots were reviewed. No physical vehicle, camera or
+  competition server was used for this verification.
 
-* Moved wire subscriptions, heartbeat mode decoding and parameter-message
-  handling out of the common vehicle contract and into the MAVLink package.
-  Mission synchronization policy now comes from the provider rather than a
-  MAVLink settings lookup in the composition root.
-* Gave telemetry its own feed runtime, connection chip and quality indicator.
-  The runtime consumes normalized snapshots from any protocol provider and
-  releases its subscriptions when disabled; it no longer requires a concrete
-  switchable service from the application. Late events from a stopped feed are
-  rejected. Camera controls remain owned by the camera package.
-* Added generic connection/metrics placement for extension status contributions
-  and an optional protocol-owned connection editor. Removed MAVLink profile
-  editing and telemetry-specific UI toggling from the main window. Advanced
-  MAVLink settings now live in the extension rather than the common form;
-  existing settings files are preserved.
-
-### Added
-
-* Added compact, hover-only controls at the top center of each workspace panel.
-  The rounded grip moves panels without entering layout-edit mode, and its
-  adjacent arrow opens placement and visibility actions. A short opacity
-  transition affects only the controls, leaving panel content and geometry
-  unchanged; colors follow the active theme.
-
-### Changed
-
-* Made the three left-side vehicle panels independently adjustable in width.
-  Each row keeps its own saved width and uses flexible trailing space, so
-  widening one panel no longer stretches the other two. Moving or tabbing a
-  panel releases that row's sizing constraints.
-* Limited separator resizing to its immediate neighbors in both directions.
-  Resizing stops at their size limits instead of taking space from a third
-  panel, and repeated movement at a limit no longer triggers extra relayouts.
-* Extended the left dock column to the bottom of the workspace. Log and
-  parameter panels now occupy the space beside it, including when an existing
-  saved layout is restored.
-* Reworked layout editing around one drag-and-drop target layer shared by the
-  map, camera, flight, telemetry, command, log and parameter panels. Dragging
-  starts from a panel title bar; visible target outlines show its four sides
-  and center. Dropping on the center tabs panels, while edges split or dock
-  them. Hints appear only over the current target panel in theme-matched neutral
-  tones. Tabs now appear above their panels. The Extensions management sidebar
-  stays outside the dock workspace.
-* Unified panel placement and visibility under the shared workspace manager.
-  Main views (including map and extension-provided camera panels) have
-  individual activity-bar buttons in the upper group; Logs and Parameters
-  start in the lower group. Edit mode now has
-  explicit relative placement and tab actions when drag-drop targets are hard
-  to hit. The Extensions view is pinned beside (not inside) the workspace and
-  can be resized with its splitter without joining or obstructing panel docks.
-  Previous layout versions are normalized when loaded. Edit mode keeps Qt's
-  native dock title bar; the explicit placement menu remains available for
-  precise tab and edge positioning.
-* Promoted the map from the workspace's fixed central widget to a first-class,
-  closable dock panel. Camera views now split to the right of the map by
-  default, and the two can be freely repositioned or tabified in layout-edit
-  mode. Camera placement and tab relationships survive extension toggles, and
-  existing saved layouts are migrated without discarding camera docks.
-* Light mode now uses theme-specific subtle borders instead of white-only
-  translucent separators, and selected text keeps sufficient contrast.
-* Preserved each dock's last width and height when panels are hidden, reopened,
-  or restored after restarting. Edit Layout also offers an explicit
-  "Tab with Panel" action alongside native center-drop tabbing.
-* Bounded in-memory log buffers now use fixed-capacity deques, avoiding repeated
-  front-of-list shifts as the log stream fills while retaining the same limits.
-* Rebuilt the central workspace as independent panels while keeping the map
-  and existing panel contents intact. Panels can be shown or hidden directly
-  from the View menu and resized at any time. The optional
-  Edit Layout mode temporarily reveals handles for moving, tabbing and
-  floating panels, avoiding permanent headers over the working view.
-  Map focus, layout reset and restart-persistent placement are also available.
-* Refined the light palette and added a direct Dark/Light theme choice in the
-  View menu. Camera views now open as resizable workspace panels instead of
-  forcing an equal-width map split.
-* Consolidated grouped panel visibility and layout controls in the top-bar
-  View menu, removing the duplicate activity-rail entry. Visibility changes
-  preserve the saved arrangement; moving panels remains an explicit edit-mode
-  action.
-* Camera and telemetry extensions now activate and deactivate in the running
-  application. Only their owned services and UI contributions are rebuilt;
-  MAVLink connection, map and shared controls remain in place. Telemetry uses a
-  stable service identity so existing consumers survive source replacement.
-* The extension browser can discover newly installed packages without
-  activating them automatically and can reload an isolated extension after a
-  settings change. A live protocol or a provider with active dependents cannot
-  be reloaded in isolation.
-* Removed obsolete MAVLink compatibility imports from the common application.
-  Protocol tests now import the implementation from its extension package,
-  and an architecture test guards against new `src` → `extensions` imports.
-* Restored the archived multi-camera wall as an optional camera extension.
-  Camera profiles, per-camera recording and live video outputs now live in the
-  extension package and its own settings file; its connection controls and
-  status indicators appear only when the extension is enabled.
-* Extended the presentation contribution contract with camera-wall, status and
-  extension-owned settings actions. The common window keeps its map-only
-  workspace when camera is disabled, while camera controls use the preserved
-  archived UI when enabled.
-* Hiding the optional telemetry extension now also removes its bottom-bar
-  connection chip. GPS and autopilot indicators remain visible and continue to
-  provide access to the vehicle connection profiles.
-* Added a versioned extension API and manifest-first host with capability and
-  dependency checks, lifecycle hooks, service ownership validation and
-  persistent enablement/settings. At least one vehicle protocol is required.
-* Moved MAVLink transport, connection recovery, parameter-default loading and
-  dependency wiring into the built-in MAVLink extension. Telemetry is a separate optional extension
-  consuming a protocol-provided telemetry source; disabling it preserves its
-  configuration and leaves the common UI available.
-* Added an extension browser to the existing left activity bar with search,
-  status/category filters, enable/disable controls and settings access.
-* Added a lazy sidebar-view contribution hook so extensions can place their own
-  panels in the existing left rail without coupling the API to Qt or Core.
-* Invalid saved extension switches or settings now fail explicitly instead of
-  silently restoring defaults that could re-enable a connection.
-* Moved MAVLink telemetry decoding into the protocol extension while leaving
-  protocol-neutral telemetry state and simulation in the common services.
-* Added a compact, Visual Studio-style menu row to the main title bar. File,
-  Edit, Selection, View, Go, Run, Terminal, and Help menus have localized
-  labels; their actions remain intentionally empty for now.
-* Replaced the activity-bar placeholders with localized controls for the flight
-  sidebar, Logs, and Parameters. The bottom panels open exclusively by default;
-  an inactive panel can be opened alongside the active one from its right-click
-  menu. Hiding both lets the map use the full workspace height.
-* Removed video capture/sharing, joystick RC input, SIHA/Onboard/Orin,
-  TEKNOFEST, mission archive and SIHA task-command modules from the active
-  application, including their runtime composition, UI, adapters, settings
-  schema, MAVLink side-channel state, feature-only dependencies and tests.
-* Kept the shared MAVLink/ArduPilot vehicle path, telemetry and GPS, battery,
-  parameter and log panels, map and mission planner, plus generic connection
-  and device health reporting.
-* Preserved the existing common-screen layout while removing feature-specific
-  panels: flight dynamics, telemetry and generic flight controls remain in the
-  left rail; the map fills the main workspace above logs and parameters.
-* Removed the communication-contracts submodule from this common build; the
-  historical implementation remains available in the untouched `.archive`
-  snapshot.
-
-## **[1.7-beta] - 10.09.2026**
+## [1.7-beta] - 2026-09-10
 
 ### Added
 
@@ -417,14 +117,14 @@ All notable changes to this project will be documented in this file.
   Recovery attempts no longer terminate because a raw logging service receives
   the child-logger event signature.
 
-### Verification
+### Tests
 
 * `python run_tests.py` passes **361/361** tests.
 * `python -m compileall -q src tests`, `git diff --check` and a real NVIDIA
   hardware-encoder MP4 smoke test pass. The generated recording reports a
   constant `30/1` frame rate through `ffprobe`.
 
-## **[1.6.1-beta] - 06.09.2026**
+## [1.6.1-beta] - 2026-09-06
 
 ### Added
 
@@ -465,12 +165,12 @@ All notable changes to this project will be documented in this file.
 * Reconfiguring a video share invalidates and stops the previous publisher
   generation; an old worker can no longer overwrite the state of a newer one.
 
-### Verification
+### Tests
 
 * `python run_tests.py` passes **352/352** tests.
 * `python -m compileall -q src tests` and `git diff --check` pass.
 
-## **[1.6-beta] - 02.09.2026**
+## [1.6-beta] - 2026-09-02
 
 The **"Common Vehicle Platform and Multi-Camera Update"** turns `main` into a
 clean, vehicle-agnostic ground-control foundation. SIHA-specific automation is
@@ -536,17 +236,17 @@ workflows become more reusable.
 * Kept video source reconfiguration outside the UI thread and coalesced rapid
   profile updates to the latest requested configuration.
 
-### Documentation
+### Changed
 
 * Rewrote the README for the common GCS architecture, current command/video
   model, development boundaries and platform requirements.
 
-### Testing
+### Tests
 
 * `python run_tests.py` passes **345/345** YKİ, Communication Contracts and
   Vehicle Autonomy Core tests.
 
-## **[1.5.0-beta] - 22.08.2026**
+## [1.5.0-beta] - 2026-08-22
 The **"Shared Onboard Contracts and Mission Planning Update"** brings the
 Kamikaze approach planner from pull request #1 into the main operator workflow,
 adopts the shared SIHA communication contracts and makes task and map feedback
@@ -572,7 +272,7 @@ more dependable during live operation.
     * Added compact point radius/altitude editing from the context menu and
       complete undo/redo coverage for creation, deletion and archive loading.
 
-### Updated
+### Changed
 * **Task controls and feedback**:
     * Limited the operator task list to the connected Kamikaze and actuator-test
       workflows and added task-aware Start, Restart and Cancel behavior.
@@ -603,7 +303,7 @@ more dependable during live operation.
 * Prevented task status cards and controls from reporting readiness while the
   Orin application heartbeat is unavailable.
 
-### Testing
+### Tests
 * The combined runner passes **434 tests** across YKİ, Communication
   Contracts and Vehicle Autonomy Core.
 * Coverage includes the P1/P2 approach planner, shared contract direction and
@@ -613,7 +313,7 @@ more dependable during live operation.
 
 <br>
 
-## **[1.4.4-beta] - 21.08.2026**
+## [1.4.4-beta] - 2026-08-21
 The **"Async Runtime and Operator Performance Update"** moves auxiliary I/O
 off the interface thread, reduces map traffic under live telemetry and keeps
 flight-mode authority with the operator.
@@ -630,7 +330,7 @@ flight-mode authority with the operator.
     * Added a third video presentation mode that stretches the complete frame
       to the panel without cropping it.
 
-### Updated
+### Changed
 * **Non-blocking backend I/O**:
     * Moved TEKNOFEST polling, connection health checks, Onboard reference
       synchronization and local tile serving onto the shared async runtime.
@@ -664,7 +364,7 @@ flight-mode authority with the operator.
 * Kept command acknowledgements and high-rate MAVLink ingestion independent
   from map, video and TEKNOFEST refresh work.
 
-### Testing
+### Tests
 * The combined runner passes **393 tests**: **242 YKİ tests** and **151 Vehicle
   Autonomy Core v1.3.1 tests**.
 * Coverage includes shared-runtime lifecycle, async service scheduling,
@@ -673,12 +373,12 @@ flight-mode authority with the operator.
 
 <br>
 
-## **[1.4.3-beta] - 13.08.2026**
+## [1.4.3-beta] - 2026-08-13
 The **"Core Concurrency Compatibility Patch"** release. This patch adopts
 Vehicle Autonomy Core v1.3 and keeps the YKİ–Onboard application link
 compatible with the core's stricter immutable packet model.
 
-### Updated
+### Changed
 * **Vehicle Autonomy Core v1.3**:
     * Updated the pinned submodule from v1.2 to the official v1.3 release.
     * Adopted serialized mission launches, monotonic queue timeouts and stricter
@@ -700,7 +400,7 @@ compatible with the core's stricter immutable packet model.
     * Kept remote-log acknowledgement, session/sequence deduplication and
       retry-after-storage-failure behavior unchanged.
 
-### Compatibility
+### Changed
 * Core v1.3 does not rename the public classes or methods used by YKİ.
 * Vehicle telemetry, Onboard heartbeat, task requests, ACK correlation and
   remote logs continue to share one MAVLink client and router.
@@ -708,7 +408,7 @@ compatible with the core's stricter immutable packet model.
   existing YKİ mission and connection lifecycles require no additional API
   adaptation.
 
-### Testing
+### Tests
 * The combined runner passes **341 tests**: **206 YKİ tests** and **135 Vehicle
   Autonomy Core v1.3 tests**.
 * The Orin communication suite passes **16 tests**, including remote-log
@@ -716,7 +416,7 @@ compatible with the core's stricter immutable packet model.
 
 <br>
 
-## **[1.4.2-beta] - 13.08.2026**
+## [1.4.2-beta] - 2026-08-13
 The **"Runtime and Map Performance Patch"** release. This update focuses on
 keeping the operator interface responsive under live telemetry and map load,
 while tightening the validity and persistence rules around backend data.
@@ -730,7 +430,7 @@ while tightening the validity and persistence rules around backend data.
     * Made the monitor tolerate application and renderer processes exiting in
       the middle of a `/proc` sample.
 
-### Updated
+### Changed
 * **Service boundaries**:
     * Consolidated service interfaces under `services/abstracts` and updated
       dependency composition without introducing another service layer.
@@ -764,7 +464,7 @@ while tightening the validity and persistence rules around backend data.
 * **Web map safety**:
     * Escaped backend-provided map labels before inserting them into HTML.
 
-### Testing
+### Tests
 * The combined runner passes **331 tests**: **206 YKİ tests** and **125 Vehicle
   Autonomy Core v1.2 tests**.
 * Coverage now includes process-exit sampling races, GPS freshness and MAVLink
@@ -773,12 +473,12 @@ while tightening the validity and persistence rules around backend data.
 
 <br>
 
-## **[1.4.1-beta] - 13.08.2026**
+## [1.4.1-beta] - 2026-08-13
 The **"Core Reliability Patch"** release. This patch updates the shared
 Vehicle Autonomy Core dependency without changing the operator workflow or the
 single-connection MAVLink architecture.
 
-### Updated
+### Changed
 * **Vehicle Autonomy Core v1.2**:
     * Moved the pinned core revision from v1.1.1 to the official v1.2 release.
     * Adopted bounded MAVLink application-fragment assembly and bounded
@@ -793,14 +493,14 @@ single-connection MAVLink architecture.
     * Refreshed the English and Turkish integration notes and verified test
       counts while retaining Python 3.11 as the YKİ runtime target.
 
-### Compatibility
+### Changed
 * The existing `MavlinkClient`, router and physical transport remain shared by
   vehicle telemetry and the Onboard application channel. No second serial or
   UDP reader was introduced.
 * Operator controls, wire settings and public YKİ service boundaries remain
   compatible with the v1.4-beta release.
 
-### Testing
+### Tests
 * The YKİ suite passes **194 tests** against the updated core dependency.
 * Vehicle Autonomy Core v1.2 passes its **125 tests**, covering dependency,
   event, mission and MAVLink concurrency and lifecycle behavior.
@@ -808,7 +508,7 @@ single-connection MAVLink architecture.
 <br>
 
 
-## **[1.4-beta] - 13.08.2026**
+## [1.4-beta] - 2026-08-13
 The **"Responsive Operator Controls Beta"** release. This update focuses on
 the controls used most often during operation: autonomous task handling,
 compact-screen usability, reliable frameless resizing and a clearer quick
@@ -824,7 +524,7 @@ command layout.
       cancel acknowledgement, then starts the selected task again; a rejected
       cancel never produces a second start request.
 
-### Updated
+### Changed
 * **Task operation flow**:
     * Reduced the task controls to the two actions supported by the operator
       workflow: Start/Restart and Cancel.
@@ -861,7 +561,7 @@ command layout.
     * Lowered the safe application window minimum to 1152x648 while preserving
       minimum sizes for operational controls.
 
-### Testing
+### Tests
 * The YKİ suite passes **194 tests**, including task restart ordering,
   actuator dispatch, responsive Qt controls, frameless resizing and the
   existing MAVLink, map, video and telemetry regressions.
@@ -871,7 +571,7 @@ command layout.
 <br>
 
 
-## **[1.3-beta] - 11.08.2026**
+## [1.3-beta] - 2026-08-11
 The **"Onboard Operations and Performance Beta"** release. This update turns
 the shared Orin channel into an operator-facing mission link, improves the
 quality of battery and radio information, and removes the main UI bottlenecks
@@ -911,7 +611,7 @@ seen while telemetry, parameters, logs and map contacts arrive together.
       the operator hovers the connection name, leaving live values visually
       stable.
 
-### Updated
+### Changed
 * **Shared core dependency**:
     * Replaced the copied core tree with the independently maintained
       `TahsinCr/vehicle-autonomy-core` Git submodule and pinned the reviewed
@@ -966,7 +666,7 @@ seen while telemetry, parameters, logs and map contacts arrive together.
     * Avoided repeated SVG, tooltip, route-freshness and cache-count work when
       the underlying values have not changed.
 
-### Testing
+### Tests
 * The YKİ suite now passes **183 tests**, including application-channel
   correlation, Kamikaze target/QR recovery, remote logs, voltage estimation,
   parameter defaults, command retries and high-rate Qt/map regressions.
@@ -976,7 +676,7 @@ seen while telemetry, parameters, logs and map contacts arrive together.
 <br>
 
 
-## **[1.2-beta] - 02.08.2026**
+## [1.2-beta] - 2026-08-02
 The **"Unified Onboard Integration Beta"** release. This update establishes a
 single, extensible MAVLink application path between YKİ, the flight controller
 and the onboard computer, and moves application construction to explicit,
@@ -1006,7 +706,7 @@ testable dependency containers.
       retries, chains, checkpoints, progress and structured mission events to
       the shared core.
 
-### Updated
+### Changed
 * **Shared Orin Link**:
     * Routed YKİ-to-Orin commands, acknowledgements and future application
       packets through the existing vehicle `MavlinkClient`; no second serial
@@ -1045,7 +745,7 @@ testable dependency containers.
     * Prevented stale or unrelated system/component packets from being
       accepted as a healthy onboard application response.
 
-### Testing
+### Tests
 * **Integration and Regression Coverage**:
     * Added dependency lifecycle, container composition, Orin request routing,
       handler dispatch, remote-log acknowledgement/de-duplication and Qt
@@ -1059,12 +759,12 @@ testable dependency containers.
 <br>
 
 
-## **[1.1-beta] - 28.07.2026**
+## [1.1-beta] - 2026-07-28
 The **"Reliable Mission Workflow Beta"** release. This update improves mission
 editing history, prioritizes operator-initiated MAVLink transfers and removes
 avoidable delays while restoring archived plans to the map.
 
-### Updated
+### Changed
 * **Mission Transfer Coordination**:
     * Gave operator-initiated mission uploads priority over automatic
       flight-controller mission synchronization.
@@ -1097,7 +797,7 @@ avoidable delays while restoring archived plans to the map.
     * Fixed the first executable mission item being presented as item two in
       the flight telemetry panel.
 
-### Testing
+### Tests
 * **Mission Regression Coverage**:
     * Added concurrent MAVLink coverage proving that an operator upload
       preempts an incomplete automatic mission download.
@@ -1110,7 +810,7 @@ avoidable delays while restoring archived plans to the map.
 <br>
 
 
-## **[1.0-beta] - 25.07.2026**
+## [1.0-beta] - 2026-07-25
 The **"Operational Ground Control Beta"** release. This release turns the
 initial modular foundation into a configurable, bilingual and high-rate
 operator application while keeping vehicle decisions and protocol work in the
@@ -1166,7 +866,7 @@ backend.
     * Added the official GNU GPL v3.0-only license and the TahsinCr copyright
       notice.
 
-### Updated
+### Changed
 * **Service Layout**:
     * Replaced the mission service naming with `PlannerService`, reflecting
       that YKİ plans and dispatches but does not execute autonomous missions.
@@ -1284,7 +984,7 @@ backend.
     * Fixed battery warning and failsafe thresholds being treated as one shared
       value.
 
-### Testing
+### Tests
 * **Expanded Coverage**:
     * Added tests for battery alarms and failsafe behavior, JSON localization,
       fake-server HSS stability, map controls, log filtering and scroll
@@ -1298,7 +998,7 @@ backend.
 <br>
 
 
-## **[0.1-beta] - 22.07.2026**
+## [0.1-beta] - 2026-07-22
 The **"Modular Ground Control Foundation"** release. This first beta establishes a UI-independent backend, a reusable MAVLink core, verified vehicle operations, centralized mission data, real connection health reporting, GStreamer video support, and a local TEKNOFEST communication simulator while preserving the established Kırlangıç Team YKİ interface.
 
 ### Added
@@ -1324,7 +1024,7 @@ The **"Modular Ground Control Foundation"** release. This first beta establishes
     * Added a standalone fake HTTP server with authentication, server time, HSS and QR coordinates, and 27 independently sampled nearby competitor aircraft.
     * Added directional request/response logging and realistic telemetry sample age reporting.
 
-### Updated
+### Changed
 * **Mission Map Workflow**:
     * Centralized map changes in revisioned `MissionState` snapshots so UI and background writers share one authoritative state.
     * Separated user-owned mission overlays from server-owned HSS, QR, and live competitor data.
@@ -1354,13 +1054,13 @@ The **"Modular Ground Control Foundation"** release. This first beta establishes
     * Fixed invalid `DRI_PRIME=0` startup handling.
     * Improved responsive telemetry layout and panel scrolling on smaller displays.
 
-### Documentation
+### Changed
 * **Standalone Project Guide**:
     * Added installation, connection, video, simulator, architecture, data-flow, backend API, MAVLink, extension, logging, and testing documentation to `README.md`.
 * **Release History**:
     * Rebuilt the changelog from scratch for the Kırlangıç YKİ project and established the `0.1-beta` release format.
 
-### Testing
+### Tests
 * **Architecture and Unit Coverage**:
     * Added tests for dependency boundaries, event isolation, settings migration, mission concurrency, MAVLink routing, vehicle commands, parameters, competition traffic, and logging.
 * **UI and Integration Coverage**:
