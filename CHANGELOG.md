@@ -15,6 +15,9 @@ Release headings link each entry to its release date.
 * Rebranded the application as Argestes Ground Station, updated the repository
   checkout instructions and aligned the desktop identity and default local paths
   with the new name. New TEKNOFEST profiles now use neutral sample credentials.
+* TEKNOFEST test-server passwords are now stored directly in the extension's
+  `data/settings.json` configuration. Removed the OS keyring integration and its
+  dependency; passwords remain excluded from logs and SQLite request history.
 
 ### Fixed
 
