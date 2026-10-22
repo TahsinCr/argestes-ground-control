@@ -294,8 +294,6 @@ class MapPanel(PanelFrame):
         self._cache_index_path = self._cache_index_file()
         self._tile_cache = tile_cache_service
         self._tile_cache.cache_changed.connect(self._on_tile_cache_changed)
-        tile_cache_backend = getattr(tile_cache_service, "backend", tile_cache_service)
-        self.destroyed.connect(lambda: tile_cache_backend.stop())
         self._pending_cache_count = self._tile_cache.count_tiles()
         self._last_cache_count: int | None = None
         self._cache_count_timer = QTimer(self)

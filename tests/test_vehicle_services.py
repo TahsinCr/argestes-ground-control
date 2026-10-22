@@ -809,6 +809,42 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertGreaterEqual(len(published), 2)
         service.stop()
 
+    def test_partial_parameter_write_reports_confirmed_uncertain_and_unattempted(self) -> None:
+        class _PartialVehicle(_FakeVehicle):
+            def set_parameter(
+                self, name: str, value: object, value_type: int | None = None
+            ) -> None:
+                if name == "SECOND":
+                    self.parameter_writes.append((name, value, value_type))
+                    raise OSError("transport closed while sending")
+                super().set_parameter(name, value, value_type)
+
+        vehicle = _PartialVehicle()
+        service = VehicleParameterService(vehicle, write_timeout=0.02)  # type: ignore[arg-type]
+        service.start()
+        service.replace(
+            [
+                Parameter(key=key, value=1.0, unit="-", category="test", description="")
+                for key in ("FIRST", "SECOND", "THIRD")
+            ]
+        )
+
+        with self.assertRaises(RuntimeError) as caught:
+            service.update_values({"FIRST": 2.0, "SECOND": 3.0, "THIRD": 4.0})
+
+        error = caught.exception
+        self.assertEqual(error.confirmed_values, {"FIRST": 2.0})
+        self.assertEqual(error.uncertain_keys, ("SECOND",))
+        self.assertEqual(error.unattempted_keys, ("THIRD",))
+        self.assertEqual([item[0] for item in vehicle.parameter_writes], ["FIRST", "SECOND"])
+        service.stop()
+
+    def test_parameter_writer_rejects_non_finite_and_unrepresentable_values(self) -> None:
+        for value in (float("nan"), float("inf"), 10**10000):
+            with self.subTest(value_type=type(value).__name__):
+                with self.assertRaises((TypeError, ValueError, OverflowError)):
+                    VehicleParameterService._numeric_value("LIMIT", value)
+
     def test_parameter_list_is_cleared_when_vehicle_disconnects(self) -> None:
         vehicle = _FakeVehicle()
         service = VehicleParameterService(vehicle)  # type: ignore[arg-type]

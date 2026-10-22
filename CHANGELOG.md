@@ -5,6 +5,11 @@ Release headings link each entry to its release date.
 
 ## [Unreleased]
 
+### Added
+
+* Added a GitHub Actions test workflow that checks out the Core submodule and
+  runs the complete application and Core suite in an offscreen Qt environment.
+
 ### Changed
 
 * Rebranded the application as Argestes Ground Station, updated the repository
@@ -15,10 +20,19 @@ Release headings link each entry to its release date.
 
 * Parameter edits now remain local drafts until the operator selects **Apply**.
   Drafts survive refreshes and failed writes; the MAVLink parameter cache changes
-  only after the vehicle confirms the requested value.
+  only after the vehicle confirms the requested value. Invalid booleans, decimal
+  text for integer parameters and non-finite numbers are kept visible and block
+  Apply instead of being silently coerced.
+* Partial parameter writes now distinguish vehicle-confirmed values from writes
+  whose outcome is uncertain and values that were never attempted. The UI only
+  clears drafts confirmed by an echo; uncertain writes stay staged for review.
 * Battery failsafe evaluation now runs independently of the status-bar widget,
-  monitors the command result and makes one bounded retry after a rejected or
-  failed request.
+  monitors the command result and makes one bounded retry after a reported
+  rejection or failure. If the result never arrives, the outcome is reported as
+  unknown and the flight command is not automatically sent again.
+* Battery extension shutdown invalidates late failsafe callbacks and cancels its
+  timeout timer. Alarm settings are refreshed on configuration changes rather
+  than cloning the complete settings model for every telemetry update.
 * Required runtime-service failures now stop startup and roll back services
   already started. Extension shutdown errors are isolated so remaining plugins
   still receive cleanup.
@@ -31,6 +45,15 @@ Release headings link each entry to its release date.
   before controlled recovery.
 * Camera target reconfiguration now waits for the previous recording pipeline
   to finish EOS teardown before starting a replacement for the same target.
+  Publisher shutdown also reports and logs workers that remain alive past its
+  deadline instead of silently returning success.
+* Map tile-cache shutdown is owned by the Map & Autonomy extension lifecycle;
+  destroying a map widget no longer stops a cache service shared by other map
+  views.
+* Quick-command feedback now says when a request was accepted by the command
+  service without claiming that the vehicle has completed it.
+* Failed TEKNOFEST settings saves now restore or remove any credential writes
+  made during that configuration attempt, preserving the prior keyring state.
 * Superseded navigation requests are reported as unaccepted, and map WebChannel
   inputs are bounded and validated before dispatch, including coordinates,
   overlay IDs and mission points.

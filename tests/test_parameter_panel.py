@@ -85,6 +85,55 @@ class ParametersPanelTests(unittest.TestCase):
         self.assertEqual(self.panel.table.item(row, 1).text(), "1.0")
         self.assertEqual(self.panel._dirty_values, {})
 
+    def test_invalid_values_remain_visible_and_block_apply_until_corrected(self) -> None:
+        self.panel.set_parameters(
+            [parameter("INTEGER", 1), parameter("FLAG", False), parameter("REAL", 1.0)]
+        )
+
+        def row(key: str) -> int:
+            return next(
+                index
+                for index in range(self.panel.table.rowCount())
+                if self.panel.table.item(index, 0).text() == key
+            )
+
+        self.panel.table.item(row("INTEGER"), 1).setText("1.7")
+        self.panel.table.item(row("FLAG"), 1).setText("maybe")
+        self.panel.table.item(row("REAL"), 1).setText("nan")
+
+        self.assertEqual(self.panel.table.item(row("INTEGER"), 1).text(), "1.7")
+        self.assertEqual(self.panel._validation_errors.keys(), {"INTEGER", "FLAG", "REAL"})
+        self.assertFalse(self.panel.apply_button.isEnabled())
+        self.assertTrue(self.panel.reset_button.isEnabled())
+        self.panel.apply_changes()
+        self.assertEqual(self.submitted, [])
+
+        self.panel.reset_to_originals()
+        self.assertEqual(self.panel._validation_errors, {})
+        self.assertEqual(self.panel._invalid_values, {})
+
+    def test_integer_input_does_not_truncate_decimal_text(self) -> None:
+        self.panel.set_parameters([parameter("COUNT", 1)])
+        self.panel.table.item(0, 1).setText("3")
+        self.assertEqual(self.panel._dirty_values, {"COUNT": 3})
+        self.panel.table.item(0, 1).setText("3.9")
+        self.assertEqual(self.panel._dirty_values, {"COUNT": 3})
+        self.assertIn("COUNT", self.panel._validation_errors)
+
+    def test_partial_write_confirmation_clears_only_confirmed_draft(self) -> None:
+        self.panel.set_parameters([parameter("FIRST", 1.0), parameter("SECOND", 2.0)])
+        self.panel.table.item(0, 1).setText("3.0")
+        self.panel.table.item(1, 1).setText("4.0")
+        changes = dict(self.panel._dirty_values)
+        self.panel.apply_changes()
+
+        error = RuntimeError("one result is uncertain")
+        error.confirmed_values = {"FIRST": 3.0}
+        self.panel.finish_apply(changes, error)
+
+        self.assertEqual(self.panel._original_values["FIRST"], 3.0)
+        self.assertEqual(self.panel._dirty_values, {"SECOND": 4.0})
+
 
 if __name__ == "__main__":
     unittest.main()

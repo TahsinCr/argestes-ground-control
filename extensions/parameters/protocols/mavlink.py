@@ -11,6 +11,7 @@ from src.core.events import Subscription
 from src.models.parameters import Parameter
 from src.models.vehicle import VehicleConnectionState
 from src.services.logging_service import ServiceLogger
+from extensions.parameters.errors import ParameterWriteError
 from extensions.parameters.mutable import MutableParameterService
 from extensions.mavlink.ports import MavlinkVehiclePort
 
@@ -151,28 +152,65 @@ class VehicleParameterService(MutableParameterService):
             self._pending_writes.update(pending)
 
         started = time.monotonic()
+        attempted: list[str] = []
+        failure: Exception | None = None
         try:
-            for parameter, value in parameters.values():
-                self._vehicle.set_parameter(
-                    parameter.key, value, parameter.value_type
-                )
+            for key, (parameter, value) in parameters.items():
+                attempted.append(key)
+                try:
+                    self._vehicle.set_parameter(
+                        parameter.key, value, parameter.value_type
+                    )
+                except Exception as exc:
+                    failure = exc
+                    break
             deadline = started + self._write_timeout
-            missing: list[str] = []
-            for key, write in pending.items():
+            for key in attempted:
+                write = pending[key]
                 write.event.wait(max(0.0, deadline - time.monotonic()))
-                if not write.confirmed:
-                    missing.append(key)
-            if missing:
-                raise TimeoutError(
+            unconfirmed = [key for key in attempted if not pending[key].confirmed]
+            if failure is None and unconfirmed:
+                failure = TimeoutError(
                     "Araç parametre doğrulaması zaman aşımı: "
-                    + ", ".join(sorted(missing))
+                    + ", ".join(sorted(unconfirmed))
                 )
+            if failure is not None:
+                confirmed_values = {
+                    key: parameters[key][1]
+                    for key in attempted
+                    if pending[key].confirmed
+                }
+                uncertain = tuple(
+                    key for key in attempted if key not in confirmed_values
+                )
+                unattempted = tuple(key for key in parameters if key not in attempted)
+                detail = (
+                    "Bazı parametreler doğrulandı; doğrulanmayanların araçtaki durumu "
+                    "belirsiz olabilir. Araç değerlerini yenileyip kontrol edin."
+                )
+                raise ParameterWriteError(
+                    f"{failure}. {detail}",
+                    confirmed_values=confirmed_values,
+                    uncertain_keys=uncertain,
+                    unattempted_keys=unattempted,
+                ) from failure
         except Exception as exc:
             self._event(
                 "parameter.write_failed",
                 f"Parametre değişikliği doğrulanamadı: {exc}",
                 severity="danger",
-                details={"parameter_names": sorted(parameters)},
+                details={
+                    "parameter_names": sorted(parameters),
+                    "confirmed_parameters": sorted(
+                        getattr(exc, "confirmed_values", {})
+                    ),
+                    "uncertain_parameters": list(
+                        getattr(exc, "uncertain_keys", ())
+                    ),
+                    "unattempted_parameters": list(
+                        getattr(exc, "unattempted_keys", ())
+                    ),
+                },
             )
             self._changed.publish(self.current)
             raise
@@ -402,8 +440,15 @@ class VehicleParameterService(MutableParameterService):
     def _numeric_value(key: str, value: object) -> float:
         if isinstance(value, bool):
             return 1.0 if value else 0.0
-        if isinstance(value, (int, float)) and math.isfinite(float(value)):
-            return float(value)
+        if isinstance(value, (int, float)):
+            try:
+                numeric = float(value)
+            except (OverflowError, ValueError) as exc:
+                raise ValueError(
+                    f"Parametre MAVLink sayısal aralığı dışında: {key}"
+                ) from exc
+            if math.isfinite(numeric):
+                return numeric
         raise TypeError(f"Parametre sonlu sayısal olmalı: {key}")
 
     @staticmethod

@@ -194,6 +194,67 @@ class TeknofestCredentialTests(unittest.TestCase):
         self.assertIs(runtime.sessions["server-1"], session)
         self.assertFalse(session.stopped)
 
+    def test_settings_failure_restores_previous_keyring_secret(self) -> None:
+        previous = {
+            "identifier": "server-1",
+            "name": "Existing",
+            "base_url": "http://127.0.0.1:5000",
+            "username": "pilot",
+            "password": "legacy-secret",
+        }
+
+        class _FailingSettings(_Settings):
+            def update_extension(self, _identifier: str, *, config: dict) -> None:
+                raise OSError("settings file is read-only")
+
+        settings = _FailingSettings([previous])
+        keyring = _MemoryKeyring()
+        credentials = ServerCredentialStore(keyring)
+        credentials.set("server-1", "old-keyring-secret")
+        runtime = _runtime(settings, credentials, _Logger())
+        runtime.worker = _InlineWorker()
+        runtime._closed = False
+
+        with self.assertRaisesRegex(OSError, "read-only"):
+            runtime.configure(
+                [
+                    {
+                        **{key: value for key, value in previous.items() if key != "password"},
+                        "password": "replacement-secret",
+                    }
+                ]
+            ).result()
+
+        self.assertEqual(credentials.get("server-1"), "old-keyring-secret")
+        self.assertEqual(settings.config["servers"], [previous])
+
+    def test_settings_failure_deletes_secret_for_new_profile(self) -> None:
+        class _FailingSettings(_Settings):
+            def update_extension(self, _identifier: str, *, config: dict) -> None:
+                raise OSError("settings file is read-only")
+
+        settings = _FailingSettings([])
+        credentials = ServerCredentialStore(_MemoryKeyring())
+        runtime = _runtime(settings, credentials, _Logger())
+        runtime.worker = _InlineWorker()
+        runtime._closed = False
+
+        with self.assertRaises(OSError):
+            runtime.configure(
+                [
+                    {
+                        "identifier": "new-server",
+                        "name": "New",
+                        "base_url": "http://127.0.0.1:5000",
+                        "username": "pilot",
+                        "password": "new-secret",
+                    }
+                ]
+            ).result()
+
+        self.assertIsNone(credentials.get("new-server"))
+        self.assertEqual(settings.config["servers"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

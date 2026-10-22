@@ -334,13 +334,17 @@ class CompetitionRuntime:
             ).get("servers", [])
             existing_by_id = {item.get("identifier"): item for item in existing}
             persisted, prepared = [], []
+            credentials_to_store: dict[str, str] = {}
+            previous_credentials: dict[str, str | None] = {}
             for config in configs:
                 profile_id = config["identifier"]
                 password = config.get("password", "")
                 if not password:
                     password = existing_by_id.get(profile_id, {}).get("password") or ""
                 if password:
-                    self.credentials.set(profile_id, password)
+                    if profile_id not in previous_credentials:
+                        previous_credentials[profile_id] = self.credentials.get(profile_id)
+                    credentials_to_store[profile_id] = password
                 else:
                     try:
                         password = self.credentials.get(profile_id) or ""
@@ -353,18 +357,43 @@ class CompetitionRuntime:
                 prepared.append({**safe_config, "password": password})
             # Persist only after every secret has been stored and verified;
             # the running sessions remain untouched on any credential error.
-            new_sessions = {
-                config["identifier"]: ServerSession(
-                    config,
-                    lambda: self.telemetry.current,
-                    self.database,
-                    self.logger,
+            updated_credentials: list[str] = []
+            try:
+                for profile_id, password in credentials_to_store.items():
+                    # Record before set: a keyring backend can fail after writing.
+                    updated_credentials.append(profile_id)
+                    self.credentials.set(profile_id, password)
+                new_sessions = {
+                    config["identifier"]: ServerSession(
+                        config,
+                        lambda: self.telemetry.current,
+                        self.database,
+                        self.logger,
+                    )
+                    for config in prepared
+                }
+                self.settings.update_extension(
+                    "siha_teknofest_server", config={"servers": persisted}
                 )
-                for config in prepared
-            }
-            self.settings.update_extension(
-                "siha_teknofest_server", config={"servers": persisted}
-            )
+            except Exception:
+                for profile_id in reversed(updated_credentials):
+                    try:
+                        previous = previous_credentials[profile_id]
+                        if previous is None:
+                            self.credentials.delete(profile_id)
+                        else:
+                            self.credentials.set(profile_id, previous)
+                    except Exception as rollback_error:
+                        self.logger.event(
+                            "teknofest.credential_rollback_failed",
+                            "Sunucu ayarı başarısız oldu ve parola kasası geri alınamadı",
+                            severity="danger",
+                            details={
+                                "server_id": profile_id,
+                                "error_type": rollback_error.__class__.__name__,
+                            },
+                        )
+                raise
             previous_sessions = self.sessions
             for session in previous_sessions.values():
                 session.stop()

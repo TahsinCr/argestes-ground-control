@@ -82,7 +82,7 @@ class QtParameterService(_QtAdapter):
         try:
             self.backend.update_values(changes)
         except Exception as exc:
-            error = str(exc) or exc.__class__.__name__
+            error = exc
         else:
             error = None
         if not self._closed:

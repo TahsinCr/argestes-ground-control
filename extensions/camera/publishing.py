@@ -210,19 +210,43 @@ class VideoSharePublisher:
         if self._configs:
             self._publish_states()
 
-    def close(self) -> None:
+    def close(self, *, timeout_s: float = 3.5) -> bool:
+        if timeout_s < 0:
+            raise ValueError("Kapanış zaman aşımı negatif olamaz")
         self.stop()
-        deadline = time.monotonic() + 3.5
+        deadline = time.monotonic() + timeout_s
         current = threading.current_thread()
         with self._lifecycle_lock:
-            workers = tuple(self._workers.values())
-        for worker in workers:
+            workers = tuple(self._workers.items())
+        for _, worker in workers:
             if worker is current:
                 continue
             worker.join(timeout=max(0.0, deadline - time.monotonic()))
+        alive = tuple(
+            (identifier, worker)
+            for identifier, worker in workers
+            if worker.is_alive()
+        )
+        if alive:
+            details = {"worker_ids": [identifier for identifier, _ in alive]}
+            with self._lifecycle_lock:
+                for identifier, _ in alive:
+                    self._states[identifier] = VideoShareState(
+                        identifier,
+                        status="error",
+                        detail="Yayın işçisi kapanış zaman aşımında hâlâ çalışıyor",
+                    )
+            self._event(
+                "video.publisher.shutdown_timeout",
+                "Bazı yayın işçileri kapanış zaman aşımında çalışmaya devam ediyor",
+                "danger",
+                details,
+            )
+            self._publish_states()
         self._subscription.cancel()
         if self._source_subscription is not None:
             self._source_subscription.cancel()
+        return not alive
 
     def _start_target(
         self,

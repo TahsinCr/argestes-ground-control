@@ -16,6 +16,7 @@ class BatteryAlarmService:
     FAILSAFE_MODE = "RTL"
     MAX_FAILSAFE_ATTEMPTS = 2
     FAILSAFE_RETRY_DELAY_S = 5.0
+    FAILSAFE_TIMEOUT_S = 15.0
 
     def __init__(
         self,
@@ -32,6 +33,8 @@ class BatteryAlarmService:
         self._failsafe_retry_after = 0.0
         self._failsafe_unavailable_logged = False
         self._failsafe_generation = 0
+        self._failsafe_timeout_timer: threading.Timer | None = None
+        self._closed = False
         self._lock = threading.RLock()
         self._last_logged_percent: int | None = None
         self._settings_signature: tuple[str, float, bool, str, float] | None = None
@@ -47,7 +50,22 @@ class BatteryAlarmService:
         settings: BatteryAlarmSettings,
     ) -> bool:
         with self._lock:
+            if self._closed:
+                return False
             return self._evaluate(snapshot, settings)
+
+    def close(self) -> None:
+        """Invalidate pending callbacks and release the failsafe timeout timer."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._failsafe_generation += 1
+            self._failsafe_pending = False
+            timer = self._failsafe_timeout_timer
+            self._failsafe_timeout_timer = None
+        if timer is not None:
+            timer.cancel()
 
     def _evaluate(
         self,
@@ -110,6 +128,10 @@ class BatteryAlarmService:
         if not failsafe_active:
             if self._failsafe_pending:
                 self._failsafe_generation += 1
+                timer = self._failsafe_timeout_timer
+                self._failsafe_timeout_timer = None
+                if timer is not None:
+                    timer.cancel()
             self._failsafe_dispatched = False
             self._failsafe_pending = False
             self._failsafe_attempts = 0
@@ -131,7 +153,8 @@ class BatteryAlarmService:
         trigger_value: float,
     ) -> None:
         if (
-            not snapshot.armed
+            self._closed
+            or not snapshot.armed
             or self._failsafe_dispatched
             or self._failsafe_pending
             or self._failsafe_attempts >= self.MAX_FAILSAFE_ATTEMPTS
@@ -176,6 +199,14 @@ class BatteryAlarmService:
             )
             return
         if isinstance(result, Future):
+            timer = threading.Timer(
+                self.FAILSAFE_TIMEOUT_S,
+                self._failsafe_timed_out,
+                args=(generation,),
+            )
+            timer.daemon = True
+            self._failsafe_timeout_timer = timer
+            timer.start()
             result.add_done_callback(
                 lambda future: self._failsafe_future_completed(future, generation)
             )
@@ -206,6 +237,31 @@ class BatteryAlarmService:
             generation,
         )
 
+    def _failsafe_timed_out(self, generation: int) -> None:
+        with self._lock:
+            if (
+                self._closed
+                or generation != self._failsafe_generation
+                or not self._failsafe_pending
+            ):
+                return
+            self._failsafe_pending = False
+            # The command may still complete at the transport. Never resend an
+            # outcome-unknown flight command automatically.
+            self._failsafe_dispatched = True
+            self._failsafe_generation += 1
+            self._failsafe_timeout_timer = None
+            if self._logger:
+                self._logger.event(
+                    "battery.failsafe_outcome_unknown",
+                    "RTL failsafe sonucu zaman aşımında doğrulanamadı; komut otomatik tekrarlanmayacak",
+                    severity="danger",
+                    details={
+                        "mode": self.FAILSAFE_MODE,
+                        "timeout_s": self.FAILSAFE_TIMEOUT_S,
+                    },
+                )
+
     def _finish_failsafe(
         self,
         accepted: bool,
@@ -216,6 +272,10 @@ class BatteryAlarmService:
         with self._lock:
             if generation != self._failsafe_generation:
                 return
+            timer = self._failsafe_timeout_timer
+            self._failsafe_timeout_timer = None
+            if timer is not None:
+                timer.cancel()
             self._failsafe_pending = False
             if accepted:
                 self._failsafe_dispatched = True

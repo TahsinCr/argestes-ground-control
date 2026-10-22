@@ -57,20 +57,27 @@ class BatteryExtension:
                 source="battery-failsafe",
             ),
         )
+        self._alarm_settings = settings.current.backend.battery_alarm
         self._telemetry_subscription = telemetry.updated.subscribe(
             lambda snapshot: self.alarm.evaluate(
                 snapshot,
-                settings.current.backend.battery_alarm,
+                self._alarm_settings,
             )
         )
         self.processor = BatteryProcessor(settings.current.backend.battery_telemetry)
-        self.subscription = settings.changed.subscribe(
-            lambda model: self.processor.configure(model.backend.battery_telemetry)
-        )
+
+        def settings_changed(model):
+            self._alarm_settings = model.backend.battery_alarm
+            self.processor.configure(model.backend.battery_telemetry)
+
+        self.subscription = settings.changed.subscribe(settings_changed)
         self.pipeline = context.services.resolve(TelemetryPipeline)
         self.pipeline.add_processor("battery.estimation", self.processor)
 
     def stop(self):
+        alarm = getattr(self, "alarm", None)
+        if alarm is not None:
+            alarm.close()
         telemetry_subscription = getattr(self, "_telemetry_subscription", None)
         if telemetry_subscription is not None:
             telemetry_subscription.cancel()

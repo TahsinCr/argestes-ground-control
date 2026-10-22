@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Iterable
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -33,6 +34,8 @@ class ParametersPanel(PanelFrame):
         self._parameters: list[Parameter] = []
         self._original_values: dict[str, object] = {}
         self._dirty_values: dict[str, object] = {}
+        self._invalid_values: dict[str, str] = {}
+        self._validation_errors: dict[str, str] = {}
         self._language = "tr"
         self._write_in_progress = False
         self._write_error: str | None = None
@@ -160,6 +163,14 @@ class ParametersPanel(PanelFrame):
 
         self._parameters = incoming
         incoming_keys = {item.key for item in incoming}
+        self._invalid_values = {
+            key: value for key, value in self._invalid_values.items() if key in incoming_keys
+        }
+        self._validation_errors = {
+            key: value
+            for key, value in self._validation_errors.items()
+            if key in incoming_keys
+        }
         self._dirty_values = {
             key: value
             for key, value in self._dirty_values.items()
@@ -270,7 +281,10 @@ class ParametersPanel(PanelFrame):
         items = [
             QTableWidgetItem(str(parameter.key)),
             QTableWidgetItem(
-                str(self._dirty_values.get(parameter.key, parameter.value))
+                self._invalid_values.get(
+                    parameter.key,
+                    str(self._dirty_values.get(parameter.key, parameter.value)),
+                )
             ),
             QTableWidgetItem(self._display_default(parameter.default_value)),
             QTableWidgetItem(parameter.unit),
@@ -291,27 +305,41 @@ class ParametersPanel(PanelFrame):
     def _coerce_value(self, parameter: Parameter, raw_value: str) -> object:
         current_value = self._original_values.get(parameter.key, parameter.value)
         if isinstance(current_value, bool):
-            return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+            normalized = raw_value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+            raise ValueError("parameters.invalid_boolean")
         if isinstance(current_value, int) and not isinstance(current_value, bool):
             try:
-                return int(float(raw_value))
-            except ValueError:
-                return current_value
+                return int(raw_value.strip(), 10)
+            except ValueError as exc:
+                raise ValueError("parameters.invalid_integer") from exc
         if isinstance(current_value, float):
             try:
-                return float(raw_value)
-            except ValueError:
-                return current_value
+                value = float(raw_value)
+            except ValueError as exc:
+                raise ValueError("parameters.invalid_number") from exc
+            if not math.isfinite(value):
+                raise ValueError("parameters.invalid_number")
+            return value
         return raw_value
 
     def _apply_row_style(self, row: int, key: str) -> None:
         dirty = key in self._dirty_values
+        invalid = key in self._validation_errors
         item = self.table.item(row, 1)
         if not item:
             return
-        if dirty:
+        if invalid:
+            item.setBackground(QColor("#7a2525"))
+            item.setForeground(QColor("#ffffff"))
+            item.setToolTip(t(self._validation_errors[key], self._language))
+        elif dirty:
             item.setBackground(QColor("#0e639c"))
             item.setForeground(QColor("#ffffff"))
+            item.setToolTip("")
         else:
             background = (
                 self.table.palette().alternateBase().color()
@@ -320,6 +348,7 @@ class ParametersPanel(PanelFrame):
             )
             item.setBackground(background)
             item.setForeground(self.table.palette().text().color())
+            item.setToolTip("")
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if item.column() != 1:
@@ -331,7 +360,22 @@ class ParametersPanel(PanelFrame):
         parameter = self._parameter_for_key(key)
         if not parameter:
             return
-        value = self._coerce_value(parameter, item.text())
+        raw_value = item.text()
+        try:
+            value = self._coerce_value(parameter, raw_value)
+        except ValueError as exc:
+            error_key = (
+                str(exc)
+                if str(exc).startswith("parameters.")
+                else "parameters.invalid_values"
+            )
+            self._invalid_values[key] = raw_value
+            self._validation_errors[key] = error_key
+            self._apply_row_style(item.row(), key)
+            self._update_footer()
+            return
+        self._invalid_values.pop(key, None)
+        self._validation_errors.pop(key, None)
         parameter.value = value
         self._write_error = None
         if value == self._original_values.get(key):
@@ -346,6 +390,13 @@ class ParametersPanel(PanelFrame):
         if self._write_in_progress:
             self.pending_label.setText(t("parameters.write_in_progress", self._language))
             self.pending_label.setToolTip("")
+        elif self._validation_errors:
+            self.pending_label.setText(
+                t("parameters.invalid_values", self._language).format(
+                    count=len(self._validation_errors)
+                )
+            )
+            self.pending_label.setToolTip("")
         elif self._write_error:
             self.pending_label.setText(
                 t("parameters.write_failed", self._language).format(count=count)
@@ -356,13 +407,19 @@ class ParametersPanel(PanelFrame):
                 t("parameters.pending", self._language).format(count=count)
             )
             self.pending_label.setToolTip(self._write_error or "")
-        enabled = count > 0 and not self._write_in_progress
-        self.apply_button.setEnabled(enabled)
-        self.reset_button.setEnabled(enabled)
+        can_apply = (
+            count > 0 and not self._write_in_progress and not self._validation_errors
+        )
+        can_reset = (
+            (count > 0 or bool(self._validation_errors))
+            and not self._write_in_progress
+        )
+        self.apply_button.setEnabled(can_apply)
+        self.reset_button.setEnabled(can_reset)
         self.table.setEnabled(not self._write_in_progress)
 
     def apply_changes(self) -> None:
-        if not self._dirty_values or self._write_in_progress:
+        if not self._dirty_values or self._write_in_progress or self._validation_errors:
             return
         changes = dict(self._dirty_values)
         self._write_in_progress = True
@@ -371,7 +428,7 @@ class ParametersPanel(PanelFrame):
         self._update_footer()
         self.apply_requested.emit(changes)
 
-    def finish_apply(self, changes: dict[str, object], error: str | None) -> None:
+    def finish_apply(self, changes: dict[str, object], error: object | None) -> None:
         """Commit staged edits only after the backend confirms the write."""
         if not self._write_in_progress:
             return
@@ -385,13 +442,24 @@ class ParametersPanel(PanelFrame):
                     self._dirty_values.pop(key, None)
             self._write_error = None
         else:
-            self._write_error = error
+            confirmed = getattr(error, "confirmed_values", {})
+            parameters = {parameter.key: parameter for parameter in self._parameters}
+            for key, value in confirmed.items():
+                self._original_values[key] = value
+                if key in parameters:
+                    parameters[key].value = value
+                if self._dirty_values.get(key) == changes.get(key):
+                    self._dirty_values.pop(key, None)
+            self._write_error = str(error) or error.__class__.__name__
         self._write_in_progress = False
         self._rebuild_table()
         self._update_footer()
 
     def reset_to_originals(self) -> None:
-        if not self._dirty_values or self._write_in_progress:
+        if (
+            (not self._dirty_values and not self._validation_errors)
+            or self._write_in_progress
+        ):
             return
         for parameter in self._parameters:
             if parameter.key in self._dirty_values:
@@ -399,6 +467,8 @@ class ParametersPanel(PanelFrame):
                     parameter.key, parameter.value
                 )
         self._dirty_values.clear()
+        self._invalid_values.clear()
+        self._validation_errors.clear()
         self._rebuild_table()
         self._update_footer()
         self.reset_requested.emit()

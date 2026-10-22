@@ -55,7 +55,22 @@ class VideoPublisherLifecycleTests(unittest.TestCase):
         self.assertTrue(new_started.wait(timeout=1.0))
         self.assertEqual(max_active, 1)
 
-        publisher.close()
+        self.assertTrue(publisher.close())
+
+    def test_close_reports_worker_that_exceeds_shutdown_deadline(self) -> None:
+        publisher = VideoSharePublisher(EventBus())
+        release = threading.Event()
+        worker = threading.Thread(target=release.wait, name="blocked-video-worker")
+        publisher._workers["camera-stuck"] = worker
+        worker.start()
+
+        try:
+            self.assertFalse(publisher.close(timeout_s=0.01))
+            self.assertEqual(publisher._states["camera-stuck"].status, "error")
+        finally:
+            release.set()
+            worker.join(timeout=1.0)
+        self.assertFalse(worker.is_alive())
 
 
 if __name__ == "__main__":
