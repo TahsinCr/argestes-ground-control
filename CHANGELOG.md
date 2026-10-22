@@ -5,7 +5,9 @@ Release headings link each entry to its release date.
 
 ## [Unreleased]
 
-This development cycle introduces an extension architecture and a customizable
+## [2.0-beta] - 22.10.2026
+
+Version 2.0-beta introduces an extension architecture and a customizable
 workspace in place of the fixed application layout used in 1.7-beta. Vehicle
 integrations and feature panels now belong to separate packages, while the
 application provides their shared workspace, settings and lifecycle services.
