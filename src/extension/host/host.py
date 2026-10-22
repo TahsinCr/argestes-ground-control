@@ -88,6 +88,7 @@ class ExtensionHost:
         self._lifecycle_started = False
         self._active_ids: set[str] = set()
         self._dirty_settings: set[str] = set()
+        self._reload_baselines: dict[str, dict[str, Any]] = {}
         self._visual_views: list[VisualContribution] = []
         self._status_widgets: list[StatusContribution] = []
         self._settings_contributions: dict[str, SettingsContribution] = {}
@@ -256,6 +257,8 @@ class ExtensionHost:
         ):
             return
         was_active = identifier in self._active_ids
+        was_dirty = identifier in self._dirty_settings
+        previous_baseline = self._reload_baselines.get(identifier)
         if enabled and not was_active:
             self._load_one(identifier)
         elif not enabled and was_active:
@@ -268,12 +271,22 @@ class ExtensionHost:
             self._save_states(self._stored)
         except Exception:
             self._stored[identifier] = previous
+            if was_dirty:
+                self._dirty_settings.add(identifier)
+            else:
+                self._dirty_settings.discard(identifier)
+            if previous_baseline is None:
+                self._reload_baselines.pop(identifier, None)
+            else:
+                self._reload_baselines[identifier] = previous_baseline
             if was_active != enabled:
                 if was_active:
                     self._load_one(identifier)
                 else:
                     self._unload_one(identifier)
             raise
+        self._dirty_settings.discard(identifier)
+        self._reload_baselines.pop(identifier, None)
 
     def settings(self, identifier: str) -> dict[str, Any]:
         manifest = self._manifests[identifier]
@@ -294,6 +307,8 @@ class ExtensionHost:
                 not isinstance(value, int) or isinstance(value, bool)
             ):
                 raise ValueError(f"{key} must be integer")
+        if identifier in self._active_ids:
+            self._reload_baselines.setdefault(identifier, self.settings(identifier))
         self._settings_service.update_extension(
             identifier, config={**self.settings(identifier), **values}
         )
@@ -418,15 +433,27 @@ class ExtensionHost:
             raise ExtensionError(
                 f"{identifier} has live protocol/dependents; cannot reload it in isolation"
             )
+        baseline = self._reload_baselines.get(identifier, self.settings(identifier))
         self._unload_one(identifier)
         try:
             self._load_one(identifier)
         except Exception as exc:
-            # Preserve the requested enabled state and expose the failed live
-            # reload as pending restart instead of silently disabling it.
             self._log_lifecycle_error(identifier, "reload", exc)
+            try:
+                self._settings_service.update_extension(identifier, config=baseline)
+                self._load_one(identifier)
+            except Exception as rollback_error:
+                self._log_lifecycle_error(identifier, "reload_rollback", rollback_error)
+                raise ExtensionError(
+                    f"{identifier} reload failed and its previous configuration could not be restored"
+                ) from exc
+            self._dirty_settings.discard(identifier)
+            self._reload_baselines.pop(identifier, None)
+            # Keep the original failure visible to the caller even though the
+            # prior settings and a working extension instance are restored.
             raise
         self._dirty_settings.discard(identifier)
+        self._reload_baselines.pop(identifier, None)
 
     def start(self) -> None:
         if self._lifecycle_started:

@@ -1,16 +1,18 @@
 """Archived profile cards and an independent profile editor."""
 
-from dataclasses import asdict
+from urllib.parse import urlsplit
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QSpinBox,
@@ -63,7 +65,9 @@ class ServerPanel(QWidget):
             if error:
                 QMessageBox.warning(self, "TEKNOFEST", str(error))
         profiles = tuple(
-            CompetitionServerConfig(**item)
+            CompetitionServerConfig(
+                **{key: value for key, value in item.items() if key != "password"}
+            )
             for item in self.settings.extension_config("siha_teknofest_server").get(
                 "servers", []
             )
@@ -86,7 +90,9 @@ class ServerPanel(QWidget):
 
     def save_profiles(self, profiles):
         try:
-            self.pending = self.runtime.configure([asdict(item) for item in profiles])
+            self.pending = self.runtime.configure(
+                [item.to_dict(include_password=True) for item in profiles]
+            )
             self.refresh()
         except (ValueError, RuntimeError) as error:
             QMessageBox.warning(self, "TEKNOFEST", str(error))
@@ -108,6 +114,7 @@ class ServerPanel(QWidget):
         self.timer.start()
 
     def edit(self, profile=None):
+        is_new = profile is None
         profile = profile or CompetitionServerConfig(name="TEKNOFEST")
         dialog = QDialog(self)
         dialog.setWindowTitle(t("teknofest.edit", self.language))
@@ -120,12 +127,34 @@ class ServerPanel(QWidget):
         form.setSpacing(12)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         controls = {}
-        for key in ("name", "base_url", "username", "password"):
+        for key in ("name", "username"):
             field = QLineEdit(str(getattr(profile, key)), box)
-            if key == "password":
-                field.setEchoMode(QLineEdit.EchoMode.Password)
             controls[key] = field
             form.addRow(t("teknofest." + key, self.language), field)
+        scheme = QComboBox(box)
+        scheme.addItem("HTTPS", "https")
+        scheme.addItem("HTTP", "http")
+        selected_scheme = urlsplit(profile.base_url).scheme.lower()
+        scheme.setCurrentIndex(max(0, scheme.findData(selected_scheme)))
+        address = QLineEdit(profile.base_url.split("://", 1)[-1], box)
+        address_row = QWidget(box)
+        address_layout = QHBoxLayout(address_row)
+        address_layout.setContentsMargins(0, 0, 0, 0)
+        address_layout.addWidget(scheme)
+        address_layout.addWidget(address, 1)
+        controls["base_url"] = address
+        form.addRow(t("teknofest.base_url", self.language), address_row)
+        password = QLineEdit(box)
+        password.setEchoMode(QLineEdit.EchoMode.Password)
+        password.setPlaceholderText(
+            t("teknofest.password.keep" if not is_new else "teknofest.password.required", self.language)
+        )
+        controls["password"] = password
+        form.addRow(t("teknofest.password", self.language), password)
+        transport_note = QLabel(t("teknofest.transport_note", self.language), box)
+        transport_note.setWordWrap(True)
+        transport_note.setObjectName("mutedLabel")
+        form.addRow(transport_note)
         team, timeout = QSpinBox(box), QDoubleSpinBox(box)
         team.setRange(1, 9999)
         team.setValue(profile.team_number)
@@ -148,15 +177,22 @@ class ServerPanel(QWidget):
 
         def accept():
             try:
+                password_value = controls["password"].text()
+                if is_new and not password_value:
+                    raise ValueError(t("teknofest.password.required", self.language))
+                host = controls["base_url"].text().strip()
+                if host.startswith(("http://", "https://")):
+                    host = host.split("://", 1)[1]
                 result.append(
                     CompetitionServerConfig(
                         identifier=profile.identifier,
+                        base_url=f"{scheme.currentData()}://{host}",
                         team_number=team.value(),
                         timeout_s=timeout.value(),
                         auto_connect=auto.isChecked(),
-                        **{
-                            key: field.text().strip() for key, field in controls.items()
-                        },
+                        name=controls["name"].text().strip(),
+                        username=controls["username"].text().strip(),
+                        password=password_value,
                     )
                 )
             except ValueError as error:

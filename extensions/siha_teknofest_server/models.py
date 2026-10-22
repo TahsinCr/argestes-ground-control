@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 import math
 from typing import Any, ClassVar
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from src.core.abstracts import Model
@@ -20,7 +21,7 @@ class CompetitionServerConfig(Model):
     name: str = "TEKNOFEST"
     base_url: str = "http://127.0.0.1:5000"
     username: str = "argestes"
-    password: str = "argestes-demo"
+    password: str = field(default="", repr=False, compare=False)
     team_number: int = 1
     timeout_s: float = 3.0
     auto_connect: bool = False
@@ -34,7 +35,20 @@ class CompetitionServerConfig(Model):
             raise ValueError("TEKNOFEST sunucu kimliği boş olamaz")
         if not name:
             raise ValueError("TEKNOFEST sunucu adı boş olamaz")
-        if not base_url.startswith(("http://", "https://")):
+        parsed_url = urlsplit(base_url)
+        try:
+            parsed_url.port
+        except ValueError as exc:
+            raise ValueError("TEKNOFEST sunucu adresindeki port geçersiz") from exc
+        if (
+            parsed_url.scheme not in {"http", "https"}
+            or not parsed_url.hostname
+            or any(character.isspace() for character in parsed_url.netloc)
+            or parsed_url.username is not None
+            or parsed_url.password is not None
+            or parsed_url.query
+            or parsed_url.fragment
+        ):
             raise ValueError(
                 "TEKNOFEST sunucu adresi http:// veya https:// ile başlamalı"
             )
@@ -51,8 +65,11 @@ class CompetitionServerConfig(Model):
         object.__setattr__(self, "team_number", int(self.team_number))
         object.__setattr__(self, "timeout_s", float(self.timeout_s))
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+    def to_dict(self, *, include_password: bool = False) -> dict[str, Any]:
+        payload = asdict(self)
+        if not include_password:
+            payload.pop("password", None)
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

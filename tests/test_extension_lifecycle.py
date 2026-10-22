@@ -27,6 +27,14 @@ class _Container:
         return self.logger
 
 
+class _ExtensionSettings:
+    def __init__(self) -> None:
+        self.config = {"value": "new-invalid-value"}
+
+    def update_extension(self, identifier: str, *, config: dict) -> None:
+        self.config = dict(config)
+
+
 class _Plugin:
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error
@@ -57,18 +65,26 @@ class ExtensionLifecycleTests(unittest.TestCase):
         self.assertFalse(host._lifecycle_started)
         self.assertEqual(len(logger.entries), 1)
 
-    def test_failed_reload_keeps_the_persisted_enabled_choice(self) -> None:
+    def test_failed_reload_restores_previous_config_and_live_extension(self) -> None:
         logger = _Logger()
         host = object.__new__(ExtensionHost)
         host.container = _Container(logger)
         host._active_ids = {"example"}
         host._stored = {"example": True}
         host._dirty_settings = {"example"}
+        host._reload_baselines = {"example": {"value": "previous-working-value"}}
+        host._settings_service = _ExtensionSettings()
+        host.settings = lambda _identifier: dict(host._settings_service.config)
         host.can_reload = lambda identifier: True
-        host._unload_one = lambda identifier: None
+        host._unload_one = lambda identifier: host._active_ids.discard(identifier)
+        loads = 0
 
         def fail_to_load(identifier: str) -> None:
-            raise RuntimeError("invalid new settings")
+            nonlocal loads
+            loads += 1
+            if loads == 1:
+                raise RuntimeError("invalid new settings")
+            host._active_ids.add(identifier)
 
         host._load_one = fail_to_load
 
@@ -76,7 +92,10 @@ class ExtensionLifecycleTests(unittest.TestCase):
             host.reload("example")
 
         self.assertTrue(host._stored["example"])
-        self.assertIn("example", host._dirty_settings)
+        self.assertEqual(host._settings_service.config, {"value": "previous-working-value"})
+        self.assertIn("example", host._active_ids)
+        self.assertNotIn("example", host._dirty_settings)
+        self.assertNotIn("example", host._reload_baselines)
         self.assertEqual(len(logger.entries), 1)
 
 

@@ -22,8 +22,13 @@ Release headings link each entry to its release date.
 * Required runtime-service failures now stop startup and roll back services
   already started. Extension shutdown errors are isolated so remaining plugins
   still receive cleanup.
-* Failed extension reloads no longer rewrite the saved enabled preference, and
-  joystick transport errors release RC overrides before controlled recovery.
+* Failed extension reloads restore the last working settings and extension
+  instance without changing the saved enabled preference. The workspace also
+  rebuilds that extension's UI after a failed reload.
+* Joystick button actions now use a single reusable worker, reject work from a
+  closed or superseded device session and finish any dispatched action before
+  extension shutdown. Joystick transport errors still release RC overrides
+  before controlled recovery.
 * Camera target reconfiguration now waits for the previous recording pipeline
   to finish EOS teardown before starting a replacement for the same target.
 * Superseded navigation requests are reported as unaccepted, and map WebChannel
@@ -36,8 +41,16 @@ Release headings link each entry to its release date.
 
 ### Security
 
-* Map WebChannel JSON payloads are size-limited; malformed
-  or out-of-range actions and overlays are discarded before reaching map logic.
+* TEKNOFEST server profiles now allow HTTP or HTTPS independently. HTTPS keeps
+  normal certificate verification enabled; HTTP is clearly identified as
+  unencrypted rather than being silently upgraded.
+* New TEKNOFEST passwords are kept in the operating-system credential store,
+  omitted from normal profile serialization and migrated from existing settings
+  when a secure store is available. If migration cannot be completed, the old
+  value is retained to avoid losing the only working credential and a warning is
+  logged for the operator.
+* Map WebChannel JSON payloads are size-limited; malformed or out-of-range
+  actions and overlays are discarded before reaching map logic.
 
 ## [2.0-beta] - 22.10.2026
 

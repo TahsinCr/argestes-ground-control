@@ -169,8 +169,11 @@ class MainWindow(QMainWindow):
 
     def _reload_extension(self, identifier: str) -> None:
         self._remove_extension_ui(identifier)
-        self.extension_host.reload(identifier)
-        self._sync_extension_ui(identifier)
+        try:
+            self.extension_host.reload(identifier)
+        finally:
+            if self.extension_host.is_active(identifier):
+                self._sync_extension_ui(identifier)
 
     def _sync_extension_ui(self, identifier):
         self._remove_extension_ui(identifier)

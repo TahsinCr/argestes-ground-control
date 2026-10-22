@@ -7,6 +7,7 @@ import os
 import struct
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
@@ -55,6 +56,9 @@ class LinuxRcJoystickService(JoystickService):
         self._state = JoystickState()
         self._state_lock = threading.RLock()
         self._action_lock = threading.Lock()
+        self._action_executor: ThreadPoolExecutor | None = None
+        self._action_future: Future | None = None
+        self._action_generation = 0
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -80,6 +84,11 @@ class LinuxRcJoystickService(JoystickService):
             return
         self._stop_event.clear()
         self._manual_disconnect = False
+        with self._state_lock:
+            self._action_generation += 1
+            self._action_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="JoystickButtonAction"
+            )
         self._configuration = JoystickSettings.from_config(
             self._settings.extension_config("joystick")
         )
@@ -101,6 +110,7 @@ class LinuxRcJoystickService(JoystickService):
     def stop(self) -> None:
         self._stop_event.set()
         self._wake_event.set()
+        self._cancel_button_actions(wait=True, shutdown=True)
         if self._settings_subscription is not None:
             self._settings_subscription.cancel()
             self._settings_subscription = None
@@ -124,6 +134,7 @@ class LinuxRcJoystickService(JoystickService):
         self._manual_disconnect = True
         with self._state_lock:
             self._configuration_revision += 1
+        self._cancel_button_actions(wait=False)
         self._wake_event.set()
         self._release_override()
         self._publish(JoystickState())
@@ -147,6 +158,7 @@ class LinuxRcJoystickService(JoystickService):
         self._manual_disconnect = False
         with self._state_lock:
             self._configuration_revision += 1
+        self._cancel_button_actions(wait=False)
         self._wake_event.set()
 
     def _run(self) -> None:
@@ -186,6 +198,9 @@ class LinuxRcJoystickService(JoystickService):
         config: JoystickSettings,
         revision: int,
     ) -> None:
+        with self._state_lock:
+            self._action_generation += 1
+            action_generation = self._action_generation
         device = self._describe(path)
         descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
         axes = [0.0] * device.axis_count
@@ -210,7 +225,7 @@ class LinuxRcJoystickService(JoystickService):
                     for index, pressed in enumerate(buttons):
                         if pressed and not previous_buttons[index]:
                             toggles[index] = not toggles.get(index, False)
-                            self._execute_button_action(config, index)
+                            self._execute_button_action(config, index, action_generation)
                     previous_buttons[:] = buttons
                 pwm = self.channel_pwm(config, axes, buttons, toggles)
                 now = time.monotonic()
@@ -239,10 +254,13 @@ class LinuxRcJoystickService(JoystickService):
                 self._wake_event.clear()
         finally:
             os.close(descriptor)
+            self._cancel_button_actions(wait=True)
             self._release_override()
             self._publish(JoystickState())
 
-    def _execute_button_action(self, config: JoystickSettings, button: int) -> None:
+    def _execute_button_action(
+        self, config: JoystickSettings, button: int, generation: int
+    ) -> None:
         assignment = next(
             (
                 item
@@ -251,8 +269,17 @@ class LinuxRcJoystickService(JoystickService):
             ),
             None,
         )
-        if assignment is None or not assignment.action or not self._vehicle.connected:
+        if (
+            assignment is None
+            or not assignment.action
+            or not self._vehicle.connected
+            or self._stop_event.is_set()
+        ):
             return
+        with self._state_lock:
+            executor = self._action_executor
+            if generation != self._action_generation or executor is None:
+                return
         if not self._action_lock.acquire(blocking=False):
             self._event(
                 "joystick.button_action_busy",
@@ -261,26 +288,38 @@ class LinuxRcJoystickService(JoystickService):
                 {"button": button + 1, "action": assignment.action},
             )
             return
-        threading.Thread(
-            target=self._run_button_action,
-            args=(assignment,),
-            name="JoystickButtonAction",
-            daemon=True,
-        ).start()
+        try:
+            future = executor.submit(self._run_button_action, assignment, generation)
+            self._action_future = future
+            future.add_done_callback(self._button_action_finished)
+        except RuntimeError as exc:
+            self._action_lock.release()
+            self._event(
+                "joystick.button_action_failed",
+                "Joystick buton aksiyonu oturum kapanırken başlatılamadı",
+                "warning",
+                {"button": button + 1, "action": assignment.action},
+            )
 
-    def _run_button_action(self, assignment: JoystickButtonConfig) -> None:
+    def _run_button_action(
+        self, assignment: JoystickButtonConfig, generation: int
+    ) -> None:
         parameters: dict[str, object] = {}
         if assignment.action == "SET_MODE":
             parameters["mode"] = assignment.mode
         elif assignment.action == "SET_SERVO":
             parameters.update(servo=assignment.servo, pwm=assignment.pwm)
         try:
+            with self._state_lock:
+                current = generation == self._action_generation
+            if not current or self._stop_event.is_set() or not self._vehicle.connected:
+                return
             accepted = self._vehicle.execute(
                 CommandRequest(assignment.action, parameters, source="joystick")
             )
             self._event(
                 "joystick.button_action",
-                f"Joystick buton aksiyonu {'doğrulandı' if accepted else 'reddedildi'}: {assignment.action}",
+                f"Joystick buton aksiyonu {'gönderildi' if accepted else 'reddedildi'}: {assignment.action}",
                 "success" if accepted else "warning",
                 {
                     "button": assignment.button + 1,
@@ -295,7 +334,43 @@ class LinuxRcJoystickService(JoystickService):
                 "danger",
                 {"button": assignment.button + 1, "action": assignment.action},
             )
+    def _button_action_finished(self, future: Future) -> None:
+        try:
+            error = future.exception()
+            if error is not None:
+                self._event(
+                    "joystick.button_action_failed",
+                    "Joystick buton aksiyonu beklenmedik biçimde başarısız oldu",
+                    "danger",
+                )
+        except Exception:
+            pass
         finally:
+            self._action_lock.release()
+
+    def _cancel_button_actions(self, *, wait: bool, shutdown: bool = False) -> None:
+        with self._state_lock:
+            self._action_generation += 1
+            future = self._action_future
+            executor = self._action_executor
+            if shutdown:
+                self._action_executor = None
+        if future is not None:
+            future.cancel()
+        if shutdown and executor is not None:
+            # Shutdown waits for any already-dispatched command to finish; a
+            # queued action is cancelled, and the generation guard prevents it
+            # from dispatching after a disconnect or session replacement.
+            executor.shutdown(wait=True, cancel_futures=True)
+        elif wait and future is not None:
+            try:
+                future.result()
+            except Exception:
+                pass
+            # A Future may notify waiters just before invoking its callbacks;
+            # wait for the completion callback to release the single-flight
+            # guard before a replacement device session accepts actions.
+            self._action_lock.acquire()
             self._action_lock.release()
 
     @classmethod

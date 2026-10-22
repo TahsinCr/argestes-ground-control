@@ -19,6 +19,7 @@ from .models import (
     CompetitionServerConfig,
     CompetitionServerTime,
 )
+from .credentials import CredentialStoreError, ServerCredentialStore
 
 
 class ServerSession:
@@ -227,7 +228,7 @@ class CompetitionDatabase:
 
 
 class CompetitionRuntime:
-    def __init__(self, context):
+    def __init__(self, context, credential_store=None):
         from src.services.abstracts.telemetry import TelemetryService
         from src.services.logging_service import LoggingService
         from src.services.settings import SettingsService
@@ -235,6 +236,11 @@ class CompetitionRuntime:
         self.settings = context.services.resolve(SettingsService)
         self.telemetry = context.services.resolve(TelemetryService)
         self.logger = context.services.resolve(LoggingService).child("TEKNOFEST")
+        self.credentials = (
+            credential_store
+            if credential_store is not None
+            else ServerCredentialStore()
+        )
         self.database = CompetitionDatabase(
             context.base_dir / "data" / "siha_teknofest_server" / "history.sqlite3"
         )
@@ -246,19 +252,65 @@ class CompetitionRuntime:
         self._load()
 
     def _load(self):
-        configs = self.settings.extension_config("siha_teknofest_server").get(
+        raw_configs = self.settings.extension_config("siha_teknofest_server").get(
             "servers", []
         )
-        configs = validate_servers(configs)
+        configs = validate_servers(raw_configs)
         if len({item["identifier"] for item in configs}) != len(configs):
             raise ValueError("Duplicate competition server identity")
+        persisted, needs_migration = [], False
         for config in configs:
             timeout = float(config.get("timeout_s", 3))
             if not 0.1 <= timeout <= 15:
                 raise ValueError("Server timeout must be between 0.1 and 15 seconds")
+            legacy_password = config.get("password", "")
+            safe_config = {key: value for key, value in config.items() if key != "password"}
+            password = ""
+            if legacy_password:
+                try:
+                    self.credentials.set(config["identifier"], legacy_password)
+                    password = legacy_password
+                    needs_migration = True
+                    persisted.append(safe_config)
+                except CredentialStoreError:
+                    # Keep an existing plaintext credential only when the OS
+                    # store is unavailable, so a migration never breaks the
+                    # current connection or silently destroys the only copy.
+                    persisted.append(config)
+                    self.logger.event(
+                        "teknofest.credential_migration_pending",
+                        "Sunucu parolası güvenli kasaya taşınamadı; eski ayar korunuyor",
+                        severity="warning",
+                    )
+                    password = legacy_password
+            else:
+                persisted.append(safe_config)
+                try:
+                    password = self.credentials.get(config["identifier"]) or ""
+                except CredentialStoreError:
+                    self.logger.event(
+                        "teknofest.credential_read_failed",
+                        "Sunucu parolası işletim sistemi kasasından okunamadı",
+                        severity="warning",
+                    )
+                    password = ""
             self.sessions[config["identifier"]] = ServerSession(
-                config, lambda: self.telemetry.current, self.database, self.logger
+                {**safe_config, "password": password},
+                lambda: self.telemetry.current,
+                self.database,
+                self.logger,
             )
+        if needs_migration:
+            try:
+                self.settings.update_extension(
+                    "siha_teknofest_server", config={"servers": persisted}
+                )
+            except Exception:
+                self.logger.event(
+                    "teknofest.credential_migration_save_failed",
+                    "Güvenli kasa hazır ancak ayar dosyasındaki eski parola temizlenemedi",
+                    severity="warning",
+                )
 
     def start(self):
         for session in self.sessions.values():
@@ -277,14 +329,57 @@ class CompetitionRuntime:
             raise RuntimeError("Competition extension stopped")
 
         def apply():
-            for session in self.sessions.values():
-                session.stop()
+            existing = self.settings.extension_config(
+                "siha_teknofest_server"
+            ).get("servers", [])
+            existing_by_id = {item.get("identifier"): item for item in existing}
+            persisted, prepared = [], []
+            for config in configs:
+                profile_id = config["identifier"]
+                password = config.get("password", "")
+                if not password:
+                    password = existing_by_id.get(profile_id, {}).get("password") or ""
+                if password:
+                    self.credentials.set(profile_id, password)
+                else:
+                    try:
+                        password = self.credentials.get(profile_id) or ""
+                    except CredentialStoreError:
+                        if profile_id in existing_by_id:
+                            raise
+                        password = ""
+                safe_config = {key: value for key, value in config.items() if key != "password"}
+                persisted.append(safe_config)
+                prepared.append({**safe_config, "password": password})
+            # Persist only after every secret has been stored and verified;
+            # the running sessions remain untouched on any credential error.
+            new_sessions = {
+                config["identifier"]: ServerSession(
+                    config,
+                    lambda: self.telemetry.current,
+                    self.database,
+                    self.logger,
+                )
+                for config in prepared
+            }
             self.settings.update_extension(
-                "siha_teknofest_server", config={"servers": configs}
+                "siha_teknofest_server", config={"servers": persisted}
             )
-            self.sessions = {}
-            self._load()
+            previous_sessions = self.sessions
+            for session in previous_sessions.values():
+                session.stop()
+            self.sessions = new_sessions
             self.start()
+            retained = {item["identifier"] for item in prepared}
+            for removed_id in set(existing_by_id) - retained:
+                try:
+                    self.credentials.delete(removed_id)
+                except CredentialStoreError:
+                    self.logger.event(
+                        "teknofest.credential_cleanup_failed",
+                        "Kaldırılan sunucunun parolası parola kasasından silinemedi",
+                        severity="warning",
+                    )
 
         return self.worker.submit(apply)
 
@@ -320,7 +415,10 @@ class CompetitionRuntime:
 
 
 def validate_servers(configs):
-    parsed = [CompetitionServerConfig(**dict(item)).to_dict() for item in configs]
+    parsed = [
+        CompetitionServerConfig(**dict(item)).to_dict(include_password=True)
+        for item in configs
+    ]
     if len({item["identifier"] for item in parsed}) != len(parsed):
         raise ValueError("Duplicate competition server identity")
     if any(item["timeout_s"] > 15 for item in parsed):
