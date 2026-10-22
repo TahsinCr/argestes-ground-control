@@ -89,6 +89,52 @@ class WorkspaceViewTests(unittest.TestCase):
         self.controller.switch(original)
         self.assertEqual(len(self.controller.active["categories"]), 1)
 
+    def test_new_view_has_fresh_topology_and_each_first_panel_fills_workspace(self):
+        original = self.controller.active_id
+        self.workspace.place_panel(self.a, self.b, "tab")
+        self.app.processEvents()
+        self.workspace.set_panel_size_locked(self.a, True)
+        self.c.setFloating(True)
+        self.app.processEvents()
+
+        empty = self.controller.create("Fresh", "layout")
+        self.app.processEvents()
+        self.assertEqual(self.controller.active["layout"]["locked_sizes"], {})
+        for dock in (self.a, self.b, self.c):
+            with self.subTest(panel=dock.objectName()):
+                self.assertFalse(dock.isFloating())
+                dock.toggleViewAction().trigger()
+                QTest.qWait(20)
+                self.assertEqual(dock.geometry(), self.workspace.rect())
+                self.assertFalse(self.workspace.tabifiedDockWidgets(dock))
+                dock.toggleViewAction().trigger()
+                self.app.processEvents()
+
+        self.b.toggleViewAction().trigger()
+        QTest.qWait(20)
+        self.controller.switch(original)
+        QTest.qWait(20)
+        self.assertIn(self.b, self.workspace.tabifiedDockWidgets(self.a))
+        self.assertIn("a", self.workspace._locked_sizes)
+        self.assertTrue(self.c.isFloating())
+        self.controller.switch(empty)
+        QTest.qWait(20)
+        self.assertEqual(self.b.geometry(), self.workspace.rect())
+        self.assertTrue(self.a.isHidden() and self.c.isHidden())
+
+    def test_open_detached_panel_is_recovered_without_breaking_other_tabs(self):
+        self.workspace.place_panel(self.b, self.c, "tab")
+        self.app.processEvents()
+        self.workspace.removeDockWidget(self.a)
+        self.a.show()
+        QTest.qWait(20)
+        self.assertEqual(
+            self.workspace.dockWidgetArea(self.a),
+            Qt.DockWidgetArea.LeftDockWidgetArea,
+        )
+        self.assertTrue(self.workspace.rect().intersects(self.a.geometry()))
+        self.assertIn(self.c, self.workspace.tabifiedDockWidgets(self.b))
+
     def test_partial_category_opens_missing_member_without_closing_others(self):
         self.controller.add_category("Tools", "SP_ComputerIcon", ["a", "b"])
         group = self.controller.active["categories"][0]

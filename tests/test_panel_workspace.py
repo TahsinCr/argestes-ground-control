@@ -12,13 +12,49 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt
 from PyQt6.QtGui import QDragMoveEvent, QDropEvent, QMouseEvent, QRegion
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QLabel, QStyle, QTabWidget
+from PyQt6.QtWidgets import QApplication, QDockWidget, QLabel, QStyle, QTabWidget
 
 from src.ui.themes.style import DARK, LIGHT, build_stylesheet
 from src.ui.widgets.panel_workspace import PanelWorkspace
 
 
 class PanelWorkspaceTests(unittest.TestCase):
+    def test_legacy_offscreen_singleton_map_recovers_and_round_trips(self):
+        fixture = Path(__file__).parent / "fixtures" / "orphaned_dock_state.json"
+        payload = json.loads(fixture.read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = PanelWorkspace(Path(directory) / "layout.json")
+            map_dock = workspace.add_panel(
+                "map_autonomy.view",
+                "Map",
+                QLabel("Map"),
+                Qt.DockWidgetArea.RightDockWidgetArea,
+            )
+            workspace.resize(1200, 800)
+            workspace.show()
+            self.app.processEvents()
+            try:
+                self.assertTrue(workspace.restore_layout(payload, restore_window=False))
+                QTest.qWait(30)
+                self.assertFalse(map_dock.isHidden())
+                self.assertEqual(map_dock.geometry(), workspace.rect())
+                repaired = workspace.capture_layout()
+                self.assertTrue(
+                    workspace.restore_layout(repaired, restore_window=False)
+                )
+                QTest.qWait(30)
+                self.assertEqual(map_dock.geometry(), workspace.rect())
+                workspace.clear_layout()
+                retired = QDockWidget("Retired extension", workspace)
+                retired.setObjectName("panel.siha_teknofest_server.servers")
+                self.assertFalse(workspace.restoreDockWidget(retired))
+                retired.deleteLater()
+                map_dock.toggleViewAction().trigger()
+                QTest.qWait(30)
+                self.assertEqual(map_dock.geometry(), workspace.rect())
+            finally:
+                workspace.close()
+
     def test_drag_targets_and_preview_survive_overlay_paint_occlusion(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = PanelWorkspace(Path(directory) / "layout.json")

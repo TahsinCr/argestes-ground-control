@@ -150,8 +150,11 @@ class WorkspaceViews(QObject):
         name = self._validate_name(name)
         if self.active:
             self.active["layout"] = self.workspace.capture_layout()
-        empty = self.workspace.capture_layout()
-        empty["visible_panels"] = []
+        self._busy = True
+        try:
+            empty = self.workspace.clear_layout()
+        finally:
+            self._busy = False
         view = {
             "id": uuid4().hex,
             "name": name,
@@ -161,7 +164,6 @@ class WorkspaceViews(QObject):
         }
         self.views.append(view)
         self.active_id = view["id"]
-        self._apply(empty)
         self.changed.emit()
         self.save()
         return view["id"]

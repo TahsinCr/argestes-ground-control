@@ -342,6 +342,9 @@ class PanelWorkspace(QMainWindow):
         self._visibility_timer = QTimer(self)
         self._visibility_timer.setSingleShot(True)
         self._visibility_timer.timeout.connect(self._finish_panel_visibility_change)
+        self._layout_validation_timer = QTimer(self)
+        self._layout_validation_timer.setSingleShot(True)
+        self._layout_validation_timer.timeout.connect(self._ensure_visible_panels)
         self._restoring_panel_sizes = False
         self._panel_size_restore_enabled = False
         self.edit_mode = False
@@ -358,6 +361,7 @@ class PanelWorkspace(QMainWindow):
         self._drop_overlay = _PanelDropOverlay(self)
         self._drop_overlay.hide()
         self.installEventFilter(self)
+        self._empty_dock_state = self.saveState(self.STATE_VERSION)
 
     def _configure_dock_corners(self) -> None:
         self.setCorner(Qt.Corner.TopLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
@@ -720,6 +724,8 @@ class PanelWorkspace(QMainWindow):
         hidden = dock.isHidden()
         was_hidden = self._panel_hidden.get(key, hidden)
         self._panel_hidden[key] = hidden
+        if not hidden:
+            self._layout_validation_timer.start(0)
         if key in self._width_spacers:
             self._width_spacers[key].setVisible(not hidden)
         self._schedule_width_sync()
@@ -804,8 +810,59 @@ class PanelWorkspace(QMainWindow):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        self._layout_validation_timer.start(0)
         # A restored Qt dock state already owns the split proportions. Merely
         # showing the workspace must not replay independent pixel dimensions.
+
+    def _ensure_visible_panels(self) -> None:
+        """Recover open dock groups that Qt left outside the working area."""
+        if not self.isVisible() or self._drag_source is not None:
+            return
+        self.layout().activate()
+        visited = set()
+        repaired = False
+        restoring = self._restoring_panel_sizes
+        self._restoring_panel_sizes = True
+        try:
+            for key, dock in self.panels.items():
+                if dock in visited or dock.isHidden() or dock.isFloating():
+                    continue
+                peers = self.tabifiedDockWidgets(dock)
+                group = [dock, *peers]
+                visited.update(group)
+                area = self.dockWidgetArea(dock)
+                if area != Qt.DockWidgetArea.NoDockWidgetArea and any(
+                    not panel.isHidden() and self.rect().intersects(panel.geometry())
+                    for panel in group
+                ):
+                    # Inactive tabs are intentionally parked offscreen. Keep
+                    # their group intact whenever an open tab has a surface.
+                    continue
+                dock.raise_()
+                self.layout().activate()
+                if area != Qt.DockWidgetArea.NoDockWidgetArea and any(
+                    not panel.isHidden() and self.rect().intersects(panel.geometry())
+                    for panel in group
+                ):
+                    continue
+                if area == Qt.DockWidgetArea.NoDockWidgetArea:
+                    area = self._panel_default_areas[key]
+                visibility = {peer: not peer.isHidden() for peer in peers}
+                # show()/raise_() cannot repair a stale singleton tab node.
+                # Reattaching just the broken group clears its Qt placeholder.
+                self.addDockWidget(area, dock)
+                for peer in peers:
+                    self.tabifyDockWidget(dock, peer)
+                    peer.setVisible(visibility[peer])
+                dock.show()
+                dock.raise_()
+                self.layout().activate()
+                repaired = True
+        finally:
+            self._restoring_panel_sizes = restoring
+        if repaired:
+            self._configure_dock_corners()
+            self.layout_changed.emit()
 
     def set_edit_mode(self, enabled: bool) -> None:
         self.edit_mode = enabled
@@ -846,6 +903,7 @@ class PanelWorkspace(QMainWindow):
             self._drop_overlay.hide()
             self._drag_source = None
             drag.deleteLater()
+            self._layout_validation_timer.start(0)
         pending = self._pending_drop
         self._pending_drop = None
         if pending is not None:
@@ -1164,6 +1222,37 @@ class PanelWorkspace(QMainWindow):
         dock.deleteLater()
         return widget
 
+    def clear_layout(self) -> dict:
+        """Start an empty view with fresh dock topology and no inherited locks."""
+        self._size_restore_timer.stop()
+        self._visibility_timer.stop()
+        self._layout_validation_timer.stop()
+        self._size_restore_pending = False
+        updates_enabled = self.updatesEnabled()
+        self.setUpdatesEnabled(False)
+        self._restoring_panel_sizes = True
+        try:
+            for key in tuple(self._locked_sizes):
+                self.set_panel_size_locked(self.panels[key], False)
+            for dock in self.panels.values():
+                dock.hide()
+                self.removeDockWidget(dock)
+            # Removing live docks alone leaves native placeholders for absent
+            # extensions. Reset the Qt tree before attaching this view's docks.
+            self.restoreState(self._empty_dock_state, self.STATE_VERSION)
+            for key, dock in self.panels.items():
+                self._release_width_row(key)
+                self.addDockWidget(self._panel_default_areas[key], dock)
+                if dock.isFloating():
+                    dock.setFloating(False)
+                dock.hide()
+            self._panel_sizes.clear()
+            self._configure_dock_corners()
+        finally:
+            self._restoring_panel_sizes = False
+            self.setUpdatesEnabled(updates_enabled)
+        return self.capture_layout()
+
     def capture_layout(self) -> dict:
         """Capture dock topology without changing panel or window geometry."""
         for key, dock in self.panels.items():
@@ -1211,6 +1300,7 @@ class PanelWorkspace(QMainWindow):
         try:
             self._size_restore_timer.stop()
             self._visibility_timer.stop()
+            self._layout_validation_timer.stop()
             self._size_restore_pending = False
             self._restoring_panel_sizes = False
             if payload is None:
@@ -1322,6 +1412,7 @@ class PanelWorkspace(QMainWindow):
                 # Reapplying every dock's width AND height destroys nested
                 # split proportions, especially across separate branches.
                 self._restoring_panel_sizes = False
+                self._layout_validation_timer.start(0)
             else:
                 self._restoring_panel_sizes = False
             return restored

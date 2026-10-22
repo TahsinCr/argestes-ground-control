@@ -46,6 +46,11 @@ Release headings link each entry to its release date.
 
 ### Fixed
 
+* New workspace views now start with clean dock positions instead of inheriting
+  the previous view's tabs, floating windows and size locks. The first panel
+  opened in a blank view fills the workspace. Restoring an older view also
+  recovers open panels left offscreen by stale Qt dock placeholders while
+  preserving healthy tab groups.
 * Restored dragging the frameless application window from unused space in the
   top menu bar. Menu actions and window controls remain interactive; when the
   window manager cannot start a native move, the title bar falls back to manual
@@ -80,8 +85,10 @@ Release headings link each entry to its release date.
 
 ### Tests
 
-* The combined suite passes 591 tests. Panel and UI checks also pass on X11 and
-  offscreen Qt; compileall, targeted lint and whitespace checks pass.
+* The combined suite passes 595 tests. Workspace recovery and map-view checks
+  pass with real Qt widgets in offscreen mode; compileall, targeted lint and
+  whitespace checks pass. The real-map smoke test uses its own Qt process to
+  keep Chromium cleanup separate from the shared UI test application.
 * Dark and light UI screenshots were reviewed. No physical vehicle, camera or
   competition server was used for this verification.
 
