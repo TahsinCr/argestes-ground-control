@@ -1,103 +1,373 @@
-[![Python 3.11+][python-shield]][python-url]
-[![License][license-shield]][license-url]
-
-**English** | [Türkçe](README-TR.md)
-
 # Kırlangıç Ground Control Station
 
-Kırlangıç is a desktop ground control station built around an extensible application host. The current vehicle stack uses MAVLink, while the application and feature packages are organized so that vehicle protocols and operator tools can evolve independently.
+[![Python 3.11+][python-shield]][python-url]
+[![License: GPL-3.0-only][license-shield]][license-url]
 
-The application owns shared workspace behavior, settings, logging, extension lifecycle and normalized data contracts. Extensions provide vehicle connections, maps, camera tools and other operator features.
+**English** · [Türkçe](README-TR.md) · [Changelog](CHANGELOG.md)
 
-## Quick start
+Kırlangıç is a desktop ground control station for monitoring vehicles, planning
+missions and working with live camera feeds. It combines a configurable panel
+workspace with an extension system, so operators can choose their tools and
+developers can add integrations without rebuilding the application around them.
+
+MAVLink is the current vehicle protocol. Maps, cameras, joystick control and
+competition-server connections live in separate extension packages. The shared
+application provides the workspace, settings, logging and extension lifecycle.
+
+[Installation](#installation) · [Vehicle connection](#vehicle-connection) ·
+[Workspace](#workspace) · [Extensions](#extensions) ·
+[Extension development](#extension-development) · [Troubleshooting](#troubleshooting)
+
+## What you can do
+
+* Monitor vehicle attitude, telemetry, battery and connection health.
+* Plan map-based missions, inspect parameters and use the active vehicle's
+  available commands.
+* Arrange panels side by side or in tabs, save different workspace views and
+  show or hide panel groups with one action.
+* Work with multiple camera feeds, separate recordings and live video outputs.
+* Configure joystick axes, PWM ranges and button actions for RC control.
+* Connect to SIHA Teknofest servers and retain a local history of exchanges.
+
+Available panels and controls depend on which extensions are enabled and which
+capabilities the active vehicle provider supplies.
+
+## Installation
+
+### Requirements
+
+The application requires Python 3.11 or newer, Git and Qt 6. Development and
+hardware integrations are primarily exercised on Linux; device access, video
+plugins and window-manager behavior depend on the host system.
+
+Install the root requirements and those of the extensions you intend to use.
+The MAVLink extension adds `pymavlink` and `pyserial`; Map & Autonomy adds Qt
+WebEngine. Camera support also needs native GStreamer components, described below.
+
+### Set up a checkout
+
+Run these commands from a terminal:
 
 ```bash
-git clone --recurse-submodules \
-  https://github.com/TahsinCr/ground-control-station.git
+git clone --recurse-submodules https://github.com/TahsinCr/ground-control-station.git
 cd ground-control-station
-git submodule update --init --recursive
+
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install -r requirements.txt
-pip install -r extensions/mavlink/requirements.txt
-pip install -r extensions/map_autonomy/requirements.txt
+python -m pip install -r requirements.txt
+python -m pip install -r extensions/mavlink/requirements.txt
+python -m pip install -r extensions/map_autonomy/requirements.txt
+
 python main.py
 ```
 
-Python 3.11+ and Qt 6 are required. Install protocol and WebEngine dependencies from the requirements files belonging to those extensions, and run the application from the same virtual environment. Keep Qt and Qt WebEngine versions aligned. Linux may also require system packages for PyQt6 and Qt WebEngine.
+Vehicle Autonomy Core is included as a Git submodule. If you already have a
+checkout without it, run `git submodule update --init --recursive` before starting
+the application. Keep Qt and Qt WebEngine versions aligned, and use the same
+Python environment for installation and launch.
 
-## Connecting a vehicle
+### Camera dependencies
 
-Create or select a named profile from the vehicle connection control. Typical MAVLink endpoints are:
+The Camera extension uses GStreamer 1.0 through PyGObject. Install the runtime,
+Python bindings and plugins needed by your video sources and codecs. These are
+system-dependent requirements and are not supplied by the root Python
+requirements file. The bindings must be importable from the application's
+virtual environment.
 
-| Link | Endpoint | Example baud |
+Local recording requires a supported NVIDIA or VA-API hardware encoder exposed
+as a GStreamer element. Having a GPU alone is not sufficient: its driver and
+encoder plugin must also be available. Network streaming can fall back to a
+software encoder; local recording reports an error if no supported hardware
+encoder is found.
+
+## Vehicle connection
+
+Open the vehicle connection control in the bottom bar, create a named profile
+and enter the endpoint used by your vehicle or telemetry router. Choose the
+serial baud rate when using a serial device.
+
+| Connection | Example endpoint | Meaning |
 | --- | --- | --- |
-| Serial | `/dev/ttyUSB0` | `57600` |
-| UDP input | `udpin:0.0.0.0:14550` | — |
-| TCP | `tcp:127.0.0.1:5762` | — |
+| Serial | `/dev/ttyUSB0` | Open a local serial device; set its baud rate separately. |
+| UDP input | `udpin:0.0.0.0:14550` | Listen on local port 14550 on all interfaces. |
+| UDP output | `udpout:192.168.1.30:14550` | Send to a remote host and port. |
+| TCP | `tcp:127.0.0.1:5762` | Connect to a TCP server. |
 
-The connection is healthy after a vehicle heartbeat is received. `auto_connect` controls the initial connection attempt; `autoreconnect` controls recovery after an established link drops. If both are disabled, the application makes no automatic attempt. An operator disconnect suppresses recovery until the next explicit connection request.
+For UDP input, the vehicle or router must send telemetry to the ground
+station's reachable address and listening port. `0.0.0.0` is a local bind
+address, not a remote destination. A UDP output profile needs a peer that can
+respond; choosing that mode alone does not establish a telemetry session.
 
-The shared MAVLink client and router are the only transport readers. Services consume their events; UI code does not create another reader or encode packets.
+A healthy MAVLink connection requires an incoming vehicle heartbeat. The
+connection profile and the MAVLink settings have distinct roles:
 
-## Architecture
+* `auto_connect` permits the initial connection attempt at application startup.
+* `autoreconnect` permits recovery after an established connection drops.
+* An explicit disconnect suppresses recovery until the next connection request.
 
-### Application and extension host
-
-`src/container.py` composes the application. The versioned extension contract lives in `src/extension/api`; `src/extension/host` discovers manifests, checks capabilities and starts enabled packages. Extensions can use public `src.core` packages directly.
-
-The application provides shared workspace, settings, logging and normalized data services. A protocol extension adapts its vehicle data to common contracts. The Vehicle Connection extension manages connection lifecycle and profiles through provider-neutral `ConnectionSource` and `ConnectionProfiles` contracts. At least one vehicle protocol provider must remain enabled.
-
-### Extension packages
-
-Each package lives under `extensions/<identifier>/` and has a `manifest.json` with its API version, entry point and provided or required capabilities. Its factory returns an object with `configure(registrar, context)` and optional `start(context)` and `stop()` methods. `registrar.singleton(...)` supplies application services; duplicate service ownership is rejected.
-
-Extensions contribute ordinary panels with `registrar.visual_view(...)`, footer indicators with `registrar.status_widget(...)`, and settings pages with `registrar.settings_page(factory)`. Settings pages load only when selected and may implement `prepare_shutdown()` to release timers, workers and subscriptions. Disabled extensions do not start services or import their UI. The extension browser manages discovery and activation; settings remain in the shared Settings window.
-
-The active protocol cannot be reloaded independently while shared vehicle services depend on it. Camera and Vehicle Connection can be enabled or disabled at runtime, rebuilding only their own services and UI.
-
-### Configuration and language
-
-Application settings and extension state live in `data/settings.json`. Each extension stores its state and configuration under `extensions.<identifier>.enabled` and `extensions.<identifier>.config`; disabling a package does not erase its settings. Legacy files under `data/extensions/` are imported before removal, without deleting unrelated data.
-
-Every extension owns `i18n/en.json` and `i18n/tr.json`. The host validates and merges installed catalogs once, caches them, and rejects duplicate keys.
+The **MAVLink** settings category contains dialect and protocol options.
+**Vehicle Connection** owns profiles, connection controls and link-quality
+indicators. GPS and autopilot indicators report protocol status; they do not
+open connection editors.
 
 ## Workspace
 
-The workspace contains independent panels for the map, flight dynamics, vehicle telemetry, quick commands, logs, parameters and extension-provided views. Use **View → Panels** to show or hide panels. Drag the small handle above a panel to move, split or tab it; the adjacent menu offers placement and visibility actions. There is no separate layout-edit mode.
+### Arrange panels
 
-The activity bar has saved views above and panel categories below. A view stores its own panel visibility, split and tab arrangement, sizes and categories in `data/workspace-layout.json`. Switching views does not resize the application. Existing single-layout files migrate to an initial view. Adjacent panels share the dimensions of their split, while separate branches can be resized independently.
+Use **View → Panels** to show or hide individual panels. Move the pointer over
+a panel to reveal its handle and menu. Drag the handle toward another panel's
+edge to split the space, or toward its center to create tabs. The destination
+preview shows where it will be placed.
 
-Panel menus can lock a panel's content size. This preference is saved with its view. A locked panel can limit how small the application window can become.
+The adjacent menu provides placement, visibility and content-size locking.
+There is no separate layout-edit mode. Panels in the same split share the
+relevant dimension; unrelated layout branches can be resized independently.
+A size lock is saved with the view and can raise the window's minimum size.
 
-## Built-in and optional packages
+### Save views and panel categories
 
-The MAVLink package provides the current protocol, decoded vehicle feed, GPS and autopilot indicators. Parameters use the `mavlink.parameters` capability and keep their protocol adapter in the parameter package. The common `VehicleService` does not require RC or mission methods; optional `RcControl` and `MissionControl` contracts are advertised separately.
+The upper part of the activity bar selects saved workspace views. Each view
+keeps its own panel visibility, arrangement, dimensions and categories.
+Switching views changes the workspace without resizing the application window.
+Older single-layout files migrate to an initial saved view.
 
-Other packages include Map & Autonomy (`map_autonomy`), Camera, Joystick, Battery, Flight Dynamics, Telemetry Display, Quick Commands and SIHA Teknofest Server. Their settings are managed from their categories in the shared Settings window. Camera and competition server controls appear as bottom-bar popups when those packages are enabled.
+Use the **+** button below the view list to create a view or category. A new view
+asks for a name and icon, then opens an empty workspace. Add its panels through
+the View menu. Right-click an existing view to edit its name or icon, or delete
+it; the last remaining view cannot be deleted.
 
-Map & Autonomy owns the map, web assets, tile cache and mission planner. Joystick currently uses the MAVLink RC adapter; disabling joystick control releases RC overrides. Telemetry Display lets operators choose and order 58 fields and arrange them as a list or grouped grid. SIHA Teknofest Server supports separate HTTP profiles and records exchanges in `data/teknofest/history.sqlite3`; it sends no requests unless a profile is configured for automatic connection or the operator connects explicitly.
+Categories appear in the lower activity-bar section and belong to the active
+view. To create one, choose its name and icon, select the visible panels to
+include, and confirm with **Add**. A category toggles its members together
+without controlling the underlying extension services.
 
-To support another vehicle protocol, implement its required adapter and capabilities. Feature UI should consume normalized data and must not depend on transport details. Production mock telemetry has been removed; tests provide their own doubles.
+Panel visibility and extension activation are separate controls. Closing a
+camera panel, for example, does not disable the Camera extension.
 
-## Settings, logs and tests
+### Display preferences
 
-Settings are stored in `data/settings.json`. Each session writes a JSON log to `data/logs/gcs_<session-date>_<session-time>.json`; extension entries retain their `extension_id` in the shared log.
+Light and dark themes are available in Settings. The **Vehicle Telemetry**
+category lets you choose and order 58 fields, switch between a list and grid,
+use one to four columns and group fields by category.
 
-Run the test suite with:
+## Extensions
+
+Open the extension manager using the button next to Settings in the bottom bar.
+Search and filters help find installed packages and inspect their activation
+and dependency state. Configure each package in its own category in the shared
+Settings window.
+
+The following packages are included in this repository. Defaults apply to a
+new configuration; saved activation preferences take precedence.
+
+| Package | Responsibility | Default |
+| --- | --- | --- |
+| [MAVLink](extensions/mavlink/) | Vehicle protocol, decoded data, commands, GPS and autopilot status. | Enabled |
+| [Vehicle Connection](extensions/vehicle_connection/) | Connection profiles, lifecycle, recovery and link indicators. | Enabled |
+| [Map & Autonomy](extensions/map_autonomy/) | Map, mission planning, planner API and tile cache. | Enabled |
+| [Battery](extensions/battery/) | Battery display, estimation and alarms. | Enabled |
+| [Parameters](extensions/parameters/) | Parameter inspection and editing through `mavlink.parameters`. | Enabled |
+| [Vehicle Dynamics](extensions/flight_dynamics/) | Attitude, speed and altitude instruments. | Enabled |
+| [Vehicle Telemetry](extensions/telemetry_display/) | Configurable telemetry readouts. | Enabled |
+| [Quick Commands](extensions/quick_commands/) | Commands and modes supplied by the active vehicle provider. | Enabled |
+| [Camera](extensions/camera/) | Camera feeds, connection controls, recording and live outputs. | Disabled |
+| [Joystick](extensions/joystick/) | RC calibration, channel mapping and button actions. | Disabled |
+| [SIHA Teknofest Server](extensions/siha_teknofest_server/) | Server profiles, telemetry delivery and SQLite history. | Disabled |
+
+### Activation and reloads
+
+The host checks declared capabilities before applying activation changes.
+Packages that can be changed independently, including Camera and Vehicle
+Connection, can be enabled or disabled while the application runs. Disabling a
+package removes its services and UI contributions but retains its settings.
+
+Settings changes mark the affected package for reload. A provider with active
+dependents cannot be reloaded independently, and at least one vehicle protocol
+provider must remain enabled. The application currently ships a MAVLink
+provider; another protocol needs its own implementation and required adapters.
+
+### Cameras, joystick and server tools
+
+Camera connection controls appear in the bottom bar when Camera is enabled.
+Each source can have its own recording or network output. The camera-panel
+record action controls camera recordings together, while output settings allow
+individual targets to be enabled or disabled. Recordings use fixed 30 FPS
+output, pause when their source becomes stale and resume in the same file when
+frames return. Stop recording normally to finalize the MP4.
+
+Joystick provides device selection, RC channel assignments, PWM calibration,
+deadzone, expo, reversal and button actions. Its current RC adapter supports
+MAVLink. Deactivating joystick control releases RC overrides.
+
+SIHA Teknofest Server opens its profile manager from the bottom bar rather than
+as a workspace panel. Profiles support separate HTTP connections; the package
+submits normalized telemetry and records exchanges in SQLite. Requests begin
+when an operator connects or a profile is configured for automatic connection.
+
+## Architecture
+
+### Shared application and Core
+
+[Application composition](src/container.py) connects shared services and the
+extension host. `src/` owns workspace behavior, configuration, session logging
+and normalized vehicle data contracts.
+
+[Vehicle Autonomy Core](src/core/) is a separate repository included as a
+submodule. Both the application and extensions may import its public
+`src.core` packages directly. The Extension API handles integration with the
+application; it does not wrap or restrict access to Core.
+
+### Protocol and feature boundaries
+
+[The Extension API](src/extension/api/) defines contributions and provider
+contracts. [The host](src/extension/host/) discovers manifests, checks
+dependencies, composes services and manages their lifecycle.
+
+Protocol packages decode their messages into shared data and expose supported
+operations. Feature packages consume those contracts or keep protocol adapters
+inside their own package. MAVLink's shared client and router own transport
+reading; UI widgets do not create competing readers.
+
+`VehicleService` provides the common vehicle interface without requiring every
+provider to implement RC or missions. Optional `RcControl` and `MissionControl`
+contracts describe those operations separately. Parameters currently require
+`mavlink.parameters`; Map & Autonomy requires `vehicle.navigation`.
+The map package also owns [PlannerMapApi](extensions/map_autonomy/api/planner.py),
+its web assets and cache lifecycle.
+
+## Extension development
+
+### Package and manifest
+
+Create an importable package under `extensions/<identifier>/`, with an
+`__init__.py`. Use a lowercase
+identifier with underscores; it must match the directory name. Add a
+`manifest.json` declaring its entry point, API major version, required
+capabilities and provided capabilities.
+
+A minimal manifest looks like this:
+
+```json
+{
+  "identifier": "example_tool",
+  "name": "Example Tool",
+  "description": "An operator tool",
+  "category": "Tools",
+  "version": "1.0.0",
+  "api_major": 1,
+  "entry_point": "extensions.example_tool.plugin:create_extension",
+  "requires": [],
+  "provides": ["tools.example"],
+  "default_enabled": false,
+  "settings": {}
+}
+```
+
+Provide `create_extension()` in `plugin.py`. Its returned object implements
+`configure(registrar, context)` and may implement `start(context)` and `stop()`.
+Use configuration to declare contributions, startup for runtime work, and
+shutdown to release workers, timers, subscriptions and connections.
+
+### Services and UI contributions
+
+| Registration | Purpose |
+| --- | --- |
+| `registrar.singleton(...)` | Register a service and its dependencies; duplicate ownership is rejected. |
+| `registrar.visual_view(...)` | Add a panel to the common workspace. |
+| `registrar.status_widget(...)` | Add an ordered connection or metric indicator to the bottom bar. |
+| `registrar.settings_page(factory)` | Supply a settings page that loads when its category is selected. |
+
+`context.settings` contains the package configuration; `context.services`
+resolves shared services. Obtain logging through those services so the host can
+attach the extension identity automatically. Settings pages may implement
+`prepare_shutdown()` to release their own resources.
+
+Keep widgets and assets in their owning package. Provide
+`i18n/en.json` and `i18n/tr.json` catalogs with namespaced keys; the application
+validates and caches merged catalogs. Do not reuse another package's keys.
+
+Declare the capabilities your package actually needs. Supporting another
+vehicle protocol may require a new adapter, but should not require changes to
+unrelated feature panels. The [Joystick plugin](extensions/joystick/plugin.py)
+and [Vehicle Connection plugin](extensions/vehicle_connection/plugin.py) show
+existing service and UI integration patterns.
+
+## Configuration and stored data
+
+| Location | Contents |
+| --- | --- |
+| `data/settings.json` | Application preferences, extension configuration and activation state. |
+| `data/workspace-layout.json` | Saved views, panel arrangements, visibility, sizes and categories. |
+| `data/logs/gcs_<session-date>_<session-time>.json` | Session log shared by the application and extensions. |
+| `data/teknofest/history.sqlite3` | SIHA Teknofest Server exchange history. |
+
+Each extension stores `enabled` and `config` under
+`extensions.<identifier>` in the shared settings file. Disabling it preserves its
+configuration. Legacy extension files and renamed identifiers are migrated
+while retaining unknown settings and disabled-state preferences.
+
+Extension log records include `extension_id`. Use the session log to correlate
+connection events, lifecycle changes and package errors. Treat local settings,
+credentials and operational logs as machine-specific data when sharing a
+checkout or reporting an issue.
+
+## Development and verification
+
+Install the dependencies needed by the features under test, then run:
 
 ```bash
 python run_tests.py
 ```
 
-Qt tests use the offscreen platform. Before field operation, verify the MAVLink link and mission-transfer behavior with the intended vehicle.
+This runs the application's and Core's `unittest` suites together and selects
+Qt's offscreen platform by default. The real-map smoke test uses a separate Qt
+process for WebEngine cleanup.
+
+Software tests cover contracts and UI behavior; vehicle links, mission transfer,
+camera encoders and joystick devices still need verification with the intended
+hardware. See the [changelog](CHANGELOG.md) for recorded changes and verification
+results.
+
+## Troubleshooting
+
+### The map reports that WebEngine is unavailable
+
+Install `extensions/map_autonomy/requirements.txt` in the environment used to
+launch `main.py`. A system Python installation and `.venv/bin/python` can have
+different Qt packages. Check that Qt and Qt WebEngine versions match.
+
+### A UDP profile receives no telemetry
+
+Check the profile's input/output direction, listening port and destination
+address. For an input profile, the sender must target the ground station,
+and the relevant interface and firewall must admit that traffic. Another
+process bound to the same port can also interfere with reception.
+
+### A panel or extension is missing
+
+First check the extension's activation and dependency state. Then check
+**View → Panels** and the active saved view. A hidden panel and a disabled
+extension are different states. GPS and autopilot indicators are status-only;
+connection editing belongs to the vehicle connection control.
+
+### Recording cannot find an encoder
+
+Check the GStreamer runtime, PyGObject import in the launch environment and
+hardware encoder plugins. Local recording requires a supported hardware
+encoder and does not silently fall back to CPU encoding.
+
+### The checkout reports a missing Core module
+
+Run `git submodule update --init --recursive` from the repository root. Core's
+contents are not included in a checkout that omits its submodule.
 
 ## License
 
-Copyright © 2026 TahsinCr.
+Kırlangıç is licensed under [GPL-3.0-only](LICENSE).
+Copyright © 2026 TahsinCr. See [COPYRIGHT](COPYRIGHT) for attribution information.
 
 [python-shield]: https://img.shields.io/badge/Python-3.11%2B-blue
 [python-url]: https://www.python.org/downloads/
-[license-shield]: https://img.shields.io/badge/License-GPL--3.0-blue
+[license-shield]: https://img.shields.io/badge/License-GPL--3.0--only-blue
 [license-url]: LICENSE

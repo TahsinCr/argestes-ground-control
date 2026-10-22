@@ -77,8 +77,10 @@ application provides their shared workspace, settings and lifecycle services.
 * Reworked light and dark theme styling, workspace navigation, extension
   management and settings pages. Existing single-layout workspace files migrate
   to an initial saved view.
-* Reorganized both README files around setup, architecture, workspace and
-  extension development. Repository links now use the current owner.
+* Expanded both README files with installation and video dependencies, vehicle
+  connection examples, workspace workflows, a package catalog, extension
+  development guidance and troubleshooting. Repository links now use the
+  current owner.
 
 ### Fixed
 
