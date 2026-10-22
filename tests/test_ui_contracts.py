@@ -981,14 +981,40 @@ class UiContractTests(unittest.TestCase):
     def test_map_bridge_ignores_malformed_web_payloads(self) -> None:
         bridge = MapWebBridge()
         actions: list[dict] = []
+        overlays: list[dict] = []
+        removed: list[str] = []
+        selected: list[str | None] = []
         bridge.map_action.connect(actions.append)
+        bridge.overlay_changed.connect(overlays.append)
+        bridge.overlay_removed.connect(removed.append)
+        bridge.overlay_selected.connect(selected.append)
 
         bridge.mapAction("{not-json")
         bridge.mapAction("[]")
+        bridge.mapAction('{"type":"goto","value":"' + "x" * 300_000 + '"}')
+        bridge.mapAction("[" * 1200 + "0" + "]" * 1200)
+        bridge.mapAction('{"type":"goto_request","lat":999,"lon":32}')
+        bridge.mapAction('{"type":"unknown_action"}')
         self.assertEqual(actions, [])
 
-        bridge.mapAction('{"type":"goto","latitude":39.9}')
-        self.assertEqual(actions[-1]["type"], "goto")
+        bridge.mapAction('{"type":"center_vehicle"}')
+        self.assertEqual(actions[-1]["type"], "center_vehicle")
+
+        bridge.overlayChanged(
+            '{"overlay_id":"bad","overlay_type":"waypoint","points":[[91,32]]}'
+        )
+        bridge.overlayChanged(
+            '{"overlay_id":"ok","overlay_type":"waypoint","points":[[39.9,32.7]]}'
+        )
+        self.assertEqual([item["overlay_id"] for item in overlays], ["ok"])
+
+        bridge.overlayRemoved("x" * 129)
+        bridge.overlayRemoved("overlay-1")
+        self.assertEqual(removed, ["overlay-1"])
+        bridge.overlaySelected("x" * 129)
+        bridge.overlaySelected("overlay-1")
+        bridge.overlaySelected("")
+        self.assertEqual(selected, ["overlay-1", None])
         bridge.deleteLater()
         self.app.processEvents()
 

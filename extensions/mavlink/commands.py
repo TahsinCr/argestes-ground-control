@@ -135,10 +135,11 @@ class DispatchCommandService(CommandService):
     ) -> CommandResult:
         result = CommandResult(
             request,
-            True,
+            False,
             f"{request.code} daha yeni bir hedef tarafından geçersiz kılındı",
             {
                 "navigation": "superseded",
+                "confirmed": False,
                 "revision": revision,
                 "latest_revision": latest_revision,
             },

@@ -7,6 +7,7 @@ from src.extension.api.parameters import ParameterService
 
 class QtParameterService(_QtAdapter):
     parameters_changed = pyqtSignal(object)
+    write_finished = pyqtSignal(object, object)
     _UI_UPDATE_INTERVAL_MS = 100
 
     def __init__(
@@ -80,9 +81,12 @@ class QtParameterService(_QtAdapter):
     def _update_values(self, changes: dict[str, object]) -> None:
         try:
             self.backend.update_values(changes)
-        except Exception:
-            # The domain service writes failures to the structured backend log.
-            return
+        except Exception as exc:
+            error = str(exc) or exc.__class__.__name__
+        else:
+            error = None
+        if not self._closed:
+            self.write_finished.emit(dict(changes), error)
 
     def _refresh(self) -> None:
         try:

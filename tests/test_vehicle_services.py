@@ -1062,6 +1062,13 @@ class VehicleServiceTests(unittest.TestCase):
 
         self.assertTrue(all(not worker.is_alive() for worker in workers))
         self.assertEqual(vehicle.targets, [1.0, 3.0])
+        superseded = [
+            result
+            for result in results
+            if result.details.get("navigation") == "superseded"
+        ]
+        self.assertEqual(len(superseded), 1)
+        self.assertFalse(superseded[0].accepted)
         self.assertEqual(
             sum(result.details.get("navigation") == "superseded" for result in results),
             1,

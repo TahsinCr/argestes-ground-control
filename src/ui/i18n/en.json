@@ -180,6 +180,8 @@
   "panel.telemetry": "Flight Telemetry",
   "panel.telemetry.subtitle": "Critical flight, navigation and motion data",
   "parameters.apply": "Apply",
+  "parameters.write_in_progress": "Writing changes to vehicle…",
+  "parameters.write_failed": "Write was not confirmed; {count} changes remain staged",
   "parameters.pending": "{count} staged changes",
   "parameters.reset": "Reset",
   "search.placeholder": "Search parameters...",

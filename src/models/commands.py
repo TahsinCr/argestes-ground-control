@@ -31,6 +31,8 @@ class CommandRequest(Model):
 
 @dataclass(frozen=True, slots=True)
 class CommandResult(Model):
+    """Dispatch outcome; ``accepted`` does not mean the vehicle confirmed it."""
+
     request: CommandRequest
     accepted: bool
     message: str

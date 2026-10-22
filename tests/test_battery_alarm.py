@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from concurrent.futures import Future
+from unittest.mock import patch
 
 from src.models.settings import BatteryAlarmSettings
 from src.models.telemetry import TelemetrySnapshot
@@ -209,6 +211,64 @@ class BatteryAlarmTests(unittest.TestCase):
             sum(entry.action == "battery.low" for entry in self.logs.history),
             1,
         )
+
+    def test_failed_failsafe_is_retried_once_after_backoff(self) -> None:
+        outcomes = iter((False, True))
+        requested_modes: list[str] = []
+
+        def dispatch(mode: str) -> bool:
+            requested_modes.append(mode)
+            return next(outcomes)
+
+        service = BatteryAlarmService(self.logs.child("BATTERY"), dispatch)
+        settings = BatteryAlarmSettings(
+            failsafe_enabled=True,
+            failsafe_mode="percent",
+            failsafe_threshold=10,
+        )
+        low_battery = self.base.copy(
+            armed=True,
+            battery_percent=9,
+            flight_mode="AUTO",
+        )
+
+        with patch("extensions.battery.alarm.time.monotonic", return_value=0.0):
+            service.evaluate(low_battery, settings)
+            service.evaluate(low_battery, settings)
+        self.assertEqual(requested_modes, ["RTL"])
+
+        with patch("extensions.battery.alarm.time.monotonic", return_value=6.0):
+            service.evaluate(low_battery, settings)
+        self.assertEqual(requested_modes, ["RTL", "RTL"])
+        self.assertTrue(service._failsafe_dispatched)
+        self.assertFalse(service._failsafe_pending)
+
+    def test_pending_failsafe_future_is_not_dispatched_twice(self) -> None:
+        future: Future = Future()
+        requested_modes: list[str] = []
+        service = BatteryAlarmService(
+            self.logs.child("BATTERY"),
+            lambda mode: (requested_modes.append(mode), future)[1],
+        )
+        settings = BatteryAlarmSettings(
+            failsafe_enabled=True,
+            failsafe_mode="percent",
+            failsafe_threshold=10,
+        )
+        low_battery = self.base.copy(
+            armed=True,
+            battery_percent=9,
+            flight_mode="AUTO",
+        )
+
+        service.evaluate(low_battery, settings)
+        service.evaluate(low_battery, settings)
+        self.assertEqual(requested_modes, ["RTL"])
+        self.assertTrue(service._failsafe_pending)
+
+        future.set_result(type("Accepted", (), {"accepted": True, "message": ""})())
+        self.assertFalse(service._failsafe_pending)
+        self.assertTrue(service._failsafe_dispatched)
 
 
 if __name__ == "__main__":

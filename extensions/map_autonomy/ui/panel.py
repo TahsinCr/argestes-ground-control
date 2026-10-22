@@ -56,6 +56,31 @@ class MapRequestInterceptor(QWebEngineUrlRequestInterceptor):
 
 
 class MapWebBridge(QObject):
+    _MAX_PAYLOAD_BYTES = 256 * 1024
+    _MAX_OVERLAY_ID_LENGTH = 128
+    _MAX_OVERLAY_POINTS = 4096
+    _MAP_ACTION_TYPES = frozenset(
+        {
+            "tool_changed",
+            "mission_send_request",
+            "mission_download_request",
+            "mission_loop_changed",
+            "history_batch_begin",
+            "history_batch_end",
+            "history_undo",
+            "history_redo",
+            "history_home_command",
+            "layer_changed",
+            "mission_item_created",
+            "goto_request",
+            "set_home_reference",
+            "land_request",
+            "takeoff_request",
+            "center_vehicle",
+            "tile_notice",
+        }
+    )
+
     js_ready = pyqtSignal()
     telemetry_pushed = pyqtSignal(str)
     state_delta_applied = pyqtSignal(str)
@@ -83,21 +108,25 @@ class MapWebBridge(QObject):
     @pyqtSlot(str)
     def overlayChanged(self, payload: str) -> None:
         parsed = self._parse_object(payload)
-        if parsed is not None:
+        if parsed is not None and self._valid_overlay(parsed):
             self.overlay_changed.emit(parsed)
 
     @pyqtSlot(str)
     def overlayRemoved(self, overlay_id: str) -> None:
-        self.overlay_removed.emit(overlay_id)
+        if self._valid_overlay_id(overlay_id):
+            self.overlay_removed.emit(overlay_id)
 
     @pyqtSlot(str)
     def overlaySelected(self, overlay_id: str) -> None:
-        self.overlay_selected.emit(overlay_id or None)
+        if not overlay_id:
+            self.overlay_selected.emit(None)
+        elif self._valid_overlay_id(overlay_id):
+            self.overlay_selected.emit(overlay_id)
 
     @pyqtSlot(str)
     def mapAction(self, payload: str) -> None:
         parsed = self._parse_object(payload)
-        if parsed is not None:
+        if parsed is not None and self._valid_map_action(parsed):
             self.map_action.emit(parsed)
 
     @pyqtSlot(str)
@@ -108,11 +137,126 @@ class MapWebBridge(QObject):
 
     @staticmethod
     def _parse_object(payload: str) -> dict[str, Any] | None:
+        if not isinstance(payload, str):
+            return None
+        if len(payload) > MapWebBridge._MAX_PAYLOAD_BYTES:
+            return None
+        if len(payload.encode("utf-8", errors="replace")) > MapWebBridge._MAX_PAYLOAD_BYTES:
+            return None
         try:
             value = json.loads(payload)
-        except (TypeError, json.JSONDecodeError):
+        except (TypeError, ValueError, RecursionError):
             return None
         return value if isinstance(value, dict) else None
+
+    @staticmethod
+    def _valid_overlay_id(value: object) -> bool:
+        return (
+            isinstance(value, str)
+            and bool(value)
+            and len(value) <= MapWebBridge._MAX_OVERLAY_ID_LENGTH
+            and value.isprintable()
+        )
+
+    @classmethod
+    def _valid_overlay(cls, payload: dict[str, Any]) -> bool:
+        overlay_type = payload.get("overlay_type")
+        label = payload.get("label", "")
+        color = payload.get("color", "#61A8FF")
+        points = payload.get("points", [])
+        metadata = payload.get("metadata", {})
+        radius = payload.get("radius_m")
+        if not cls._valid_overlay_id(payload.get("overlay_id")):
+            return False
+        if (
+            not isinstance(overlay_type, str)
+            or not overlay_type
+            or len(overlay_type) > 64
+            or not overlay_type.isprintable()
+        ):
+            return False
+        if not isinstance(label, str) or len(label) > 256 or not label.isprintable():
+            return False
+        if (
+            not isinstance(color, str)
+            or not color
+            or len(color) > 64
+            or not color.isprintable()
+        ):
+            return False
+        if not isinstance(points, list) or len(points) > cls._MAX_OVERLAY_POINTS:
+            return False
+        if not isinstance(metadata, dict):
+            return False
+        if radius is not None and not cls._valid_number(radius, minimum=0.0, exclusive=True):
+            return False
+        for point in points:
+            if not isinstance(point, list) or len(point) not in {2, 3}:
+                return False
+            if not cls._valid_number(point[0], -90.0, 90.0):
+                return False
+            if not cls._valid_number(point[1], -180.0, 180.0):
+                return False
+            if len(point) == 3 and not cls._valid_number(point[2]):
+                return False
+        return True
+
+    @classmethod
+    def _valid_map_action(cls, payload: dict[str, Any]) -> bool:
+        action = payload.get("type")
+        if not isinstance(action, str) or action not in cls._MAP_ACTION_TYPES:
+            return False
+        if action in {"goto_request", "history_home_command"}:
+            return cls._valid_coordinates(payload)
+        if action == "set_home_reference":
+            if not cls._valid_coordinates(payload):
+                return False
+            previous = {
+                "lat": payload.get("previous_lat", payload["lat"]),
+                "lon": payload.get("previous_lon", payload["lon"]),
+            }
+            return cls._valid_coordinates(previous)
+        if action in {"mission_send_request", "mission_loop_changed"}:
+            return "loop" not in payload or isinstance(payload["loop"], bool)
+        if action in {"tool_changed", "layer_changed"}:
+            key = "tool" if action == "tool_changed" else "layer"
+            value = payload.get(key, "pan" if key == "tool" else "vector")
+            return isinstance(value, str) and 0 < len(value) <= 64
+        if action == "history_batch_begin":
+            label = payload.get("label", "map-edit")
+            return isinstance(label, str) and len(label) <= 128
+        if action == "tile_notice":
+            message = payload.get("message", "Harita katmani gecici olarak ulasilamiyor")
+            return isinstance(message, str) and len(message) <= 256
+        return True
+
+    @classmethod
+    def _valid_coordinates(cls, payload: dict[str, Any]) -> bool:
+        return cls._valid_number(payload.get("lat"), -90.0, 90.0) and cls._valid_number(
+            payload.get("lon"), -180.0, 180.0
+        )
+
+    @staticmethod
+    def _valid_number(
+        value: object,
+        minimum: float | None = None,
+        maximum: float | None = None,
+        *,
+        exclusive: bool = False,
+    ) -> bool:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False
+        try:
+            number = float(value)
+        except OverflowError:
+            return False
+        if not math.isfinite(number):
+            return False
+        if minimum is not None and (number <= minimum if exclusive else number < minimum):
+            return False
+        if maximum is not None and number > maximum:
+            return False
+        return True
 
 
 class MapPanel(PanelFrame):

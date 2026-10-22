@@ -340,9 +340,13 @@ class ExtensionHost:
             if self._lifecycle_started and hasattr(plugin, "start"):
                 try:
                     plugin.start(context)
-                except Exception:
+                except Exception as start_error:
                     if hasattr(plugin, "stop"):
-                        plugin.stop()
+                        try:
+                            plugin.stop()
+                        except Exception as stop_error:
+                            self._log_lifecycle_error(identifier, "stop", stop_error)
+                    self._log_lifecycle_error(identifier, "start", start_error)
                     raise
         except Exception:
             for token in reversed(registered):
@@ -384,7 +388,10 @@ class ExtensionHost:
         _, plugin, _ = entry
         if plugin in self._started_plugins:
             if hasattr(plugin, "stop"):
-                plugin.stop()
+                try:
+                    plugin.stop()
+                except Exception as exc:
+                    self._log_lifecycle_error(identifier, "stop", exc)
             self._started_plugins.remove(plugin)
         for token in reversed(self._owned_tokens.pop(identifier, ())):
             self.container.unregister(token)
@@ -414,10 +421,10 @@ class ExtensionHost:
         self._unload_one(identifier)
         try:
             self._load_one(identifier)
-        except Exception:
-            # A rejected replacement must not remain advertised as enabled.
-            self._stored[identifier] = False
-            self._save_states(self._stored)
+        except Exception as exc:
+            # Preserve the requested enabled state and expose the failed live
+            # reload as pending restart instead of silently disabling it.
+            self._log_lifecycle_error(identifier, "reload", exc)
             raise
         self._dirty_settings.discard(identifier)
 
@@ -435,8 +442,37 @@ class ExtensionHost:
             raise
 
     def stop(self) -> None:
-        for plugin in reversed(self._started_plugins):
-            if hasattr(plugin, "stop"):
-                plugin.stop()
-        self._started_plugins.clear()
-        self._lifecycle_started = False
+        try:
+            for plugin in reversed(self._started_plugins):
+                if not hasattr(plugin, "stop"):
+                    continue
+                identifier = next(
+                    (
+                        plugin_id
+                        for plugin_id, running, _ in self._running
+                        if running is plugin
+                    ),
+                    "unknown",
+                )
+                try:
+                    plugin.stop()
+                except Exception as exc:
+                    self._log_lifecycle_error(identifier, "stop", exc)
+        finally:
+            self._started_plugins.clear()
+            self._lifecycle_started = False
+
+    def _log_lifecycle_error(
+        self, identifier: str, operation: str, error: Exception
+    ) -> None:
+        try:
+            self.container.resolve(LoggingService).for_extension(identifier).event(
+                f"extension.{operation}_failed",
+                f"Extension {identifier} {operation} işlemi başarısız: {error}",
+                severity="danger",
+                details={"error_type": error.__class__.__name__},
+            )
+        except Exception:
+            # Lifecycle cleanup must remain best-effort even if logging itself
+            # is one of the services that failed.
+            pass

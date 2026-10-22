@@ -32,11 +32,37 @@ class BatteryExtension:
         registrar.settings_page(lambda parent: self._settings_page(context, parent))
 
     def start(self, context):
+        from concurrent.futures import ThreadPoolExecutor
+        from .alarm import BatteryAlarmService
         from src.extension.api.telemetry import TelemetryPipeline
+        from src.services.abstracts.commands import CommandService
+        from src.services.abstracts.telemetry import TelemetryService
+        from src.services.logging_service import LoggingService
         from src.services.settings import SettingsService
         from .processor import BatteryProcessor
 
         settings = context.services.resolve(SettingsService)
+        commands = context.services.resolve(CommandService)
+        telemetry = context.services.resolve(TelemetryService)
+        self._failsafe_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="BatteryFailsafe",
+        )
+        self.alarm = BatteryAlarmService(
+            context.services.resolve(LoggingService).child("BATTERY"),
+            lambda mode: self._failsafe_executor.submit(
+                commands.issue_command,
+                "APPLY_MODE",
+                {"mode": mode, "battery_failsafe": True},
+                source="battery-failsafe",
+            ),
+        )
+        self._telemetry_subscription = telemetry.updated.subscribe(
+            lambda snapshot: self.alarm.evaluate(
+                snapshot,
+                settings.current.backend.battery_alarm,
+            )
+        )
         self.processor = BatteryProcessor(settings.current.backend.battery_telemetry)
         self.subscription = settings.changed.subscribe(
             lambda model: self.processor.configure(model.backend.battery_telemetry)
@@ -45,35 +71,24 @@ class BatteryExtension:
         self.pipeline.add_processor("battery.estimation", self.processor)
 
     def stop(self):
+        telemetry_subscription = getattr(self, "_telemetry_subscription", None)
+        if telemetry_subscription is not None:
+            telemetry_subscription.cancel()
+            self._telemetry_subscription = None
         if hasattr(self, "subscription"):
             self.subscription.cancel()
             self.pipeline.remove_processor("battery.estimation")
+        executor = getattr(self, "_failsafe_executor", None)
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+            self._failsafe_executor = None
 
-    @staticmethod
-    def create(context, parent, theme, language):
+    def create(self, context, parent, theme, language):
         from .ui.meter import BatteryMeter
-        from .alarm import BatteryAlarmService
         from src.ui.adapters.services import QtTelemetryService
         from src.services.abstracts.telemetry import TelemetryService
-        from src.services.abstracts.commands import CommandService
-        from src.services.settings import SettingsService
-        from src.services.logging_service import LoggingService
         from src.ui.i18n import t
 
-        settings = context.services.resolve(SettingsService)
-        commands = context.services.resolve(CommandService)
-        logger = context.services.resolve(LoggingService).child("BATTERY")
-        alarm = BatteryAlarmService(
-            logger,
-            lambda mode: feed._start_worker(
-                lambda: commands.issue_command(
-                    "APPLY_MODE",
-                    {"mode": mode, "battery_failsafe": True},
-                    source="battery-failsafe",
-                ),
-                name="BatteryFailsafe",
-            ),
-        )
         meter = BatteryMeter(t("status.battery", language), parent)
         meter.set_theme(theme)
         meter.set_language(language)
@@ -86,13 +101,12 @@ class BatteryExtension:
                 snapshot.battery_current_amps,
                 snapshot.battery_consumed_mah,
             )
-            meter.set_alarm(
-                alarm.evaluate(snapshot, settings.current.backend.battery_alarm)
-            )
+            alarm = getattr(self, "alarm", None)
+            meter.set_alarm(alarm.active if alarm is not None else False)
 
         feed.telemetry_updated.connect(update)
         update(feed.current)
-        meter.prepare_shutdown = lambda: (meter.set_alarm(False), feed.close())
+        meter.prepare_shutdown = feed.close
         return meter
 
     @staticmethod

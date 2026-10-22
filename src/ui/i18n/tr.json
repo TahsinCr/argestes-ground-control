@@ -180,6 +180,8 @@
   "panel.telemetry": "Uçuş Telemetrisi",
   "panel.telemetry.subtitle": "Kritik uçuş, rota ve hareket verileri",
   "parameters.apply": "Uygula",
+  "parameters.write_in_progress": "Değişiklikler araca yazılıyor…",
+  "parameters.write_failed": "Yazma doğrulanamadı; {count} değişiklik bekliyor",
   "parameters.pending": "{count} değişiklik hazır",
   "parameters.reset": "Sıfırla",
   "search.placeholder": "Parametre ara...",

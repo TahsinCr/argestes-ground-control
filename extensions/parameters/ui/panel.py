@@ -23,7 +23,6 @@ from src.ui.widgets.common import PanelFrame, compact_button, horizontal_row
 
 
 class ParametersPanel(PanelFrame):
-    parameter_changed = pyqtSignal(str, object)
     apply_requested = pyqtSignal(dict)
     reset_requested = pyqtSignal()
 
@@ -35,6 +34,8 @@ class ParametersPanel(PanelFrame):
         self._original_values: dict[str, object] = {}
         self._dirty_values: dict[str, object] = {}
         self._language = "tr"
+        self._write_in_progress = False
+        self._write_error: str | None = None
         self.setMinimumWidth(0)
 
         self.parameters_tab = QWidget(self)
@@ -158,8 +159,18 @@ class ParametersPanel(PanelFrame):
             return
 
         self._parameters = incoming
-        self._original_values = {item.key: item.value for item in self._parameters}
-        self._dirty_values.clear()
+        incoming_keys = {item.key for item in incoming}
+        self._dirty_values = {
+            key: value
+            for key, value in self._dirty_values.items()
+            if key in incoming_keys
+        }
+        self._original_values = {
+            item.key: self._original_values.get(item.key, item.value)
+            if item.key in self._dirty_values
+            else item.value
+            for item in incoming
+        }
         self._replace_categories()
         self._rebuild_table()
         self._update_footer()
@@ -258,7 +269,9 @@ class ParametersPanel(PanelFrame):
         self.table.insertRow(row)
         items = [
             QTableWidgetItem(str(parameter.key)),
-            QTableWidgetItem(str(parameter.value)),
+            QTableWidgetItem(
+                str(self._dirty_values.get(parameter.key, parameter.value))
+            ),
             QTableWidgetItem(self._display_default(parameter.default_value)),
             QTableWidgetItem(parameter.unit),
             QTableWidgetItem(parameter.category.upper()),
@@ -320,34 +333,65 @@ class ParametersPanel(PanelFrame):
             return
         value = self._coerce_value(parameter, item.text())
         parameter.value = value
+        self._write_error = None
         if value == self._original_values.get(key):
             self._dirty_values.pop(key, None)
         else:
             self._dirty_values[key] = value
         self._apply_row_style(item.row(), key)
         self._update_footer()
-        self.parameter_changed.emit(key, value)
 
     def _update_footer(self) -> None:
         count = len(self._dirty_values)
-        self.pending_label.setText(
-            t("parameters.pending", self._language).format(count=count)
-        )
-        enabled = count > 0
+        if self._write_in_progress:
+            self.pending_label.setText(t("parameters.write_in_progress", self._language))
+            self.pending_label.setToolTip("")
+        elif self._write_error:
+            self.pending_label.setText(
+                t("parameters.write_failed", self._language).format(count=count)
+            )
+            self.pending_label.setToolTip(self._write_error)
+        else:
+            self.pending_label.setText(
+                t("parameters.pending", self._language).format(count=count)
+            )
+            self.pending_label.setToolTip(self._write_error or "")
+        enabled = count > 0 and not self._write_in_progress
         self.apply_button.setEnabled(enabled)
         self.reset_button.setEnabled(enabled)
+        self.table.setEnabled(not self._write_in_progress)
 
     def apply_changes(self) -> None:
-        if not self._dirty_values:
+        if not self._dirty_values or self._write_in_progress:
             return
-        self.apply_requested.emit(dict(self._dirty_values))
-        self._original_values.update(self._dirty_values)
-        self._dirty_values.clear()
+        changes = dict(self._dirty_values)
+        self._write_in_progress = True
+        self._write_error = None
+        self._rebuild_table()
+        self._update_footer()
+        self.apply_requested.emit(changes)
+
+    def finish_apply(self, changes: dict[str, object], error: str | None) -> None:
+        """Commit staged edits only after the backend confirms the write."""
+        if not self._write_in_progress:
+            return
+        if error is None:
+            parameters = {parameter.key: parameter for parameter in self._parameters}
+            for key, value in changes.items():
+                self._original_values[key] = value
+                if key in parameters:
+                    parameters[key].value = value
+                if self._dirty_values.get(key) == value:
+                    self._dirty_values.pop(key, None)
+            self._write_error = None
+        else:
+            self._write_error = error
+        self._write_in_progress = False
         self._rebuild_table()
         self._update_footer()
 
     def reset_to_originals(self) -> None:
-        if not self._dirty_values:
+        if not self._dirty_values or self._write_in_progress:
             return
         for parameter in self._parameters:
             if parameter.key in self._dirty_values:

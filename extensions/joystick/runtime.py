@@ -168,14 +168,14 @@ class LinuxRcJoystickService(JoystickService):
                 revision = self._configuration_revision
             try:
                 self._device_session(path, config, revision)
-            except (OSError, ValueError) as exc:
+            except Exception as exc:
                 self._release_override()
                 self._publish(JoystickState(device_path=path, error=str(exc)))
                 self._event(
-                    "joystick.connection_failed",
-                    f"Joystick bağlantısı kurulamadı: {exc}",
-                    "warning",
-                    {"device": path},
+                    "joystick.worker_failed",
+                    f"Joystick oturumu sonlandı ve yeniden denenecek: {exc}",
+                    "warning" if isinstance(exc, (OSError, ValueError)) else "danger",
+                    {"device": path, "error_type": exc.__class__.__name__},
                 )
                 self._wake_event.wait(1.0)
                 self._wake_event.clear()

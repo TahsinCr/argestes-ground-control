@@ -128,14 +128,13 @@ class VehicleParameterService(MutableParameterService):
             )
             self._changed.publish(self.current)
             raise error
-        parameters: dict[str, Parameter] = {}
+        parameters: dict[str, tuple[Parameter, object]] = {}
         for key, value in changes.items():
             parameter = self._find(key)
             if parameter is None:
                 raise KeyError(f"Bilinmeyen parametre: {key}")
             self._numeric_value(key, value)
-            parameter.value = value
-            parameters[key] = parameter
+            parameters[key] = (parameter, value)
 
         with self._sync_lock:
             overlap = set(parameters) & set(self._pending_writes)
@@ -145,17 +144,17 @@ class VehicleParameterService(MutableParameterService):
                 )
             pending = {
                 key: _PendingWrite(
-                    self._numeric_value(key, parameter.value), threading.Event()
+                    self._numeric_value(key, value), threading.Event()
                 )
-                for key, parameter in parameters.items()
+                for key, (_, value) in parameters.items()
             }
             self._pending_writes.update(pending)
 
         started = time.monotonic()
         try:
-            for parameter in parameters.values():
+            for parameter, value in parameters.values():
                 self._vehicle.set_parameter(
-                    parameter.key, parameter.value, parameter.value_type
+                    parameter.key, value, parameter.value_type
                 )
             deadline = started + self._write_timeout
             missing: list[str] = []
@@ -187,7 +186,7 @@ class VehicleParameterService(MutableParameterService):
             severity="success",
             details={
                 "changes": {
-                    key: parameter.value for key, parameter in parameters.items()
+                    key: value for key, (_, value) in parameters.items()
                 },
                 "elapsed_ms": round((time.monotonic() - started) * 1000),
             },

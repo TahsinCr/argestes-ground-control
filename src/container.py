@@ -38,7 +38,6 @@ def _logging(context):
     session = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
     return LoggingService(
         log_path=context.base_dir / "data" / "logs" / f"gcs_{session}.json",
-        max_file_bytes=2**63 - 1,
     )
 
 

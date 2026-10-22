@@ -11,6 +11,34 @@ Release headings link each entry to its release date.
   checkout instructions and aligned the desktop identity and default local paths
   with the new name. New TEKNOFEST profiles now use neutral sample credentials.
 
+### Fixed
+
+* Parameter edits now remain local drafts until the operator selects **Apply**.
+  Drafts survive refreshes and failed writes; the MAVLink parameter cache changes
+  only after the vehicle confirms the requested value.
+* Battery failsafe evaluation now runs independently of the status-bar widget,
+  monitors the command result and makes one bounded retry after a rejected or
+  failed request.
+* Required runtime-service failures now stop startup and roll back services
+  already started. Extension shutdown errors are isolated so remaining plugins
+  still receive cleanup.
+* Failed extension reloads no longer rewrite the saved enabled preference, and
+  joystick transport errors release RC overrides before controlled recovery.
+* Camera target reconfiguration now waits for the previous recording pipeline
+  to finish EOS teardown before starting a replacement for the same target.
+* Superseded navigation requests are reported as unaccepted, and map WebChannel
+  inputs are bounded and validated before dispatch, including coordinates,
+  overlay IDs and mission points.
+* Tile-cache invalidation now prevents in-flight downloads from repopulating a
+  cleared cache, and timeout responses use the correct HTTP reason phrase.
+* Session logs use the configured bounded rotation instead of an effectively
+  unlimited file size.
+
+### Security
+
+* Map WebChannel JSON payloads are size-limited; malformed
+  or out-of-range actions and overlays are discarded before reaching map logic.
+
 ## [2.0-beta] - 22.10.2026
 
 Version 2.0-beta introduces an extension architecture and a customizable

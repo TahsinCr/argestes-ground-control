@@ -111,6 +111,7 @@ class VideoSharePublisher:
         self._active_source: Callable[[], str] = lambda: ""
         self._frame_event = threading.Event()
         self._stop = threading.Event()
+        self._lifecycle_lock = threading.RLock()
         self._workers: dict[str, threading.Thread] = {}
         self._server_time: Callable[[], datetime | None] = lambda: None
         self._subscription: Subscription = frames.subscribe(self._on_frame)
@@ -126,10 +127,11 @@ class VideoSharePublisher:
 
     @property
     def states(self) -> tuple[VideoShareState, ...]:
-        return tuple(
-            self._states.get(item.identifier, VideoShareState(item.identifier))
-            for item in self._configs
-        )
+        with self._lifecycle_lock:
+            return tuple(
+                self._states.get(item.identifier, VideoShareState(item.identifier))
+                for item in self._configs
+            )
 
     def set_server_time_provider(self, provider: Callable[[], datetime | None]) -> None:
         self._server_time = provider
@@ -141,28 +143,98 @@ class VideoSharePublisher:
         if configs == self._configs:
             return
         self.stop()
-        self._configs = tuple(configs)
-        self._states = {
-            config.identifier: VideoShareState(
-                config.identifier,
-                status="waiting" if config.enabled else "inactive",
-                detail="Kamera karesi bekleniyor"
-                if config.enabled
-                else (
-                    "Kayıt devre dışı"
-                    if config.output_type == "record"
-                    else "Yayın devre dışı"
-                ),
-            )
-            for config in self._configs
-        }
+        with self._lifecycle_lock:
+            self._configs = tuple(configs)
+            self._states = {
+                config.identifier: VideoShareState(
+                    config.identifier,
+                    status="waiting" if config.enabled else "inactive",
+                    detail="Kamera karesi bekleniyor"
+                    if config.enabled
+                    else (
+                        "Kayıt devre dışı"
+                        if config.output_type == "record"
+                        else "Yayın devre dışı"
+                    ),
+                )
+                for config in self._configs
+            }
+            self._stop = threading.Event()
+            stop_event = self._stop
+            self._frame_event.clear()
         self._publish_states()
-        self._stop = threading.Event()
-        stop_event = self._stop
-        self._frame_event.clear()
         for config in self._configs:
             if not config.enabled:
                 continue
+            self._start_target(config, stop_event)
+
+    def restart(self) -> None:
+        """Restart configured targets after their dynamic panel source changes."""
+
+        configs = self._configs
+        if not configs:
+            return
+        with self._lifecycle_lock:
+            self._configs = ()
+        self.configure(configs)
+
+    def stop(self) -> None:
+        with self._lifecycle_lock:
+            self._stop.set()
+            self._frame_event.set()
+            for config in self._configs:
+                state = self._states.get(config.identifier)
+                if config.enabled and state is not None and state.status != "error":
+                    self._states[config.identifier] = VideoShareState(
+                        config.identifier,
+                        status="waiting",
+                        detail="Çıkış akışı güvenle sonlandırılıyor",
+                    )
+            workers = tuple(self._workers.items())
+            for identifier, worker in workers:
+                if worker.is_alive():
+                    continue
+                self._workers.pop(identifier, None)
+                config = next(
+                    (item for item in self._configs if item.identifier == identifier),
+                    None,
+                )
+                if config is not None:
+                    self._states[identifier] = VideoShareState(
+                        identifier,
+                        status="inactive",
+                        detail="Kayıt durduruldu"
+                        if config.output_type == "record"
+                        else "Yayın durduruldu",
+                    )
+        if self._configs:
+            self._publish_states()
+
+    def close(self) -> None:
+        self.stop()
+        deadline = time.monotonic() + 3.5
+        current = threading.current_thread()
+        with self._lifecycle_lock:
+            workers = tuple(self._workers.values())
+        for worker in workers:
+            if worker is current:
+                continue
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
+        self._subscription.cancel()
+        if self._source_subscription is not None:
+            self._source_subscription.cancel()
+
+    def _start_target(
+        self,
+        config: VideoShareConfig,
+        stop_event: threading.Event,
+    ) -> None:
+        with self._lifecycle_lock:
+            if stop_event is not self._stop or stop_event.is_set():
+                return
+            existing = self._workers.get(config.identifier)
+            if existing is not None and existing.is_alive():
+                return
             worker = threading.Thread(
                 target=self._run_target,
                 args=(config, stop_event),
@@ -172,40 +244,46 @@ class VideoSharePublisher:
             self._workers[config.identifier] = worker
             worker.start()
 
-    def restart(self) -> None:
-        """Restart configured targets after their dynamic panel source changes."""
-
-        configs = self._configs
-        if not configs:
-            return
-        self._configs = ()
-        self.configure(configs)
-
-    def stop(self) -> None:
-        self._stop.set()
-        self._frame_event.set()
-        for worker in tuple(self._workers.values()):
-            if worker is not threading.current_thread():
-                worker.join(timeout=1.0)
-        self._workers.clear()
-        if self._configs:
-            self._states = {
-                config.identifier: VideoShareState(
-                    config.identifier,
-                    status="inactive",
-                    detail="Kayıt durduruldu"
-                    if config.output_type == "record"
-                    else "Yayın durduruldu",
-                )
-                for config in self._configs
-            }
+    def _target_finished(
+        self,
+        identifier: str,
+        worker: threading.Thread,
+        stop_event: threading.Event,
+    ) -> None:
+        replacement: VideoShareConfig | None = None
+        replacement_event: threading.Event | None = None
+        publish = False
+        with self._lifecycle_lock:
+            if self._workers.get(identifier) is worker:
+                self._workers.pop(identifier, None)
+            desired = next(
+                (item for item in self._configs if item.identifier == identifier),
+                None,
+            )
+            current_event = self._stop
+            if (
+                desired is not None
+                and desired.enabled
+                and not current_event.is_set()
+                and stop_event is not current_event
+            ):
+                replacement = desired
+                replacement_event = current_event
+            elif desired is None or not desired.enabled or current_event.is_set():
+                state = self._states.get(identifier)
+                if state is not None and state.status != "error":
+                    self._states[identifier] = VideoShareState(
+                        identifier,
+                        status="inactive",
+                        detail="Kayıt durduruldu"
+                        if desired is None or desired.output_type == "record"
+                        else "Yayın durduruldu",
+                    )
+                    publish = True
+        if publish:
             self._publish_states()
-
-    def close(self) -> None:
-        self.stop()
-        self._subscription.cancel()
-        if self._source_subscription is not None:
-            self._source_subscription.cancel()
+        if replacement is not None and replacement_event is not None:
+            self._start_target(replacement, replacement_event)
 
     def _on_frame(self, frame: VideoFrame) -> None:
         with self._frames_lock:
@@ -371,6 +449,11 @@ class VideoSharePublisher:
                     pipeline.set_state(Gst.State.NULL)
                 except Exception:
                     pass
+            self._target_finished(
+                config.identifier,
+                threading.current_thread(),
+                stop_event,
+            )
 
     def _current_frame(self, config: VideoShareConfig) -> VideoFrame | None:
         with self._frames_lock:
@@ -609,13 +692,16 @@ class VideoSharePublisher:
         *,
         stop_event: threading.Event | None = None,
     ) -> None:
-        if stop_event is not None and stop_event is not self._stop:
-            return
-        active = status == "active"
-        state = VideoShareState(identifier, active=active, status=status, detail=detail)
-        if self._states.get(identifier) == state:
-            return
-        self._states[identifier] = state
+        with self._lifecycle_lock:
+            if stop_event is not None and stop_event is not self._stop:
+                return
+            active = status == "active"
+            state = VideoShareState(
+                identifier, active=active, status=status, detail=detail
+            )
+            if self._states.get(identifier) == state:
+                return
+            self._states[identifier] = state
         self._publish_states()
 
     def _publish_states(self) -> None:

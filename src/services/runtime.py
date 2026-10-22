@@ -19,6 +19,8 @@ from src.services.settings import SettingsService
 
 @dataclass(slots=True)
 class RuntimeServices:
+    _REQUIRED_SERVICES = frozenset({"async_runtime", "telemetry", "extensions"})
+
     """Own the application lifecycle; feature lifetimes belong to extensions."""
 
     container: DependencyContainer
@@ -72,7 +74,7 @@ class RuntimeServices:
                     f"{name} servisi başlatılamadı: {exc}",
                     severity="danger",
                 )
-                if name == "extensions":
+                if name in self._REQUIRED_SERVICES:
                     self._stop_requested.set()
                     return
 

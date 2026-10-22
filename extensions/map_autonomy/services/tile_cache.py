@@ -90,6 +90,7 @@ class TileCacheServer(TileCacheService):
         self._lock = threading.RLock()
         self._index: dict[str, dict[str, Any]] = {}
         self._total_bytes = 0
+        self._generation = 0
         self._inflight: dict[str, threading.Event] = {}
         self._fetch_gate = threading.BoundedSemaphore(6)
         self._last_persist_at = 0.0
@@ -221,6 +222,7 @@ class TileCacheServer(TileCacheService):
                 404: "Not Found",
                 405: "Method Not Allowed",
                 503: "Service Unavailable",
+                504: "Gateway Timeout",
             }.get(result.status, "OK")
             headers = [
                 f"HTTP/1.1 {result.status} {reason}",
@@ -259,6 +261,10 @@ class TileCacheServer(TileCacheService):
 
     def clear(self) -> None:
         with self._lock:
+            # Any remote fetch already in progress belongs to the cache state
+            # that is being deleted; it may still serve its caller, but must
+            # not repopulate the cache after this point.
+            self._generation += 1
             shutil.rmtree(self._tiles_root, ignore_errors=True)
             self._index.clear()
             self._total_bytes = 0
@@ -283,6 +289,8 @@ class TileCacheServer(TileCacheService):
             )
 
     def handle_request(self, raw_path: str) -> TileResult:
+        with self._lock:
+            generation = self._generation
         if urlparse(raw_path).path == "/health":
             return TileResult(200, "text/plain; charset=utf-8", b"ok", "health")
 
@@ -314,7 +322,7 @@ class TileCacheServer(TileCacheService):
             payload, content_type = self._fetch_remote_tile(tile)
             if payload:
                 if self._enabled:
-                    self._write_tile(tile, payload)
+                    self._write_tile(tile, payload, generation=generation)
                 return TileResult(
                     200,
                     content_type or self._content_type(tile.extension),
@@ -477,9 +485,17 @@ class TileCacheServer(TileCacheService):
             )
         return None
 
-    def _write_tile(self, tile: TileRequest, payload: bytes) -> None:
+    def _write_tile(
+        self,
+        tile: TileRequest,
+        payload: bytes,
+        *,
+        generation: int,
+    ) -> None:
         path = self._tile_path(tile)
         with self._lock:
+            if generation != self._generation:
+                return
             is_new_tile = tile.key not in self._index
             ensure_directory(path.parent)
             temp_path = path.with_name(f".{path.name}.{threading.get_ident()}.tmp")
