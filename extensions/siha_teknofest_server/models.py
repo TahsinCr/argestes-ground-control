@@ -19,8 +19,8 @@ class CompetitionServerConfig(Model):
     identifier: str = field(default_factory=lambda: uuid4().hex)
     name: str = "TEKNOFEST"
     base_url: str = "http://127.0.0.1:5000"
-    username: str = "kirlangic"
-    password: str = "kirlangic-demo"
+    username: str = "argestes"
+    password: str = "argestes-demo"
     team_number: int = 1
     timeout_s: float = 3.0
     auto_connect: bool = False

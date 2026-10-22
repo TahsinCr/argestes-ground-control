@@ -31,8 +31,8 @@ from src.ui.views.main_window import MainWindow
 def run() -> int:
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv)
-    app.setApplicationName("Kırlangıç Team YKİ")
-    app.setOrganizationName("Kırlangıç Team")
+    app.setApplicationName("Argestes Ground Station")
+    app.setOrganizationName("Argestes")
 
     base_dir = Path(__file__).resolve().parent.parent
     app.setWindowIcon(application_icon(base_dir))

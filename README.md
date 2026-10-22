@@ -1,14 +1,14 @@
-# Kırlangıç Ground Control Station
+# Argestes Ground Station
 
 [![Python 3.11+][python-shield]][python-url]
 [![License: GPL-3.0-only][license-shield]][license-url]
 
 **English** · [Türkçe](README-TR.md) · [Changelog](CHANGELOG.md)
 
-Kırlangıç is a desktop ground control station for monitoring vehicles, planning
-missions and working with live camera feeds. It combines a configurable panel
-workspace with an extension system, so operators can choose their tools and
-developers can add integrations without rebuilding the application around them.
+Argestes Ground Station (AGS) is a modular desktop ground control station for
+monitoring vehicles, planning missions and working with live camera feeds. Its
+configurable workspace lets operators choose the panels they need, while the
+extension system gives developers a clear way to add integrations.
 
 MAVLink is the current vehicle protocol. Maps, cameras, joystick control and
 competition-server connections live in separate extension packages. The shared
@@ -49,8 +49,8 @@ WebEngine. Camera support also needs native GStreamer components, described belo
 Run these commands from a terminal:
 
 ```bash
-git clone --recurse-submodules https://github.com/TahsinCr/ground-control-station.git
-cd ground-control-station
+git clone --recurse-submodules https://github.com/TahsinCr/argestes-ground-control.git
+cd argestes-ground-control
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -364,7 +364,7 @@ contents are not included in a checkout that omits its submodule.
 
 ## License
 
-Kırlangıç is licensed under [GPL-3.0-only](LICENSE).
+Argestes Ground Station is licensed under [GPL-3.0-only](LICENSE).
 Copyright © 2026 TahsinCr. See [COPYRIGHT](COPYRIGHT) for attribution information.
 
 [python-shield]: https://img.shields.io/badge/Python-3.11%2B-blue

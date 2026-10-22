@@ -1,15 +1,15 @@
-# Kırlangıç Yer Kontrol İstasyonu
+# Argestes Ground Station
 
 [![Python 3.11+][python-shield]][python-url]
 [![Lisans: GPL-3.0-only][license-shield]][license-url]
 
 [English](README.md) · **Türkçe** · [Değişiklik geçmişi](CHANGELOG.md)
 
-Kırlangıç; araç takibi, görev planlama ve canlı kamera görüntüleriyle çalışmak
-için geliştirilen bir masaüstü yer kontrol istasyonudur. Özelleştirilebilir panel
-düzenini bir eklenti sistemiyle birleştirir. Operatörler kullanacakları araçları
-seçebilir; geliştiriciler yeni entegrasyonları uygulamanın tamamını yeniden
-şekillendirmeden ekleyebilir.
+Argestes Ground Station (AGS), araç takibi, görev planlama ve canlı kamera
+görüntüleri için modüler bir masaüstü yer kontrol istasyonudur. Özelleştirilebilir
+çalışma alanı operatörlerin ihtiyaç duydukları panelleri seçmesini sağlar;
+eklenti sistemi de yeni entegrasyonların uygulamaya eklenmesi için açık bir yapı
+sunar.
 
 Güncel araç protokolü MAVLink’tir. Harita, kamera, joystick ve yarışma sunucusu
 bağlantıları ayrı eklenti paketlerinde bulunur. Ortak uygulama çalışma alanını,
@@ -54,8 +54,8 @@ gerektirir. Kamera için gereken yerel GStreamer bileşenleri aşağıda açıkl
 Terminalde şu komutları çalıştırın:
 
 ```bash
-git clone --recurse-submodules https://github.com/TahsinCr/ground-control-station.git
-cd ground-control-station
+git clone --recurse-submodules https://github.com/TahsinCr/argestes-ground-control.git
+cd argestes-ground-control
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -376,7 +376,7 @@ Alt modül alınmadan oluşturulan depo kopyası Core’un içeriğini barındı
 
 ## Lisans
 
-Kırlangıç, [GPL-3.0-only](LICENSE) ile lisanslanmıştır.
+Argestes Ground Station, [GPL-3.0-only](LICENSE) ile lisanslanmıştır.
 Copyright © 2026 TahsinCr. Atıf bilgileri için [COPYRIGHT](COPYRIGHT) dosyasına bakın.
 
 [python-shield]: https://img.shields.io/badge/Python-3.11%2B-blue

@@ -675,7 +675,11 @@ class GStreamerVideoService(MutableVideoService):
             ) from exc
         Gst.init(None)
         user_plugin_path = (
-            Path.home() / ".local" / "share" / "kirlangic-yki" / "gstreamer-1.0"
+            Path.home()
+            / ".local"
+            / "share"
+            / "argestes-ground-station"
+            / "gstreamer-1.0"
         )
         if user_plugin_path.is_dir():
             Gst.Registry.get().scan_path(str(user_plugin_path))

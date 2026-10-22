@@ -5,6 +5,12 @@ Release headings link each entry to its release date.
 
 ## [Unreleased]
 
+### Changed
+
+* Rebranded the application as Argestes Ground Station, updated the repository
+  checkout instructions and aligned the desktop identity and default local paths
+  with the new name. New TEKNOFEST profiles now use neutral sample credentials.
+
 ## [2.0-beta] - 22.10.2026
 
 Version 2.0-beta introduces an extension architecture and a customizable
@@ -924,7 +930,7 @@ backend.
     * Kept automatic camera startup disabled by default so unavailable devices
       do not create background capture work.
 * **Application Identity and Licensing**:
-    * Added the Kırlangıç application logo from `src/assets`.
+    * Added the application logo from `src/assets`.
     * Added the official GNU GPL v3.0-only license and the TahsinCr copyright
       notice.
 
@@ -1061,7 +1067,7 @@ backend.
 
 
 ## [0.1-beta] - 2026-07-22
-The **"Modular Ground Control Foundation"** release. This first beta establishes a UI-independent backend, a reusable MAVLink core, verified vehicle operations, centralized mission data, real connection health reporting, GStreamer video support, and a local TEKNOFEST communication simulator while preserving the established Kırlangıç Team YKİ interface.
+The **"Modular Ground Control Foundation"** release. This first beta establishes a UI-independent backend, a reusable MAVLink core, verified vehicle operations, centralized mission data, real connection health reporting, GStreamer video support, and a local TEKNOFEST communication simulator while preserving the established ground-station interface.
 
 ### Added
 * **Layered Application Architecture**:
@@ -1120,7 +1126,7 @@ The **"Modular Ground Control Foundation"** release. This first beta establishes
 * **Standalone Project Guide**:
     * Added installation, connection, video, simulator, architecture, data-flow, backend API, MAVLink, extension, logging, and testing documentation to `README.md`.
 * **Release History**:
-    * Rebuilt the changelog from scratch for the Kırlangıç YKİ project and established the `0.1-beta` release format.
+    * Rebuilt the changelog from scratch for the GCS project and established the `0.1-beta` release format.
 
 ### Tests
 * **Architecture and Unit Coverage**:
