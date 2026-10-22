@@ -5,53 +5,80 @@ Release headings link each entry to its release date.
 
 ## [Unreleased]
 
+This development cycle introduces an extension architecture and a customizable
+workspace in place of the fixed application layout used in 1.7-beta. Vehicle
+integrations and feature panels now belong to separate packages, while the
+application provides their shared workspace, settings and lifecycle services.
+
 ### Added
 
-* Added saved workspace views and view-specific panel categories. Each view keeps
-  its split and tab layout, visibility, sizes and categories; the former single
-  layout migrates to an initial view.
-* Added extension-owned settings pages, lazy loading and typed settings for
-  disabled extensions. Extension state and configuration share
-  `data/settings.json`.
-* Added independent packages for the map and autonomy tools, battery,
-  parameters, flight dynamics, telemetry display and quick commands. Added
-  optional joystick and SIHA Teknofest Server packages.
-* Added protocol-neutral vehicle, telemetry and command contracts, optional RC
-  and mission capabilities, and protocol selection for extension adapters.
-* Added configurable telemetry readouts, a MAVLink dialect selector, ordered
-  footer contributions, panel size locks and searchable view/category icons.
-* Added archived-style connection popups for vehicle and competition server
-  profiles, with background connections and exchange history.
-* Added a localized menu bar to the application title bar. File, Edit, Selection,
-  View, Go, Run, Terminal and Help menus are present; their commands remain
-  placeholders.
+* Introduced the Extension API and host: manifest discovery, API compatibility
+  checks, capability-based dependencies, service registration and managed
+  startup and shutdown. Extensions can contribute panels, settings pages and
+  status indicators, and can use public Vehicle Autonomy Core packages directly.
+* Added an extension management dialog with search, category and activation
+  filters, dependency information and enable/disable controls.
+* Introduced a shared dockable workspace for application and extension panels,
+  including the map. Panels can be closed, resized, floated, placed on any side
+  of another panel or grouped into tabs. Drag previews show the destination;
+  a compact hover handle provides dragging, placement actions and size locking.
+* Added named workspace views with selectable icons. Each view saves its own
+  panel visibility, split and tab layout, dimensions and categories. New views
+  open empty, with guidance for adding panels.
+* Added view-specific panel categories. Operators can select visible panels to
+  form a group and show or hide them together. Saved views and categories occupy
+  separate activity-bar sections; individual panels remain available in View.
+* Added protocol-neutral vehicle, telemetry and command contracts, with separate
+  optional RC and mission capabilities. Extensions select adapters through the
+  active provider's capabilities rather than requiring MAVLink in the host.
+* Added configurable vehicle telemetry: selection and ordering of 58 fields,
+  list or grid display, one to four columns and optional category grouping.
+* Added a light theme alongside the existing dark theme, with shared styling
+  for workspace controls, settings and extension dialogs.
+* Added MAVLink dialect selection in Settings, extension-owned English and
+  Turkish language catalogs, and a localized title-bar menu with panel controls
+  in View. Menu entries without implemented actions remain placeholders.
 
 ### Changed
 
-* MAVLink-specific decoding, heartbeat handling, dialect settings and
-  reconnection logic now belong to the MAVLink extension. It uses the shared
-  `MavlinkClient` and transport from Vehicle Autonomy Core. Vehicle Connection
-  owns connection profiles and controls; GPS and autopilot status come from
-  MAVLink.
-* Extension enablement changes apply in the running application when dependency
-  rules allow. Settings edits mark the affected extension for reload; an
-  extension that provides a required capability or has active dependents cannot
-  be reloaded on its own.
-* Moved map, planner, map API, web assets and tile cache into Map & Autonomy.
-  Camera connections, recording and live outputs belong to the camera extension.
-* Consolidated application and extension logging in
-  `data/logs/gcs_<date>_<time>.json`; extension records retain their identity.
-  Extension configuration and enablement use the shared settings file.
-* Refined the workspace and settings UI: saved views and categories have distinct
-  activity-bar sections, extension settings live in the common Settings window,
-  and panel controls use a compact hover handle and menu.
-* Improved light and dark theme styling, extension management, battery settings,
-  telemetry field selection, camera status labels and bottom-bar profile controls.
-* Updated the extension API with lazy settings pages, status placement and
-  ordering, lifecycle cleanup and capability-based contributions.
-* Reorganized the README files into shorter, parallel sections and replaced
-  the architecture diagram with a written description of application and
-  extension responsibilities. Clone links now use the repository's current owner.
+* Updated the embedded Vehicle Autonomy Core to the 1.9.1 line and adapted the
+  application integrations to its current interfaces.
+* Separated MAVLink and Vehicle Connection into extensions. MAVLink owns message
+  decoding, heartbeat handling, dialect configuration, GPS and autopilot status;
+  Vehicle Connection owns connection lifecycle, profiles and connection-quality
+  controls. MAVLink continues to use Core's shared `MavlinkClient` and transport.
+* Moved the map, mission planner, planner API, web assets and tile cache into
+  Map & Autonomy. Camera capture, connection controls, recording and live
+  streaming now belong to the Camera extension.
+* Split Battery, Parameters, Vehicle Dynamics, Vehicle Telemetry and Quick
+  Commands into independent extensions. Shared vehicle contracts no longer
+  require every provider to implement RC, mission or MAVLink parameter methods;
+  protocol-specific operations remain behind capabilities and package adapters.
+* Restored joystick control and SIHA Teknofest Server as optional extensions.
+  Joystick currently uses a MAVLink RC adapter. The server package consumes
+  normalized telemetry, supports multiple HTTP profiles and records exchanges
+  in SQLite. Vehicle, camera and server connection popups remain in the bottom
+  bar; server management is not a workspace panel.
+* Extension activation changes now apply while the application is running when
+  dependencies allow. Settings changes mark the affected package for reload.
+  Providers required by active dependents cannot be reloaded independently;
+  at least one vehicle protocol provider must remain enabled.
+* Consolidated extension configuration and activation state under
+  `extensions.<identifier>` in `data/settings.json`. Legacy extension files and
+  renamed package identifiers migrate without losing disabled preferences,
+  saved configuration or unknown fields.
+* Made the shared Settings window the single location for extension settings,
+  grouped by package. Pages load on demand, including configuration editors for
+  disabled extensions, without starting their services. Connection popups keep
+  their profile controls and share the same editors.
+* Consolidated application and extension logs in
+  `data/logs/gcs_<date>_<time>.json`, with an extension identity on each extension
+  record. Language catalogs are validated, merged and cached by the host.
+* Reworked light and dark theme styling, workspace navigation, extension
+  management and settings pages. Existing single-layout workspace files migrate
+  to an initial saved view.
+* Reorganized both README files around setup, architecture, workspace and
+  extension development. Repository links now use the current owner.
 
 ### Fixed
 
@@ -60,46 +87,40 @@ Release headings link each entry to its release date.
   opened in a blank view fills the workspace. Restoring an older view also
   recovers open panels left offscreen by stale Qt dock placeholders while
   preserving healthy tab groups.
-* Consolidated deferred layout timer cancellation and kept workspace view
-  switching from changing `PanelWorkspace`'s private restore state. View
-  transitions now preserve the workspace's prior update state.
 * Restored dragging the frameless application window from unused space in the
-  top menu bar. Menu actions and window controls remain interactive; when the
-  window manager cannot start a native move, the title bar falls back to manual
-  movement.
-* Fixed edge drops on tabbed panels choosing the workspace boundary before the
-  actual tab group. Split drops at the group's outer edges now keep both panels
-  attached and visible, including when the group touches the workspace edge.
-* Fixed bottom panels remaining restricted to the right-hand column after the
-  right-side panels are closed. The lower region now spans the workspace when
-  no right dock remains, and returns alongside a full-height left column when
-  the right side is reopened.
-* Corrected panel splitting and tab placement, including edge drops onto the
-  panel's own tab group. Drop previews and hit testing now share panel geometry,
-  independent of drag-overlay paint occlusion.
-* Stabilized panel dimensions during hover, window resize, view changes and
-  workspace restoration. Removed spacer docks and corrected split sizing.
-* Fixed dock teardown and placement timing around Qt drag operations. Restricted
-  the frameless resize filter to relevant events and removed invalid widget
-  coordinate conversions.
-* Fixed MAVLink recovery, profile consistency, stale telemetry health indicators,
-  extension settings preservation, async shutdown and several panel/popup
-  lifecycle issues.
+  title bar, with a manual fallback when the window manager cannot start a
+  native move. Menus and window controls remain interactive.
+* Corrected panel edge and center drop detection, including drops within a
+  panel's own tab group and at workspace boundaries. Panels remain visible
+  after splitting; destination previews and placement use the same geometry.
+* Fixed unused space after closing panels. Bottom panels expand across the
+  workspace when the right side is closed; the left column retains its full
+  height when the right side is reopened.
+* Fixed hover-driven panel width growth and unexpected size changes during
+  window resizing, view switching and layout restoration. Split sizing follows
+  the actual panel arrangement; unrelated layout branches remain independent.
+* Fixed Qt drag/drop and panel teardown timing, stale layout timers, unsafe
+  resize-event handling and coordinate conversions. View transitions preserve
+  the workspace's update state and release deferred layout work consistently.
+* Restored vehicle and server connection popups and corrected camera settings
+  sizing, WebEngine initialization, telemetry health and GPS status indicators.
+* Fixed MAVLink recovery, active-profile consistency, extension subscription
+  cleanup and asynchronous shutdown.
 * Corrupt saved extension state and invalid extension settings now fail
   explicitly instead of silently falling back to defaults that could re-enable
   a connection.
 
 ### Removed
 
-* Removed production mock telemetry, null vehicle wiring, obsolete edit-layout
-  controls, duplicate extension settings routes and legacy sidebar/settings
-  contribution hooks.
+* Removed the separate layout-edit mode and its obsolete controls. Panels now
+  use the same hover handle and placement menu during normal operation.
+* Removed production mock telemetry, null vehicle wiring, duplicate settings
+  entry points and superseded sidebar/settings contribution hooks.
 * Removed SIHA Onboard/Orin execution, target-selection and Kamikaze workflows,
   and the mission archive from the common application. TEKNOFEST server support
   is available separately through its optional extension.
-* Removed feature implementations from the common application once their
-  extension packages took ownership. Settings migration preserves unknown
-  fields and disabled-state preferences.
+* Removed feature implementations and protocol-specific compatibility shims
+  from the common application after moving ownership to their extensions.
 
 ### Tests
 
