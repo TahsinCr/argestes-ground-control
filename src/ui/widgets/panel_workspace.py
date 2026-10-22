@@ -767,6 +767,12 @@ class PanelWorkspace(QMainWindow):
         self._restoring_panel_sizes = True
         self._size_restore_timer.start(0)
 
+    def _cancel_deferred_layout_updates(self) -> None:
+        self._size_restore_timer.stop()
+        self._visibility_timer.stop()
+        self._layout_validation_timer.stop()
+        self._size_restore_pending = False
+
     def enable_panel_size_restore(self, *, capture_current: bool = False) -> None:
         self._panel_size_restore_enabled = True
         if capture_current:
@@ -814,6 +820,12 @@ class PanelWorkspace(QMainWindow):
         # A restored Qt dock state already owns the split proportions. Merely
         # showing the workspace must not replay independent pixel dimensions.
 
+    def _dock_group_has_visible_surface(self, docks) -> bool:
+        return any(
+            not dock.isHidden() and self.rect().intersects(dock.geometry())
+            for dock in docks
+        )
+
     def _ensure_visible_panels(self) -> None:
         """Recover open dock groups that Qt left outside the working area."""
         if not self.isVisible() or self._drag_source is not None:
@@ -831,18 +843,18 @@ class PanelWorkspace(QMainWindow):
                 group = [dock, *peers]
                 visited.update(group)
                 area = self.dockWidgetArea(dock)
-                if area != Qt.DockWidgetArea.NoDockWidgetArea and any(
-                    not panel.isHidden() and self.rect().intersects(panel.geometry())
-                    for panel in group
+                if (
+                    area != Qt.DockWidgetArea.NoDockWidgetArea
+                    and self._dock_group_has_visible_surface(group)
                 ):
                     # Inactive tabs are intentionally parked offscreen. Keep
                     # their group intact whenever an open tab has a surface.
                     continue
                 dock.raise_()
                 self.layout().activate()
-                if area != Qt.DockWidgetArea.NoDockWidgetArea and any(
-                    not panel.isHidden() and self.rect().intersects(panel.geometry())
-                    for panel in group
+                if (
+                    area != Qt.DockWidgetArea.NoDockWidgetArea
+                    and self._dock_group_has_visible_surface(group)
                 ):
                     continue
                 if area == Qt.DockWidgetArea.NoDockWidgetArea:
@@ -1224,10 +1236,7 @@ class PanelWorkspace(QMainWindow):
 
     def clear_layout(self) -> dict:
         """Start an empty view with fresh dock topology and no inherited locks."""
-        self._size_restore_timer.stop()
-        self._visibility_timer.stop()
-        self._layout_validation_timer.stop()
-        self._size_restore_pending = False
+        self._cancel_deferred_layout_updates()
         updates_enabled = self.updatesEnabled()
         self.setUpdatesEnabled(False)
         self._restoring_panel_sizes = True
@@ -1298,10 +1307,7 @@ class PanelWorkspace(QMainWindow):
         self, payload: dict | None = None, *, restore_window: bool = True
     ) -> bool:
         try:
-            self._size_restore_timer.stop()
-            self._visibility_timer.stop()
-            self._layout_validation_timer.stop()
-            self._size_restore_pending = False
+            self._cancel_deferred_layout_updates()
             self._restoring_panel_sizes = False
             if payload is None:
                 payload = json.loads(self.state_path.read_text(encoding="utf-8"))

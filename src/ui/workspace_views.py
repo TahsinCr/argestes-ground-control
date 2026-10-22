@@ -119,15 +119,15 @@ class WorkspaceViews(QObject):
             self._save_timer.start()
 
     def _apply(self, layout):
+        was_busy = self._busy
+        updates_enabled = self.workspace.updatesEnabled()
         self._busy = True
-        self.workspace._restoring_panel_sizes = True
         self.workspace.setUpdatesEnabled(False)
         try:
             return self.workspace.restore_layout(layout, restore_window=False)
         finally:
-            self.workspace._restoring_panel_sizes = False
-            self.workspace.setUpdatesEnabled(True)
-            self._busy = False
+            self.workspace.setUpdatesEnabled(updates_enabled)
+            self._busy = was_busy
 
     def switch(self, identifier):
         target = next((view for view in self.views if view["id"] == identifier), None)

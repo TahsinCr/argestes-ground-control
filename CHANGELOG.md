@@ -51,6 +51,9 @@ Release headings link each entry to its release date.
   opened in a blank view fills the workspace. Restoring an older view also
   recovers open panels left offscreen by stale Qt dock placeholders while
   preserving healthy tab groups.
+* Consolidated deferred layout timer cancellation and kept workspace view
+  switching from changing `PanelWorkspace`'s private restore state. View
+  transitions now preserve the workspace's prior update state.
 * Restored dragging the frameless application window from unused space in the
   top menu bar. Menu actions and window controls remain interactive; when the
   window manager cannot start a native move, the title bar falls back to manual
