@@ -22,12 +22,21 @@ Release headings link each entry to its release date.
   footer contributions, panel size locks and searchable view/category icons.
 * Added archived-style connection popups for vehicle and competition server
   profiles, with background connections and exchange history.
+* Added a localized menu bar to the application title bar. File, Edit, Selection,
+  View, Go, Run, Terminal and Help menus are present; their commands remain
+  placeholders.
 
 ### Changed
 
-* Moved MAVLink transport, connection recovery, heartbeat decoding and protocol
-  settings into the MAVLink extension. Vehicle Connection owns connection
-  lifecycle and profiles; GPS and autopilot indicators remain with MAVLink.
+* MAVLink-specific decoding, heartbeat handling, dialect settings and
+  reconnection logic now belong to the MAVLink extension. It uses the shared
+  `MavlinkClient` and transport from Vehicle Autonomy Core. Vehicle Connection
+  owns connection profiles and controls; GPS and autopilot status come from
+  MAVLink.
+* Extension enablement changes apply in the running application when dependency
+  rules allow. Settings edits mark the affected extension for reload; an
+  extension that provides a required capability or has active dependents cannot
+  be reloaded on its own.
 * Moved map, planner, map API, web assets and tile cache into Map & Autonomy.
   Camera connections, recording and live outputs belong to the camera extension.
 * Consolidated application and extension logging in
@@ -76,22 +85,29 @@ Release headings link each entry to its release date.
 * Fixed MAVLink recovery, profile consistency, stale telemetry health indicators,
   extension settings preservation, async shutdown and several panel/popup
   lifecycle issues.
+* Corrupt saved extension state and invalid extension settings now fail
+  explicitly instead of silently falling back to defaults that could re-enable
+  a connection.
 
 ### Removed
 
 * Removed production mock telemetry, null vehicle wiring, obsolete edit-layout
   controls, duplicate extension settings routes and legacy sidebar/settings
   contribution hooks.
-* Removed feature-specific logic from the common application as those features
-  moved into extensions. Existing settings are migrated without dropping unknown
-  fields or disabled-state preferences.
+* Removed SIHA Onboard/Orin execution, target-selection and Kamikaze workflows,
+  and the mission archive from the common application. TEKNOFEST server support
+  is available separately through its optional extension.
+* Removed feature implementations from the common application once their
+  extension packages took ownership. Settings migration preserves unknown
+  fields and disabled-state preferences.
 
 ### Tests
 
-* The combined suite passes 595 tests. Workspace recovery and map-view checks
-  pass with real Qt widgets in offscreen mode; compileall, targeted lint and
-  whitespace checks pass. The real-map smoke test uses its own Qt process to
-  keep Chromium cleanup separate from the shared UI test application.
+* The last full combined run, before the latest workspace cleanup, passed 595
+  tests. The cleanup itself passed compileall, targeted lint and whitespace
+  checks; a full suite run against that final commit is still outstanding. The
+  real-map smoke test uses its own Qt process to keep Chromium cleanup separate
+  from the shared UI test application.
 * Dark and light UI screenshots were reviewed. No physical vehicle, camera or
   competition server was used for this verification.
 
