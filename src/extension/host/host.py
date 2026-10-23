@@ -14,6 +14,7 @@ from typing import Any
 from src.core.dependency import BaseDependencyContainer
 from src.extension.api import (
     API_MAJOR,
+    ClockSample,
     ClockReferenceRegistry,
     ExtensionContext,
     ExtensionManifest,
@@ -49,6 +50,11 @@ class ExtensionError(RuntimeError):
     pass
 
 
+def _system_clock_sample(*, local: bool) -> ClockSample:
+    value = datetime.now().astimezone() if local else datetime.now(UTC)
+    return ClockSample(value=value, updated_at=value)
+
+
 @dataclass(frozen=True, slots=True)
 class ExtensionState:
     manifest: ExtensionManifest
@@ -64,10 +70,18 @@ class ExtensionHost:
         self.container = container
         self.clock_references = ClockReferenceRegistry()
         self.clock_references.register(
-            "system", "local", "System local time", lambda: datetime.now().astimezone()
+            "system",
+            "local",
+            "System local time",
+            lambda: _system_clock_sample(local=True),
+            stale_after_seconds=1.0,
         )
         self.clock_references.register(
-            "system", "utc", "System UTC", lambda: datetime.now(UTC)
+            "system",
+            "utc",
+            "System UTC",
+            lambda: _system_clock_sample(local=False),
+            stale_after_seconds=1.0,
         )
         self._settings_service = container.resolve(SettingsService)
         # A malformed persisted switch must never silently re-enable a plugin.

@@ -11,7 +11,7 @@ from extensions.parameters.ui.panel import ParametersPanel
 from src.models.parameters import Parameter
 
 
-_APP = QApplication.instance() or QApplication([])
+_APP = QApplication.instance() or QApplication(["yki-parameter-tests"])
 
 
 def parameter(key: str, value: float) -> Parameter:

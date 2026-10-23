@@ -18,7 +18,7 @@ from src.ui.widgets.workspace_dialog import WorkspaceItemDialog
 class WorkspaceViewTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = QApplication.instance() or QApplication([])
+        cls.app = QApplication.instance() or QApplication(["yki-workspace-view-tests"])
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

@@ -83,5 +83,13 @@
   "telemetry.section.battery": "Batarya",
   "telemetry.section.gps": "GPS",
   "telemetry.section.link": "Bağlantı ve radyo",
-  "telemetry.section.sensors": "Sensörler ve sistem"
+  "telemetry.section.sensors": "Sensörler ve sistem",
+  "telemetry.clock.quality.live": "Saat kaynağı canlı",
+  "telemetry.clock.quality.estimated": "Son örnekten tahmin ediliyor",
+  "telemetry.clock.quality.stale": "Saat örneği eski",
+  "telemetry.clock.quality.unavailable": "Saat kaynağı kullanılamıyor",
+  "telemetry.clock.quality.unknown": "Saat verisinin tazeliği doğrulanamıyor",
+  "telemetry.clock.last_updated": "Son örnek",
+  "telemetry.clock.sample_age": "Örnek yaşı",
+  "telemetry.clock.seconds": "sn"
 }

@@ -166,6 +166,7 @@ class CompetitionClockSample(Model):
     received_monotonic: float
     request_started_monotonic: float
     resolved_at: datetime
+    received_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
     def rtt_s(self) -> float:

@@ -5,11 +5,47 @@ from __future__ import annotations
 import re
 import threading
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
+from enum import Enum
+import math
 from typing import Callable
 
 
-ClockProvider = Callable[[], datetime | None]
+class ClockQuality(str, Enum):
+    """Freshness of the latest value supplied by a clock source."""
+
+    LIVE = "live"
+    ESTIMATED = "estimated"
+    STALE = "stale"
+    UNAVAILABLE = "unavailable"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class ClockSample:
+    """A clock value and the wall-clock instant when its source last updated it.
+
+    ``estimated`` is set when ``value`` advances from a previously received
+    sample rather than from a new source response. ``updated_at`` must describe
+    that response, not the time this object was read.
+    """
+
+    value: datetime
+    updated_at: datetime
+    estimated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ClockStatus:
+    """Clock value with measurable source freshness for UI and consumers."""
+
+    value: datetime | None
+    updated_at: datetime | None
+    age_seconds: float | None
+    quality: ClockQuality
+
+
+ClockProvider = Callable[[], ClockSample | datetime | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +55,7 @@ class ClockReference:
     identifier: str
     title: str
     extension_id: str
+    stale_after_seconds: float | None = None
 
 
 class ClockReferenceRegistry:
@@ -26,7 +63,9 @@ class ClockReferenceRegistry:
 
     Identifiers are derived from the owning extension and its stable local key;
     display titles are intentionally not used as persistent identity. Providers
-    should return an aware datetime in the timezone that should be displayed.
+    should return :class:`ClockSample` with aware timestamps. Legacy providers
+    returning an aware :class:`datetime` remain usable, but their freshness is
+    reported as unknown because they do not identify when their source updated.
     """
 
     _EXTENSION_ID = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
@@ -42,6 +81,8 @@ class ClockReferenceRegistry:
         key: str,
         title: str,
         provider: ClockProvider,
+        *,
+        stale_after_seconds: float | None = None,
     ) -> str:
         owner = str(extension_id).strip().lower()
         local_key = str(key).strip().lower()
@@ -54,8 +95,16 @@ class ClockReferenceRegistry:
             raise ValueError("Clock reference title cannot be empty")
         if not callable(provider):
             raise TypeError("Clock reference provider must be callable")
+        if stale_after_seconds is not None:
+            if isinstance(stale_after_seconds, bool):
+                raise ValueError("Clock staleness limit must be a positive number")
+            stale_after_seconds = float(stale_after_seconds)
+            if not math.isfinite(stale_after_seconds) or stale_after_seconds <= 0:
+                raise ValueError("Clock staleness limit must be a positive number")
         identifier = f"{owner}.{local_key}"
-        reference = ClockReference(identifier, display_title, owner)
+        reference = ClockReference(
+            identifier, display_title, owner, stale_after_seconds
+        )
         with self._lock:
             # Re-registering the same logical source updates its live provider
             # and label without changing the identifier stored in settings.
@@ -80,19 +129,68 @@ class ClockReferenceRegistry:
                 self._sources[identifier][0] for identifier in sorted(self._sources)
             )
 
-    def current_time(self, identifier: str) -> datetime | None:
+    @staticmethod
+    def _is_aware(value: object) -> bool:
+        return (
+            isinstance(value, datetime)
+            and value.tzinfo is not None
+            and value.utcoffset() is not None
+        )
+
+    def status(self, identifier: str) -> ClockStatus:
+        """Return the current value and its age relative to the system clock.
+
+        A source can declare its established stale threshold at registration.
+        Without one, age is still reported, but freshness remains ``UNKNOWN``;
+        the registry does not guess a threshold. Legacy datetime-only providers
+        also report ``UNKNOWN`` quality because they carry no update timestamp.
+        """
         with self._lock:
             entry = self._sources.get(str(identifier))
         if entry is None:
-            return None
+            return ClockStatus(None, None, None, ClockQuality.UNAVAILABLE)
         try:
-            value = entry[1]()
-            if not isinstance(value, datetime) or value.tzinfo is None:
-                return None
-            if value.utcoffset() is None:
-                return None
-            return value
+            sample = entry[1]()
+            if isinstance(sample, datetime):
+                if self._is_aware(sample):
+                    return ClockStatus(
+                        sample, None, None, ClockQuality.UNKNOWN
+                    )
+                return ClockStatus(None, None, None, ClockQuality.UNAVAILABLE)
+            if (
+                not isinstance(sample, ClockSample)
+                or not self._is_aware(sample.value)
+                or not self._is_aware(sample.updated_at)
+            ):
+                return ClockStatus(None, None, None, ClockQuality.UNAVAILABLE)
+
+            age_seconds = max(
+                0.0,
+                (datetime.now(UTC) - sample.updated_at.astimezone(UTC)).total_seconds(),
+            )
+            stale_after = entry[0].stale_after_seconds
+            if stale_after is not None and age_seconds > stale_after:
+                quality = ClockQuality.STALE
+            elif sample.estimated:
+                quality = ClockQuality.ESTIMATED
+            elif stale_after is None:
+                quality = ClockQuality.UNKNOWN
+            else:
+                quality = ClockQuality.LIVE
+            return ClockStatus(
+                sample.value,
+                sample.updated_at,
+                age_seconds,
+                quality,
+            )
         except Exception:
             # A provider can temporarily be unavailable (for example, before
             # a server has supplied its first clock sample).
+            return ClockStatus(None, None, None, ClockQuality.UNAVAILABLE)
+
+    def current_time(self, identifier: str) -> datetime | None:
+        """Return a usable time, preserving the legacy ``datetime | None`` API."""
+        status = self.status(identifier)
+        if status.quality in {ClockQuality.UNAVAILABLE, ClockQuality.STALE}:
             return None
+        return status.value

@@ -14,6 +14,7 @@ from http.cookiejar import CookieJar
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 from src.core.events import EventBus
+from src.extension.api import ClockSample
 
 from .models import (
     CompetitionClockSample,
@@ -136,12 +137,14 @@ class ServerSession:
                 if self._stop.is_set():
                     return
                 received = time.monotonic()
+                received_at = datetime.now(UTC)
                 server_time = CompetitionServerTime.from_payload(clock)
                 self.clock = CompetitionClockSample(
                     server_time,
                     received,
                     started,
-                    server_time.resolve_near(datetime.now(UTC)),
+                    server_time.resolve_near(received_at),
+                    received_at,
                 )
                 snapshot = self.snapshot()
                 if snapshot.has_valid_position:
@@ -299,7 +302,8 @@ class CompetitionRuntime:
                 "siha_teknofest_server",
                 f"server.{stable_key}.utc",
                 str(session.config.get("name") or profile_id),
-                lambda current=session: self._server_time(current),
+                lambda current=session: self._server_clock_sample(current),
+                stale_after_seconds=30.0,
             )
             identifiers.add(identifier)
         for identifier in self._clock_reference_ids - identifiers:
@@ -313,6 +317,17 @@ class CompetitionRuntime:
         if sample is None or now - sample.received_monotonic > 30.0:
             return None
         return sample.estimate(now)
+
+    @staticmethod
+    def _server_clock_sample(session):
+        sample = session.clock
+        if sample is None:
+            return None
+        return ClockSample(
+            value=sample.estimate(time.monotonic()),
+            updated_at=sample.received_at,
+            estimated=True,
+        )
 
     def start(self):
         for session in self.sessions.values():

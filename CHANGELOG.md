@@ -15,6 +15,12 @@ Release headings link each entry to its release date.
   page defaults to local system time, with UTC and available TEKNOFEST profile
   clocks as alternatives. A registered source without a current sample remains
   visible as unavailable and warns instead of being silently selected.
+* Clock providers can now publish the value's actual update timestamp and whether
+  the clock value is estimated. The shared API reports measured sample age and
+  marks a source stale only after its declared freshness limit; the TEKNOFEST
+  clock uses its existing 30-second expiration. Sources without a declared
+  freshness limit (including legacy datetime-only providers) remain usable but
+  report unknown freshness instead of being incorrectly labeled live.
 * Added a GitHub Actions test workflow that checks out the Core submodule and
   installs the Qt platform libraries and extension test dependencies, then runs
   the application and Core suites in an offscreen Qt environment.
@@ -48,6 +54,10 @@ Release headings link each entry to its release date.
   unavailable saved source remains visible and disabled until the operator
   selects another one; clock lists refresh when their settings view is opened.
   The camera setting now states visibly that it applies to all output timestamps.
+* Camera clock choices now identify live, estimated, stale and unavailable data;
+  the source's last update time and measured age are available in the item
+  tooltip. Telemetry clock readouts mark estimated values and expose the same
+  quality and age details on hover.
 * Telemetry clock-field choices are refreshed when the settings page is opened
   again, so newly registered sources become selectable without a new event
   framework.
@@ -96,6 +106,14 @@ Release headings link each entry to its release date.
 * Map tile-cache shutdown is owned by the Map & Autonomy extension lifecycle;
   destroying a map widget no longer stops a cache service shared by other map
   views.
+* Hardened Map & Autonomy's WebEngine request boundary. The page can load only
+  its packaged local map assets, the Qt WebChannel script, its loopback tile
+  endpoint and the configured CARTO/Esri tile hosts; other file, network and
+  top-level navigation requests are blocked. Local file access remains enabled
+  for bundled resources, but is constrained by the request allowlist.
+* Fixed Map & Autonomy shutdown ordering so the WebEngine view is destroyed
+  before its page and profile, preventing native Qt WebEngine crashes during
+  repeated workspace teardown.
 * Quick-command feedback now says when a request was accepted by the command
   service without claiming that the vehicle has completed it.
 * TEKNOFEST profile updates now stop existing sessions before replacing their

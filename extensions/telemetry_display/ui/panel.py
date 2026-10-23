@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
 
 from src.models.telemetry import TelemetrySnapshot
 from src.ui.i18n import t
+from src.extension.api import ClockQuality
 from src.ui.themes.style import ThemePalette
 from src.ui.widgets.common import PanelFrame
 
@@ -310,8 +311,29 @@ class TelemetryPanel(PanelFrame):
         values = {}
         for field_key in self._visible_clock_fields:
             identifier = self._clock_field_ids[field_key]
-            value = self._clock_references.current_time(identifier)
-            values[field_key] = value.strftime("%H:%M:%S") if value else "--"
+            status = self._clock_references.status(identifier)
+            usable = status.quality not in {
+                ClockQuality.UNAVAILABLE,
+                ClockQuality.STALE,
+            }
+            value = status.value if usable else None
+            prefix = "~" if status.quality is ClockQuality.ESTIMATED else ""
+            values[field_key] = (
+                f"{prefix}{value.strftime('%H:%M:%S')}" if value else "--"
+            )
+            tooltip = t(
+                f"telemetry.clock.quality.{status.quality.value}", self._language
+            )
+            if status.updated_at is not None and status.age_seconds is not None:
+                updated = status.updated_at.astimezone().strftime(
+                    "%Y-%m-%d %H:%M:%S %Z"
+                )
+                age = f"{status.age_seconds:.1f} {t('telemetry.clock.seconds', self._language)}"
+                tooltip = (
+                    f"{tooltip}\n{t('telemetry.clock.last_updated', self._language)}: "
+                    f"{updated}\n{t('telemetry.clock.sample_age', self._language)}: {age}"
+                )
+            self.readouts[field_key].setToolTip(tooltip)
         self._set_readout_values(values)
 
     def _set_readout_values(self, values: dict[str, str]) -> None:

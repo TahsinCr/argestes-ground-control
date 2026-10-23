@@ -14,7 +14,7 @@ from extensions.camera.runtime import (
     CameraSettingsStore,
 )
 from extensions.siha_teknofest_server.runtime import CompetitionRuntime
-from src.extension.api import ClockReferenceRegistry
+from src.extension.api import ClockQuality, ClockReferenceRegistry, ClockSample
 
 
 class ClockReferenceTests(unittest.TestCase):
@@ -56,6 +56,62 @@ class ClockReferenceTests(unittest.TestCase):
         registry.unregister_owner("test_source")
         self.assertEqual(registry.references(), ())
 
+    def test_registry_reports_sample_quality_and_measured_age(self) -> None:
+        registry = ClockReferenceRegistry()
+        now = datetime.now(UTC)
+        value = now.astimezone(timezone(timedelta(hours=3)))
+        live = registry.register(
+            "clock_test",
+            "live",
+            "Live",
+            lambda: ClockSample(value, now),
+            stale_after_seconds=5.0,
+        )
+        estimated = registry.register(
+            "clock_test",
+            "estimated",
+            "Estimated",
+            lambda: ClockSample(value, now, estimated=True),
+            stale_after_seconds=30.0,
+        )
+        old_sample_time = now - timedelta(seconds=60)
+        stale = registry.register(
+            "clock_test",
+            "stale",
+            "Stale",
+            lambda: ClockSample(value, old_sample_time, estimated=True),
+            stale_after_seconds=30.0,
+        )
+        legacy = registry.register(
+            "clock_test", "legacy", "Legacy", lambda: value
+        )
+        unknown_freshness = registry.register(
+            "clock_test",
+            "unknown_freshness",
+            "Unknown freshness",
+            lambda: ClockSample(value, old_sample_time),
+        )
+
+        live_status = registry.status(live)
+        estimated_status = registry.status(estimated)
+        stale_status = registry.status(stale)
+        legacy_status = registry.status(legacy)
+        unknown_status = registry.status(unknown_freshness)
+
+        self.assertIs(live_status.quality, ClockQuality.LIVE)
+        self.assertEqual(live_status.value, value)
+        self.assertIsNotNone(live_status.updated_at)
+        self.assertIsNotNone(live_status.age_seconds)
+        self.assertLess(live_status.age_seconds, 2.0)
+        self.assertIs(estimated_status.quality, ClockQuality.ESTIMATED)
+        self.assertIs(stale_status.quality, ClockQuality.STALE)
+        self.assertGreaterEqual(stale_status.age_seconds, 60.0)
+        self.assertIsNone(registry.current_time(stale))
+        self.assertIs(legacy_status.quality, ClockQuality.UNKNOWN)
+        self.assertIs(unknown_status.quality, ClockQuality.UNKNOWN)
+        self.assertGreaterEqual(unknown_status.age_seconds, 60.0)
+        self.assertEqual(registry.current_time(legacy), value)
+
     def test_camera_clock_setting_round_trips_without_using_display_title(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -94,6 +150,7 @@ class ClockReferenceTests(unittest.TestCase):
         sample_time = datetime(2026, 10, 23, tzinfo=UTC)
         sample = SimpleNamespace(
             received_monotonic=time.monotonic(),
+            received_at=datetime.now(UTC),
             estimate=lambda _now: sample_time,
         )
         session = SimpleNamespace(

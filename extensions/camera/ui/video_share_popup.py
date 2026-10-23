@@ -28,7 +28,7 @@ from extensions.camera.models import (
     VideoSourceConfig,
     VideoSourceStats,
 )
-from src.extension.api import ClockReferenceRegistry
+from src.extension.api import ClockQuality, ClockReferenceRegistry
 from src.ui.i18n import t
 from src.ui.themes.style import ThemePalette
 
@@ -245,13 +245,22 @@ class VideoSharePopup(QDialog):
                 label = reference.title
             if reference.extension_id != "system":
                 label = f"{label} · {owner}"
-            available = (
-                self._clock_references is not None
-                and self._clock_references.current_time(reference.identifier)
-                is not None
+            status = (
+                self._clock_references.status(reference.identifier)
+                if self._clock_references is not None
+                else None
             )
+            available = status is not None and status.quality not in {
+                ClockQuality.UNAVAILABLE,
+                ClockQuality.STALE,
+            }
             if not available:
                 label = f"{label} · {t('video.clock.unavailable', self._language)}"
+            elif status is not None:
+                label = (
+                    f"{label} · "
+                    f"{t(f'video.clock.quality.{status.quality.value}', self._language)}"
+                )
             self.clock_combo.addItem(
                 label,
                 reference.identifier,
@@ -266,6 +275,23 @@ class VideoSharePopup(QDialog):
                 self.clock_combo.setItemData(
                     index,
                     t("video.clock.unavailable_message", self._language),
+                    Qt.ItemDataRole.ToolTipRole,
+                )
+                model_item = getattr(self.clock_combo.model(), "item", lambda _: None)(
+                    index
+                )
+                if model_item is not None:
+                    model_item.setEnabled(False)
+            elif status is not None and status.updated_at is not None:
+                updated = status.updated_at.astimezone().strftime(
+                    "%Y-%m-%d %H:%M:%S %Z"
+                )
+                self.clock_combo.setItemData(
+                    index,
+                    f"{t(f'video.clock.quality.{status.quality.value}', self._language)}\n"
+                    f"{t('video.clock.last_updated', self._language)}: {updated}\n"
+                    f"{t('video.clock.sample_age', self._language)}: "
+                    f"{status.age_seconds:.1f} {t('video.clock.seconds', self._language)}",
                     Qt.ItemDataRole.ToolTipRole,
                 )
         selected_index = self.clock_combo.findData(self._clock_reference_id)

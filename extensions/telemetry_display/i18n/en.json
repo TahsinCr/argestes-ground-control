@@ -83,5 +83,13 @@
   "telemetry.section.battery": "Battery",
   "telemetry.section.gps": "GPS",
   "telemetry.section.link": "Connection and radio",
-  "telemetry.section.sensors": "Sensors and system"
+  "telemetry.section.sensors": "Sensors and system",
+  "telemetry.clock.quality.live": "Live clock source",
+  "telemetry.clock.quality.estimated": "Estimated from the last sample",
+  "telemetry.clock.quality.stale": "Clock sample is stale",
+  "telemetry.clock.quality.unavailable": "Clock source unavailable",
+  "telemetry.clock.quality.unknown": "Clock freshness is unverified",
+  "telemetry.clock.last_updated": "Last sample",
+  "telemetry.clock.sample_age": "Sample age",
+  "telemetry.clock.seconds": "s"
 }

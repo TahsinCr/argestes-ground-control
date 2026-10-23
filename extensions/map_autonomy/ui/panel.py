@@ -6,7 +6,16 @@ import math
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QElapsedTimer, QObject, QTimer, QUrl, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import (
+    QCoreApplication,
+    QElapsedTimer,
+    QEvent,
+    QObject,
+    QTimer,
+    QUrl,
+    pyqtSignal,
+    pyqtSlot,
+)
 from PyQt6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from src.ui.i18n import t
@@ -26,6 +35,7 @@ try:
         QWebEnginePage,
         QWebEngineProfile,
         QWebEngineSettings,
+        QWebEngineUrlRequestInfo,
         QWebEngineUrlRequestInterceptor,
     )
     from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -38,16 +48,105 @@ except ImportError as exc:  # pragma: no cover - runtime fallback
     QWebEnginePage = object  # type: ignore[assignment]
     QWebEngineProfile = object  # type: ignore[assignment]
     QWebEngineSettings = object  # type: ignore[assignment]
+    QWebEngineUrlRequestInfo = object  # type: ignore[assignment]
     QWebEngineUrlRequestInterceptor = object  # type: ignore[assignment]
     QWebEngineView = QLabel  # type: ignore[assignment]
 
 
+_CARTO_TILE_HOSTS = frozenset(
+    f"{subdomain}.basemaps.cartocdn.com" for subdomain in "abcd"
+)
+_ALLOWED_TILE_HOSTS = _CARTO_TILE_HOSTS | {"server.arcgisonline.com"}
+
+
+def _map_request_allowed(
+    request_url: QUrl,
+    *,
+    web_root: Path,
+    map_document: Path,
+    tile_cache_url: str,
+    main_frame: bool = False,
+) -> bool:
+    """Allow only packaged map files and the map's configured tile origins."""
+    scheme = request_url.scheme().lower()
+    if scheme == "file":
+        if request_url.host().lower() not in {"", "localhost"}:
+            return False
+        try:
+            candidate = Path(request_url.toLocalFile()).resolve(strict=True)
+            root = web_root.resolve(strict=True)
+            document = map_document.resolve(strict=True)
+        except (OSError, RuntimeError):
+            return False
+        if not candidate.is_file():
+            return False
+        if main_frame:
+            return candidate == document
+        return candidate == root or root in candidate.parents
+
+    if main_frame:
+        return False
+    if scheme == "qrc":
+        return (
+            not request_url.host()
+            and request_url.path() == "/qtwebchannel/qwebchannel.js"
+        )
+    if scheme == "data":
+        # map.html uses only these two inline resources (its empty favicon and
+        # the blank-tile SVG). Avoid allowing arbitrary data documents/scripts.
+        data_url = request_url.toString().lower()
+        return data_url.startswith(("data:,", "data:image/svg+xml;utf8,"))
+    if scheme == "http":
+        cache_url = QUrl(tile_cache_url)
+        return bool(
+            cache_url.isValid()
+            and cache_url.scheme() == "http"
+            and request_url.host() == cache_url.host()
+            and request_url.port(-1) == cache_url.port(-1)
+            and request_url.port(-1) > 0
+            and request_url.path().startswith("/tile/")
+            and not request_url.userInfo()
+        )
+    if scheme == "https":
+        return bool(
+            request_url.host().lower() in _ALLOWED_TILE_HOSTS
+            and request_url.port(443) == 443
+            and request_url.path().startswith("/")
+            and not request_url.userInfo()
+        )
+    return False
+
+
 class MapRequestInterceptor(QWebEngineUrlRequestInterceptor):
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        *,
+        web_root: Path,
+        map_document: Path,
+        tile_cache_url: str,
+    ) -> None:
         super().__init__(parent)
+        self._web_root = web_root
+        self._map_document = map_document
+        self._tile_cache_url = tile_cache_url
 
     def interceptRequest(self, info) -> None:  # pragma: no cover - Qt callback
-        if info.requestUrl().scheme() in {"http", "https"}:
+        request_url = info.requestUrl()
+        main_frame = (
+            info.resourceType()
+            == QWebEngineUrlRequestInfo.ResourceType.ResourceTypeMainFrame
+        )
+        if not _map_request_allowed(
+            request_url,
+            web_root=self._web_root,
+            map_document=self._map_document,
+            tile_cache_url=self._tile_cache_url,
+            main_frame=main_frame,
+        ):
+            info.block(True)
+            return
+        if request_url.scheme() in {"http", "https"}:
             info.setHttpHeader(
                 b"User-Agent",
                 b"YKI/1.0 (PyQt6 Ground Control Station)",
@@ -404,7 +503,17 @@ class MapPanel(PanelFrame):
             view.setParent(None)
             view.deleteLater()
         if page is not None:
+            # QWebEngineView uses its page/profile until the view itself is
+            # destroyed. Detach both from the panel so parent teardown cannot
+            # destroy them first, then flush only this view's deferred delete.
+            page.setParent(None)
+        app = QCoreApplication.instance()
+        if view is not None and app is not None:
+            QCoreApplication.sendPostedEvents(view, QEvent.Type.DeferredDelete)
+        if page is not None:
             page.deleteLater()
+            if app is not None:
+                QCoreApplication.sendPostedEvents(page, QEvent.Type.DeferredDelete)
         self._profile = None
         self._interceptor = None
 
@@ -705,7 +814,14 @@ class MapPanel(PanelFrame):
         # disk cache. Off-the-record profiles also close without background
         # storage writes after an extension unload.
         self._profile = QWebEngineProfile(self)
-        self._interceptor = MapRequestInterceptor(self)
+        web_root = Path(__file__).resolve().parents[1] / "web"
+        map_document = web_root / "map.html"
+        self._interceptor = MapRequestInterceptor(
+            self,
+            web_root=web_root,
+            map_document=map_document,
+            tile_cache_url=self._cache_base_url,
+        )
         self._profile.setUrlRequestInterceptor(self._interceptor)
         self._profile.setHttpUserAgent("YKI/1.0 (PyQt6 Ground Control Station)")
 
@@ -761,8 +877,7 @@ class MapPanel(PanelFrame):
         self._last_telemetry_payload = None
         self._pending_telemetry_payload = None
         self._last_cache_count = None
-        html_path = Path(__file__).resolve().parents[1] / "web" / "map.html"
-        self._view.load(QUrl.fromLocalFile(str(html_path)))
+        self._view.load(QUrl.fromLocalFile(str(map_document)))
 
     def _reset_map_view_state(self) -> None:
         """Discard browser-side caches before rebuilding an authoritative map."""

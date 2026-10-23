@@ -59,6 +59,14 @@ def _run_smoke():
             QTest.qWait(30)
             assert dock.geometry() == window.workspace.rect(), dock.geometry()
             assert dock.widget().isVisibleTo(window)
+            map_panel = dock.widget()
+            for _ in range(200):
+                if getattr(map_panel, "_js_ready", False):
+                    break
+                QTest.qWait(50)
+            assert getattr(map_panel, "_js_ready", False), (
+                "Leaflet/WebChannel did not initialize"
+            )
             window.workspace_views.switch(original)
             window.workspace_views.switch(mission)
             QTest.qWait(30)

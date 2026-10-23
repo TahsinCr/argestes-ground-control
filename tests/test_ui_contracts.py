@@ -78,7 +78,7 @@ class UiContractTests(unittest.TestCase):
 
         from extensions.telemetry_display.fields import clock_field_key
         from extensions.telemetry_display.ui.settings import TelemetrySettingsPage
-        from src.extension.api import ClockReferenceRegistry
+        from src.extension.api import ClockReferenceRegistry, ClockSample
         from src.services.settings import SettingsService
 
         now = {
@@ -88,13 +88,20 @@ class UiContractTests(unittest.TestCase):
         }
         clocks = ClockReferenceRegistry()
         local_id = clocks.register(
-            "system", "local", "Local system time", lambda: now["local"]
+            "system",
+            "local",
+            "Local system time",
+            lambda: ClockSample(now["local"], datetime.now(UTC)),
         )
         competition_id = clocks.register(
             "competition",
             "server",
             "Competition server time",
-            lambda: now["competition"],
+            lambda: (
+                ClockSample(now["competition"], datetime.now(UTC))
+                if now["competition"] is not None
+                else None
+            ),
         )
         local_key = clock_field_key(local_id)
         competition_key = clock_field_key(competition_id)
@@ -124,7 +131,12 @@ class UiContractTests(unittest.TestCase):
                 )
 
                 later_id = clocks.register(
-                    "later_source", "server", "Later server time", lambda: now["later"]
+                    "later_source",
+                    "server",
+                    "Later server time",
+                    lambda: ClockSample(
+                        now["later"], datetime.now(UTC), estimated=True
+                    ),
                 )
                 later_key = clock_field_key(later_id)
                 page.show()
@@ -151,11 +163,17 @@ class UiContractTests(unittest.TestCase):
 
                 panel = TelemetryPanel("", "", DARK, clock_references=clocks)
                 panel.configure_layout(
-                    {"fields": [local_key, competition_key], "layout": "list"}
+                    {
+                        "fields": [local_key, competition_key, later_key],
+                        "layout": "list",
+                    }
                 )
                 panel.update_snapshot(TelemetrySnapshot.zero())
                 self.assertEqual(panel.readouts[local_key].text(), "12:34:56")
                 self.assertEqual(panel.readouts[competition_key].text(), "--")
+                self.assertEqual(panel.readouts[later_key].text(), "~12:36:00")
+                self.assertIn("tahmin", panel.readouts[later_key].toolTip().lower())
+                self.assertIn("Örnek yaşı", panel.readouts[later_key].toolTip())
                 now["competition"] = datetime(2026, 10, 23, 12, 35, 1, tzinfo=UTC)
                 panel._update_clock_values()
                 self.assertEqual(panel.readouts[competition_key].text(), "12:35:01")
