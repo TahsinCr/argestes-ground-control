@@ -170,7 +170,7 @@ class ClockReferenceTests(unittest.TestCase):
     def test_competition_profiles_register_stable_clock_references(self) -> None:
         registry = ClockReferenceRegistry()
         runtime = object.__new__(CompetitionRuntime)
-        runtime.clock_references = registry
+        runtime.clock_references = registry._scope("siha_teknofest_server")
         runtime._clock_reference_ids = set()
         sample_time = datetime(2026, 10, 23, tzinfo=UTC)
         sample = SimpleNamespace(

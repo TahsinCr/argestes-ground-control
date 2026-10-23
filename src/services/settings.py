@@ -28,6 +28,7 @@ class SettingsService(SettingsRepository):
         self._lock = threading.RLock()
         self._extension_projections = {}
         self._extension_restorers = {}
+        self._extension_schemas = {}
         self._legacy_backend = {}
         self._preservation_failed = False
         self._settings = self._load()
@@ -135,6 +136,7 @@ class SettingsService(SettingsRepository):
             entry = settings.extensions.setdefault(identifier, {})
             if "config" in changes:
                 entry.setdefault("config", {}).update(deepcopy(changes["config"]))
+                self.validate_extension_config(identifier, entry["config"])
             if "enabled" in changes:
                 entry["enabled"] = changes["enabled"]
             restore = self._extension_restorers.get(identifier)
@@ -144,6 +146,19 @@ class SettingsService(SettingsRepository):
 
         self.update(mutate, notify=False)
         self.extensions_changed.publish(identifier)
+
+    def register_extension_schema(self, identifier: str, schema: dict) -> None:
+        """Install a package's schema without starting its runtime or UI."""
+        with self._lock:
+            self._extension_schemas[identifier] = deepcopy(schema)
+
+    def validate_extension_config(self, identifier: str, config: dict) -> None:
+        from src.extension.api.settings import validate_settings
+        validate_settings(config, self._extension_schemas.get(identifier, {}), identifier)
+
+    def extension_setting_keys(self, identifier: str) -> frozenset[str]:
+        with self._lock:
+            return frozenset(self._extension_schemas.get(identifier, {}).get("properties", {}))
 
     @property
     def changed(self) -> EventBus[SettingsModel]:
@@ -292,6 +307,11 @@ class SettingsService(SettingsRepository):
             snapshot.extensions.setdefault(identifier, {}).setdefault(
                 "config", {}
             ).update(project(snapshot))
+        for identifier, entry in snapshot.extensions.items():
+            config = entry.get("config", {})
+            old = self._settings.extensions.get(identifier, {}).get("config", {})
+            if config != old:
+                self.validate_extension_config(identifier, config)
         previous = (
             SettingsModel.from_dict(self._settings.to_dict())
             if hasattr(self, "_settings")

@@ -1,0 +1,72 @@
+{
+  "type": "object",
+  "properties": {
+    "mavlink": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        },
+        "baud": {
+          "type": "integer"
+        },
+        "heartbeat_timeout": {
+          "type": "integer"
+        },
+        "auto_connect": {
+          "type": "boolean"
+        },
+        "dialect": {
+          "type": "string"
+        },
+        "source_system": {
+          "type": "integer"
+        },
+        "source_component": {
+          "type": "integer"
+        },
+        "autoreconnect": {
+          "type": "boolean"
+        },
+        "operation_timeout": {
+          "type": "integer"
+        },
+        "sync_parameters_on_connect": {
+          "type": "boolean"
+        },
+        "sync_mission_on_connect": {
+          "type": "boolean"
+        }
+      }
+    },
+    "mavlink_connections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "identifier": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "baud": {
+            "type": "integer"
+          },
+          "heartbeat_timeout": {
+            "type": "integer"
+          },
+          "auto_connect": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "active_mavlink_connection_id": {
+      "type": "string"
+    }
+  }
+}

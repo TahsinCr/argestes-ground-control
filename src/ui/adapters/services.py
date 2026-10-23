@@ -25,6 +25,7 @@ class _QtAdapter(QObject):
     # Bound work performed by a single queued callback so a burst of logs or
     # service events cannot monopolize the GUI event loop for a whole frame.
     _MAX_DISPATCH_BATCH = 32
+    _MAX_DISPATCH_SECONDS = 0.004
     _dispatch_requested = pyqtSignal()
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -73,6 +74,7 @@ class _QtAdapter(QObject):
             if self._closed:
                 self._dispatch_scheduled = False
                 return
+        deadline = time.monotonic() + self._MAX_DISPATCH_SECONDS
         for _index in range(self._MAX_DISPATCH_BATCH):
             try:
                 callback, args = self._pending_events.get_nowait()
@@ -85,6 +87,8 @@ class _QtAdapter(QObject):
                 # abort the process when that happens, especially while the
                 # widget tree is being destroyed.
                 traceback.print_exc()
+            if time.monotonic() >= deadline:
+                break
         schedule_next = False
         with self._dispatch_lock:
             if self._closed:

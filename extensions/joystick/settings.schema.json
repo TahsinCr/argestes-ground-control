@@ -1,0 +1,79 @@
+{
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "type": "boolean"
+    },
+    "device_path": {
+      "type": "string"
+    },
+    "send_rate_hz": {
+      "type": "integer"
+    },
+    "channels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "integer"
+          },
+          "control": {
+            "type": "string"
+          },
+          "pwm_min": {
+            "type": "integer"
+          },
+          "pwm_trim": {
+            "type": "integer"
+          },
+          "pwm_max": {
+            "type": "integer"
+          },
+          "deadzone": {
+            "type": "number"
+          },
+          "expo": {
+            "type": "integer"
+          },
+          "reversed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "channel"
+        ]
+      }
+    },
+    "buttons": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "button": {
+            "type": "integer"
+          },
+          "action": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "servo": {
+            "type": "integer"
+          },
+          "pwm": {
+            "type": "integer"
+          },
+          "slot": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "button"
+        ]
+      }
+    }
+  },
+  "required": []
+}

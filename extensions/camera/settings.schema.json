@@ -1,0 +1,93 @@
+{
+  "type": "object",
+  "properties": {
+    "video_sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "source_type": {
+            "type": "string"
+          },
+          "source_uri": {
+            "type": "string"
+          },
+          "codec": {
+            "type": "string"
+          },
+          "latency_ms": {
+            "type": "integer"
+          },
+          "frame_timeout_s": {
+            "type": "number"
+          },
+          "auto_connect": {
+            "type": "boolean"
+          },
+          "identifier": {
+            "type": "string"
+          }
+        },
+        "required": []
+      }
+    },
+    "video_shares": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "identifier": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "connection_type": {
+            "type": "string"
+          },
+          "codec": {
+            "type": "string"
+          },
+          "fps": {
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "timestamp_enabled": {
+            "type": "boolean"
+          },
+          "fixed_frame_rate": {
+            "type": "boolean"
+          },
+          "network_interface": {
+            "type": "string"
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "output_type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "identifier",
+          "name",
+          "endpoint"
+        ]
+      }
+    },
+    "active_video_source_id": {
+      "type": "string"
+    },
+    "clock_reference_id": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "type": "object",
+  "properties": {
+    "cache": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "limit_mb": {
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        }
+      }
+    },
+    "map_layer": {
+      "type": "string",
+      "enum": [
+        "vector",
+        "satellite"
+      ]
+    },
+    "map_center_min_zoom": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "vehicle_trail_limit": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "contact_trail_limit": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

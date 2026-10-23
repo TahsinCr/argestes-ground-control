@@ -298,8 +298,7 @@ class CompetitionRuntime:
         identifiers = set()
         for profile_id, session in self.sessions.items():
             stable_key = hashlib.sha256(profile_id.encode("utf-8")).hexdigest()
-            identifier = registry.register(
-                "siha_teknofest_server",
+            identifier = registry.publish(
                 f"server.{stable_key}.utc",
                 str(session.config.get("name") or profile_id),
                 lambda current=session: self._server_clock_sample(current),

@@ -24,8 +24,10 @@ from .contracts import (
 from .vehicle import MissionControl, RcControl
 from .telemetry import TelemetryPipeline
 from .parameters import ParameterService
+from .settings import validate_settings
 
 __all__ = [
+    "validate_settings",
     "API_MAJOR",
     "ClockQuality",
     "ClockReference",

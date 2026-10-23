@@ -7,6 +7,12 @@ Release headings link each entry to its release date.
 
 ### Added
 
+* Added package-owned recursive settings schemas, checked before persistence
+  through both extension pages and shared settings writers. Camera, joystick,
+  server, battery, MAVLink, map and telemetry configurations now describe their
+  nested value types without changing their saved layout or specialized UI.
+* Added `tools/qt_queue_probe.py` to measure EventBus-to-Qt delivery, callback
+  duration, sampled queue depth and event-loop delay with configurable workloads.
 * Extended the isolated map WebEngine smoke test to rebuild the view twice and
   verify that Leaflet and WebChannel initialize after each recreation.
 * Registered Extension API clock sources can now be selected alongside vehicle
@@ -29,6 +35,13 @@ Release headings link each entry to its release date.
 
 ### Changed
 
+* Extension clock publishing now uses a host-bound owner context. Extensions
+  publish a local key through `publish()`; cross-owner updates and removals are
+  rejected by the API itself without a protocol adapter.
+* Qt event draining now yields after a four-millisecond callback budget as well
+  as the existing batch limit. Synthetic slow-callback measurements showed
+  prolonged event-loop stalls with count-only batching; delivery order and all
+  queued events are preserved.
 * Organized camera settings into separate **Camera**, **Streaming**, and
   **Recording** tabs. Each output tab now shows and edits only its own target
   type, while the existing quick-access output popup remains available.

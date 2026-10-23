@@ -1,0 +1,55 @@
+{
+  "type": "object",
+  "properties": {
+    "battery_alarm": {
+      "type": "object",
+      "properties": {
+        "warning_mode": {
+          "type": "string"
+        },
+        "warning_threshold": {
+          "type": "number"
+        },
+        "failsafe_enabled": {
+          "type": "boolean"
+        },
+        "failsafe_mode": {
+          "type": "string"
+        },
+        "failsafe_threshold": {
+          "type": "number"
+        }
+      }
+    },
+    "battery_telemetry": {
+      "type": "object",
+      "properties": {
+        "use_pixhawk_percent": {},
+        "mode": {
+          "type": "string"
+        },
+        "cell_count": {
+          "type": "integer"
+        },
+        "full_voltage": {
+          "type": "number"
+        },
+        "reserve_voltage": {
+          "type": "number"
+        },
+        "reserve_percent": {
+          "type": "number"
+        },
+        "median_window": {
+          "type": "integer"
+        },
+        "discharge_filter_seconds": {
+          "type": "number"
+        },
+        "recovery_filter_seconds": {
+          "type": "number"
+        }
+      }
+    }
+  }
+}

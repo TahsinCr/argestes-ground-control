@@ -384,7 +384,7 @@ class ExtensionTests(unittest.TestCase):
                 self.assertEqual(
                     settings.extension_config("camera")["retained_option"], "after"
                 )
-                with self.assertRaisesRegex(ValueError, "saved JSON value type"):
+                with self.assertRaisesRegex(ValueError, "video_sources: expected array"):
                     host.save_settings("camera", {"video_sources": {"front": "bad"}})
                 self.assertEqual(
                     settings.extension_config("camera")["video_sources"],

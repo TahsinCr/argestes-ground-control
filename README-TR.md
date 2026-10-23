@@ -252,6 +252,25 @@ ayrı tanımlar. Parametreler şu anda `mavlink.parameters`, Harita ve Otonomi i
 
 ## Eklenti geliştirme
 
+### Ayar doğrulaması ve saatler
+
+Eklenti, manifestinin yanında `settings.schema.json` sağlayabilir. Ortak ayar
+servisi, özel ayar sayfaları ve model projeksiyonları dahil yazma yollarında iç
+değerleri kaydetmeden doğrular. Desteklenen alanlar `type`, `properties`, `items`,
+`required`, `enum`, `minimum`, `maximum` ve `additionalProperties` şeklindedir.
+Bu sınırlı bildirimsel şema, tam JSON Schema uygulaması değildir. Paket açıkça
+reddetmedikçe bilinmeyen yapılandırma anahtarları korunur. Alanlar arası kurallar
+ve protokol anlamı, eklentinin model ve özel düzenleyicilerinde kalır; mevcut
+profil biçimini veya ayar ekranını değiştirmek gerekmez.
+
+Saat yayımlamak için `context.clock_references.publish(key, title, provider)`
+kullanın. Sahibi host belirler; yerel anahtar `<eklenti>.<anahtar>` biçiminde
+kararlı kimlik üretir. Aynı API bütün kaynakları okuyabilir, ancak yalnız kendi
+sahibinin kaynaklarını değiştirebilir veya kaldırabilir. Python'un özel
+üyelerine erişim bir güvenlik sandbox'ı oluşturmaz.
+
+[Kuyruk ölçüm aracı](tools/README.md), Qt teslim gecikmesini tekrar ölçmeyi sağlar.
+
 ### Paket ve manifest
 
 `extensions/<kimlik>/` altında `__init__.py` içeren, içe aktarılabilir bir

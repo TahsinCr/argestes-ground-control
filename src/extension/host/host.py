@@ -100,6 +100,8 @@ class ExtensionHost:
         self._manifests = self._discover(
             Path(__file__).resolve().parents[3] / "extensions"
         )
+        for identifier, schema in self._settings_schemas(self._manifests).items():
+            self._settings_service.register_extension_schema(identifier, schema)
         for key, value in self._stored.items():
             if key in self._manifests and not isinstance(value, bool):
                 raise ExtensionError(f"Invalid enabled state for {key}")
@@ -273,9 +275,22 @@ class ExtensionHost:
             for key, manifest in sorted(self._manifests.items())
         ]
 
+    @staticmethod
+    def _settings_schemas(manifests):
+        root = Path(__file__).resolve().parents[3] / "extensions"
+        schemas = {}
+        for identifier, manifest in manifests.items():
+            path = root / identifier / "settings.schema.json"
+            schemas[identifier] = (
+                json.loads(path.read_text(encoding="utf-8")) if path.exists()
+                else {"type": "object", "properties": manifest.settings}
+            )
+        return schemas
+
     def refresh_extensions(self) -> None:
         """Refresh installed packages and safely unload packages removed on disk."""
         found = self._discover(Path(__file__).resolve().parents[3] / "extensions")
+        schemas = self._settings_schemas(found)
         previous_manifests = self._manifests
         persisted_ids = set(self._settings_service.current.extensions)
         missing = (set(previous_manifests) | persisted_ids) - set(found)
@@ -330,6 +345,8 @@ class ExtensionHost:
 
         self._stored = updated
         self._manifests = found
+        for identifier, schema in schemas.items():
+            self._settings_service.register_extension_schema(identifier, schema)
         for identifier in missing | to_unload:
             self._dirty_settings.discard(identifier)
             self._reload_baselines.pop(identifier, None)
@@ -412,27 +429,19 @@ class ExtensionHost:
     def save_settings(self, identifier: str, values: dict[str, Any]) -> None:
         manifest = self._manifests[identifier]
         existing = self.settings(identifier)
-        writable = set(manifest.settings) | set(existing)
+        declared = self._settings_service.extension_setting_keys(identifier)
+        writable = set(manifest.settings) | set(existing) | declared
         if set(values) - writable:
             raise ValueError("Unknown extension setting")
+        from src.extension.api.settings import validate_settings
+        validate_settings(values, {"type": "object", "properties": manifest.settings}, identifier)
         for key, value in values.items():
-            spec = manifest.settings.get(key)
-            if spec is None:
+            if key not in declared and key not in manifest.settings:
                 previous = existing.get(key)
                 if previous is not None and type(value) is not type(previous):
                     raise ValueError(
                         f"{key} must preserve its saved JSON value type"
                     )
-                continue
-            kind = spec.get("type")
-            if kind == "boolean" and not isinstance(value, bool):
-                raise ValueError(f"{key} must be boolean")
-            if kind == "string" and not isinstance(value, str):
-                raise ValueError(f"{key} must be string")
-            if kind == "integer" and (
-                not isinstance(value, int) or isinstance(value, bool)
-            ):
-                raise ValueError(f"{key} must be integer")
         if identifier in self._active_ids:
             self._reload_baselines.setdefault(identifier, existing)
         self._settings_service.update_extension(
@@ -446,6 +455,7 @@ class ExtensionHost:
 
     def _load_one(self, identifier: str) -> None:
         manifest = self._manifests[identifier]
+        self._settings_service.validate_extension_config(identifier, self.settings(identifier))
         module_name, separator, factory_name = manifest.entry_point.partition(":")
         if not separator or not module_name.startswith(f"extensions.{identifier}."):
             raise ExtensionError(f"Invalid entry point: {manifest.entry_point}")
@@ -455,7 +465,7 @@ class ExtensionHost:
             self.base_dir,
             self.settings(identifier),
             ExtensionServices(self.container, identifier),
-            getattr(self, "clock_references", None),
+            self.clock_references._scope(identifier),
         )
         try:
             plugin.configure(registrar, context)

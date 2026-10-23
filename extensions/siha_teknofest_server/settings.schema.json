@@ -1,0 +1,38 @@
+{
+  "type": "object",
+  "properties": {
+    "servers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "identifier": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "team_number": {
+            "type": "integer"
+          },
+          "timeout_s": {
+            "type": "number"
+          },
+          "auto_connect": {
+            "type": "boolean"
+          }
+        },
+        "required": []
+      }
+    }
+  }
+}

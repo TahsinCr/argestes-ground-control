@@ -244,6 +244,25 @@ its web assets and cache lifecycle.
 
 ## Extension development
 
+### Configuration validation and clocks
+
+An extension may ship `settings.schema.json` beside its manifest. The shared
+settings service validates nested values before saving, including writes from
+custom settings pages and legacy model projections. The supported vocabulary
+is `type`, `properties`, `items`, `required`, `enum`, `minimum`, `maximum`, and
+`additionalProperties`. This is a deliberately limited declarative schema,
+not a full JSON Schema implementation. Unknown configuration keys remain
+preserved unless the package explicitly rejects them. Specialized editors and
+model validation retain responsibility for cross-field rules and protocol
+semantics. Existing profile formats and settings pages do not need to change.
+
+Use `context.clock_references.publish(key, title, provider)` to publish clocks.
+The host binds the owner; a local key produces a stable `<extension>.<key>` ID.
+The same API instance can read all available sources, but can modify or remove
+only its owner's sources. Private Python members are not a sandbox boundary.
+
+The [queue probe](tools/README.md) provides reproducible Qt delivery measurements.
+
 ### Package and manifest
 
 Create an importable package under `extensions/<identifier>/`, with an

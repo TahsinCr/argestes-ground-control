@@ -74,8 +74,18 @@ class ClockReferenceRegistry:
     _KEY = re.compile(r"[a-z][a-z0-9_.-]{0,127}\Z")
 
     def __init__(self) -> None:
+        self._owner: str | None = None
         self._lock = threading.RLock()
         self._sources: dict[str, tuple[ClockReference, ClockProvider]] = {}
+
+    def _scope(self, owner: str) -> ClockReferenceRegistry:
+        if self._owner is not None:
+            raise ValueError("A clock context cannot change owner")
+        scoped = ClockReferenceRegistry()
+        scoped._owner = owner
+        scoped._lock = self._lock
+        scoped._sources = self._sources
+        return scoped
 
     def register(
         self,
@@ -87,6 +97,8 @@ class ClockReferenceRegistry:
         stale_after_seconds: float | None = None,
     ) -> str:
         owner = str(extension_id).strip().lower()
+        if self._owner is not None and owner != self._owner:
+            raise ValueError("Clock source belongs to another extension")
         if owner == "system":
             raise ValueError("The system clock owner is reserved for the host")
         return self._register(
@@ -97,6 +109,14 @@ class ClockReferenceRegistry:
             stale_after_seconds=stale_after_seconds,
         )
 
+    def publish(self, key: str, title: str, provider: ClockProvider, *,
+                stale_after_seconds: float | None = None) -> str:
+        """Publish a source owned by the extension context supplied by the host."""
+        if self._owner is None:
+            raise ValueError("Publishing requires an extension context")
+        return self.register(self._owner, key, title, provider,
+                             stale_after_seconds=stale_after_seconds)
+
     def _register_system(
         self,
         key: str,
@@ -106,6 +126,8 @@ class ClockReferenceRegistry:
         stale_after_seconds: float | None = None,
     ) -> str:
         """Register a host-owned source in the reserved ``system`` namespace."""
+        if self._owner is not None:
+            raise ValueError("System clocks require the host context")
         return self._register(
             "system",
             key,
@@ -150,6 +172,8 @@ class ClockReferenceRegistry:
         return identifier
 
     def unregister(self, identifier: str) -> bool:
+        if self._owner is not None and not str(identifier).startswith(self._owner + "."):
+            raise ValueError("Clock source belongs to another extension")
         if str(identifier).strip().lower().startswith("system."):
             raise ValueError("System clock references are owned by the host")
         with self._lock:
@@ -157,6 +181,8 @@ class ClockReferenceRegistry:
 
     def unregister_owner(self, extension_id: str) -> None:
         owner = str(extension_id).strip().lower()
+        if self._owner is not None and owner != self._owner:
+            raise ValueError("Clock source belongs to another extension")
         if owner == "system":
             raise ValueError("System clock references are owned by the host")
         prefix = owner + "."
