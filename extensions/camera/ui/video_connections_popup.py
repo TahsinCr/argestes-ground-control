@@ -271,9 +271,6 @@ class VideoConnectionsPopup(QDialog):
                     latency_ms=latency.value(),
                     frame_timeout_s=timeout.value(),
                     auto_connect=auto.isChecked(),
-                    aim_enabled=current.aim_enabled if current else False,
-                    aim_x=current.aim_x if current else 0.5,
-                    aim_y=current.aim_y if current else 0.5,
                 )
             except ValueError:
                 return

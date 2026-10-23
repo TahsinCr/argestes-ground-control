@@ -54,7 +54,12 @@ class VideoSharePopup(QDialog):
         language: str = "tr",
         clock_references: ClockReferenceRegistry | None = None,
         show_clock_selector: bool = False,
+        output_type_filter: str | None = None,
     ) -> None:
+        if output_type_filter not in {None, "stream", "record"}:
+            raise ValueError(
+                f"Unsupported video output settings section: {output_type_filter}"
+            )
         super().__init__(
             parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
         )
@@ -66,6 +71,7 @@ class VideoSharePopup(QDialog):
         self._clock_references = clock_references
         self._clock_reference_id = "system.local"
         self._show_clock_selector = bool(show_clock_selector)
+        self._output_type_filter = output_type_filter
         self._shares: list[VideoShareConfig] = []
         self._states: dict[str, VideoShareState] = {}
         self._network_interfaces: tuple[tuple[str, str], ...] = ()
@@ -79,6 +85,11 @@ class VideoSharePopup(QDialog):
         self._render_timer.timeout.connect(self._render)
         self._build_ui()
         self.set_theme(theme)
+
+    def _localized(self, key: str) -> str:
+        if self._output_type_filter is not None:
+            key = f"{key}.{self._output_type_filter}"
+        return t(key, self._language)
 
     def set_clock_reference(self, identifier: str) -> None:
         self._clock_reference_id = str(identifier or "system.local")
@@ -99,9 +110,11 @@ class VideoSharePopup(QDialog):
     def set_language(self, language: str) -> None:
         self._language = language
         self.back_button.setText(t("common.action.back", language))
-        self.detail_label.setText(t("video.output.description", language))
-        self.add_button.setText(t("video.output.add", language))
+        self.title_label.setText(self._localized("video.output.title"))
+        self.detail_label.setText(self._localized("video.output.description"))
+        self.add_button.setText(self._localized("video.output.add"))
         self.clock_label.setText(t("video.clock.label", language))
+        self.clock_label.setToolTip(t("video.clock.scope", language))
         self._render()
 
     def show_shares(
@@ -156,15 +169,17 @@ class VideoSharePopup(QDialog):
         root.setContentsMargins(12, 10, 12, 12)
         root.setSpacing(8)
         header = QHBoxLayout()
-        title = QLabel("VIDEO SHARE", self)
-        title.setProperty("role", "title")
-        header.addWidget(title)
+        self.title_label = QLabel(self._localized("video.output.title"), self)
+        self.title_label.setProperty("role", "title")
+        header.addWidget(self.title_label)
         header.addStretch(1)
         self.back_button = QPushButton(t("common.action.back", self._language), self)
         self.back_button.clicked.connect(self._go_back)
         header.addWidget(self.back_button)
         root.addLayout(header)
-        self.detail_label = QLabel(t("video.output.description", self._language), self)
+        self.detail_label = QLabel(
+            self._localized("video.output.description"), self
+        )
         self.detail_label.setWordWrap(True)
         self.detail_label.setProperty("role", "detail")
         root.addWidget(self.detail_label)
@@ -192,6 +207,8 @@ class VideoSharePopup(QDialog):
         self.clock_label.setProperty("role", "detail")
         self.clock_combo = QComboBox(self)
         self.clock_combo.activated.connect(self._clock_reference_selected)
+        self.clock_label.setToolTip(t("video.clock.scope", self._language))
+        self.clock_combo.setToolTip(t("video.clock.scope", self._language))
         self.clock_row.addWidget(self.clock_label)
         self.clock_row.addWidget(self.clock_combo, 1)
         root.addLayout(self.clock_row)
@@ -199,7 +216,7 @@ class VideoSharePopup(QDialog):
         self.clock_combo.setVisible(self._show_clock_selector)
         if self._show_clock_selector:
             self._refresh_clock_references()
-        self.add_button = QPushButton(t("video.output.add", self._language), self)
+        self.add_button = QPushButton(self._localized("video.output.add"), self)
         self.add_button.setProperty("role", "primary")
         self.add_button.clicked.connect(lambda: self._edit_share(None))
         root.addWidget(self.add_button)
@@ -285,15 +302,22 @@ class VideoSharePopup(QDialog):
         self._editing = False
         self.back_button.show()
         self.add_button.show()
-        self.interface_label.show()
-        self.interface_combo.show()
+        show_interface = self._output_type_filter != "record"
+        self.interface_label.setVisible(show_interface)
+        self.interface_combo.setVisible(show_interface)
         self._render_interface_selector()
         self._clear_list()
-        if not self._shares:
-            empty = QLabel("Henüz yayın hedefi eklenmedi.", self.list_host)
+        shares = [
+            share
+            for share in self._shares
+            if self._output_type_filter is None
+            or share.output_type == self._output_type_filter
+        ]
+        if not shares:
+            empty = QLabel(self._localized("video.output.empty"), self.list_host)
             empty.setProperty("role", "detail")
             self.list_layout.addWidget(empty)
-        for share in self._shares:
+        for share in shares:
             state = self._states.get(
                 share.identifier,
                 VideoShareState(
@@ -313,7 +337,7 @@ class VideoSharePopup(QDialog):
             name.setStyleSheet("font-weight: 700;")
             row.addWidget(dot)
             row.addWidget(name, 1)
-            edit = QPushButton("Düzenle", card)
+            edit = QPushButton(t("video.output.action.edit", self._language), card)
             edit.setProperty("compact", "true")
             edit.clicked.connect(
                 lambda _checked=False, item=share: self._edit_share(item)
@@ -357,7 +381,12 @@ class VideoSharePopup(QDialog):
                     else t("video.record.disabled", self._language)
                 )
                 if share.output_type == "record"
-                else ("YAYIN AÇIK" if share.enabled else "YAYIN KAPALI"),
+                else t(
+                    "video.stream.enabled"
+                    if share.enabled
+                    else "video.stream.disabled",
+                    self._language,
+                ),
                 card,
             )
             enabled.setCheckable(True)
@@ -424,8 +453,9 @@ class VideoSharePopup(QDialog):
         self._editing = True
         self.back_button.hide()
         self.add_button.hide()
-        self.interface_label.hide()
-        self.interface_combo.hide()
+        show_interface = self._output_type_filter != "record"
+        self.interface_label.setVisible(show_interface)
+        self.interface_combo.setVisible(show_interface)
         self._clear_list()
         editor = QFrame(self.list_host)
         editor.setProperty("role", "share-card")
@@ -433,7 +463,10 @@ class VideoSharePopup(QDialog):
         root.setContentsMargins(9, 8, 9, 8)
         root.setSpacing(6)
         title = QLabel(
-            "VİDEO ÇIKIŞINI DÜZENLE" if current else "YENİ VİDEO ÇIKIŞI", editor
+            self._localized("video.output.edit")
+            if current
+            else self._localized("video.output.new"),
+            editor,
         )
         title.setProperty("role", "title")
         root.addWidget(title)
@@ -441,9 +474,10 @@ class VideoSharePopup(QDialog):
         output_type = QComboBox(editor)
         output_type.addItem(t("video.output.kind.stream", self._language), "stream")
         output_type.addItem(t("video.output.kind.record", self._language), "record")
-        output_type.setCurrentIndex(
-            max(0, output_type.findData(current.output_type if current else "stream"))
+        selected_type = self._output_type_filter or (
+            current.output_type if current else "stream"
         )
+        output_type.setCurrentIndex(max(0, output_type.findData(selected_type)))
         name = QLineEdit(current.name if current else "", editor)
         endpoint = QLineEdit(current.endpoint if current else "", editor)
         connection_type = QComboBox(editor)
@@ -472,17 +506,20 @@ class VideoSharePopup(QDialog):
                 selected_source,
             )
         source.setCurrentIndex(max(0, source.findData(selected_source)))
-        form.addRow("Tür", output_type)
-        form.addRow("Ad", name)
-        form.addRow("Bağlantı", endpoint)
-        form.addRow("Bağlantı tipi", connection_type)
-        form.addRow("Codec", codec)
-        form.addRow("FPS", fps)
-        form.addRow(t("video.share.source.label", self._language), source)
+        if self._output_type_filter is None:
+            form.addRow(t("video.output.field.type", self._language), output_type)
+        form.addRow(t("video.output.field.name", self._language), name)
+        form.addRow(t("video.output.field.endpoint", self._language), endpoint)
+        form.addRow(
+            t("video.output.field.connection_type", self._language), connection_type
+        )
+        form.addRow(t("video.output.field.codec", self._language), codec)
+        form.addRow(t("video.output.field.fps", self._language), fps)
+        form.addRow(t("video.output.field.source", self._language), source)
         root.addLayout(form)
-        timestamp = QCheckBox("Sağ üstte milisaniyeli zaman damgası", editor)
+        timestamp = QCheckBox(t("video.output.timestamp", self._language), editor)
         timestamp.setChecked(current.timestamp_enabled if current else True)
-        fixed_fps = QCheckBox("Sabit frame rate", editor)
+        fixed_fps = QCheckBox(t("video.output.fixed_fps", self._language), editor)
         fixed_fps.setChecked(current.fixed_frame_rate if current else True)
         root.addWidget(timestamp)
         root.addWidget(fixed_fps)
@@ -494,22 +531,35 @@ class VideoSharePopup(QDialog):
                 timestamp.setChecked(False)
             previous_output_type[0] = str(output_type.currentData())
             connection_type.setEnabled(not recording)
+            connection_type.setVisible(not recording)
+            connection_label = form.labelForField(connection_type)
+            if connection_label is not None:
+                connection_label.setVisible(not recording)
             self.interface_combo.setEnabled(not recording)
             fps.setValue(30 if recording else fps.value())
             fps.setEnabled(not recording)
             fixed_fps.setChecked(True if recording else fixed_fps.isChecked())
-            fixed_fps.setEnabled(not recording)
+            fixed_fps.setVisible(not recording)
             endpoint.setPlaceholderText("data/recordings" if recording else "host:port")
             endpoint_label = form.labelForField(endpoint)
             if endpoint_label is not None:
-                endpoint_label.setText("Kayıt klasörü" if recording else "Bağlantı")
+                endpoint_label.setText(
+                    t(
+                        "video.output.field.recording_path"
+                        if recording
+                        else "video.output.field.stream_address",
+                        self._language,
+                    )
+                )
             if recording and source.currentData() == "panel" and source.count() > 1:
                 source.setCurrentIndex(1)
 
         output_type.currentIndexChanged.connect(sync_output_type)
         sync_output_type()
+        if self._output_type_filter is not None:
+            output_type.hide()
         note = QLabel(
-            "Kamera kaynağı, en az 640×480 ve 15 FPS gerekir. Yayın çözünürlüğü Video Link'ten aynen alınır.",
+            self._localized("video.output.note"),
             editor,
         )
         note.setWordWrap(True)
@@ -522,7 +572,7 @@ class VideoSharePopup(QDialog):
         buttons = QHBoxLayout()
         cancel = QPushButton(t("common.action.back", self._language), editor)
         cancel.clicked.connect(self._render)
-        save = QPushButton("Kaydet", editor)
+        save = QPushButton(t("video.output.action.save", self._language), editor)
         save.setProperty("role", "primary")
 
         def commit() -> None:
@@ -560,7 +610,9 @@ class VideoSharePopup(QDialog):
         buttons.addWidget(cancel)
         buttons.addStretch(1)
         if current is not None:
-            delete = QPushButton("Sil", editor)
+            delete = QPushButton(
+                t("video.output.action.delete", self._language), editor
+            )
             delete.setProperty("role", "danger")
             delete.clicked.connect(lambda: self._delete_share(current.identifier))
             buttons.addWidget(delete)

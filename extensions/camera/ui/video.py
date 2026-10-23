@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import replace
-
 from PyQt6.QtCore import QEvent, QRect, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PyQt6.QtGui import QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -27,7 +25,6 @@ class VideoViewport(QWidget):
     view_mode_changed = pyqtSignal(str)
     reconnect_requested = pyqtSignal()
     recording_requested = pyqtSignal(bool)
-    aim_changed = pyqtSignal(bool, float, float)
     source_menu_requested = pyqtSignal(object)
     clicked = pyqtSignal()
 
@@ -50,12 +47,6 @@ class VideoViewport(QWidget):
         self._compact_overlays = False
         self._current_stats = VideoStreamStats()
         self._source_name = ""
-        self._aim_enabled = False
-        self._aim_selecting = False
-        self._aim_x = 0.5
-        self._aim_y = 0.5
-        self._aim_hover: tuple[float, float] | None = None
-        self.setMouseTracking(True)
         self.setMinimumHeight(180 if controls else 120)
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -123,10 +114,6 @@ class VideoViewport(QWidget):
         self.recording_button.setCheckable(True)
         self.recording_button.clicked.connect(self._request_recording_toggle)
         recording_layout.addWidget(self.recording_button)
-        self.aim_button = self._action_button("⌖", "aim")
-        self.aim_button.setCheckable(True)
-        self.aim_button.clicked.connect(self._request_aim_toggle)
-        recording_layout.addWidget(self.aim_button)
         self._recording_enabled: bool | None = None
 
         if not controls:
@@ -250,7 +237,6 @@ class VideoViewport(QWidget):
         self.stretch_button.setAccessibleName(t("video.view.stretch", language))
         self.reconnect_button.setToolTip(t("video.reconnect", language))
         self.reconnect_button.setAccessibleName(t("video.reconnect", language))
-        self._sync_aim_button()
         self._sync_recording_button()
         self._render_stats()
 
@@ -292,36 +278,6 @@ class VideoViewport(QWidget):
         text = t(key, self._language)
         self.recording_button.setToolTip(text)
         self.recording_button.setAccessibleName(text)
-
-    def set_aim(self, enabled: bool, x: float = 0.5, y: float = 0.5) -> None:
-        self._aim_enabled = bool(enabled)
-        self._aim_x = min(1.0, max(0.0, float(x)))
-        self._aim_y = min(1.0, max(0.0, float(y)))
-        self._aim_selecting = False
-        self._aim_hover = None
-        self.unsetCursor()
-        self._sync_aim_button()
-        self.update()
-
-    def _request_aim_toggle(self) -> None:
-        if self._aim_enabled:
-            self._aim_enabled = False
-            self._aim_selecting = False
-            self._aim_hover = None
-            self.unsetCursor()
-            self.aim_changed.emit(False, self._aim_x, self._aim_y)
-        else:
-            self._aim_selecting = True
-            self.setCursor(Qt.CursorShape.BlankCursor)
-        self._sync_aim_button()
-        self.update()
-
-    def _sync_aim_button(self) -> None:
-        self.aim_button.setChecked(self._aim_enabled or self._aim_selecting)
-        key = "video.aim.disable" if self._aim_enabled else "video.aim.select"
-        text = t(key, self._language)
-        self.aim_button.setToolTip(text)
-        self.aim_button.setAccessibleName(text)
 
     def set_stats(self, stats: VideoStreamStats) -> None:
         self._current_stats = stats
@@ -418,54 +374,8 @@ class VideoViewport(QWidget):
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            if self._aim_selecting and self._capture_aim(
-                event.position().x(), event.position().y()
-            ):
-                event.accept()
-                return
             self.clicked.emit()
         super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event) -> None:
-        if self._aim_selecting:
-            self._aim_hover = self._normalized_aim(
-                event.position().x(), event.position().y()
-            )
-            self.update()
-        super().mouseMoveEvent(event)
-
-    def leaveEvent(self, event) -> None:
-        if self._aim_hover is not None:
-            self._aim_hover = None
-            self.update()
-        super().leaveEvent(event)
-
-    def _visible_frame_geometry(self) -> QRect:
-        return self.frame_geometry().intersected(self.rect())
-
-    def _normalized_aim(self, x: float, y: float) -> tuple[float, float] | None:
-        visible = self._visible_frame_geometry()
-        geometry = self.frame_geometry()
-        if visible.isEmpty() or not visible.contains(int(x), int(y)):
-            return None
-        return (
-            min(1.0, max(0.0, (x - geometry.left()) / max(1, geometry.width()))),
-            min(1.0, max(0.0, (y - geometry.top()) / max(1, geometry.height()))),
-        )
-
-    def _capture_aim(self, x: float, y: float) -> bool:
-        point = self._normalized_aim(x, y)
-        if point is None:
-            return False
-        self._aim_x, self._aim_y = point
-        self._aim_enabled = True
-        self._aim_selecting = False
-        self._aim_hover = None
-        self.unsetCursor()
-        self._sync_aim_button()
-        self.update()
-        self.aim_changed.emit(True, self._aim_x, self._aim_y)
-        return True
 
     def eventFilter(self, watched, event) -> bool:
         if (
@@ -541,35 +451,6 @@ class VideoViewport(QWidget):
 
         geometry = self.frame_geometry()
         painter.drawPixmap(geometry, self._pixmap, self._pixmap.rect())
-        point = (
-            self._aim_hover
-            if self._aim_selecting
-            else ((self._aim_x, self._aim_y) if self._aim_enabled else None)
-        )
-        visible = self._visible_frame_geometry()
-        if point is not None and not visible.isEmpty():
-            x = geometry.left() + round(point[0] * geometry.width())
-            y = geometry.top() + round(point[1] * geometry.height())
-            if visible.contains(x, y):
-                painter.save()
-                painter.setClipRect(visible)
-                gap = 2
-                arm = 14
-                segments = (
-                    (x - arm, y, x - gap, y),
-                    (x + gap, y, x + arm, y),
-                    (x, y - arm, x, y - gap),
-                    (x, y + gap, x, y + arm),
-                )
-                # The dark outer stroke keeps the reticle visible over bright
-                # sky and sun glare; the vivid green core remains easy to aim.
-                painter.setPen(QPen(QColor("#101010"), 4))
-                for segment in segments:
-                    painter.drawLine(*segment)
-                painter.setPen(QPen(QColor("#00FF3C"), 2))
-                for segment in segments:
-                    painter.drawLine(*segment)
-                painter.restore()
         painter.end()
 
 
@@ -578,7 +459,6 @@ class VideoPanel(PanelFrame):
     recording_requested = pyqtSignal(bool)
     source_selected = pyqtSignal(str)
     view_configuration_changed = pyqtSignal(int, str)
-    aim_changed = pyqtSignal(str, bool, float, float)
 
     def __init__(
         self,
@@ -674,7 +554,6 @@ class VideoPanel(PanelFrame):
             )
         self.viewport.reconnect_requested.connect(self.reconnect_requested.emit)
         self.viewport.recording_requested.connect(self.recording_requested.emit)
-        self.viewport.aim_changed.connect(self._on_aim_changed)
         self.viewport.view_mode_changed.connect(self._propagate_display_mode)
         self.body_layout.addWidget(self.wall, 1)
         self._apply_wall_layout()
@@ -905,14 +784,12 @@ class VideoPanel(PanelFrame):
                 viewport.set_source_name("")
                 viewport.set_stats(VideoStreamStats())
                 viewport.clear_frame()
-                viewport.set_aim(False)
                 continue
             source = ordered[index]
             # Tile labels identify the configured connection itself.  The
             # order is already conveyed by the wall layout and selector, so
             # avoid prepending unstable 1/2/3 numbering to camera names.
             viewport.set_source_name(source.name)
-            viewport.set_aim(source.aim_enabled, source.aim_x, source.aim_y)
             stats = self._stats.get(source.identifier, VideoStreamStats())
             viewport.set_stats(stats)
             frame = self._frames.get(source.identifier)
@@ -920,20 +797,6 @@ class VideoPanel(PanelFrame):
                 viewport.set_frame(frame)
             else:
                 viewport.clear_frame()
-
-    def _on_aim_changed(self, enabled: bool, x: float, y: float) -> None:
-        ordered = self._ordered_sources()
-        if not ordered:
-            return
-        identifier = ordered[0].identifier
-        self._sources = tuple(
-            replace(source, aim_enabled=enabled, aim_x=x, aim_y=y)
-            if source.identifier == identifier
-            else source
-            for source in self._sources
-        )
-        self._refresh_viewports()
-        self.aim_changed.emit(identifier, enabled, x, y)
 
     def _viewport_for_source(self, identifier: str) -> VideoViewport | None:
         ordered = self._ordered_sources()

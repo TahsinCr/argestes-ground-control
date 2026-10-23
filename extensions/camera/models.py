@@ -93,9 +93,6 @@ class VideoSourceConfig(Model):
     latency_ms: int = 100
     frame_timeout_s: float = 3.0
     auto_connect: bool = False
-    aim_enabled: bool = False
-    aim_x: float = 0.5
-    aim_y: float = 0.5
     identifier: str = field(default_factory=lambda: uuid4().hex)
 
     def __post_init__(self) -> None:
@@ -124,8 +121,6 @@ class VideoSourceConfig(Model):
             raise ValueError("Video gecikmesi 0..10000 ms aralığında olmalı")
         if not 1 <= float(self.frame_timeout_s) <= 60:
             raise ValueError("Video kare zaman aşımı 1..60 saniye aralığında olmalı")
-        if not 0.0 <= float(self.aim_x) <= 1.0 or not 0.0 <= float(self.aim_y) <= 1.0:
-            raise ValueError("Video nişangâh koordinatları 0..1 aralığında olmalı")
         object.__setattr__(self, "identifier", identifier)
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "source_type", source_type)
@@ -134,9 +129,6 @@ class VideoSourceConfig(Model):
         object.__setattr__(self, "latency_ms", int(self.latency_ms))
         object.__setattr__(self, "frame_timeout_s", float(self.frame_timeout_s))
         object.__setattr__(self, "auto_connect", bool(self.auto_connect))
-        object.__setattr__(self, "aim_enabled", bool(self.aim_enabled))
-        object.__setattr__(self, "aim_x", float(self.aim_x))
-        object.__setattr__(self, "aim_y", float(self.aim_y))
 
 
 @dataclass(frozen=True, slots=True)

@@ -84,11 +84,15 @@ class CameraExtensionTests(unittest.TestCase):
             import json
             from dataclasses import asdict
 
+            source_payload = asdict(source)
+            source_payload.update(
+                {"aim_enabled": True, "aim_x": 0.25, "aim_y": 0.75}
+            )
             settings.write_text(
                 json.dumps(
                     {
                         "backend": {
-                            "video_sources": [asdict(source)],
+                            "video_sources": [source_payload],
                             "active_video_source_id": "front",
                             "video_shares": [asdict(output)],
                         }
@@ -99,6 +103,14 @@ class CameraExtensionTests(unittest.TestCase):
             store = CameraSettingsStore(root)
             self.assertEqual(store.current.sources[0].name, "Ön")
             self.assertEqual(store.current.outputs[0].identifier, "live")
+            persisted = json.loads(settings.read_text(encoding="utf-8"))
+            migrated_source = persisted["extensions"]["camera"]["config"][
+                "video_sources"
+            ][0]
+            self.assertFalse(
+                {"aim_enabled", "aim_x", "aim_y"}.intersection(migrated_source)
+            )
+            self.assertFalse(hasattr(store.current.sources[0], "aim_enabled"))
             store.save(store.current)
             self.assertTrue(store.path.exists())
             self.assertEqual(CameraSettingsStore(root).current, store.current)
@@ -154,6 +166,7 @@ from pathlib import Path
 from PyQt6.QtCore import QCoreApplication, QEvent, Qt
 from PyQt6.QtWidgets import QApplication
 from extensions.camera.ui.video import VideoPanel
+from extensions.camera.models import VideoShareConfig
 from src.container import create_container
 from src.extension.host import ExtensionHost
 from src.services.abstracts.telemetry import TelemetryService
@@ -174,12 +187,39 @@ with tempfile.TemporaryDirectory() as directory:
     assert 'camera.wall' in window._extension_visual_by_id
     camera = window._extension_visual_by_id['camera.wall']
     assert isinstance(camera, VideoPanel)
+    assert not hasattr(camera.viewport, "aim_button")
     assert tuple(camera.split_buttons) == (1, 2, 3, 4)
     assert len([key for key in window._extension_status_by_id if key.startswith("camera.")]) == 1
     status = window._extension_status_by_id["camera.connections"]
     assert status.video_chip.text_label.text() == "KAMERA"
     assert status.share_chip.text_label.text() == "YAYIN / KAYIT"
     assert backend.resolve(ExtensionHost).settings_contribution("camera") is not None
+    camera_settings = (
+        backend.resolve(ExtensionHost)
+        .settings_contribution("camera")
+        .page_factory(window)
+    )
+    assert [camera_settings.tabText(i) for i in range(camera_settings.count())] in (
+        ["Kamera", "Yayın", "Kayıt"], ["Camera", "Streaming", "Recording"]
+    )
+    outputs = (
+        VideoShareConfig(
+            "stream", "Yayın", "127.0.0.1:5000", source_id="video-primary"
+        ),
+        VideoShareConfig(
+            "record",
+            "Kayıt",
+            "data/recordings",
+            source_id="video-primary",
+            output_type="record",
+        ),
+    )
+    camera_settings.streaming.show_shares(outputs, ())
+    camera_settings.recording.show_shares(outputs, ())
+    assert camera_settings.streaming.list_layout.count() == 2
+    assert camera_settings.recording.list_layout.count() == 2
+    camera_settings.prepare_shutdown()
+    camera_settings.deleteLater()
     camera_dock = window.workspace.panels["camera.wall"]
     assert camera_dock.toggleViewAction().isCheckable()
     window.show()

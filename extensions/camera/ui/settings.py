@@ -17,14 +17,21 @@ class CameraSettingsPage(QTabWidget):
         self.sources = VideoConnectionsPopup(
             workspace._theme, self, language=workspace._language
         )
-        self.outputs = VideoSharePopup(
+        self.streaming = VideoSharePopup(
+            workspace._theme,
+            self,
+            language=workspace._language,
+            output_type_filter="stream",
+        )
+        self.recording = VideoSharePopup(
             workspace._theme,
             self,
             language=workspace._language,
             clock_references=workspace.runtime.clock_references,
             show_clock_selector=True,
+            output_type_filter="record",
         )
-        for editor in (self.sources, self.outputs):
+        for editor in (self.sources, self.streaming, self.recording):
             editor.setWindowFlags(Qt.WindowType.Widget)
             editor.setMinimumSize(0, 0)
             editor.setMaximumSize(16777215, 16777215)
@@ -33,12 +40,14 @@ class CameraSettingsPage(QTabWidget):
                 if button:
                     button.hide()
         english = workspace._language == "en"
-        self.addTab(self.sources, "Cameras" if english else "Kameralar")
-        self.addTab(self.outputs, "Stream / recording" if english else "Yayın / kayıt")
+        self.addTab(self.sources, "Camera" if english else "Kamera")
+        self.addTab(self.streaming, "Streaming" if english else "Yayın")
+        self.addTab(self.recording, "Recording" if english else "Kayıt")
         self.sources.sources_saved.connect(self.save_sources)
         self.sources.source_connect_requested.connect(workspace._connect)
-        self.outputs.shares_saved.connect(self.save_outputs)
-        self.outputs.clock_reference_changed.connect(
+        self.streaming.shares_saved.connect(self.save_outputs)
+        self.recording.shares_saved.connect(self.save_outputs)
+        self.recording.clock_reference_changed.connect(
             workspace.runtime.save_clock_reference
         )
         workspace.bridge.source_stats_updated.connect(self._refresh_live)
@@ -51,7 +60,8 @@ class CameraSettingsPage(QTabWidget):
 
     def set_theme(self, theme):
         self.sources.set_theme(theme)
-        self.outputs.set_theme(theme)
+        self.streaming.set_theme(theme)
+        self.recording.set_theme(theme)
 
     def save_outputs(self, outputs):
         self.workspace._save_outputs(outputs)
@@ -66,25 +76,27 @@ class CameraSettingsPage(QTabWidget):
             connected=runtime.video.connected,
             source_stats=runtime.video.source_stats,
         )
-        self.outputs.show_shares(
-            config.outputs,
-            runtime.video.share_states,
-            network_interfaces=self._interfaces,
-            sources=config.sources,
-            source_stats=runtime.video.source_stats,
-            active_source_id=config.active_source_id,
-        )
-        self.outputs.set_clock_reference(config.clock_reference_id)
+        for editor in (self.streaming, self.recording):
+            editor.show_shares(
+                config.outputs,
+                runtime.video.share_states,
+                network_interfaces=self._interfaces,
+                sources=config.sources,
+                source_stats=runtime.video.source_stats,
+                active_source_id=config.active_source_id,
+            )
+        self.recording.set_clock_reference(config.clock_reference_id)
 
     def _refresh_live(self, *_):
         if self.isVisible():
             runtime = self.workspace.runtime
             config = runtime.settings.current
             self.sources.update_source_stats(runtime.video.source_stats)
-            self.outputs.update_sources(
-                config.sources, runtime.video.source_stats, config.active_source_id
-            )
-            self.outputs.update_states(runtime.video.share_states)
+            for editor in (self.streaming, self.recording):
+                editor.update_sources(
+                    config.sources, runtime.video.source_stats, config.active_source_id
+                )
+                editor.update_states(runtime.video.share_states)
 
     def showEvent(self, event):
         super().showEvent(event)

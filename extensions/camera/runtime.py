@@ -31,6 +31,8 @@ class CameraConfiguration:
 
 
 class CameraSettingsStore:
+    _RETIRED_SOURCE_FIELDS = frozenset({"aim_enabled", "aim_x", "aim_y"})
+
     def __init__(self, base_dir: Path, settings: SettingsService | None = None) -> None:
         self._settings = settings or SettingsService(base_dir)
         self.path = base_dir / "data" / "settings.json"
@@ -49,7 +51,20 @@ class CameraSettingsStore:
             legacy = load_json_file(self._legacy_path, {})
             payload = dict(legacy.get("backend", {}))
         raw_sources = payload.get("video_sources", ())
-        sources = tuple(VideoSourceConfig(**dict(item)) for item in raw_sources)
+        source_payloads = tuple(dict(item) for item in raw_sources)
+        has_retired_source_fields = any(
+            self._RETIRED_SOURCE_FIELDS.intersection(item) for item in source_payloads
+        )
+        sources = tuple(
+            VideoSourceConfig(
+                **{
+                    key: value
+                    for key, value in item.items()
+                    if key not in self._RETIRED_SOURCE_FIELDS
+                }
+            )
+            for item in source_payloads
+        )
         if not sources:
             sources = (
                 VideoSourceConfig(
@@ -73,12 +88,15 @@ class CameraSettingsStore:
         selected = str(payload.get("active_video_source_id", sources[0].identifier))
         if selected not in identifiers:
             selected = sources[0].identifier
-        return CameraConfiguration(
+        configuration = CameraConfiguration(
             sources,
             selected,
             outputs,
             str(payload.get("clock_reference_id", "system.local")),
         )
+        if has_retired_source_fields:
+            self.save(configuration)
+        return configuration
 
     def save(self, configuration: CameraConfiguration) -> None:
         payload = {

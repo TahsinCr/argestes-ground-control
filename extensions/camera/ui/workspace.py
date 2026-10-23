@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import replace
 
 from PyQt6.QtCore import QPoint, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage
@@ -122,7 +121,6 @@ class CameraWorkspace(VideoPanel):
         )
         self.recording_requested.connect(self._record_all)
         self.source_selected.connect(self._select_source)
-        self.aim_changed.connect(self._save_aim)
         self.reconnect_completed.connect(self._reconnect_completed)
         self._sync_settings()
 
@@ -151,16 +149,6 @@ class CameraWorkspace(VideoPanel):
     def _select_source(self, identifier: str) -> None:
         config = self.runtime.settings.current
         self._save_sources(config.sources, identifier)
-
-    def _save_aim(self, identifier: str, enabled: bool, x: float, y: float) -> None:
-        config = self.runtime.settings.current
-        sources = tuple(
-            replace(item, aim_enabled=enabled, aim_x=x, aim_y=y)
-            if item.identifier == identifier
-            else item
-            for item in config.sources
-        )
-        self._save_sources(sources, config.active_source_id)
 
     def _save_outputs(self, outputs: tuple[VideoShareConfig, ...]) -> None:
         try:

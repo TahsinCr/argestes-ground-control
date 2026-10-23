@@ -18,6 +18,9 @@ Release headings link each entry to its release date.
 
 ### Changed
 
+* Organized camera settings into separate **Camera**, **Streaming**, and
+  **Recording** tabs. Each output tab now shows and edits only its own target
+  type, while the existing quick-access output popup remains available.
 * Camera timestamps no longer delay or stop a video output when its selected
   clock is unavailable. Selecting another clock takes effect in active outputs
   without restarting their pipelines; sampling follows the selected source and
@@ -98,6 +101,11 @@ Release headings link each entry to its release date.
   cleared cache, and timeout responses use the correct HTTP reason phrase.
 * Session logs use the configured bounded rotation instead of an effectively
   unlimited file size.
+
+### Removed
+
+* Removed the per-camera aim-point selector, crosshair rendering, and saved
+  coordinates. Existing camera profiles are migrated without the retired fields.
 
 ### Security
 
