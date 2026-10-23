@@ -8,7 +8,8 @@ Release headings link each entry to its release date.
 ### Added
 
 * Added a GitHub Actions test workflow that checks out the Core submodule and
-  runs the complete application and Core suite in an offscreen Qt environment.
+  installs the Qt platform libraries and extension test dependencies, then runs
+  the application and Core suites in an offscreen Qt environment.
 
 ### Changed
 
@@ -39,24 +40,42 @@ Release headings link each entry to its release date.
 * Required runtime-service failures now stop startup and roll back services
   already started. Extension shutdown errors are isolated so remaining plugins
   still receive cleanup.
-* Failed extension reloads restore the last working settings and extension
-  instance without changing the saved enabled preference. The workspace also
-  rebuilds that extension's UI after a failed reload.
-* Joystick button actions now use a single reusable worker, reject work from a
-  closed or superseded device session and finish any dispatched action before
-  extension shutdown. Joystick transport errors still release RC overrides
-  before controlled recovery.
+* Failed extension reloads restore the last working settings and attempt to
+  recreate the extension; this is a new instance, not a transactional rollback
+  of the original one. The workspace also rebuilds that extension's UI after a
+  failed reload. If shutdown itself fails, the host now retains the extension's
+  service registrations and reports the failure instead of unloading beneath a
+  still-running plugin.
+* Joystick button actions now use a single reusable worker and reject work from
+  a closed or superseded device session. Shutdown cancels queued actions without
+  blocking the UI on an in-flight command; that command cannot be forcibly
+  interrupted and is reported in the log. Joystick transport errors still
+  release RC overrides before controlled recovery.
 * Camera target reconfiguration now waits for the previous recording pipeline
   to finish EOS teardown before starting a replacement for the same target.
-  Publisher shutdown also reports and logs workers that remain alive past its
-  deadline instead of silently returning success.
+  MP4 finalization now checks the EOS result and bus response, and the camera
+  extension closes its publisher and sources during shutdown. Publisher
+  shutdown also reports workers that remain alive past its deadline.
 * Map tile-cache shutdown is owned by the Map & Autonomy extension lifecycle;
   destroying a map widget no longer stops a cache service shared by other map
   views.
 * Quick-command feedback now says when a request was accepted by the command
   service without claiming that the vehicle has completed it.
-* Failed TEKNOFEST settings saves now restore or remove any credential writes
-  made during that configuration attempt, preserving the prior keyring state.
+* TEKNOFEST profile updates now stop existing sessions before replacing their
+  configuration. If a session misses its shutdown deadline, the update is
+  rejected rather than allowing overlapping sessions, and any earlier sessions
+  stopped during that attempt are restarted.
+* TEKNOFEST login responses are validated before a profile is marked connected;
+  a successful HTTP response with an invalid payload no longer appears online.
+* Unreadable settings files are preserved under a unique `settings.corrupt-*`
+  name before defaults are written. If preservation fails, the original file is
+  left untouched and defaults are used in memory only.
+* Runtime startup now reports starting, ready, degraded and failed states in
+  the status bar, instead of marking the backend active before startup finishes.
+* If an extension fails to stop, its service registrations remain available and
+  the host retains its failed lifecycle state rather than partially unloading it.
+* Local recordings no longer inherit the 640×480 minimum used for network
+  streaming outputs.
 * Superseded navigation requests are reported as unaccepted, and map WebChannel
   inputs are bounded and validated before dispatch, including coordinates,
   overlay IDs and mission points.
@@ -70,11 +89,9 @@ Release headings link each entry to its release date.
 * TEKNOFEST server profiles now allow HTTP or HTTPS independently. HTTPS keeps
   normal certificate verification enabled; HTTP is clearly identified as
   unencrypted rather than being silently upgraded.
-* New TEKNOFEST passwords are kept in the operating-system credential store,
-  omitted from normal profile serialization and migrated from existing settings
-  when a secure store is available. If migration cannot be completed, the old
-  value is retained to avoid losing the only working credential and a warning is
-  logged for the operator.
+* On POSIX systems, an existing `data/settings.json` is restricted to owner
+  read/write permissions at load time; newly written settings already use a
+  private temporary file before atomic replacement.
 * Map WebChannel JSON payloads are size-limited; malformed or out-of-range
   actions and overlays are discarded before reaching map logic.
 

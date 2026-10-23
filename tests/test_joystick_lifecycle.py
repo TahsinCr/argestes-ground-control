@@ -36,7 +36,7 @@ class _Vehicle:
 
 
 class JoystickActionLifecycleTests(unittest.TestCase):
-    def test_stop_waits_for_active_action_and_prevents_post_stop_work(self) -> None:
+    def test_stop_does_not_wait_for_active_action_and_prevents_post_stop_work(self) -> None:
         vehicle = _Vehicle()
         service = LinuxRcJoystickService(_Settings(), vehicle)
         service._action_executor = ThreadPoolExecutor(max_workers=1)
@@ -47,13 +47,13 @@ class JoystickActionLifecycleTests(unittest.TestCase):
         stopped = threading.Event()
         stopper = threading.Thread(target=lambda: (service.stop(), stopped.set()))
         stopper.start()
-        time.sleep(0.03)
-        self.assertFalse(stopped.is_set())
-
-        vehicle.finish.set()
-        stopper.join(1)
+        stopper.join(0.5)
         self.assertTrue(stopped.is_set())
         self.assertEqual(vehicle.calls, 1)
+
+        vehicle.finish.set()
+        self.assertTrue(service._action_lock.acquire(timeout=1))
+        service._action_lock.release()
 
         service._execute_button_action(config, 0, service._action_generation)
         self.assertEqual(vehicle.calls, 1)

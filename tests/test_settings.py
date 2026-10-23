@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -14,6 +16,22 @@ from src.ui.config.settings_schema import iter_fields
 
 
 class SettingsTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "POSIX file modes are required")
+    def test_existing_settings_file_is_restricted_to_its_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base_dir = Path(directory)
+            settings_path = base_dir / "data" / "settings.json"
+            settings_path.parent.mkdir(parents=True)
+            settings_path.write_text(
+                json.dumps(SettingsModel.default(base_dir).to_dict()),
+                encoding="utf-8",
+            )
+            settings_path.chmod(0o644)
+
+            SettingsService(base_dir)
+
+            self.assertEqual(stat.S_IMODE(settings_path.stat().st_mode), 0o600)
+
     def test_concurrent_path_updates_are_one_read_modify_write_transaction(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             service = SettingsService(Path(directory))
@@ -111,7 +129,7 @@ class SettingsTests(unittest.TestCase):
             )
             self.assertFalse(payload["backend"]["mavlink"]["auto_connect"])
 
-    def test_invalid_settings_file_is_replaced_with_safe_defaults(self) -> None:
+    def test_invalid_settings_file_is_preserved_before_safe_defaults_are_written(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base_dir = Path(directory)
             settings_path = base_dir / "data" / "settings.json"
@@ -123,6 +141,9 @@ class SettingsTests(unittest.TestCase):
 
             payload = json.loads(settings_path.read_text(encoding="utf-8"))
             self.assertEqual(payload, service.current.to_dict())
+            backups = tuple(settings_path.parent.glob("settings.corrupt-*.json"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_text(encoding="utf-8"), "{invalid-json")
             self.assertTrue(
                 any(
                     entry.action == "settings.load_failed"
@@ -136,7 +157,7 @@ class SettingsTests(unittest.TestCase):
                 )
             )
 
-    def test_unreadable_settings_file_falls_back_and_rewrites_defaults(self) -> None:
+    def test_unreadable_settings_file_is_preserved_before_defaults_are_written(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base_dir = Path(directory)
             settings_path = base_dir / "data" / "settings.json"
@@ -150,6 +171,25 @@ class SettingsTests(unittest.TestCase):
 
             payload = json.loads(settings_path.read_text(encoding="utf-8"))
             self.assertEqual(payload, service.current.to_dict())
+            backups = tuple(settings_path.parent.glob("settings.corrupt-*.json"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_text(encoding="utf-8"), "{}")
+
+    def test_corrupt_settings_are_not_overwritten_when_preservation_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base_dir = Path(directory)
+            settings_path = base_dir / "data" / "settings.json"
+            settings_path.parent.mkdir(parents=True)
+            original = "{invalid-json"
+            settings_path.write_text(original, encoding="utf-8")
+            with patch(
+                "src.services.settings.SettingsService._preserve_unreadable_settings",
+                return_value=None,
+            ):
+                service = SettingsService(base_dir)
+
+            self.assertEqual(settings_path.read_text(encoding="utf-8"), original)
+            self.assertEqual(service.current.ui.language, "tr")
 
     def test_invalid_backend_values_are_rejected_before_persistence(self) -> None:
         model = SettingsModel()

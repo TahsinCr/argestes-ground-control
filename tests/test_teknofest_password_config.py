@@ -37,6 +37,21 @@ class _InlineWorker:
         return future
 
 
+class _Session:
+    def __init__(self, *, running: bool = False) -> None:
+        self.running = running
+        self.stopped = False
+
+    def stop(self) -> bool:
+        self.stopped = True
+        self.running = False
+        return True
+
+    def start(self) -> None:
+        self.stopped = False
+        self.running = True
+
+
 def _runtime(settings, logger):
     runtime = object.__new__(CompetitionRuntime)
     runtime.settings = settings
@@ -98,8 +113,7 @@ class TeknofestPasswordConfigTests(unittest.TestCase):
         settings = _Settings([_server(password=secret)])
         logger = _Logger()
         runtime = _runtime(settings, logger)
-        old_session = SimpleNamespace(stopped=False)
-        old_session.stop = lambda: setattr(old_session, "stopped", True)
+        old_session = _Session()
         runtime.sessions = {"server-1": old_session}
 
         runtime.configure([_server(password="")]).result()
@@ -112,8 +126,7 @@ class TeknofestPasswordConfigTests(unittest.TestCase):
     def test_new_password_is_written_to_settings_before_session_replacement(self) -> None:
         settings = _Settings([_server(password="old-secret")])
         runtime = _runtime(settings, _Logger())
-        old_session = SimpleNamespace(stopped=False)
-        old_session.stop = lambda: setattr(old_session, "stopped", True)
+        old_session = _Session()
         runtime.sessions = {"server-1": old_session}
 
         runtime.configure([_server(password="replacement-secret")]).result()
@@ -134,8 +147,7 @@ class TeknofestPasswordConfigTests(unittest.TestCase):
         previous = _server(password="saved-secret")
         settings = _FailingSettings([previous])
         runtime = _runtime(settings, _Logger())
-        old_session = SimpleNamespace(stopped=False)
-        old_session.stop = lambda: setattr(old_session, "stopped", True)
+        old_session = _Session(running=True)
         runtime.sessions = {"server-1": old_session}
 
         with self.assertRaisesRegex(OSError, "read-only"):
@@ -143,6 +155,7 @@ class TeknofestPasswordConfigTests(unittest.TestCase):
 
         self.assertEqual(settings.config["servers"], [previous])
         self.assertIs(runtime.sessions["server-1"], old_session)
+        self.assertTrue(old_session.running)
         self.assertFalse(old_session.stopped)
 
 

@@ -407,6 +407,9 @@ class ExtensionHost:
                     plugin.stop()
                 except Exception as exc:
                     self._log_lifecycle_error(identifier, "stop", exc)
+                    raise ExtensionError(
+                        f"{identifier} could not be stopped; its services remain registered"
+                    ) from exc
             self._started_plugins.remove(plugin)
         for token in reversed(self._owned_tokens.pop(identifier, ())):
             self.container.unregister(token)
@@ -469,25 +472,25 @@ class ExtensionHost:
             raise
 
     def stop(self) -> None:
-        try:
-            for plugin in reversed(self._started_plugins):
-                if not hasattr(plugin, "stop"):
-                    continue
-                identifier = next(
-                    (
-                        plugin_id
-                        for plugin_id, running, _ in self._running
-                        if running is plugin
-                    ),
-                    "unknown",
-                )
-                try:
-                    plugin.stop()
-                except Exception as exc:
-                    self._log_lifecycle_error(identifier, "stop", exc)
-        finally:
-            self._started_plugins.clear()
-            self._lifecycle_started = False
+        remaining = []
+        for plugin in reversed(tuple(self._started_plugins)):
+            if not hasattr(plugin, "stop"):
+                continue
+            identifier = next(
+                (
+                    plugin_id
+                    for plugin_id, running, _ in self._running
+                    if running is plugin
+                ),
+                "unknown",
+            )
+            try:
+                plugin.stop()
+            except Exception as exc:
+                self._log_lifecycle_error(identifier, "stop", exc)
+                remaining.append(plugin)
+        self._started_plugins = list(reversed(remaining))
+        self._lifecycle_started = bool(self._started_plugins)
 
     def _log_lifecycle_error(
         self, identifier: str, operation: str, error: Exception

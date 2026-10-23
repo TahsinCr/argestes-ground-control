@@ -3,13 +3,14 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 import ipaddress
 from pathlib import Path
 import re
 import subprocess
 from urllib.parse import urlparse
-from typing import Any
+from typing import Any, Literal
 
 from src.core.events import EventBus, Subscription
 from extensions.camera.models import (
@@ -27,6 +28,16 @@ _interface_cache: tuple[tuple[str, str], ...] = ()
 _interface_cache_at = 0.0
 _interface_refreshing = False
 _RECORDING_FRAME_STALE_S = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class VideoFinalizationResult:
+    status: Literal["finalized", "eos_timeout", "pipeline_error", "aborted"]
+    detail: str
+
+    @property
+    def finalized(self) -> bool:
+        return self.status == "finalized"
 
 
 def _read_active_ipv4_interfaces() -> tuple[tuple[str, str], ...]:
@@ -113,7 +124,7 @@ class VideoSharePublisher:
         self._stop = threading.Event()
         self._lifecycle_lock = threading.RLock()
         self._workers: dict[str, threading.Thread] = {}
-        self._server_time: Callable[[], datetime | None] = lambda: None
+        self._clock_provider: Callable[[], datetime | None] = lambda: None
         self._subscription: Subscription = frames.subscribe(self._on_frame)
         self._source_subscription = (
             source_frames.subscribe(self._on_source_frame)
@@ -133,8 +144,15 @@ class VideoSharePublisher:
                 for item in self._configs
             )
 
+    def set_clock_provider(self, provider: Callable[[], datetime | None]) -> None:
+        """Set the clock used for optional output timestamps."""
+
+        self._clock_provider = provider
+
     def set_server_time_provider(self, provider: Callable[[], datetime | None]) -> None:
-        self._server_time = provider
+        """Backward-compatible alias for the generic timestamp clock provider."""
+
+        self.set_clock_provider(provider)
 
     def set_active_source_provider(self, provider: Callable[[], str]) -> None:
         self._active_source = provider
@@ -273,6 +291,7 @@ class VideoSharePublisher:
         identifier: str,
         worker: threading.Thread,
         stop_event: threading.Event,
+        finalization_result: VideoFinalizationResult | None = None,
     ) -> None:
         replacement: VideoShareConfig | None = None
         replacement_event: threading.Event | None = None
@@ -296,12 +315,24 @@ class VideoSharePublisher:
             elif desired is None or not desired.enabled or current_event.is_set():
                 state = self._states.get(identifier)
                 if state is not None and state.status != "error":
+                    if finalization_result is not None:
+                        status = "inactive" if finalization_result.finalized else "error"
+                        detail = (
+                            "MP4 kaydı EOS ile sonlandırıldı"
+                            if finalization_result.finalized
+                            else finalization_result.detail
+                        )
+                    else:
+                        status = "inactive"
+                        detail = (
+                            "Kayıt durduruldu"
+                            if desired is None or desired.output_type == "record"
+                            else "Yayın durduruldu"
+                        )
                     self._states[identifier] = VideoShareState(
                         identifier,
-                        status="inactive",
-                        detail="Kayıt durduruldu"
-                        if desired is None or desired.output_type == "record"
-                        else "Yayın durduruldu",
+                        status=status,
+                        detail=detail,
                     )
                     publish = True
         if publish:
@@ -326,21 +357,17 @@ class VideoSharePublisher:
     ) -> None:
         pipeline: Any | None = None
         appsrc: Any | None = None
+        finalization_result: VideoFinalizationResult | None = None
         try:
             frame = self._wait_for_frame(config, stop_event)
             if frame is None:
                 return
-            if frame.width < 640 or frame.height < 480:
-                raise RuntimeError(
-                    f"Kaynak çözünürlük şartname altı: {frame.width}x{frame.height}"
-                )
+            self._validate_minimum_resolution(config, frame)
             clock_reference: datetime | None = None
             clock_started_at: float | None = None
             if config.timestamp_enabled:
-                # A published timestamp must always be rooted in a real
-                # TEKNOFEST sample.  Once received, advance that exact value
-                # with monotonic time; do not transform it through the GCS
-                # machine's local clock or timezone.
+                # Anchor the output clock once, then advance it monotonically
+                # so wall-clock adjustments cannot make video timestamps jump.
                 clock_reference, clock_started_at = self._wait_for_clock_reference(
                     config.identifier,
                     stop_event,
@@ -374,7 +401,7 @@ class VideoSharePublisher:
             if not config.fixed_frame_rate:
                 compliance.append("sabit FPS kapalı")
             if not config.timestamp_enabled:
-                compliance.append("sunucu saati kapalı")
+                compliance.append("zaman damgası kapalı")
             detail = f"{config.codec.upper()} · {config.fps} FPS · {encoder_name}"
             if output_path is not None:
                 detail += f" · {output_path.name}"
@@ -460,23 +487,37 @@ class VideoSharePublisher:
                 try:
                     Gst = self._load_gstreamer()
                     if config.output_type == "record":
-                        if appsrc is not None:
-                            appsrc.emit("end-of-stream")
-                        else:
-                            pipeline.send_event(Gst.Event.new_eos())
-                        bus = pipeline.get_bus()
-                        if bus is not None:
-                            bus.timed_pop_filtered(
-                                3 * Gst.SECOND,
-                                Gst.MessageType.EOS | Gst.MessageType.ERROR,
+                        finalization_result = self._finalize_recording(
+                            pipeline, appsrc, Gst
+                        )
+                        if not finalization_result.finalized:
+                            self._event(
+                                "video.recording.finalization_failed",
+                                f"Kayıt dosyası güvenle sonlandırılamadı: {config.name}: {finalization_result.detail}",
+                                "danger",
+                                {
+                                    "share_id": config.identifier,
+                                    "finalization_status": finalization_result.status,
+                                },
                             )
-                    pipeline.set_state(Gst.State.NULL)
-                except Exception:
-                    pass
+                    else:
+                        pipeline.set_state(Gst.State.NULL)
+                except Exception as exc:
+                    if config.output_type == "record":
+                        finalization_result = VideoFinalizationResult(
+                            "pipeline_error", f"MP4 sonlandırma doğrulanamadı: {exc}"
+                        )
+                        self._event(
+                            "video.publisher.pipeline_shutdown_failed",
+                            f"Video pipeline'ı güvenle kapatılamadı: {config.name}: {exc}",
+                            "warning",
+                            {"share_id": config.identifier},
+                        )
             self._target_finished(
                 config.identifier,
                 threading.current_thread(),
                 stop_event,
+                finalization_result,
             )
 
     def _current_frame(self, config: VideoShareConfig) -> VideoFrame | None:
@@ -522,20 +563,101 @@ class VideoSharePublisher:
         identifier: str,
         stop_event: threading.Event,
     ) -> tuple[datetime | None, float | None]:
-        """Wait for the newest competition-clock sample before publishing."""
+        """Wait for a clock sample before publishing the optional timestamp."""
 
         while not stop_event.is_set():
-            timestamp = self._server_time()
+            timestamp = self._clock_provider()
             if timestamp is not None:
                 return timestamp, time.monotonic()
             self._set_state(
                 identifier,
                 "waiting",
-                "TEKNOFEST sunucu saati bekleniyor",
+                "Zaman damgası kaynağı bekleniyor",
                 stop_event=stop_event,
             )
             stop_event.wait(0.2)
         return None, None
+
+    @staticmethod
+    def _validate_minimum_resolution(config: VideoShareConfig, frame: VideoFrame) -> None:
+        """Apply competition output constraints without restricting local files."""
+
+        if config.output_type != "record" and (frame.width < 640 or frame.height < 480):
+            raise RuntimeError(
+                f"Kaynak çözünürlük şartname altı: {frame.width}x{frame.height}"
+            )
+
+    @staticmethod
+    def _finalize_recording(
+        pipeline: Any,
+        appsrc: Any | None,
+        Gst: Any,
+    ) -> VideoFinalizationResult:
+        """Send EOS and verify that the muxer actually finalized its output."""
+
+        result = VideoFinalizationResult("aborted", "Kayıt sonlandırma işlemi tamamlanamadı")
+        try:
+            if appsrc is not None:
+                flow = appsrc.emit("end-of-stream")
+                if flow != Gst.FlowReturn.OK:
+                    result = VideoFinalizationResult(
+                        "pipeline_error", "GStreamer EOS isteğini kabul etmedi"
+                    )
+                    return result
+            elif not pipeline.send_event(Gst.Event.new_eos()):
+                result = VideoFinalizationResult(
+                    "pipeline_error", "GStreamer pipeline EOS isteğini kabul etmedi"
+                )
+                return result
+
+            bus = pipeline.get_bus()
+            if bus is None:
+                result = VideoFinalizationResult(
+                    "pipeline_error", "GStreamer pipeline mesaj bus'ı bulunamadı"
+                )
+                return result
+            message = bus.timed_pop_filtered(
+                3 * Gst.SECOND,
+                Gst.MessageType.EOS | Gst.MessageType.ERROR,
+            )
+            if message is None:
+                result = VideoFinalizationResult(
+                    "eos_timeout", "MP4 muxer EOS onayı vermedi; dosya bütünlüğü garanti edilemiyor"
+                )
+                return result
+            if message.type == Gst.MessageType.ERROR:
+                error, debug = message.parse_error()
+                detail = str(error)
+                if debug:
+                    detail = f"{detail} ({debug})"
+                result = VideoFinalizationResult("pipeline_error", detail)
+                return result
+            if message.type != Gst.MessageType.EOS:
+                result = VideoFinalizationResult(
+                    "aborted", "GStreamer pipeline EOS yerine beklenmeyen bir sonuç verdi"
+                )
+                return result
+            result = VideoFinalizationResult("finalized", "MP4 EOS ile sonlandırıldı")
+        except Exception as exc:
+            result = VideoFinalizationResult("pipeline_error", str(exc))
+        finally:
+            try:
+                state_result = pipeline.set_state(Gst.State.NULL)
+                if (
+                    result.finalized
+                    and state_result == Gst.StateChangeReturn.FAILURE
+                ):
+                    result = VideoFinalizationResult(
+                        "pipeline_error",
+                        "MP4 EOS alındı ancak pipeline kapatılamadı",
+                    )
+            except Exception as exc:
+                if result.finalized:
+                    result = VideoFinalizationResult(
+                        "pipeline_error",
+                        f"MP4 EOS alındı ancak pipeline kapatılamadı: {exc}",
+                    )
+        return result
 
     def _pipeline_description(
         self,
@@ -703,7 +825,7 @@ class VideoSharePublisher:
 
     @staticmethod
     def _clock_text(reference: datetime, started_at: float) -> str:
-        """Format the server-clock timeline without a local-time conversion."""
+        """Format the configured timestamp timeline using its original timezone."""
 
         value = reference + timedelta(seconds=max(0.0, time.monotonic() - started_at))
         return value.strftime("%H:%M:%S.") + f"{value.microsecond // 1000:03d}"

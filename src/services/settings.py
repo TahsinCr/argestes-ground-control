@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
+import stat
 import threading
 from copy import deepcopy
 from collections.abc import Callable
 from pathlib import Path
+from uuid import uuid4
 
 from src.core.events import EventBus
 from src.models.settings import SettingsModel
@@ -26,10 +29,13 @@ class SettingsService(SettingsRepository):
         self._extension_projections = {}
         self._extension_restorers = {}
         self._legacy_backend = {}
+        self._preservation_failed = False
         self._settings = self._load()
         self._migrate_extensions()
 
     def _migrate_extensions(self) -> None:
+        if self._preservation_failed:
+            return
         directory = self._data_dir / "extensions"
         states = (
             load_json_file(directory / "state.json")
@@ -150,6 +156,7 @@ class SettingsService(SettingsRepository):
 
     def _load(self) -> SettingsModel:
         if self._settings_path.exists():
+            self._secure_settings_permissions()
             try:
                 payload = load_json_file(self._settings_path)
                 self._legacy_backend = dict(payload.get("backend", {}))
@@ -166,8 +173,55 @@ class SettingsService(SettingsRepository):
                             "error_type": exc.__class__.__name__,
                         },
                     )
-                return self._restore_defaults(reason="unreadable")
+                preserved_path = self._preserve_unreadable_settings()
+                if preserved_path is None:
+                    self._preservation_failed = True
+                    if self._logger:
+                        self._logger.event(
+                            "settings.preserve_failed",
+                            "Bozuk ayar dosyası korunamadı; varsayılanlar yalnız bellekte kullanılacak",
+                            severity="danger",
+                            details={"path": str(self._settings_path)},
+                        )
+                    return SettingsModel.default(self._base_dir)
+                return self._restore_defaults(
+                    reason=f"unreadable; preserved as {preserved_path.name}"
+                )
         return self._restore_defaults(reason="missing")
+
+    def _secure_settings_permissions(self) -> None:
+        """Restrict the local settings file, which may contain credentials, to its owner."""
+
+        if os.name != "posix":
+            return
+        try:
+            metadata = self._settings_path.lstat()
+            if not stat.S_ISREG(metadata.st_mode):
+                return
+            if stat.S_IMODE(metadata.st_mode) != 0o600:
+                os.chmod(self._settings_path, 0o600, follow_symlinks=False)
+        except OSError as exc:
+            if self._logger:
+                self._logger.event(
+                    "settings.permissions_failed",
+                    f"Ayar dosyası izinleri güvenli hale getirilemedi: {exc}",
+                    severity="warning",
+                    details={"path": str(self._settings_path)},
+                )
+
+    def _preserve_unreadable_settings(self) -> Path | None:
+        """Move an unreadable settings file aside before creating defaults."""
+
+        if not self._settings_path.exists():
+            return None
+        backup_path = self._settings_path.with_name(
+            f"{self._settings_path.stem}.corrupt-{uuid4().hex}{self._settings_path.suffix}"
+        )
+        try:
+            self._settings_path.replace(backup_path)
+        except OSError:
+            return None
+        return backup_path
 
     def _restore_defaults(self, *, reason: str) -> SettingsModel:
         settings = SettingsModel.default(self._base_dir)

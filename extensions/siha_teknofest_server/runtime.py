@@ -51,11 +51,19 @@ class ServerSession:
         )
         self._thread.start()
 
-    def stop(self):
+    def stop(self, timeout_s=None):
         self._stop.set()
-        if self._thread and self._thread is not threading.current_thread():
-            self._thread.join(timeout=float(self.config.get("timeout_s", 3)) + 1)
+        thread = self._thread
+        if thread and thread is not threading.current_thread():
+            timeout = (
+                float(self.config.get("timeout_s", 3)) + 1
+                if timeout_s is None
+                else max(0.0, float(timeout_s))
+            )
+            thread.join(timeout=timeout)
+        stopped = thread is None or not thread.is_alive() or thread is threading.current_thread()
         self.connected = False
+        return stopped
 
     def request(self, path, payload=None):
         with self._request_lock:
@@ -110,17 +118,9 @@ class ServerSession:
                             "sifre": self.config.get("password", ""),
                         },
                     )
-                    assigned = (
-                        login.get("takim_numarasi")
-                        if isinstance(login, dict)
-                        else login
-                    )
-                    if (
-                        isinstance(assigned, int)
-                        and not isinstance(assigned, bool)
-                        and 1 <= assigned <= 9999
-                    ):
-                        self.config["team_number"] = assigned
+                    if self._stop.is_set():
+                        return
+                    self.config["team_number"] = parse_login_response(login)
                     self.connected = True
                     self.error = ""
                     self.logger.event(
@@ -128,8 +128,12 @@ class ServerSession:
                         "Competition server connected",
                         details={"server": self.config["identifier"]},
                     )
+                if self._stop.is_set():
+                    return
                 started = time.monotonic()
                 clock = self.request("/api/sunucusaati")
+                if self._stop.is_set():
+                    return
                 received = time.monotonic()
                 server_time = CompetitionServerTime.from_payload(clock)
                 self.clock = CompetitionClockSample(
@@ -152,10 +156,14 @@ class ServerSession:
                     self.reference["telemetry"] = self.request(
                         "/api/telemetri_gonder", payload
                     )
+                    if self._stop.is_set():
+                        return
                     self.updated.publish(dict(self.reference))
                 backoff = 1.0
                 self._stop.wait(max(0.0, deadline - time.monotonic()))
             except Exception as exc:
+                if self._stop.is_set():
+                    return
                 self.connected = False
                 self.error = str(exc)
                 self.logger.event(
@@ -166,6 +174,19 @@ class ServerSession:
                 )
                 self._stop.wait(backoff)
                 backoff = min(30.0, backoff * 2)
+
+
+def parse_login_response(payload):
+    """Require the documented team-number response before marking a session connected."""
+
+    assigned = payload.get("takim_numarasi") if isinstance(payload, dict) else payload
+    if (
+        not isinstance(assigned, int)
+        or isinstance(assigned, bool)
+        or not 1 <= assigned <= 9999
+    ):
+        raise ValueError("Unexpected TEKNOFEST login response")
+    return assigned
 
 
 def telemetry_payload(snapshot, config, server_time=None):
@@ -300,14 +321,31 @@ class CompetitionRuntime:
                 )
                 for config in prepared
             }
-            # Commit the complete profile set before replacing live sessions.
-            # A failed settings write therefore leaves the active sessions intact.
-            self.settings.update_extension(
-                "siha_teknofest_server", config={"servers": prepared}
-            )
             previous_sessions = self.sessions
-            for session in previous_sessions.values():
-                session.stop()
+            was_running = {
+                identifier: session.running
+                for identifier, session in previous_sessions.items()
+            }
+            stopped = {
+                identifier: session.stop()
+                for identifier, session in previous_sessions.items()
+            }
+            if not all(stopped.values()):
+                for identifier, session in previous_sessions.items():
+                    if was_running.get(identifier) and stopped.get(identifier):
+                        session.start()
+                raise RuntimeError(
+                    "An existing TEKNOFEST session is still stopping; profiles were not changed"
+                )
+            try:
+                self.settings.update_extension(
+                    "siha_teknofest_server", config={"servers": prepared}
+                )
+            except Exception:
+                for identifier, session in previous_sessions.items():
+                    if was_running.get(identifier):
+                        session.start()
+                raise
             self.sessions = new_sessions
             self.start()
 
@@ -341,7 +379,13 @@ class CompetitionRuntime:
         self._closed = True
         self.worker.shutdown(wait=True, cancel_futures=True)
         for session in self.sessions.values():
-            session.stop()
+            if not session.stop():
+                self.logger.event(
+                    "server.shutdown_timeout",
+                    "TEKNOFEST session did not stop before its shutdown deadline",
+                    severity="danger",
+                    details={"server": session.config["identifier"]},
+                )
 
 
 def validate_servers(configs):

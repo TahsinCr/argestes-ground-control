@@ -358,10 +358,17 @@ class LinuxRcJoystickService(JoystickService):
         if future is not None:
             future.cancel()
         if shutdown and executor is not None:
-            # Shutdown waits for any already-dispatched command to finish; a
-            # queued action is cancelled, and the generation guard prevents it
-            # from dispatching after a disconnect or session replacement.
-            executor.shutdown(wait=True, cancel_futures=True)
+            # Never block plugin/UI shutdown on an already-dispatched vehicle
+            # operation. Queued actions are cancelled; an in-flight operation
+            # is reported as pending because Python cannot safely interrupt it.
+            if future is not None and not future.done():
+                self._event(
+                    "joystick.button_action_shutdown_pending",
+                    "Joystick kapanırken gönderilmiş buton komutu hâlâ sonuçlanmadı",
+                    "warning",
+                    {},
+                )
+            executor.shutdown(wait=False, cancel_futures=True)
         elif wait and future is not None:
             try:
                 future.result()

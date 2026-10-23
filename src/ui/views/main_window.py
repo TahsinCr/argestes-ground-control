@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
     QHBoxLayout,
+    QLabel,
     QMainWindow,
     QPushButton,
     QVBoxLayout,
@@ -114,6 +115,10 @@ class MainWindow(QMainWindow):
         self._status_metrics_anchor = QWidget(self.status_bar)
         self._status_metrics_anchor.setFixedWidth(0)
         footer.addWidget(self._status_metrics_anchor)
+        self.runtime_status_label = QLabel(self.status_bar)
+        self.runtime_status_label.setObjectName("RuntimeStartupStatus")
+        self.runtime_status_label.hide()
+        footer.addWidget(self.runtime_status_label)
         self.extensions_button = QPushButton(self.status_bar)
         from src.ui.widgets.workspace_dialog import extension_icon
 
@@ -749,6 +754,26 @@ class MainWindow(QMainWindow):
         self.log_service.entries_emitted.connect(self.log_panel.add_entries)
         self.settings_service.settings_changed.connect(self._settings_changed)
         self.log_service.reemit_history()
+
+    def show_runtime_startup(self, state: str, message: str = "") -> None:
+        if state in {"ready", "stopped"}:
+            self.runtime_status_label.hide()
+            return
+        labels = {
+            "starting": "status.runtime.starting",
+            "degraded": "status.runtime.degraded",
+            "failed": "status.runtime.failed",
+            "stopping": "status.runtime.stopping",
+        }
+        key = labels.get(state, "status.runtime.failed")
+        self.runtime_status_label.setText(t(key, self.language))
+        self.runtime_status_label.setToolTip(message)
+        self.runtime_status_label.setProperty(
+            "state", "danger" if state == "failed" else "warning"
+        )
+        self.runtime_status_label.style().unpolish(self.runtime_status_label)
+        self.runtime_status_label.style().polish(self.runtime_status_label)
+        self.runtime_status_label.show()
 
     def open_settings(self):
         dialog = SettingsDialog(

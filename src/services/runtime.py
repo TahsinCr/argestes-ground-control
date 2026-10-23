@@ -36,6 +36,7 @@ class RuntimeServices:
     _python_handler: ServiceLogHandler | None = field(default=None, repr=False)
     _started: bool = field(default=False, repr=False)
     _starting: bool = field(default=False, repr=False)
+    _startup_failures: list[str] = field(default_factory=list, repr=False)
     _stop_requested: threading.Event = field(
         default_factory=threading.Event, repr=False
     )
@@ -50,8 +51,9 @@ class RuntimeServices:
                 return
             self._starting = True
             self._stop_requested.clear()
-        self._install_python_logging()
+            self._startup_failures.clear()
         try:
+            self._install_python_logging()
             self._start_services()
         finally:
             cancelled = self._stop_requested.is_set()
@@ -61,6 +63,16 @@ class RuntimeServices:
             if cancelled:
                 self._stop_services()
 
+    @property
+    def started(self) -> bool:
+        with self._lifecycle_lock:
+            return self._started and not self._starting
+
+    @property
+    def startup_failures(self) -> tuple[str, ...]:
+        with self._lifecycle_lock:
+            return tuple(self._startup_failures)
+
     def _start_services(self) -> None:
         for name, service in self._service_start_order():
             if self._stop_requested.is_set():
@@ -68,6 +80,8 @@ class RuntimeServices:
             try:
                 service.start()
             except Exception as exc:
+                with self._lifecycle_lock:
+                    self._startup_failures.append(name)
                 self.log_service.event(
                     "RUNTIME",
                     f"runtime.{name}_start_failed",

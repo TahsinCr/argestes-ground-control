@@ -28,6 +28,8 @@ class _Logger:
 class RuntimeStartupTests(unittest.TestCase):
     def test_required_telemetry_failure_cancels_later_startup(self) -> None:
         runtime = object.__new__(RuntimeServices)
+        runtime._lifecycle_lock = threading.RLock()
+        runtime._startup_failures = []
         runtime._stop_requested = threading.Event()
         runtime.log_service = _Logger()
         runtime.async_runtime = _Service()
@@ -46,6 +48,8 @@ class RuntimeStartupTests(unittest.TestCase):
 
     def test_optional_connection_failure_does_not_cancel_core_runtime(self) -> None:
         runtime = object.__new__(RuntimeServices)
+        runtime._lifecycle_lock = threading.RLock()
+        runtime._startup_failures = []
         runtime._stop_requested = threading.Event()
         runtime.log_service = _Logger()
         runtime.async_runtime = _Service()

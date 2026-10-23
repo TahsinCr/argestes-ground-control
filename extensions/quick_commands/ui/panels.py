@@ -262,10 +262,14 @@ class VehicleControlsPanel(PanelFrame):
         self._update_arm_display()
         self._set_command_status(
             t(
-                "command.result.accepted" if accepted else "command.result.failed",
+                (
+                    "command.result.accepted_unconfirmed"
+                    if accepted
+                    else "command.result.failed"
+                ),
                 self._language,
             ).format(command=code),
-            "success" if accepted else "danger",
+            "warning" if accepted else "danger",
         )
 
     def _set_command_status(self, message: str, state: str) -> None:

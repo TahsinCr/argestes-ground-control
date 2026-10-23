@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
-from src.extension.host.host import ExtensionHost
+from src.extension.host.host import ExtensionError, ExtensionHost
 from src.services.logging_service import LoggingService
 
 
@@ -61,9 +62,29 @@ class ExtensionLifecycleTests(unittest.TestCase):
 
         self.assertTrue(first.stopped)
         self.assertTrue(second.stopped)
-        self.assertEqual(host._started_plugins, [])
-        self.assertFalse(host._lifecycle_started)
+        self.assertEqual(host._started_plugins, [first])
+        self.assertTrue(host._lifecycle_started)
         self.assertEqual(len(logger.entries), 1)
+
+    def test_unload_keeps_services_registered_when_plugin_stop_fails(self) -> None:
+        plugin = _Plugin(RuntimeError("stop failed"))
+        host = object.__new__(ExtensionHost)
+        host._running = [("example", plugin, None)]
+        host._active_ids = {"example"}
+        host._started_plugins = [plugin]
+        host._owned_tokens = {"example": ["service-token"]}
+        host._visual_views = []
+        host._status_widgets = []
+        host._settings_contributions = {}
+        host._log_lifecycle_error = lambda *_args: None
+        host.container = SimpleNamespace(unregister=lambda _token: self.fail("unregistered"))
+
+        with self.assertRaisesRegex(ExtensionError, "services remain registered"):
+            host._unload_one("example")
+
+        self.assertIn("example", host._active_ids)
+        self.assertIn(plugin, host._started_plugins)
+        self.assertEqual(host._owned_tokens["example"], ["service-token"])
 
     def test_failed_reload_restores_previous_config_and_live_extension(self) -> None:
         logger = _Logger()

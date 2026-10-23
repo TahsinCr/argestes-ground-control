@@ -239,7 +239,7 @@ class VideoSharePopup(QDialog):
             layout.addWidget(source)
             flags = "Sabit FPS" if share.fixed_frame_rate else "Değişken FPS"
             flags += (
-                " · Sunucu saati"
+                " · Zaman damgası"
                 if share.timestamp_enabled
                 else " · Zaman damgası kapalı"
             )
@@ -377,7 +377,7 @@ class VideoSharePopup(QDialog):
         form.addRow("FPS", fps)
         form.addRow(t("video.share.source.label", self._language), source)
         root.addLayout(form)
-        timestamp = QCheckBox("Sağ üstte milisaniyeli sunucu saati", editor)
+        timestamp = QCheckBox("Sağ üstte milisaniyeli zaman damgası", editor)
         timestamp.setChecked(current.timestamp_enabled if current else True)
         fixed_fps = QCheckBox("Sabit frame rate", editor)
         fixed_fps.setChecked(current.fixed_frame_rate if current else True)

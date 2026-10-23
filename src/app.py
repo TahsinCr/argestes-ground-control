@@ -49,6 +49,7 @@ def run() -> int:
     )
     runtime = ui_container.resolve(QtRuntimeServices)
     window = ui_container.resolve(MainWindow)
+    runtime.startup_changed.connect(window.show_runtime_startup)
     window.show()
 
     shutdown_signal = threading.Event()

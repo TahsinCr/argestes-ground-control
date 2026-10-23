@@ -107,7 +107,10 @@ class MutableVideoService(VideoService):
         self._source_identifier = str(identifier)
 
     def set_server_time_provider(self, provider: Callable[[], datetime | None]) -> None:
-        self._share_publisher.set_server_time_provider(provider)
+        self.set_clock_provider(provider)
+
+    def set_clock_provider(self, provider: Callable[[], datetime | None]) -> None:
+        self._share_publisher.set_clock_provider(provider)
 
     def start(self) -> None:
         self._set_connected(True)
@@ -858,7 +861,10 @@ class MultiVideoService(VideoService):
                 self._reconcile_running_sources()
 
     def set_server_time_provider(self, provider: Callable[[], datetime | None]) -> None:
-        self._share_publisher.set_server_time_provider(provider)
+        self.set_clock_provider(provider)
+
+    def set_clock_provider(self, provider: Callable[[], datetime | None]) -> None:
+        self._share_publisher.set_clock_provider(provider)
 
     def configure_sources(
         self,
@@ -951,6 +957,20 @@ class MultiVideoService(VideoService):
                 source.stop()
         self._share_publisher.stop()
         self._publish_focused_state()
+
+    def close(self, *, timeout_s: float = 3.5) -> bool:
+        """Permanently close capture and publisher resources owned by this service."""
+
+        self.stop()
+        closed = self._share_publisher.close(timeout_s=timeout_s)
+        with self._lock:
+            for source in self._sources.values():
+                source.stop()
+            for subscriptions in self._source_subscriptions.values():
+                for subscription in subscriptions:
+                    subscription.cancel()
+            self._source_subscriptions.clear()
+        return closed
 
     def reconnect(self) -> None:
         source = self._sources.get(self._active_identifier)

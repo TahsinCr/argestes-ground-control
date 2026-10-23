@@ -107,7 +107,7 @@ class CameraRuntime:
         )
         # Camera outputs use their own wall clock; competition time belongs to
         # a separate optional extension and must not block generic streaming.
-        self.video.set_server_time_provider(lambda: datetime.now(UTC))
+        self.video.set_clock_provider(lambda: datetime.now(UTC))
         self.video.configure_shares(config.outputs)
         self._worker = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="CameraConfig"
@@ -128,7 +128,8 @@ class CameraRuntime:
         with self._lock:
             self._started = False
         self._worker.shutdown(wait=True, cancel_futures=True)
-        self.video.stop()
+        if not self.video.close():
+            raise RuntimeError("One or more camera output workers did not shut down")
 
     def save_sources(
         self, sources: tuple[VideoSourceConfig, ...], active_id: str

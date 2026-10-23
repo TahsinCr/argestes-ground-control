@@ -10,6 +10,74 @@ from extensions.camera.publishing import VideoSharePublisher
 
 
 class VideoPublisherLifecycleTests(unittest.TestCase):
+    def test_recording_finalization_requires_confirmed_eos(self) -> None:
+        class FakeGst:
+            SECOND = 1
+
+            class FlowReturn:
+                OK = 0
+
+            class MessageType:
+                EOS = 1
+                ERROR = 2
+
+            class State:
+                NULL = 0
+
+            class StateChangeReturn:
+                FAILURE = 1
+                SUCCESS = 0
+
+        class AppSource:
+            def emit(self, _signal):
+                return FakeGst.FlowReturn.OK
+
+        class Message:
+            def __init__(self, message_type):
+                self.type = message_type
+
+            def parse_error(self):
+                return RuntimeError("muxer failed"), "test"
+
+        class Bus:
+            def __init__(self, message):
+                self.message = message
+
+            def timed_pop_filtered(self, _timeout, _mask):
+                return self.message
+
+        class Pipeline:
+            def __init__(self, message):
+                self.bus = Bus(message)
+
+            def get_bus(self):
+                return self.bus
+
+            def set_state(self, _state):
+                return FakeGst.StateChangeReturn.SUCCESS
+
+        results = (
+            (Message(FakeGst.MessageType.EOS), "finalized"),
+            (None, "eos_timeout"),
+            (Message(FakeGst.MessageType.ERROR), "pipeline_error"),
+        )
+        for message, expected in results:
+            with self.subTest(expected=expected):
+                result = VideoSharePublisher._finalize_recording(
+                    Pipeline(message), AppSource(), FakeGst
+                )
+                self.assertEqual(result.status, expected)
+                self.assertEqual(result.finalized, expected == "finalized")
+
+    def test_minimum_resolution_applies_to_streams_not_local_recordings(self) -> None:
+        frame = SimpleNamespace(width=320, height=240)
+        recording = SimpleNamespace(output_type="record")
+        stream = SimpleNamespace(output_type="stream")
+
+        VideoSharePublisher._validate_minimum_resolution(recording, frame)
+        with self.assertRaisesRegex(RuntimeError, "320x240"):
+            VideoSharePublisher._validate_minimum_resolution(stream, frame)
+
     def test_reconfigure_waits_for_old_pipeline_finalization_without_blocking(self) -> None:
         publisher = VideoSharePublisher(EventBus())
         old_started = threading.Event()
