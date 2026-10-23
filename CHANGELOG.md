@@ -41,6 +41,19 @@ Release headings link each entry to its release date.
 
 ### Fixed
 
+* Extension discovery now reconciles the workspace UI when a refresh unloads a
+  removed package or one of its dependents. Stale panel/status contributions and
+  categories are removed without rebuilding unaffected extensions.
+* Camera clock preferences survive a temporarily missing clock provider. The
+  unavailable saved source remains visible and disabled until the operator
+  selects another one; clock lists refresh when their settings view is opened.
+  The camera setting now states visibly that it applies to all output timestamps.
+* Telemetry clock-field choices are refreshed when the settings page is opened
+  again, so newly registered sources become selectable without a new event
+  framework.
+* Disabled-extension settings can save edits to keys already present in that
+  extension's configuration, even when the manifest has no schema for them.
+  New undeclared keys remain rejected.
 * Fixed the joystick channel and button tables' heading rows stretching to fill
   unused vertical space, which pushed the controls down and made the columns
   look misaligned.

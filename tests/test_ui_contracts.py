@@ -84,6 +84,7 @@ class UiContractTests(unittest.TestCase):
         now = {
             "local": datetime(2026, 10, 23, 12, 34, 56, tzinfo=UTC),
             "competition": None,
+            "later": datetime(2026, 10, 23, 12, 36, 0, tzinfo=UTC),
         }
         clocks = ClockReferenceRegistry()
         local_id = clocks.register(
@@ -122,6 +123,24 @@ class UiContractTests(unittest.TestCase):
                     available[competition_key].flags() & Qt.ItemFlag.ItemIsEnabled
                 )
 
+                later_id = clocks.register(
+                    "later_source", "server", "Later server time", lambda: now["later"]
+                )
+                later_key = clock_field_key(later_id)
+                page.show()
+                self.app.processEvents()
+                refreshed = {
+                    page.available.item(index).data(Qt.ItemDataRole.UserRole)
+                    for index in range(page.available.count())
+                }
+                self.assertIn(later_key, refreshed)
+                available = {
+                    page.available.item(index).data(Qt.ItemDataRole.UserRole): (
+                        page.available.item(index)
+                    )
+                    for index in range(page.available.count())
+                }
+
                 page.available.setCurrentItem(available[local_key])
                 page.add()
                 page.apply()
@@ -142,12 +161,133 @@ class UiContractTests(unittest.TestCase):
                 self.assertEqual(panel.readouts[competition_key].text(), "12:35:01")
             finally:
                 if page is not None:
+                    page.close()
                     page.deleteLater()
                 if panel is not None:
                     panel.close()
                     panel.deleteLater()
                 self.app.processEvents()
                 backend.shutdown()
+
+    def test_camera_clock_selector_refreshes_and_preserves_missing_choice(self):
+        from extensions.camera.ui.video_share_popup import VideoSharePopup
+        from src.extension.api import ClockReferenceRegistry
+
+        clocks = ClockReferenceRegistry()
+        clocks.register("system", "local", "Local time", lambda: datetime.now(UTC))
+        popup = VideoSharePopup(
+            DARK,
+            language="en",
+            clock_references=clocks,
+            show_clock_selector=True,
+            output_type_filter="record",
+        )
+        changed = []
+        popup.clock_reference_changed.connect(changed.append)
+        try:
+            identifier = clocks.register(
+                "test_clock", "competition", "Competition time", lambda: datetime.now(UTC)
+            )
+            popup.show()
+            self.app.processEvents()
+            self.assertGreaterEqual(popup.clock_combo.findData(identifier), 0)
+            self.assertEqual(popup.clock_label.text(), "Clock source (all outputs)")
+
+            popup.set_clock_reference(identifier)
+            clocks.unregister(identifier)
+            popup._refresh_clock_references()
+
+            index = popup.clock_combo.findData(identifier)
+            self.assertGreaterEqual(index, 0)
+            self.assertEqual(popup.clock_combo.currentData(), identifier)
+            self.assertFalse(popup.clock_combo.model().item(index).isEnabled())
+            self.assertEqual(changed, [])
+        finally:
+            popup.close()
+            popup.deleteLater()
+            self.app.processEvents()
+
+    def test_extension_refresh_syncs_ui_for_unloaded_plugins(self):
+        from types import SimpleNamespace
+
+        class Host:
+            def __init__(self):
+                self.entries = ["camera", "mavlink"]
+                self.active = {"camera", "mavlink"}
+
+            def list_extensions(self):
+                return [
+                    SimpleNamespace(manifest=SimpleNamespace(identifier=key))
+                    for key in self.entries
+                ]
+
+            def is_active(self, identifier):
+                return identifier in self.active
+
+            def refresh_extensions(self):
+                self.entries = ["mavlink"]
+                self.active = {"mavlink"}
+
+        host = Host()
+        synchronized = []
+        window = SimpleNamespace(
+            extension_host=host,
+            _sync_extension_ui=synchronized.append,
+        )
+        window._active_extension_ids = lambda: MainWindow._active_extension_ids(
+            window
+        )
+
+        MainWindow._refresh_extension_discovery(window)
+
+        self.assertEqual(synchronized, ["camera"])
+
+    def test_extension_refresh_callback_rebuilds_installed_categories(self):
+        from types import SimpleNamespace
+
+        from src.ui.widgets.extension_panel import ExtensionPanel
+
+        def entry(identifier, category):
+            manifest = SimpleNamespace(
+                identifier=identifier,
+                category=category,
+                name=identifier,
+                description="",
+                version="1.0",
+            )
+            return SimpleNamespace(
+                manifest=manifest,
+                enabled=False,
+                pending_restart=False,
+            )
+
+        class Host:
+            entries = [entry("camera", "Media")]
+
+            def list_extensions(self):
+                return self.entries
+
+            def refresh_extensions(self):
+                raise AssertionError("the window refresh callback should be used")
+
+        host = Host()
+        callbacks = []
+
+        def refresh_discovery():
+            callbacks.append(True)
+            host.entries = [entry("telemetry_display", "Telemetry")]
+
+        panel = ExtensionPanel(host, "en", refresh_discovery=refresh_discovery)
+        try:
+            self.assertGreaterEqual(panel.category.findData("Media"), 0)
+            panel._refresh_discovery()
+            self.assertEqual(callbacks, [True])
+            self.assertEqual(panel.category.findData("Media"), -1)
+            self.assertGreaterEqual(panel.category.findData("Telemetry"), 0)
+        finally:
+            panel.close()
+            panel.deleteLater()
+            self.app.processEvents()
 
     def test_joystick_table_headers_do_not_expand_and_shift_rows(self):
         from types import SimpleNamespace

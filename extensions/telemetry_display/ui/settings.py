@@ -32,18 +32,12 @@ class TelemetrySettingsPage(QWidget):
         self.clock_references = getattr(context, "clock_references", None)
         self._clock_fields = {}
         self._clock_field_titles = {}
-        references = (
-            self.clock_references.references() if self.clock_references else ()
-        )
-        clock_specs = clock_field_specs(references)
-        self._clock_fields = {key: identifier for key, _, identifier in clock_specs}
-        self._clock_field_titles = {key: label for key, label, _ in clock_specs}
-        self.catalog = [
+        self._base_catalog = [
             (key, label)
             for _, items in TelemetryPanel.SECTION_SPECS
             for key, label in items
         ]
-        self.catalog.extend((key, label) for key, label, _ in clock_specs)
+        self._refresh_clock_catalog()
         config = self.settings.extension_config("telemetry_display")
         root = QVBoxLayout(self)
         title = QLabel(self.tr("hint"), self)
@@ -127,6 +121,41 @@ class TelemetrySettingsPage(QWidget):
     def tr(self, key):
         return t("telemetry.settings." + key, self.language)
 
+    def _refresh_clock_catalog(self):
+        previous_titles = self._clock_field_titles
+        references = (
+            self.clock_references.references() if self.clock_references else ()
+        )
+        clock_specs = clock_field_specs(references)
+        self._clock_fields = {key: identifier for key, _, identifier in clock_specs}
+        self._clock_field_titles = {key: label for key, label, _ in clock_specs}
+        self.catalog = self._base_catalog + [
+            (key, label) for key, label, _ in clock_specs
+        ]
+        if hasattr(self, "selected"):
+            for index in range(self.selected.count()):
+                item = self.selected.item(index)
+                key = item.data(Qt.ItemDataRole.UserRole)
+                identifier = clock_reference_id(key)
+                if identifier is None:
+                    continue
+                title = self._clock_field_titles.get(key)
+                if title is None:
+                    unavailable = self.tr("clock_unavailable")
+                    title = previous_titles.get(key, item.text() or identifier)
+                    suffix = f" · {unavailable}"
+                    item.setText(
+                        title if title.endswith(suffix) else f"{title}{suffix}"
+                    )
+                    item.setToolTip(self.tr("clock_unavailable"))
+                else:
+                    item.setText(title)
+                    item.setToolTip(
+                        ""
+                        if self._clock_is_available(identifier)
+                        else self.tr("clock_unavailable")
+                    )
+
     def add_key(self, key, *, preserve_unavailable=False):
         labels = dict(self.catalog)
         if key in self.fields():
@@ -155,6 +184,7 @@ class TelemetrySettingsPage(QWidget):
         ]
 
     def refresh_available(self):
+        self._refresh_clock_catalog()
         self.available.clear()
         query = self.search.text().casefold()
         chosen = set(self.fields())
@@ -170,6 +200,10 @@ class TelemetrySettingsPage(QWidget):
                     )
                     item.setToolTip(self.tr("clock_unavailable"))
                 self.available.addItem(item)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh_available()
 
     def _field_label(self, key, label):
         if key in self._clock_field_titles:

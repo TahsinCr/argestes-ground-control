@@ -150,6 +150,7 @@ class MainWindow(QMainWindow):
             self,
             apply_change=self._apply_extension_change,
             reload_extension=self._reload_extension,
+            refresh_discovery=self._refresh_extension_discovery,
         )
         self.extension_panel = self.extension_dialog.browser
 
@@ -171,6 +172,20 @@ class MainWindow(QMainWindow):
             self.extension_host.set_enabled(identifier, was_active)
             self._sync_extension_ui(identifier)
             raise
+
+    def _active_extension_ids(self) -> set[str]:
+        return {
+            item.manifest.identifier
+            for item in self.extension_host.list_extensions()
+            if self.extension_host.is_active(item.manifest.identifier)
+        }
+
+    def _refresh_extension_discovery(self) -> None:
+        active_before = self._active_extension_ids()
+        self.extension_host.refresh_extensions()
+        active_after = self._active_extension_ids()
+        for identifier in sorted(active_before ^ active_after):
+            self._sync_extension_ui(identifier)
 
     def _reload_extension(self, identifier: str) -> None:
         self._remove_extension_ui(identifier)

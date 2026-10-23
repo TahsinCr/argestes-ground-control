@@ -365,6 +365,26 @@ class ExtensionTests(unittest.TestCase):
             finally:
                 second.shutdown()
 
+    def test_disabled_extension_settings_can_edit_saved_unknown_keys_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            container = create_container(Path(directory))
+            try:
+                host = container.resolve(ExtensionHost)
+                settings = container.resolve(SettingsService)
+                settings.update_extension(
+                    "camera", config={"retained_option": "before"}
+                )
+
+                host.save_settings("camera", {"retained_option": "after"})
+
+                self.assertEqual(
+                    settings.extension_config("camera")["retained_option"], "after"
+                )
+                with self.assertRaisesRegex(ValueError, "Unknown extension setting"):
+                    host.save_settings("camera", {"new_undeclared_option": True})
+            finally:
+                container.shutdown()
+
     def test_refresh_unloads_removed_optional_extension_and_preserves_settings(self):
         from extensions.camera.runtime import CameraRuntime
 

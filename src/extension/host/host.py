@@ -399,10 +399,15 @@ class ExtensionHost:
 
     def save_settings(self, identifier: str, values: dict[str, Any]) -> None:
         manifest = self._manifests[identifier]
-        if set(values) - set(manifest.settings):
+        existing = self.settings(identifier)
+        writable = set(manifest.settings) | set(existing)
+        if set(values) - writable:
             raise ValueError("Unknown extension setting")
         for key, value in values.items():
-            kind = manifest.settings[key].get("type")
+            spec = manifest.settings.get(key)
+            if spec is None:
+                continue
+            kind = spec.get("type")
             if kind == "boolean" and not isinstance(value, bool):
                 raise ValueError(f"{key} must be boolean")
             if kind == "string" and not isinstance(value, str):
@@ -412,9 +417,9 @@ class ExtensionHost:
             ):
                 raise ValueError(f"{key} must be integer")
         if identifier in self._active_ids:
-            self._reload_baselines.setdefault(identifier, self.settings(identifier))
+            self._reload_baselines.setdefault(identifier, existing)
         self._settings_service.update_extension(
-            identifier, config={**self.settings(identifier), **values}
+            identifier, config={**existing, **values}
         )
         self._dirty_settings.add(identifier)
 

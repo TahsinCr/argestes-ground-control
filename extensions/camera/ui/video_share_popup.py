@@ -95,6 +95,10 @@ class VideoSharePopup(QDialog):
         self._clock_reference_id = str(identifier or "system.local")
         self._refresh_clock_references()
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._refresh_clock_references()
+
     def set_theme(self, theme: ThemePalette) -> None:
         self._theme = theme
         self.setStyleSheet(f"""
@@ -265,11 +269,28 @@ class VideoSharePopup(QDialog):
                     Qt.ItemDataRole.ToolTipRole,
                 )
         selected_index = self.clock_combo.findData(self._clock_reference_id)
-        if selected_index < 0:
-            selected_index = self.clock_combo.findData("system.local")
-            if selected_index >= 0:
-                self._clock_reference_id = "system.local"
-                self.clock_reference_changed.emit(self._clock_reference_id)
+        if selected_index < 0 and self._clock_reference_id:
+            self.clock_combo.addItem(
+                f"{t('video.clock.missing', self._language)} · "
+                f"{self._clock_reference_id}",
+                self._clock_reference_id,
+            )
+            selected_index = self.clock_combo.count() - 1
+            self.clock_combo.setItemData(
+                selected_index,
+                QColor(self._theme.muted_text),
+                Qt.ItemDataRole.ForegroundRole,
+            )
+            self.clock_combo.setItemData(
+                selected_index,
+                t("video.clock.missing_message", self._language),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+            model_item = getattr(self.clock_combo.model(), "item", lambda _: None)(
+                selected_index
+            )
+            if model_item is not None:
+                model_item.setEnabled(False)
         self.clock_combo.setCurrentIndex(max(0, selected_index))
         self.clock_combo.blockSignals(False)
 

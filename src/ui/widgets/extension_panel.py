@@ -74,6 +74,21 @@ class ExtensionPanel(QWidget):
         )
         return self._metadata(entry.manifest, "category")
 
+    def _refresh_categories(self) -> None:
+        selected = self.category.currentData()
+        categories = sorted(
+            {entry.manifest.category for entry in self.host.list_extensions()}
+        )
+        self.category.blockSignals(True)
+        self.category.clear()
+        self.category.addItem(
+            "All categories" if self.language == "en" else "Tüm kategoriler", ""
+        )
+        for name in categories:
+            self.category.addItem(self._category_name(name), name)
+        self.category.setCurrentIndex(max(0, self.category.findData(selected)))
+        self.category.blockSignals(False)
+
     def __init__(
         self,
         host: ExtensionHost,
@@ -81,12 +96,14 @@ class ExtensionPanel(QWidget):
         parent: QWidget | None = None,
         apply_change: Callable[[str, bool], None] | None = None,
         reload_extension: Callable[[str], None] | None = None,
+        refresh_discovery: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.host = host
         self.language = language
         self.apply_change = apply_change
         self.reload_extension = reload_extension
+        self.refresh_discovery = refresh_discovery
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         self.heading = QLabel("EXTENSIONS" if language == "en" else "EKLENTİLER")
@@ -285,18 +302,15 @@ class ExtensionPanel(QWidget):
 
     def _refresh_discovery(self) -> None:
         try:
-            self.host.refresh_extensions()
+            if self.refresh_discovery is None:
+                self.host.refresh_extensions()
+            else:
+                self.refresh_discovery()
             reload_language_packs()
         except (ExtensionError, OSError, ValueError) as exc:
             QMessageBox.warning(
                 self, "Extension" if self.language == "en" else "Eklenti", str(exc)
             )
             return
-        known = {
-            self.category.itemData(index) for index in range(self.category.count())
-        }
-        for name in sorted(
-            {entry.manifest.category for entry in self.host.list_extensions()} - known
-        ):
-            self.category.addItem(self._category_name(name), name)
+        self._refresh_categories()
         self.refresh()
