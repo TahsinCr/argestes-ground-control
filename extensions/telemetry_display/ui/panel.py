@@ -280,12 +280,41 @@ class TelemetryPanel(PanelFrame):
             }
         )
 
-    def _ensure_clock_field(self, field_key: str) -> None:
+    def _ensure_clock_field(self, field_key: str, references=None) -> None:
         identifier = clock_reference_id(field_key)
-        if identifier is None or field_key in self.readouts:
+        if identifier is None:
             return
-        label_text = identifier
+        if references is None:
+            references = (
+                self._clock_references.references()
+                if self._clock_references
+                else ()
+            )
+        previous_title = self._clock_field_titles.get(field_key)
+        label_text = next(
+            (
+                label
+                for key, label, reference_id in clock_field_specs(references)
+                if key == field_key and reference_id == identifier
+            ),
+            self._clock_field_titles.get(field_key, identifier),
+        )
         self._clock_field_ids[field_key] = identifier
+        if field_key in self.readouts:
+            if previous_title != label_text:
+                self._clock_field_titles[field_key] = label_text
+                self.readout_labels[field_key].setText(label_text.upper())
+                self._section_specs = tuple(
+                    (
+                        section,
+                        tuple(
+                            (key, label_text if key == field_key else label)
+                            for key, label in items
+                        ),
+                    )
+                    for section, items in self._section_specs
+                )
+            return
         self._clock_field_titles[field_key] = label_text
         self._section_specs = tuple(
             (
@@ -308,6 +337,9 @@ class TelemetryPanel(PanelFrame):
     def _update_clock_values(self) -> None:
         if self._clock_references is None:
             return
+        references = self._clock_references.references()
+        for field_key in self._visible_clock_fields:
+            self._ensure_clock_field(field_key, references)
         values = {}
         for field_key in self._visible_clock_fields:
             identifier = self._clock_field_ids[field_key]

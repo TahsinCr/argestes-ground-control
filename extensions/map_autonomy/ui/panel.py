@@ -57,6 +57,11 @@ _CARTO_TILE_HOSTS = frozenset(
     f"{subdomain}.basemaps.cartocdn.com" for subdomain in "abcd"
 )
 _ALLOWED_TILE_HOSTS = _CARTO_TILE_HOSTS | {"server.arcgisonline.com"}
+_BLANK_TILE_DATA_URL = QUrl(
+    'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" '
+    'width="256" height="256"><rect width="256" height="256" '
+    'fill="%230d1116"/></svg>'
+).toString().lower()
 
 
 def _map_request_allowed(
@@ -95,7 +100,7 @@ def _map_request_allowed(
         # map.html uses only these two inline resources (its empty favicon and
         # the blank-tile SVG). Avoid allowing arbitrary data documents/scripts.
         data_url = request_url.toString().lower()
-        return data_url.startswith(("data:,", "data:image/svg+xml;utf8,"))
+        return data_url in {"data:,", _BLANK_TILE_DATA_URL}
     if scheme == "http":
         cache_url = QUrl(tile_cache_url)
         return bool(

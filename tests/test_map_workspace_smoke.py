@@ -26,7 +26,7 @@ class MapWorkspaceSmokeTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            timeout=30,
+            timeout=60,
         )
         self.assertEqual(result.returncode, 0, result.stdout)
 
@@ -67,6 +67,15 @@ def _run_smoke():
             assert getattr(map_panel, "_js_ready", False), (
                 "Leaflet/WebChannel did not initialize"
             )
+            for _ in range(2):
+                map_panel._build_webview()
+                for _attempt in range(200):
+                    if getattr(map_panel, "_js_ready", False):
+                        break
+                    QTest.qWait(50)
+                assert getattr(map_panel, "_js_ready", False), (
+                    "Leaflet/WebChannel did not recover after WebEngine recreation"
+                )
             window.workspace_views.switch(original)
             window.workspace_views.switch(mission)
             QTest.qWait(30)

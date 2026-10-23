@@ -7,6 +7,8 @@ Release headings link each entry to its release date.
 
 ### Added
 
+* Extended the isolated map WebEngine smoke test to rebuild the view twice and
+  verify that Leaflet and WebChannel initialize after each recreation.
 * Registered Extension API clock sources can now be selected alongside vehicle
   telemetry fields and displayed in the existing telemetry panel. Sources that
   have not supplied a time remain listed but cannot be newly selected.
@@ -47,6 +49,17 @@ Release headings link each entry to its release date.
 
 ### Fixed
 
+* Clock samples dated more than two seconds in the future no longer appear
+  fresh. Their value remains available with unknown freshness and no fabricated
+  zero-age measurement.
+* Reserved the `system` clock namespace for host-owned clocks so normal
+  extension registration or removal calls cannot replace or unregister them.
+* Telemetry panels now resolve clock labels from current registry metadata when
+  a source is added or renamed while the panel is already open.
+* Restricted map `data:` requests to the exact empty favicon and blank-tile SVG
+  used by the packaged map page; other SVG payloads are rejected.
+* The generic extension settings page now leaves structured list/object values
+  read-only, and the host rejects type changes to saved schema-less values.
 * Fixed blank map layers when the local tile-cache server starts after the map
   page. The WebEngine request allowlist now follows the server's current
   loopback address instead of rejecting proxied vector and satellite tiles.

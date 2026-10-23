@@ -47,6 +47,8 @@ class ClockStatus:
 
 ClockProvider = Callable[[], ClockSample | datetime | None]
 
+_MAX_FUTURE_UPDATE_SKEW_SECONDS = 2.0
+
 
 @dataclass(frozen=True, slots=True)
 class ClockReference:
@@ -85,6 +87,42 @@ class ClockReferenceRegistry:
         stale_after_seconds: float | None = None,
     ) -> str:
         owner = str(extension_id).strip().lower()
+        if owner == "system":
+            raise ValueError("The system clock owner is reserved for the host")
+        return self._register(
+            owner,
+            key,
+            title,
+            provider,
+            stale_after_seconds=stale_after_seconds,
+        )
+
+    def _register_system(
+        self,
+        key: str,
+        title: str,
+        provider: ClockProvider,
+        *,
+        stale_after_seconds: float | None = None,
+    ) -> str:
+        """Register a host-owned source in the reserved ``system`` namespace."""
+        return self._register(
+            "system",
+            key,
+            title,
+            provider,
+            stale_after_seconds=stale_after_seconds,
+        )
+
+    def _register(
+        self,
+        owner: str,
+        key: str,
+        title: str,
+        provider: ClockProvider,
+        *,
+        stale_after_seconds: float | None = None,
+    ) -> str:
         local_key = str(key).strip().lower()
         display_title = str(title).strip()
         if not self._EXTENSION_ID.fullmatch(owner):
@@ -112,11 +150,15 @@ class ClockReferenceRegistry:
         return identifier
 
     def unregister(self, identifier: str) -> bool:
+        if str(identifier).strip().lower().startswith("system."):
+            raise ValueError("System clock references are owned by the host")
         with self._lock:
             return self._sources.pop(str(identifier), None) is not None
 
     def unregister_owner(self, extension_id: str) -> None:
         owner = str(extension_id).strip().lower()
+        if owner == "system":
+            raise ValueError("System clock references are owned by the host")
         prefix = owner + "."
         with self._lock:
             for identifier in tuple(self._sources):
@@ -164,10 +206,17 @@ class ClockReferenceRegistry:
             ):
                 return ClockStatus(None, None, None, ClockQuality.UNAVAILABLE)
 
-            age_seconds = max(
-                0.0,
-                (datetime.now(UTC) - sample.updated_at.astimezone(UTC)).total_seconds(),
-            )
+            skew_seconds = (
+                datetime.now(UTC) - sample.updated_at.astimezone(UTC)
+            ).total_seconds()
+            if skew_seconds < -_MAX_FUTURE_UPDATE_SKEW_SECONDS:
+                return ClockStatus(
+                    sample.value,
+                    sample.updated_at,
+                    None,
+                    ClockQuality.UNKNOWN,
+                )
+            age_seconds = max(0.0, skew_seconds)
             stale_after = entry[0].stale_after_seconds
             if stale_after is not None and age_seconds > stale_after:
                 quality = ClockQuality.STALE

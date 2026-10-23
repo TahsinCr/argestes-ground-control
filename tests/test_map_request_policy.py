@@ -102,7 +102,21 @@ class MapRequestPolicyTests(unittest.TestCase):
             self.assertFalse(allowed("javascript:alert(1)"))
             self.assertTrue(allowed("data:,"))
             self.assertTrue(
+                allowed(
+                    'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" '
+                    'width="256" height="256"><rect width="256" height="256" '
+                    'fill="%230d1116"/></svg>'
+                )
+            )
+            self.assertFalse(
                 allowed("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'/>")
+            )
+            self.assertFalse(
+                allowed(
+                    'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" '
+                    'width="256" height="256"><rect width="256" height="256" '
+                    'fill="%23ffffff"/></svg>'
+                )
             )
             self.assertFalse(allowed("data:text/html,<script>alert(1)</script>"))
             self.assertFalse(allowed("blob:https://example.com/resource"))

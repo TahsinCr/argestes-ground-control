@@ -69,15 +69,13 @@ class ExtensionHost:
         self.base_dir = base_dir
         self.container = container
         self.clock_references = ClockReferenceRegistry()
-        self.clock_references.register(
-            "system",
+        self.clock_references._register_system(
             "local",
             "System local time",
             lambda: _system_clock_sample(local=True),
             stale_after_seconds=1.0,
         )
-        self.clock_references.register(
-            "system",
+        self.clock_references._register_system(
             "utc",
             "System UTC",
             lambda: _system_clock_sample(local=False),
@@ -420,6 +418,11 @@ class ExtensionHost:
         for key, value in values.items():
             spec = manifest.settings.get(key)
             if spec is None:
+                previous = existing.get(key)
+                if previous is not None and type(value) is not type(previous):
+                    raise ValueError(
+                        f"{key} must preserve its saved JSON value type"
+                    )
                 continue
             kind = spec.get("type")
             if kind == "boolean" and not isinstance(value, bool):

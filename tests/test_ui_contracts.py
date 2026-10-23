@@ -87,8 +87,7 @@ class UiContractTests(unittest.TestCase):
             "later": datetime(2026, 10, 23, 12, 36, 0, tzinfo=UTC),
         }
         clocks = ClockReferenceRegistry()
-        local_id = clocks.register(
-            "system",
+        local_id = clocks._register_system(
             "local",
             "Local system time",
             lambda: ClockSample(now["local"], datetime.now(UTC)),
@@ -177,6 +176,33 @@ class UiContractTests(unittest.TestCase):
                 now["competition"] = datetime(2026, 10, 23, 12, 35, 1, tzinfo=UTC)
                 panel._update_clock_values()
                 self.assertEqual(panel.readouts[competition_key].text(), "12:35:01")
+
+                dynamic_id = clocks.register(
+                    "dynamic_source",
+                    "server",
+                    "Dynamic server time",
+                    lambda: ClockSample(datetime.now(UTC), datetime.now(UTC)),
+                )
+                dynamic_key = clock_field_key(dynamic_id)
+                panel.configure_layout(
+                    {
+                        "fields": [local_key, competition_key, later_key, dynamic_key],
+                        "layout": "list",
+                    }
+                )
+                self.assertEqual(
+                    panel.readout_labels[dynamic_key].text(), "DYNAMIC SERVER TIME"
+                )
+                clocks.register(
+                    "dynamic_source",
+                    "server",
+                    "Renamed server time",
+                    lambda: ClockSample(datetime.now(UTC), datetime.now(UTC)),
+                )
+                panel._update_clock_values()
+                self.assertEqual(
+                    panel.readout_labels[dynamic_key].text(), "RENAMED SERVER TIME"
+                )
             finally:
                 if page is not None:
                     page.close()
@@ -187,12 +213,35 @@ class UiContractTests(unittest.TestCase):
                 self.app.processEvents()
                 backend.shutdown()
 
+    def test_generic_extension_settings_leave_untyped_structures_read_only(self):
+        from types import SimpleNamespace
+
+        from src.ui.widgets.settings_page import ConfigSettingsPage
+
+        page = ConfigSettingsPage(
+            SimpleNamespace(
+                settings=lambda _identifier: {
+                    "video_sources": [{"source_id": "front", "uri": "test://front"}],
+                    "simple_option": "enabled",
+                }
+            ),
+            SimpleNamespace(identifier="camera", settings={}),
+            "en",
+        )
+        try:
+            self.assertTrue(page.controls["video_sources"].isReadOnly())
+            self.assertIn("own settings page", page.controls["video_sources"].toolTip())
+        finally:
+            page.close()
+            page.deleteLater()
+            self.app.processEvents()
+
     def test_camera_clock_selector_refreshes_and_preserves_missing_choice(self):
         from extensions.camera.ui.video_share_popup import VideoSharePopup
         from src.extension.api import ClockReferenceRegistry
 
         clocks = ClockReferenceRegistry()
-        clocks.register("system", "local", "Local time", lambda: datetime.now(UTC))
+        clocks._register_system("local", "Local time", lambda: datetime.now(UTC))
         popup = VideoSharePopup(
             DARK,
             language="en",
@@ -347,8 +396,8 @@ class UiContractTests(unittest.TestCase):
         from src.extension.api import ClockReferenceRegistry
 
         clocks = ClockReferenceRegistry()
-        clocks.register(
-            "system", "local", "System local time", lambda: datetime.now().astimezone()
+        clocks._register_system(
+            "local", "System local time", lambda: datetime.now().astimezone()
         )
         unavailable_id = clocks.register(
             "test_clock", "remote", "Remote clock", lambda: None

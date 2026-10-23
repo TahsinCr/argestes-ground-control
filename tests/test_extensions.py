@@ -372,13 +372,23 @@ class ExtensionTests(unittest.TestCase):
                 host = container.resolve(ExtensionHost)
                 settings = container.resolve(SettingsService)
                 settings.update_extension(
-                    "camera", config={"retained_option": "before"}
+                    "camera",
+                    config={
+                        "retained_option": "before",
+                        "video_sources": [{"source_id": "front", "uri": "test://front"}],
+                    },
                 )
 
                 host.save_settings("camera", {"retained_option": "after"})
 
                 self.assertEqual(
                     settings.extension_config("camera")["retained_option"], "after"
+                )
+                with self.assertRaisesRegex(ValueError, "saved JSON value type"):
+                    host.save_settings("camera", {"video_sources": {"front": "bad"}})
+                self.assertEqual(
+                    settings.extension_config("camera")["video_sources"],
+                    [{"source_id": "front", "uri": "test://front"}],
                 )
                 with self.assertRaisesRegex(ValueError, "Unknown extension setting"):
                     host.save_settings("camera", {"new_undeclared_option": True})

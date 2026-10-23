@@ -91,12 +91,20 @@ class ClockReferenceTests(unittest.TestCase):
             "Unknown freshness",
             lambda: ClockSample(value, old_sample_time),
         )
+        future_sample = registry.register(
+            "clock_test",
+            "future_sample",
+            "Future sample",
+            lambda: ClockSample(value, now + timedelta(days=1)),
+            stale_after_seconds=5.0,
+        )
 
         live_status = registry.status(live)
         estimated_status = registry.status(estimated)
         stale_status = registry.status(stale)
         legacy_status = registry.status(legacy)
         unknown_status = registry.status(unknown_freshness)
+        future_status = registry.status(future_sample)
 
         self.assertIs(live_status.quality, ClockQuality.LIVE)
         self.assertEqual(live_status.value, value)
@@ -111,6 +119,23 @@ class ClockReferenceTests(unittest.TestCase):
         self.assertIs(unknown_status.quality, ClockQuality.UNKNOWN)
         self.assertGreaterEqual(unknown_status.age_seconds, 60.0)
         self.assertEqual(registry.current_time(legacy), value)
+        self.assertEqual(future_status.value, value)
+        self.assertIsNone(future_status.age_seconds)
+        self.assertIs(future_status.quality, ClockQuality.UNKNOWN)
+
+    def test_system_clock_references_are_reserved_for_the_host(self) -> None:
+        registry = ClockReferenceRegistry()
+        value = datetime.now(UTC)
+        identifier = registry._register_system("local", "Local", lambda: value)
+
+        with self.assertRaisesRegex(ValueError, "reserved for the host"):
+            registry.register("system", "local", "Replacement", lambda: None)
+        with self.assertRaisesRegex(ValueError, "owned by the host"):
+            registry.unregister(identifier)
+        with self.assertRaisesRegex(ValueError, "owned by the host"):
+            registry.unregister_owner("system")
+
+        self.assertEqual(registry.references()[0].title, "Local")
 
     def test_camera_clock_setting_round_trips_without_using_display_title(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

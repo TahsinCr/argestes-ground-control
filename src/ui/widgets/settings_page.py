@@ -83,6 +83,15 @@ class ConfigSettingsPage(QWidget):
                     json.dumps(value, ensure_ascii=False, indent=2), self
                 )
                 widget.setMaximumHeight(180)
+                if isinstance(value, (list, dict)):
+                    widget.setReadOnly(True)
+                    widget.setToolTip(
+                        "Structured settings are read-only here; use the extension's "
+                        "own settings page to change them."
+                        if language == "en"
+                        else "Yapılandırılmış ayarlar burada salt okunur. Değiştirmek "
+                        "için eklentinin kendi ayar sayfasını kullanın."
+                    )
             else:
                 widget = QLineEdit(str(value), self)
                 if "password" in key.lower():
