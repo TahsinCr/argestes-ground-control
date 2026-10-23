@@ -78,6 +78,7 @@
   "telemetry.settings.columns": "Columns",
   "telemetry.settings.apply": "Apply",
   "telemetry.settings.saved": "Telemetry layout saved.",
+  "telemetry.settings.clock_unavailable": "This clock source is not currently providing a value and cannot be selected.",
   "telemetry.section.position": "Position and speed",
   "telemetry.section.battery": "Battery",
   "telemetry.section.gps": "GPS",

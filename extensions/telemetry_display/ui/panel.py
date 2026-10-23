@@ -1,4 +1,4 @@
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -14,7 +14,12 @@ from src.ui.i18n import t
 from src.ui.themes.style import ThemePalette
 from src.ui.widgets.common import PanelFrame
 
-from ..fields import EXTRA_FIELDS, format_field
+from ..fields import (
+    EXTRA_FIELDS,
+    clock_field_specs,
+    clock_reference_id,
+    format_field,
+)
 
 
 class TelemetryPanel(PanelFrame):
@@ -68,11 +73,17 @@ class TelemetryPanel(PanelFrame):
         fields = config.get("fields", self.DEFAULT_FIELDS)
         if not isinstance(fields, (list, tuple)):
             fields = self.DEFAULT_FIELDS
+        for key in fields:
+            if isinstance(key, str):
+                self._ensure_clock_field(key)
         selected = list(
             dict.fromkeys(
                 key for key in fields if isinstance(key, str) and key in self.readouts
             )
         )
+        self._visible_clock_fields = {
+            key for key in selected if key in self._clock_field_ids
+        }
         try:
             columns = max(1, min(4, int(config.get("columns", 2))))
         except (TypeError, ValueError):
@@ -92,7 +103,7 @@ class TelemetryPanel(PanelFrame):
         positions = {}
         order = []
         owners = {
-            key: section for section, items in self.SECTION_SPECS for key, _ in items
+            key: section for section, items in self._section_specs for key, _ in items
         }
         for key in selected:
             section = owners[key] if groups else first
@@ -119,6 +130,11 @@ class TelemetryPanel(PanelFrame):
             self.content_layout.insertWidget(
                 index * 2 + 1, self.section_frames[section]
             )
+        if self._visible_clock_fields:
+            self._clock_timer.start()
+            self._update_clock_values()
+        else:
+            self._clock_timer.stop()
 
     def __init__(
         self,
@@ -126,6 +142,7 @@ class TelemetryPanel(PanelFrame):
         subtitle: str,
         theme: ThemePalette,
         parent: QWidget | None = None,
+        clock_references=None,
     ) -> None:
         super().__init__(title, subtitle, parent)
         self.setMinimumWidth(300)
@@ -146,7 +163,24 @@ class TelemetryPanel(PanelFrame):
         self.section_frames = {}
         self.section_grids = {}
         self._readout_cache: dict[str, str] = {}
-        for section_key, items in self.SECTION_SPECS:
+        self._clock_references = clock_references
+        self._clock_field_ids: dict[str, str] = {}
+        self._clock_field_titles: dict[str, str] = {}
+        self._visible_clock_fields: set[str] = set()
+        clock_items = []
+        references = clock_references.references() if clock_references else ()
+        for key, label, identifier in clock_field_specs(references):
+            self._clock_field_ids[key] = identifier
+            self._clock_field_titles[key] = label
+            clock_items.append((key, label))
+        self._section_specs = tuple(
+            (
+                section,
+                items + tuple(clock_items) if section == "sensors" else items,
+            )
+            for section, items in self.SECTION_SPECS
+        )
+        for section_key, items in self._section_specs:
             title_label = QLabel("", content)
             title_label.setProperty("role", "section-label")
             self.section_titles[section_key] = title_label
@@ -179,6 +213,9 @@ class TelemetryPanel(PanelFrame):
                 self.readouts[key] = value
             self.content_layout.addWidget(section)
         self.content_layout.addStretch(1)
+        self._clock_timer = QTimer(self)
+        self._clock_timer.setInterval(1000)
+        self._clock_timer.timeout.connect(self._update_clock_values)
         self.set_language(self._language)
         self.set_visible_fields()
 
@@ -187,16 +224,21 @@ class TelemetryPanel(PanelFrame):
 
     def set_language(self, language: str) -> None:
         self._language = language
-        for section, items in self.SECTION_SPECS:
+        for section, items in self._section_specs:
             self.section_titles[section].setText(
                 t(f"telemetry.section.{section}", language).upper()
             )
             for key, label_key in items:
-                self.readout_labels[key].setText(t(label_key, language).upper())
+                label = self._clock_field_titles.get(key)
+                self.readout_labels[key].setText(
+                    (label if label is not None else t(label_key, language)).upper()
+                )
 
     def update_snapshot(self, snapshot: TelemetrySnapshot) -> None:
         if not (snapshot.telemetry_link and snapshot.autopilot_link):
-            values = {key: "--" for key in self.readouts}
+            values = {
+                key: "--" for key in self.readouts if key not in self._clock_field_ids
+            }
             values["flight_mode"] = snapshot.flight_mode
             self._set_readout_values(values)
             return
@@ -236,6 +278,41 @@ class TelemetryPanel(PanelFrame):
                 for key in keys
             }
         )
+
+    def _ensure_clock_field(self, field_key: str) -> None:
+        identifier = clock_reference_id(field_key)
+        if identifier is None or field_key in self.readouts:
+            return
+        label_text = identifier
+        self._clock_field_ids[field_key] = identifier
+        self._clock_field_titles[field_key] = label_text
+        self._section_specs = tuple(
+            (
+                section,
+                items + ((field_key, label_text),) if section == "sensors" else items,
+            )
+            for section, items in self._section_specs
+        )
+        section = self.section_frames["sensors"]
+        label = QLabel(label_text.upper(), section)
+        label.setProperty("role", "readout-label")
+        value = QLabel("--", section)
+        value.setProperty("role", "readout-value")
+        value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        value.setMinimumWidth(0)
+        value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.readout_labels[field_key] = label
+        self.readouts[field_key] = value
+
+    def _update_clock_values(self) -> None:
+        if self._clock_references is None:
+            return
+        values = {}
+        for field_key in self._visible_clock_fields:
+            identifier = self._clock_field_ids[field_key]
+            value = self._clock_references.current_time(identifier)
+            values[field_key] = value.strftime("%H:%M:%S") if value else "--"
+        self._set_readout_values(values)
 
     def _set_readout_values(self, values: dict[str, str]) -> None:
         for key, text in values.items():

@@ -7,6 +7,9 @@ Release headings link each entry to its release date.
 
 ### Added
 
+* Registered Extension API clock sources can now be selected alongside vehicle
+  telemetry fields and displayed in the existing telemetry panel. Sources that
+  have not supplied a time remain listed but cannot be newly selected.
 * Added a shared clock-reference registry to the Extension API. Clock sources
   expose stable identifiers and provider labels separately; the camera settings
   page defaults to local system time, with UTC and available TEKNOFEST profile
@@ -38,6 +41,9 @@ Release headings link each entry to its release date.
 
 ### Fixed
 
+* Fixed the joystick channel and button tables' heading rows stretching to fill
+  unused vertical space, which pushed the controls down and made the columns
+  look misaligned.
 * Fixed system clock references being normalized to UTC, which discarded the
   local timezone requested by camera timestamp settings.
 * Parameter edits now remain local drafts until the operator selects **Apply**.

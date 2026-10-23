@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QTabWidget,
     QDoubleSpinBox,
@@ -156,6 +157,9 @@ class JoystickDialog(QDialog):
         for column, key in enumerate(headers):
             label = QLabel(t(key, self._language), content)
             label.setProperty("role", "section-heading")
+            label.setSizePolicy(
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+            )
             grid.addWidget(label, 0, column)
 
         for index in range(16):
@@ -233,6 +237,9 @@ class JoystickDialog(QDialog):
         ):
             label = QLabel(t(key, self._language), content)
             label.setProperty("role", "section-heading")
+            label.setSizePolicy(
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+            )
             grid.addWidget(label, 0, column)
         for index in range(10):
             grid.addWidget(

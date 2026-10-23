@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 from src.services.settings import SettingsService
 from src.ui.i18n import t
 
+from ..fields import clock_field_specs, clock_reference_id
 from .panel import TelemetryPanel
 
 
@@ -28,11 +29,21 @@ class TelemetrySettingsPage(QWidget):
         super().__init__(parent)
         self.settings = context.services.resolve(SettingsService)
         self.language = self.settings.current.ui.language
+        self.clock_references = getattr(context, "clock_references", None)
+        self._clock_fields = {}
+        self._clock_field_titles = {}
+        references = (
+            self.clock_references.references() if self.clock_references else ()
+        )
+        clock_specs = clock_field_specs(references)
+        self._clock_fields = {key: identifier for key, _, identifier in clock_specs}
+        self._clock_field_titles = {key: label for key, label, _ in clock_specs}
         self.catalog = [
             (key, label)
             for _, items in TelemetryPanel.SECTION_SPECS
             for key, label in items
         ]
+        self.catalog.extend((key, label) for key, label, _ in clock_specs)
         config = self.settings.extension_config("telemetry_display")
         root = QVBoxLayout(self)
         title = QLabel(self.tr("hint"), self)
@@ -67,7 +78,7 @@ class TelemetrySettingsPage(QWidget):
         for key in fields:
             if not isinstance(key, str):
                 continue
-            self.add_key(key)
+            self.add_key(key, preserve_unavailable=True)
         actions = QHBoxLayout()
         for label, callback in (
             ("add", self.add),
@@ -116,12 +127,25 @@ class TelemetrySettingsPage(QWidget):
     def tr(self, key):
         return t("telemetry.settings." + key, self.language)
 
-    def add_key(self, key):
+    def add_key(self, key, *, preserve_unavailable=False):
         labels = dict(self.catalog)
-        if key not in labels or key in self.fields():
+        if key in self.fields():
             return
-        item = QListWidgetItem(t(labels[key], self.language))
+        identifier = clock_reference_id(key)
+        if key in labels:
+            label = self._field_label(key, labels[key])
+        elif identifier is not None:
+            label = self._clock_field_titles.get(key, identifier)
+        else:
+            return
+        available = identifier is None or self._clock_is_available(identifier)
+        if not available and not preserve_unavailable:
+            self.result.setText(self.tr("clock_unavailable"))
+            return
+        item = QListWidgetItem(label)
         item.setData(Qt.ItemDataRole.UserRole, key)
+        if not available:
+            item.setToolTip(self.tr("clock_unavailable"))
         self.selected.addItem(item)
 
     def fields(self):
@@ -135,11 +159,27 @@ class TelemetrySettingsPage(QWidget):
         query = self.search.text().casefold()
         chosen = set(self.fields())
         for key, label in self.catalog:
-            text = t(label, self.language)
+            text = self._field_label(key, label)
             if key not in chosen and query in (text + " " + key).casefold():
                 item = QListWidgetItem(text)
                 item.setData(Qt.ItemDataRole.UserRole, key)
+                identifier = self._clock_fields.get(key)
+                if identifier is not None and not self._clock_is_available(identifier):
+                    item.setFlags(
+                        item.flags() & ~Qt.ItemFlag.ItemIsEnabled
+                    )
+                    item.setToolTip(self.tr("clock_unavailable"))
                 self.available.addItem(item)
+
+    def _field_label(self, key, label):
+        if key in self._clock_field_titles:
+            return self._clock_field_titles[key]
+        return t(label, self.language)
+
+    def _clock_is_available(self, identifier):
+        if self.clock_references is None:
+            return False
+        return self.clock_references.current_time(identifier) is not None
 
     def add(self):
         for item in self.available.selectedItems():

@@ -78,6 +78,7 @@
   "telemetry.settings.columns": "Sütun sayısı",
   "telemetry.settings.apply": "Uygula",
   "telemetry.settings.saved": "Telemetri düzeni kaydedildi.",
+  "telemetry.settings.clock_unavailable": "Saat kaynağı şu anda veri sağlamıyor; seçilebilir değil.",
   "telemetry.section.position": "Konum ve hız",
   "telemetry.section.battery": "Batarya",
   "telemetry.section.gps": "GPS",

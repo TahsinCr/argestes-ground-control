@@ -76,6 +76,41 @@ UNITS = {
     "radio_tx_buffer": "%",
 }
 
+CLOCK_FIELD_PREFIX = "clock:"
+
+
+def clock_field_key(identifier: str) -> str:
+    """Return the persistent telemetry-field key for an Extension API clock."""
+    return f"{CLOCK_FIELD_PREFIX}{identifier}"
+
+
+def clock_reference_id(field_key: str) -> str | None:
+    """Extract a clock reference identifier from a telemetry-field key."""
+    if not field_key.startswith(CLOCK_FIELD_PREFIX):
+        return None
+    identifier = field_key[len(CLOCK_FIELD_PREFIX) :]
+    return identifier or None
+
+
+def clock_field_specs(references):
+    """Build stable display-field keys and unambiguous titles for clock sources."""
+    references = tuple(references)
+    title_counts = {}
+    for reference in references:
+        title_counts[reference.title] = title_counts.get(reference.title, 0) + 1
+    return tuple(
+        (
+            clock_field_key(reference.identifier),
+            (
+                f"{reference.title} ({reference.extension_id})"
+                if title_counts[reference.title] > 1
+                else reference.title
+            ),
+            reference.identifier,
+        )
+        for reference in references
+    )
+
 
 def format_field(snapshot, key):
     import math

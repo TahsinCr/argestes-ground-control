@@ -22,7 +22,10 @@ class TelemetryDisplayExtension:
 
         from .ui.panel import TelemetryPanel
 
-        panel = TelemetryPanel("", "", theme, parent)
+        panel = TelemetryPanel(
+            "", "", theme, parent,
+            clock_references=getattr(context, "clock_references", None),
+        )
         settings = context.services.resolve(SettingsService)
         feed = QtTelemetryService(context.services.resolve(TelemetryService), panel)
         feed.telemetry_updated.connect(panel.update_snapshot)

@@ -73,6 +73,117 @@ class UiContractTests(unittest.TestCase):
         self.assertTrue(all(value.isHidden() for value in panel.readouts.values()))
         panel.close()
 
+    def test_telemetry_clock_sources_are_selectable_and_refresh_live(self):
+        from types import SimpleNamespace
+
+        from extensions.telemetry_display.fields import clock_field_key
+        from extensions.telemetry_display.ui.settings import TelemetrySettingsPage
+        from src.extension.api import ClockReferenceRegistry
+        from src.services.settings import SettingsService
+
+        now = {
+            "local": datetime(2026, 10, 23, 12, 34, 56, tzinfo=UTC),
+            "competition": None,
+        }
+        clocks = ClockReferenceRegistry()
+        local_id = clocks.register(
+            "system", "local", "Local system time", lambda: now["local"]
+        )
+        competition_id = clocks.register(
+            "competition",
+            "server",
+            "Competition server time",
+            lambda: now["competition"],
+        )
+        local_key = clock_field_key(local_id)
+        competition_key = clock_field_key(competition_id)
+
+        with tempfile.TemporaryDirectory() as directory:
+            backend = create_container(Path(directory))
+            panel = None
+            page = None
+            try:
+                settings = backend.resolve(SettingsService)
+                page = TelemetrySettingsPage(
+                    SimpleNamespace(services=backend, clock_references=clocks)
+                )
+                available = {
+                    page.available.item(index).data(Qt.ItemDataRole.UserRole): (
+                        page.available.item(index)
+                    )
+                    for index in range(page.available.count())
+                }
+                self.assertIn(local_key, available)
+                self.assertTrue(
+                    available[local_key].flags() & Qt.ItemFlag.ItemIsEnabled
+                )
+                self.assertIn(competition_key, available)
+                self.assertFalse(
+                    available[competition_key].flags() & Qt.ItemFlag.ItemIsEnabled
+                )
+
+                page.available.setCurrentItem(available[local_key])
+                page.add()
+                page.apply()
+                self.assertIn(
+                    local_key,
+                    settings.extension_config("telemetry_display")["fields"],
+                )
+
+                panel = TelemetryPanel("", "", DARK, clock_references=clocks)
+                panel.configure_layout(
+                    {"fields": [local_key, competition_key], "layout": "list"}
+                )
+                panel.update_snapshot(TelemetrySnapshot.zero())
+                self.assertEqual(panel.readouts[local_key].text(), "12:34:56")
+                self.assertEqual(panel.readouts[competition_key].text(), "--")
+                now["competition"] = datetime(2026, 10, 23, 12, 35, 1, tzinfo=UTC)
+                panel._update_clock_values()
+                self.assertEqual(panel.readouts[competition_key].text(), "12:35:01")
+            finally:
+                if page is not None:
+                    page.deleteLater()
+                if panel is not None:
+                    panel.close()
+                    panel.deleteLater()
+                self.app.processEvents()
+                backend.shutdown()
+
+    def test_joystick_table_headers_do_not_expand_and_shift_rows(self):
+        from types import SimpleNamespace
+
+        from PyQt6.QtWidgets import QTabWidget
+
+        from extensions.joystick.ui.dialog import JoystickDialog
+        from extensions.joystick.models import JoystickState
+
+        dialog = JoystickDialog(
+            SimpleNamespace(extension_config=lambda _key: {}),
+            SimpleNamespace(devices=lambda: (), state=JoystickState()),
+            "tr",
+            DARK,
+        )
+        try:
+            dialog.resize(900, 650)
+            dialog.show()
+            tabs = dialog.findChild(QTabWidget)
+            for index in (0, 1):
+                tabs.setCurrentIndex(index)
+                self.app.processEvents()
+                scroll = tabs.widget(index)
+                grid = scroll.widget().layout()
+                header = grid.itemAtPosition(0, 0).widget()
+                first_row = grid.itemAtPosition(1, 0).widget()
+                self.assertLessEqual(header.height(), header.sizeHint().height() + 1)
+                self.assertLessEqual(
+                    first_row.y() - header.y() - header.height(),
+                    max(24, grid.verticalSpacing() + 1),
+                )
+        finally:
+            dialog.close()
+            dialog.deleteLater()
+            self.app.processEvents()
+
     def test_unavailable_camera_clock_is_visible_and_rejected_with_warning(self):
         from extensions.camera.ui.video_share_popup import VideoSharePopup
         from src.extension.api import ClockReferenceRegistry
