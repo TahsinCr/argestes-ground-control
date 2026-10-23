@@ -12,7 +12,7 @@ os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --no-sandbox")
 
 from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
-from PyQt6.QtGui import QMouseEvent, QPalette
+from PyQt6.QtGui import QColor, QMouseEvent, QPalette
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
     QApplication,
@@ -72,6 +72,48 @@ class UiContractTests(unittest.TestCase):
         panel.configure_layout({"fields": [], "columns": "bad"})
         self.assertTrue(all(value.isHidden() for value in panel.readouts.values()))
         panel.close()
+
+    def test_unavailable_camera_clock_is_visible_and_rejected_with_warning(self):
+        from extensions.camera.ui.video_share_popup import VideoSharePopup
+        from src.extension.api import ClockReferenceRegistry
+
+        clocks = ClockReferenceRegistry()
+        clocks.register(
+            "system", "local", "System local time", lambda: datetime.now().astimezone()
+        )
+        unavailable_id = clocks.register(
+            "test_clock", "remote", "Remote clock", lambda: None
+        )
+        popup = VideoSharePopup(
+            DARK,
+            language="en",
+            clock_references=clocks,
+            show_clock_selector=True,
+        )
+        try:
+            popup.set_clock_reference("system.local")
+            unavailable_index = popup.clock_combo.findData(unavailable_id)
+            self.assertGreaterEqual(unavailable_index, 0)
+            self.assertIn("unavailable", popup.clock_combo.itemText(unavailable_index))
+            self.assertEqual(
+                popup.clock_combo.itemData(
+                    unavailable_index, Qt.ItemDataRole.ForegroundRole
+                ),
+                QColor(DARK.muted_text),
+            )
+
+            popup.clock_combo.setCurrentIndex(unavailable_index)
+            with patch(
+                "extensions.camera.ui.video_share_popup.QMessageBox.warning"
+            ) as warning:
+                popup.clock_combo.activated.emit(unavailable_index)
+
+            warning.assert_called_once()
+            self.assertEqual(popup.clock_combo.currentData(), "system.local")
+        finally:
+            popup.close()
+            popup.deleteLater()
+            self.app.processEvents()
 
     def test_telemetry_settings_preserve_field_order_and_unknown_configuration(self):
         from types import SimpleNamespace

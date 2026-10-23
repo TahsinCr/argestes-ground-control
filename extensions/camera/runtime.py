@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -23,10 +23,10 @@ class CameraConfiguration:
     sources: tuple[VideoSourceConfig, ...]
     active_source_id: str
     outputs: tuple[VideoShareConfig, ...]
-    clock_reference_id: str = "system.utc"
+    clock_reference_id: str = "system.local"
 
     def __post_init__(self) -> None:
-        identifier = str(self.clock_reference_id).strip() or "system.utc"
+        identifier = str(self.clock_reference_id).strip() or "system.local"
         object.__setattr__(self, "clock_reference_id", identifier)
 
 
@@ -77,7 +77,7 @@ class CameraSettingsStore:
             sources,
             selected,
             outputs,
-            str(payload.get("clock_reference_id", "system.utc")),
+            str(payload.get("clock_reference_id", "system.local")),
         )
 
     def save(self, configuration: CameraConfiguration) -> None:
@@ -193,7 +193,7 @@ class CameraRuntime:
 
     def _current_clock_time(self) -> datetime | None:
         if self.clock_references is None:
-            return datetime.now(UTC)
+            return datetime.now().astimezone()
         return self.clock_references.current_time(self._clock_reference_id)
 
     def _apply_outputs(self, config: CameraConfiguration) -> None:

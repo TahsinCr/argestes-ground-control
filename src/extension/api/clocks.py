@@ -1,11 +1,11 @@
-"""Small shared registry for extension-provided wall-clock references."""
+"""Small shared registry for system and extension-provided wall clocks."""
 
 from __future__ import annotations
 
 import re
 import threading
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Callable
 
 
@@ -25,7 +25,8 @@ class ClockReferenceRegistry:
     """Thread-safe registry shared through :class:`ExtensionContext`.
 
     Identifiers are derived from the owning extension and its stable local key;
-    display titles are intentionally not used as persistent identity.
+    display titles are intentionally not used as persistent identity. Providers
+    should return an aware datetime in the timezone that should be displayed.
     """
 
     _EXTENSION_ID = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
@@ -90,7 +91,7 @@ class ClockReferenceRegistry:
                 return None
             if value.utcoffset() is None:
                 return None
-            return value.astimezone(UTC)
+            return value
         except Exception:
             # A provider can temporarily be unavailable (for example, before
             # a server has supplied its first clock sample).

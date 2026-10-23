@@ -378,8 +378,7 @@ class VideoSharePublisher:
                 clock_reference, clock_started_at = self._sample_clock_reference(
                     clock_provider
                 )
-                if clock_reference is None:
-                    next_clock_check = time.monotonic() + 1.0
+                next_clock_check = time.monotonic() + 1.0
             Gst = self._load_gstreamer()
             output_path = (
                 self._recording_path(config) if config.output_type == "record" else None
@@ -463,11 +462,8 @@ class VideoSharePublisher:
                             self._clock_provider_snapshot()
                         )
                         provider_changed = current_generation != clock_generation
-                        clock_retry_due = (
-                            clock_reference is None
-                            and time.monotonic() >= next_clock_check
-                        )
-                        if provider_changed or clock_retry_due:
+                        clock_check_due = time.monotonic() >= next_clock_check
+                        if provider_changed or clock_check_due:
                             clock_generation = current_generation
                             clock_reference, clock_started_at = (
                                 self._sample_clock_reference(clock_provider)

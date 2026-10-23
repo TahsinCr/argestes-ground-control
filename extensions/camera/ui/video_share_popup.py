@@ -4,6 +4,7 @@ from dataclasses import replace
 from uuid import uuid4
 
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -13,6 +14,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -62,7 +64,7 @@ class VideoSharePopup(QDialog):
         self._theme = theme
         self._language = language
         self._clock_references = clock_references
-        self._clock_reference_id = "system.utc"
+        self._clock_reference_id = "system.local"
         self._show_clock_selector = bool(show_clock_selector)
         self._shares: list[VideoShareConfig] = []
         self._states: dict[str, VideoShareState] = {}
@@ -79,7 +81,7 @@ class VideoSharePopup(QDialog):
         self.set_theme(theme)
 
     def set_clock_reference(self, identifier: str) -> None:
-        self._clock_reference_id = str(identifier or "system.utc")
+        self._clock_reference_id = str(identifier or "system.local")
         self._refresh_clock_references()
 
     def set_theme(self, theme: ThemePalette) -> None:
@@ -189,9 +191,7 @@ class VideoSharePopup(QDialog):
         self.clock_label = QLabel(t("video.clock.label", self._language), self)
         self.clock_label.setProperty("role", "detail")
         self.clock_combo = QComboBox(self)
-        self.clock_combo.currentIndexChanged.connect(
-            self._clock_reference_selected
-        )
+        self.clock_combo.activated.connect(self._clock_reference_selected)
         self.clock_row.addWidget(self.clock_label)
         self.clock_row.addWidget(self.clock_combo, 1)
         root.addLayout(self.clock_row)
@@ -216,26 +216,67 @@ class VideoSharePopup(QDialog):
             owner = t(f"extension.{reference.extension_id}.name", self._language)
             if owner == f"extension.{reference.extension_id}.name":
                 owner = reference.extension_id
-            label = reference.title
+            if reference.identifier == "system.local":
+                label = t("video.clock.system_local", self._language)
+            elif reference.identifier == "system.utc":
+                label = t("video.clock.system_utc", self._language)
+            else:
+                label = reference.title
             if reference.extension_id != "system":
                 label = f"{label} · {owner}"
+            available = (
+                self._clock_references is not None
+                and self._clock_references.current_time(reference.identifier)
+                is not None
+            )
+            if not available:
+                label = f"{label} · {t('video.clock.unavailable', self._language)}"
             self.clock_combo.addItem(
                 label,
                 reference.identifier,
             )
-        if self.clock_combo.findData(self._clock_reference_id) < 0:
-            self.clock_combo.addItem(
-                f"{self._clock_reference_id} · {t('video.clock.unavailable', self._language)}",
-                self._clock_reference_id,
-            )
-        self.clock_combo.setCurrentIndex(
-            max(0, self.clock_combo.findData(self._clock_reference_id))
-        )
+            index = self.clock_combo.count() - 1
+            if not available:
+                self.clock_combo.setItemData(
+                    index,
+                    QColor(self._theme.muted_text),
+                    Qt.ItemDataRole.ForegroundRole,
+                )
+                self.clock_combo.setItemData(
+                    index,
+                    t("video.clock.unavailable_message", self._language),
+                    Qt.ItemDataRole.ToolTipRole,
+                )
+        selected_index = self.clock_combo.findData(self._clock_reference_id)
+        if selected_index < 0:
+            selected_index = self.clock_combo.findData("system.local")
+            if selected_index >= 0:
+                self._clock_reference_id = "system.local"
+                self.clock_reference_changed.emit(self._clock_reference_id)
+        self.clock_combo.setCurrentIndex(max(0, selected_index))
         self.clock_combo.blockSignals(False)
 
     def _clock_reference_selected(self, _index: int) -> None:
         identifier = str(self.clock_combo.currentData() or "")
-        if not identifier or identifier == self._clock_reference_id:
+        if not identifier:
+            return
+        if (
+            self._clock_references is None
+            or self._clock_references.current_time(identifier) is None
+        ):
+            self.clock_combo.blockSignals(True)
+            self.clock_combo.setCurrentIndex(
+                max(0, self.clock_combo.findData(self._clock_reference_id))
+            )
+            self.clock_combo.blockSignals(False)
+            QMessageBox.warning(
+                self,
+                t("video.clock.unavailable_title", self._language),
+                t("video.clock.unavailable_message", self._language),
+            )
+            self._refresh_clock_references()
+            return
+        if identifier == self._clock_reference_id:
             return
         self._clock_reference_id = identifier
         self.clock_reference_changed.emit(identifier)

@@ -233,8 +233,10 @@ tanımlar. [Ana makine](src/extension/host/) manifest dosyalarını keşfeder,
 bağımlılıkları denetler, servisleri birleştirir ve yaşam döngülerini yönetir.
 Ana makine, eklenti bağlamı üzerinden ortak saat referanslarını da sunar.
 Kaynağın kalıcı kimliği görünen adından ayrıdır; böylece kamera zaman damgası,
-sunucu eklentisinin uygulama ayrıntılarına bağlanmadan sistem saatini veya
-isteğe bağlı bir sunucu saatini kullanabilir.
+varsayılan olarak sistemin yerel saatini kullanır; UTC veya isteğe bağlı bir
+sunucu saati de seçilebilir. Henüz geçerli zaman örneği sağlamayan kaynaklar
+ayar listesinde kullanılamaz olarak gösterilir ve seçilmeye çalışıldığında
+uyarı verir. Kamera, sunucu eklentisinin uygulama ayrıntılarına bağlanmaz.
 
 Protokol paketleri mesajları ortak verilere dönüştürür ve desteklenen işlemleri
 sunar. Özellik paketleri bu sözleşmeleri tüketir veya protokol adaptörlerini

@@ -11,6 +11,7 @@ from src.container import create_container
 from src.extension.api import ExtensionManifest, ExtensionRegistrar
 from src.extension.host import ExtensionError, ExtensionHost
 from src.services.abstracts.telemetry import TelemetryService
+from src.services.settings import SettingsService
 from src.services.telemetry import MutableTelemetryService
 from extensions.mavlink.runtime import MavlinkTelemetryRuntime
 from extensions.vehicle_connection.runtime import ConnectionRuntime
@@ -115,6 +116,11 @@ class ExtensionTests(unittest.TestCase):
                 }
                 self.assertTrue(states["mavlink"].enabled)
                 self.assertTrue(states["vehicle_connection"].enabled)
+                clock_ids = {
+                    reference.identifier
+                    for reference in host.clock_references.references()
+                }
+                self.assertTrue({"system.local", "system.utc"}.issubset(clock_ids))
                 with self.assertRaises(ExtensionError):
                     host.set_enabled("mavlink", False)
                 self.assertFalse(host.can_reload("mavlink"))
@@ -321,6 +327,146 @@ class ExtensionTests(unittest.TestCase):
                         item.enabled
                         for item in host.list_extensions()
                         if item.manifest.identifier == "extra"
+                    )
+                )
+            finally:
+                container.shutdown()
+
+    def test_missing_optional_extension_is_disabled_but_keeps_its_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = create_container(root)
+            try:
+                host = first.resolve(ExtensionHost)
+                host.start()
+                host.set_enabled("camera", True)
+                settings = first.resolve(SettingsService)
+                settings.update_extension(
+                    "camera", config={"retained_option": "keep-me"}
+                )
+                installed = dict(host._manifests)
+            finally:
+                first.shutdown()
+
+            without_camera = {
+                key: manifest for key, manifest in installed.items() if key != "camera"
+            }
+            with patch.object(ExtensionHost, "_discover", return_value=without_camera):
+                second = create_container(root)
+            try:
+                host = second.resolve(ExtensionHost)
+                self.assertNotIn(
+                    "camera",
+                    {item.manifest.identifier for item in host.list_extensions()},
+                )
+                saved = second.resolve(SettingsService).current.extensions["camera"]
+                self.assertFalse(saved["enabled"])
+                self.assertEqual(saved["config"]["retained_option"], "keep-me")
+            finally:
+                second.shutdown()
+
+    def test_refresh_unloads_removed_optional_extension_and_preserves_settings(self):
+        from extensions.camera.runtime import CameraRuntime
+
+        with tempfile.TemporaryDirectory() as directory:
+            container = create_container(Path(directory))
+            try:
+                host = container.resolve(ExtensionHost)
+                host.start()
+                host.set_enabled("camera", True)
+                settings = container.resolve(SettingsService)
+                settings.update_extension(
+                    "camera", config={"retained_option": "keep-me"}
+                )
+                installed = dict(host._manifests)
+                without_camera = {
+                    key: manifest
+                    for key, manifest in installed.items()
+                    if key != "camera"
+                }
+                with patch.object(host, "_discover", return_value=without_camera):
+                    host.refresh_extensions()
+
+                self.assertFalse(host.is_active("camera"))
+                self.assertNotIn(
+                    "camera",
+                    {item.manifest.identifier for item in host.list_extensions()},
+                )
+                self.assertFalse(container.container.has(CameraRuntime))
+                saved = settings.current.extensions["camera"]
+                self.assertFalse(saved["enabled"])
+                self.assertEqual(saved["config"]["retained_option"], "keep-me")
+            finally:
+                container.shutdown()
+
+    def test_refresh_restores_unloaded_extension_if_state_save_fails(self):
+        from extensions.camera.runtime import CameraRuntime
+
+        with tempfile.TemporaryDirectory() as directory:
+            container = create_container(Path(directory))
+            try:
+                host = container.resolve(ExtensionHost)
+                host.start()
+                host.set_enabled("camera", True)
+                installed = dict(host._manifests)
+                without_camera = {
+                    key: manifest
+                    for key, manifest in installed.items()
+                    if key != "camera"
+                }
+                with (
+                    patch.object(host, "_discover", return_value=without_camera),
+                    patch.object(host, "_save_states", side_effect=OSError("disk")),
+                ):
+                    with self.assertRaisesRegex(OSError, "disk"):
+                        host.refresh_extensions()
+
+                self.assertTrue(host.is_active("camera"))
+                self.assertIn(
+                    "camera",
+                    {item.manifest.identifier for item in host.list_extensions()},
+                )
+                self.assertTrue(container.container.has(CameraRuntime))
+            finally:
+                container.shutdown()
+
+    def test_disabling_server_extension_removes_its_clock_references(self):
+        with tempfile.TemporaryDirectory() as directory:
+            container = create_container(Path(directory))
+            try:
+                host = container.resolve(ExtensionHost)
+                host.start()
+                container.resolve(SettingsService).update_extension(
+                    "siha_teknofest_server",
+                    config={
+                        "servers": [
+                            {
+                                "identifier": "server-one",
+                                "name": "Test server",
+                                "base_url": "http://127.0.0.1:5000",
+                                "username": "test",
+                                "password": "test",
+                                "team_number": 1,
+                                "timeout_s": 3.0,
+                                "auto_connect": False,
+                            }
+                        ]
+                    },
+                )
+                host.set_enabled("siha_teknofest_server", True)
+                self.assertTrue(
+                    any(
+                        reference.extension_id == "siha_teknofest_server"
+                        for reference in host.clock_references.references()
+                    )
+                )
+
+                host.set_enabled("siha_teknofest_server", False)
+
+                self.assertFalse(
+                    any(
+                        reference.extension_id == "siha_teknofest_server"
+                        for reference in host.clock_references.references()
                     )
                 )
             finally:

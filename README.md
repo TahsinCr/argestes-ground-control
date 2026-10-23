@@ -225,8 +225,10 @@ contracts. [The host](src/extension/host/) discovers manifests, checks
 dependencies, composes services and manages their lifecycle.
 The host also shares a small clock-reference registry through the extension
 context. Sources keep stable IDs separate from their display titles, allowing a
-feature such as camera timestamping to use system UTC or an optional server
-clock without depending on that server extension's implementation.
+feature such as camera timestamping to default to local system time, use UTC, or
+select an optional server clock without depending on that server extension's
+implementation. A source that has not supplied a valid time sample remains
+visible in settings but cannot be selected until it becomes available.
 
 Protocol packages decode their messages into shared data and expose supported
 operations. Feature packages consume those contracts or keep protocol adapters

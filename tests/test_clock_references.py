@@ -18,7 +18,7 @@ from src.extension.api import ClockReferenceRegistry
 
 
 class ClockReferenceTests(unittest.TestCase):
-    def test_registry_uses_stable_ids_and_normalizes_aware_values_to_utc(self) -> None:
+    def test_registry_uses_stable_ids_and_preserves_provider_timezone(self) -> None:
         registry = ClockReferenceRegistry()
         local_time = datetime(2026, 10, 23, 12, 0, tzinfo=timezone(timedelta(hours=3)))
 
@@ -28,14 +28,18 @@ class ClockReferenceTests(unittest.TestCase):
 
         self.assertEqual(identifier, "camera.server.abc.utc")
         self.assertEqual(registry.references()[0].title, "Field server")
-        self.assertEqual(
-            registry.current_time(identifier),
-            datetime(2026, 10, 23, 9, 0, tzinfo=UTC),
-        )
+        self.assertEqual(registry.current_time(identifier), local_time)
 
         registry.register("camera", "server.abc.utc", "Renamed", lambda: local_time)
         self.assertEqual(registry.references()[0].identifier, identifier)
         self.assertEqual(registry.references()[0].title, "Renamed")
+
+    def test_camera_clock_defaults_to_local_system_time(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(
+                CameraSettingsStore(Path(directory)).current.clock_reference_id,
+                "system.local",
+            )
 
     def test_registry_treats_missing_invalid_and_failing_sources_as_unavailable(self) -> None:
         registry = ClockReferenceRegistry()

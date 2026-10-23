@@ -9,9 +9,9 @@ Release headings link each entry to its release date.
 
 * Added a shared clock-reference registry to the Extension API. Clock sources
   expose stable identifiers and provider labels separately; the camera settings
-  page can select system UTC or an available TEKNOFEST profile clock. Removed or
-  inactive sources remain visible as unavailable instead of silently changing
-  the selected clock.
+  page defaults to local system time, with UTC and available TEKNOFEST profile
+  clocks as alternatives. A registered source without a current sample remains
+  visible as unavailable and warns instead of being silently selected.
 * Added a GitHub Actions test workflow that checks out the Core submodule and
   installs the Qt platform libraries and extension test dependencies, then runs
   the application and Core suites in an offscreen Qt environment.
@@ -20,8 +20,12 @@ Release headings link each entry to its release date.
 
 * Camera timestamps no longer delay or stop a video output when its selected
   clock is unavailable. Selecting another clock takes effect in active outputs
-  without restarting their pipelines; the timestamp stays hidden until the new
-  source provides a valid sample.
+  without restarting their pipelines; sampling follows the selected source and
+  the overlay stays hidden until it provides a valid sample.
+* Extension refresh now unloads removed optional packages and their dependents
+  in dependency order. Their enabled state is saved as disabled, package-specific
+  settings are retained for a later reinstall, and missing packages no longer
+  appear in the extension list.
 * Rebranded the application as Argestes Ground Station, updated the repository
   checkout instructions and aligned the desktop identity and default local paths
   with the new name. New TEKNOFEST profiles now use neutral sample credentials.
@@ -31,6 +35,8 @@ Release headings link each entry to its release date.
 
 ### Fixed
 
+* Fixed system clock references being normalized to UTC, which discarded the
+  local timezone requested by camera timestamp settings.
 * Parameter edits now remain local drafts until the operator selects **Apply**.
   Drafts survive refreshes and failed writes; the MAVLink parameter cache changes
   only after the vehicle confirms the requested value. Invalid booleans, decimal

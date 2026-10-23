@@ -64,6 +64,9 @@ class ExtensionHost:
         self.container = container
         self.clock_references = ClockReferenceRegistry()
         self.clock_references.register(
+            "system", "local", "System local time", lambda: datetime.now().astimezone()
+        )
+        self.clock_references.register(
             "system", "utc", "System UTC", lambda: datetime.now(UTC)
         )
         self._settings_service = container.resolve(SettingsService)
@@ -88,6 +91,19 @@ class ExtensionHost:
         for key, value in self._stored.items():
             if key in self._manifests and not isinstance(value, bool):
                 raise ExtensionError(f"Invalid enabled state for {key}")
+        persisted_ids = set(self._settings_service.current.extensions)
+        missing_ids = persisted_ids - set(self._manifests)
+        for key in missing_ids:
+            # A removed package must not remain marked as active. Its config is
+            # intentionally retained by _save_states for a possible reinstall.
+            self._stored[key] = False
+        enabled = self._enabled_ids()
+        dependency_safe = self._without_unavailable_dependencies(
+            enabled, self._manifests
+        )
+        disabled_dependents = enabled - dependency_safe
+        for key in disabled_dependents:
+            self._stored[key] = False
         self._running: list[Any] = []
         self._started_plugins: list[Any] = []
         self._owned_tokens: dict[str, tuple[Any, ...]] = {}
@@ -98,13 +114,18 @@ class ExtensionHost:
         self._visual_views: list[VisualContribution] = []
         self._status_widgets: list[StatusContribution] = []
         self._settings_contributions: dict[str, SettingsContribution] = {}
-        self._validate(self._enabled_ids())
-        self._save_states(
-            {
-                key: self._stored.get(key, manifest.default_enabled)
-                for key, manifest in self._manifests.items()
-            }
-        )
+        states = {
+            key: self._stored.get(key, manifest.default_enabled)
+            for key, manifest in self._manifests.items()
+        }
+        states.update({key: False for key in missing_ids})
+        try:
+            self._validate(dependency_safe)
+        except ExtensionError:
+            if missing_ids or disabled_dependents:
+                self._save_states(states)
+            raise
+        self._save_states(states)
 
     def _save_states(self, states, *, remove=None):
         def mutate(settings):
@@ -165,10 +186,41 @@ class ExtensionHost:
             if bool(self._stored.get(key, manifest.default_enabled))
         }
 
-    def _validate(self, enabled: set[str]) -> list[str]:
+    @staticmethod
+    def _without_unavailable_dependencies(
+        enabled: set[str], manifests: dict[str, ExtensionManifest]
+    ) -> set[str]:
+        """Drop enabled extensions whose required capabilities are unavailable."""
+
+        remaining = set(enabled)
+        while True:
+            providers = {
+                capability
+                for identifier in remaining
+                for capability in manifests[identifier].provides
+            }
+            stranded = {
+                identifier
+                for identifier in remaining
+                if any(
+                    required not in providers
+                    for required in manifests[identifier].requires
+                )
+            }
+            if not stranded:
+                return remaining
+            remaining.difference_update(stranded)
+
+    def _validate(
+        self,
+        enabled: set[str],
+        *,
+        manifests: dict[str, ExtensionManifest] | None = None,
+    ) -> list[str]:
+        manifests = manifests if manifests is not None else self._manifests
         providers: dict[str, str] = {}
         for key in enabled:
-            for capability in self._manifests[key].provides:
+            for capability in manifests[key].provides:
                 if capability in providers:
                     raise ExtensionError(f"Capability conflict: {capability}")
                 providers[capability] = key
@@ -185,7 +237,7 @@ class ExtensionHost:
             if key in visiting:
                 raise ExtensionError(f"Extension dependency cycle: {key}")
             visiting.add(key)
-            for required in self._manifests[key].requires:
+            for required in manifests[key].requires:
                 provider = providers.get(required)
                 if provider is None:
                     raise ExtensionError(f"{key} requires {required}")
@@ -210,19 +262,65 @@ class ExtensionHost:
         ]
 
     def refresh_extensions(self) -> None:
-        """Discover newly installed packages without activating them implicitly."""
+        """Refresh installed packages and safely unload packages removed on disk."""
         found = self._discover(Path(__file__).resolve().parents[3] / "extensions")
-        missing = self._active_ids - set(found)
-        if missing:
-            raise ExtensionError(
-                f"Active extension package missing: {', '.join(sorted(missing))}"
-            )
-        added = set(found) - set(self._manifests)
-        if added:
-            updated = {**self._stored, **{key: False for key in added}}
-            self._save_states(updated)
-            self._stored = updated
+        previous_manifests = self._manifests
+        persisted_ids = set(self._settings_service.current.extensions)
+        missing = (set(previous_manifests) | persisted_ids) - set(found)
+        added = set(found) - set(previous_manifests)
+
+        updated = dict(self._stored)
+        for identifier in missing | added:
+            # Keep per-extension configuration, but never leave a package that
+            # is absent (or newly installed) marked as enabled.
+            updated[identifier] = False
+
+        requested = {
+            identifier
+            for identifier, manifest in found.items()
+            if bool(updated.get(identifier, manifest.default_enabled))
+        }
+        dependency_safe = self._without_unavailable_dependencies(requested, found)
+        for identifier in requested - dependency_safe:
+            updated[identifier] = False
+
+        # Validate before unloading anything. In particular, removing the only
+        # vehicle protocol provider cannot be made safe by silently continuing.
+        self._validate(dependency_safe, manifests=found)
+        active_order = self._validate(set(self._active_ids))
+        to_unload = self._active_ids - dependency_safe
+        unload_order = [
+            identifier
+            for identifier in reversed(active_order)
+            if identifier in to_unload
+        ]
+
+        unloaded: list[str] = []
+        try:
+            for identifier in unload_order:
+                self._unload_one(identifier)
+                unloaded.append(identifier)
+            if updated != self._stored:
+                self._save_states(updated)
+        except Exception as exc:
+            rollback_errors: list[tuple[str, Exception]] = []
+            for identifier in reversed(unloaded):
+                try:
+                    self._load_one(identifier)
+                except Exception as rollback_error:
+                    rollback_errors.append((identifier, rollback_error))
+            if rollback_errors:
+                details = ", ".join(identifier for identifier, _ in rollback_errors)
+                raise ExtensionError(
+                    f"Extension refresh failed and could not restore: {details}"
+                ) from exc
+            raise
+
+        self._stored = updated
         self._manifests = found
+        for identifier in missing | to_unload:
+            self._dirty_settings.discard(identifier)
+            self._reload_baselines.pop(identifier, None)
 
     def visual_views(self) -> tuple[VisualContribution, ...]:
         return tuple(self._visual_views)
