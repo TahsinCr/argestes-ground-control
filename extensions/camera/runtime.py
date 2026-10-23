@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from src.extension.api import ClockReferenceRegistry
 from src.services.logging_service import LoggingService
 from src.services.storage import load_json_file
 from src.services.settings import SettingsService
@@ -22,6 +23,11 @@ class CameraConfiguration:
     sources: tuple[VideoSourceConfig, ...]
     active_source_id: str
     outputs: tuple[VideoShareConfig, ...]
+    clock_reference_id: str = "system.utc"
+
+    def __post_init__(self) -> None:
+        identifier = str(self.clock_reference_id).strip() or "system.utc"
+        object.__setattr__(self, "clock_reference_id", identifier)
 
 
 class CameraSettingsStore:
@@ -67,19 +73,26 @@ class CameraSettingsStore:
         selected = str(payload.get("active_video_source_id", sources[0].identifier))
         if selected not in identifiers:
             selected = sources[0].identifier
-        return CameraConfiguration(sources, selected, outputs)
+        return CameraConfiguration(
+            sources,
+            selected,
+            outputs,
+            str(payload.get("clock_reference_id", "system.utc")),
+        )
 
     def save(self, configuration: CameraConfiguration) -> None:
         payload = {
             "video_sources": [asdict(item) for item in configuration.sources],
             "active_video_source_id": configuration.active_source_id,
             "video_shares": [asdict(item) for item in configuration.outputs],
+            "clock_reference_id": configuration.clock_reference_id,
         }
         # Validate before touching the last known-good file.
         checked = CameraConfiguration(
             tuple(VideoSourceConfig(**item) for item in payload["video_sources"]),
             str(payload["active_video_source_id"]),
             tuple(VideoShareConfig(**item) for item in payload["video_shares"]),
+            str(payload["clock_reference_id"]),
         )
         if not checked.sources or checked.active_source_id not in {
             item.identifier for item in checked.sources
@@ -98,16 +111,17 @@ class CameraRuntime:
         base_dir: Path,
         logging: LoggingService,
         settings: SettingsService | None = None,
+        clock_references: ClockReferenceRegistry | None = None,
     ) -> None:
         self.base_dir = base_dir
         self.settings = CameraSettingsStore(base_dir, settings)
+        self.clock_references = clock_references
         config = self.settings.current
+        self._clock_reference_id = config.clock_reference_id
         self.video = MultiVideoService(
             config.sources, config.active_source_id, logging.child("VIDEO")
         )
-        # Camera outputs use their own wall clock; competition time belongs to
-        # a separate optional extension and must not block generic streaming.
-        self.video.set_clock_provider(lambda: datetime.now(UTC))
+        self.video.set_clock_provider(self._current_clock_time)
         self.video.configure_shares(config.outputs)
         self._worker = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="CameraConfig"
@@ -137,7 +151,12 @@ class CameraRuntime:
         if not sources:
             raise ValueError("At least one camera source is required")
         previous = self.settings.current
-        config = CameraConfiguration(sources, active_id, previous.outputs)
+        config = CameraConfiguration(
+            sources,
+            active_id,
+            previous.outputs,
+            previous.clock_reference_id,
+        )
         self.settings.save(config)
         self._worker.submit(self._apply_sources, config)
 
@@ -149,10 +168,33 @@ class CameraRuntime:
     def save_outputs(self, outputs: tuple[VideoShareConfig, ...]) -> None:
         previous = self.settings.current
         config = CameraConfiguration(
-            previous.sources, previous.active_source_id, outputs
+            previous.sources,
+            previous.active_source_id,
+            outputs,
+            previous.clock_reference_id,
         )
         self.settings.save(config)
         self._worker.submit(self._apply_outputs, config)
+
+    def save_clock_reference(self, identifier: str) -> None:
+        previous = self.settings.current
+        reference_id = str(identifier).strip()
+        if not reference_id:
+            raise ValueError("A camera clock reference must be selected")
+        config = CameraConfiguration(
+            previous.sources,
+            previous.active_source_id,
+            previous.outputs,
+            reference_id,
+        )
+        self.settings.save(config)
+        self._clock_reference_id = reference_id
+        self.video.set_clock_provider(self._current_clock_time)
+
+    def _current_clock_time(self) -> datetime | None:
+        if self.clock_references is None:
+            return datetime.now(UTC)
+        return self.clock_references.current_time(self._clock_reference_id)
 
     def _apply_outputs(self, config: CameraConfiguration) -> None:
         self.video.configure_shares(config.outputs)

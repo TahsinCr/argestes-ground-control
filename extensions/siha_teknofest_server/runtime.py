@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -256,6 +257,8 @@ class CompetitionRuntime:
         self.settings = context.services.resolve(SettingsService)
         self.telemetry = context.services.resolve(TelemetryService)
         self.logger = context.services.resolve(LoggingService).child("TEKNOFEST")
+        self.clock_references = getattr(context, "clock_references", None)
+        self._clock_reference_ids: set[str] = set()
         self.database = CompetitionDatabase(
             context.base_dir / "data" / "siha_teknofest_server" / "history.sqlite3"
         )
@@ -283,6 +286,33 @@ class CompetitionRuntime:
                 self.database,
                 self.logger,
             )
+        self._sync_clock_references()
+
+    def _sync_clock_references(self):
+        registry = getattr(self, "clock_references", None)
+        if registry is None:
+            return
+        identifiers = set()
+        for profile_id, session in self.sessions.items():
+            stable_key = hashlib.sha256(profile_id.encode("utf-8")).hexdigest()
+            identifier = registry.register(
+                "siha_teknofest_server",
+                f"server.{stable_key}.utc",
+                str(session.config.get("name") or profile_id),
+                lambda current=session: self._server_time(current),
+            )
+            identifiers.add(identifier)
+        for identifier in self._clock_reference_ids - identifiers:
+            registry.unregister(identifier)
+        self._clock_reference_ids = identifiers
+
+    @staticmethod
+    def _server_time(session):
+        sample = session.clock
+        now = time.monotonic()
+        if sample is None or now - sample.received_monotonic > 30.0:
+            return None
+        return sample.estimate(now)
 
     def start(self):
         for session in self.sessions.values():
@@ -347,6 +377,7 @@ class CompetitionRuntime:
                         session.start()
                 raise
             self.sessions = new_sessions
+            self._sync_clock_references()
             self.start()
 
         return self.worker.submit(apply)
@@ -386,6 +417,9 @@ class CompetitionRuntime:
                     severity="danger",
                     details={"server": session.config["identifier"]},
                 )
+        if self.clock_references is not None:
+            self.clock_references.unregister_owner("siha_teknofest_server")
+        self._clock_reference_ids.clear()
 
 
 def validate_servers(configs):

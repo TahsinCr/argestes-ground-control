@@ -223,6 +223,10 @@ application; it does not wrap or restrict access to Core.
 [The Extension API](src/extension/api/) defines contributions and provider
 contracts. [The host](src/extension/host/) discovers manifests, checks
 dependencies, composes services and manages their lifecycle.
+The host also shares a small clock-reference registry through the extension
+context. Sources keep stable IDs separate from their display titles, allowing a
+feature such as camera timestamping to use system UTC or an optional server
+clock without depending on that server extension's implementation.
 
 Protocol packages decode their messages into shared data and expose supported
 operations. Feature packages consume those contracts or keep protocol adapters

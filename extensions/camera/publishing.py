@@ -125,6 +125,8 @@ class VideoSharePublisher:
         self._lifecycle_lock = threading.RLock()
         self._workers: dict[str, threading.Thread] = {}
         self._clock_provider: Callable[[], datetime | None] = lambda: None
+        self._clock_lock = threading.Lock()
+        self._clock_generation = 0
         self._subscription: Subscription = frames.subscribe(self._on_frame)
         self._source_subscription = (
             source_frames.subscribe(self._on_source_frame)
@@ -147,7 +149,9 @@ class VideoSharePublisher:
     def set_clock_provider(self, provider: Callable[[], datetime | None]) -> None:
         """Set the clock used for optional output timestamps."""
 
-        self._clock_provider = provider
+        with self._clock_lock:
+            self._clock_provider = provider
+            self._clock_generation += 1
 
     def set_server_time_provider(self, provider: Callable[[], datetime | None]) -> None:
         """Backward-compatible alias for the generic timestamp clock provider."""
@@ -365,15 +369,17 @@ class VideoSharePublisher:
             self._validate_minimum_resolution(config, frame)
             clock_reference: datetime | None = None
             clock_started_at: float | None = None
+            next_clock_check = 0.0
+            clock_generation = -1
             if config.timestamp_enabled:
-                # Anchor the output clock once, then advance it monotonically
-                # so wall-clock adjustments cannot make video timestamps jump.
-                clock_reference, clock_started_at = self._wait_for_clock_reference(
-                    config.identifier,
-                    stop_event,
+                # A missing optional clock must not block video. Keep the
+                # stream live without its overlay and retry the source later.
+                clock_generation, clock_provider = self._clock_provider_snapshot()
+                clock_reference, clock_started_at = self._sample_clock_reference(
+                    clock_provider
                 )
-                if clock_reference is None or clock_started_at is None:
-                    return
+                if clock_reference is None:
+                    next_clock_check = time.monotonic() + 1.0
             Gst = self._load_gstreamer()
             output_path = (
                 self._recording_path(config) if config.output_type == "record" else None
@@ -403,6 +409,9 @@ class VideoSharePublisher:
             if not config.timestamp_enabled:
                 compliance.append("zaman damgası kapalı")
             detail = f"{config.codec.upper()} · {config.fps} FPS · {encoder_name}"
+            clock_wait_detail = " · zaman kaynağı bekleniyor"
+            if config.timestamp_enabled and clock_reference is None:
+                detail += clock_wait_detail
             if output_path is not None:
                 detail += f" · {output_path.name}"
             if compliance:
@@ -450,13 +459,44 @@ class VideoSharePublisher:
                     )
                 if clock is not None:
                     if config.timestamp_enabled:
-                        assert (
-                            clock_reference is not None and clock_started_at is not None
+                        current_generation, clock_provider = (
+                            self._clock_provider_snapshot()
                         )
-                        clock.set_property(
-                            "text",
-                            self._clock_text(clock_reference, clock_started_at),
+                        provider_changed = current_generation != clock_generation
+                        clock_retry_due = (
+                            clock_reference is None
+                            and time.monotonic() >= next_clock_check
                         )
+                        if provider_changed or clock_retry_due:
+                            clock_generation = current_generation
+                            clock_reference, clock_started_at = (
+                                self._sample_clock_reference(clock_provider)
+                            )
+                            next_clock_check = time.monotonic() + 1.0
+                            if clock_reference is None:
+                                updated_detail = (
+                                    detail
+                                    if clock_wait_detail in detail
+                                    else detail + clock_wait_detail
+                                )
+                            else:
+                                updated_detail = detail.replace(clock_wait_detail, "")
+                            if updated_detail != detail:
+                                detail = updated_detail
+                                self._set_state(
+                                    config.identifier,
+                                    "active",
+                                    detail,
+                                    stop_event=stop_event,
+                                )
+                    if config.timestamp_enabled:
+                        if clock_reference is None or clock_started_at is None:
+                            clock.set_property("text", "")
+                        else:
+                            clock.set_property(
+                                "text",
+                                self._clock_text(clock_reference, clock_started_at),
+                            )
                     else:
                         clock.set_property("text", "")
                 # Wrap the immutable frame bytes directly; allocating and
@@ -558,25 +598,28 @@ class VideoSharePublisher:
             self._frame_event.clear()
         return None
 
-    def _wait_for_clock_reference(
+    def _clock_provider_snapshot(
         self,
-        identifier: str,
-        stop_event: threading.Event,
-    ) -> tuple[datetime | None, float | None]:
-        """Wait for a clock sample before publishing the optional timestamp."""
+    ) -> tuple[int, Callable[[], datetime | None]]:
+        """Return a consistent provider and its live-update generation."""
 
-        while not stop_event.is_set():
-            timestamp = self._clock_provider()
-            if timestamp is not None:
-                return timestamp, time.monotonic()
-            self._set_state(
-                identifier,
-                "waiting",
-                "Zaman damgası kaynağı bekleniyor",
-                stop_event=stop_event,
-            )
-            stop_event.wait(0.2)
-        return None, None
+        with self._clock_lock:
+            return self._clock_generation, self._clock_provider
+
+    def _sample_clock_reference(
+        self, provider: Callable[[], datetime | None] | None = None
+    ) -> tuple[datetime | None, float | None]:
+        """Return one clock anchor without delaying stream startup."""
+        clock_provider = (
+            provider if provider is not None else self._clock_provider_snapshot()[1]
+        )
+        try:
+            timestamp = clock_provider()
+        except Exception:
+            return None, None
+        if timestamp is None:
+            return None, None
+        return timestamp, time.monotonic()
 
     @staticmethod
     def _validate_minimum_resolution(config: VideoShareConfig, frame: VideoFrame) -> None:

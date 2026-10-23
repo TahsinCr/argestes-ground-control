@@ -231,6 +231,10 @@ sarmalayan veya kısıtlayan bir katman değildir.
 [Eklenti API’si](src/extension/api/) katkıları ve sağlayıcı sözleşmelerini
 tanımlar. [Ana makine](src/extension/host/) manifest dosyalarını keşfeder,
 bağımlılıkları denetler, servisleri birleştirir ve yaşam döngülerini yönetir.
+Ana makine, eklenti bağlamı üzerinden ortak saat referanslarını da sunar.
+Kaynağın kalıcı kimliği görünen adından ayrıdır; böylece kamera zaman damgası,
+sunucu eklentisinin uygulama ayrıntılarına bağlanmadan sistem saatini veya
+isteğe bağlı bir sunucu saatini kullanabilir.
 
 Protokol paketleri mesajları ortak verilere dönüştürür ve desteklenen işlemleri
 sunar. Özellik paketleri bu sözleşmeleri tüketir veya protokol adaptörlerini

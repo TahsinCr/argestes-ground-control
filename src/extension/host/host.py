@@ -7,12 +7,14 @@ import inspect
 import json
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from src.core.dependency import BaseDependencyContainer
 from src.extension.api import (
     API_MAJOR,
+    ClockReferenceRegistry,
     ExtensionContext,
     ExtensionManifest,
     ExtensionRegistrar,
@@ -60,6 +62,10 @@ class ExtensionHost:
     def __init__(self, base_dir: Path, container: BaseDependencyContainer) -> None:
         self.base_dir = base_dir
         self.container = container
+        self.clock_references = ClockReferenceRegistry()
+        self.clock_references.register(
+            "system", "utc", "System UTC", lambda: datetime.now(UTC)
+        )
         self._settings_service = container.resolve(SettingsService)
         # A malformed persisted switch must never silently re-enable a plugin.
         self._stored = {
@@ -329,10 +335,20 @@ class ExtensionHost:
             self.base_dir,
             self.settings(identifier),
             ExtensionServices(self.container, identifier),
+            getattr(self, "clock_references", None),
         )
-        plugin.configure(registrar, context)
+        try:
+            plugin.configure(registrar, context)
+        except Exception:
+            clock_references = getattr(self, "clock_references", None)
+            if clock_references is not None:
+                clock_references.unregister_owner(identifier)
+            raise
         for binding in registrar.bindings:
             if self.container.container.has(binding.token):
+                clock_references = getattr(self, "clock_references", None)
+                if clock_references is not None:
+                    clock_references.unregister_owner(identifier)
                 raise ExtensionError(f"Service conflict: {binding.token}")
         registered: list[Any] = []
         try:
@@ -366,6 +382,9 @@ class ExtensionHost:
         except Exception:
             for token in reversed(registered):
                 self.container.unregister(token)
+            clock_references = getattr(self, "clock_references", None)
+            if clock_references is not None:
+                clock_references.unregister_owner(identifier)
             raise
         self._owned_tokens[identifier] = tuple(registered)
         for view in registrar.visual_views:
@@ -411,6 +430,9 @@ class ExtensionHost:
                         f"{identifier} could not be stopped; its services remain registered"
                     ) from exc
             self._started_plugins.remove(plugin)
+        clock_references = getattr(self, "clock_references", None)
+        if clock_references is not None:
+            clock_references.unregister_owner(identifier)
         for token in reversed(self._owned_tokens.pop(identifier, ())):
             self.container.unregister(token)
         prefix = identifier + "."

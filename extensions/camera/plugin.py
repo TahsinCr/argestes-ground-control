@@ -20,7 +20,10 @@ class CameraExtension:
         registrar.singleton(
             CameraRuntime,
             lambda logging, settings: CameraRuntime(
-                context.base_dir, logging, settings
+                context.base_dir,
+                logging,
+                settings,
+                context.clock_references,
             ),
             dependencies={"logging": LoggingService, "settings": SettingsService},
         )

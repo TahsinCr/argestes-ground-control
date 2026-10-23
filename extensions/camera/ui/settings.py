@@ -18,7 +18,11 @@ class CameraSettingsPage(QTabWidget):
             workspace._theme, self, language=workspace._language
         )
         self.outputs = VideoSharePopup(
-            workspace._theme, self, language=workspace._language
+            workspace._theme,
+            self,
+            language=workspace._language,
+            clock_references=workspace.runtime.clock_references,
+            show_clock_selector=True,
         )
         for editor in (self.sources, self.outputs):
             editor.setWindowFlags(Qt.WindowType.Widget)
@@ -34,6 +38,9 @@ class CameraSettingsPage(QTabWidget):
         self.sources.sources_saved.connect(self.save_sources)
         self.sources.source_connect_requested.connect(workspace._connect)
         self.outputs.shares_saved.connect(self.save_outputs)
+        self.outputs.clock_reference_changed.connect(
+            workspace.runtime.save_clock_reference
+        )
         workspace.bridge.source_stats_updated.connect(self._refresh_live)
         workspace.bridge.share_states_changed.connect(self._refresh_live)
         self.refresh()
@@ -67,6 +74,7 @@ class CameraSettingsPage(QTabWidget):
             source_stats=runtime.video.source_stats,
             active_source_id=config.active_source_id,
         )
+        self.outputs.set_clock_reference(config.clock_reference_id)
 
     def _refresh_live(self, *_):
         if self.isVisible():

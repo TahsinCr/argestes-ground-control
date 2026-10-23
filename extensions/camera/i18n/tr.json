@@ -42,6 +42,8 @@
   "video.share.source.disconnected": "bağlı değil",
   "video.share.source.label": "Yayın kaynağı",
   "video.share.source.panel": "Mevcut video paneli",
+  "video.clock.label": "Zaman damgası saati",
+  "video.clock.unavailable": "kullanılamıyor",
   "video.output.add": "+ Çıkış ekle",
   "video.output.description": "Kamera kareleri ağda yayınlanabilir veya her kamera ayrı bir MP4 dosyasına kaydedilebilir.",
   "video.output.kind.stream": "Yayın",

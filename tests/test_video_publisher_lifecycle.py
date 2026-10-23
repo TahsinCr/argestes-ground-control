@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import unittest
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from src.core.events import EventBus
@@ -10,6 +11,36 @@ from extensions.camera.publishing import VideoSharePublisher
 
 
 class VideoPublisherLifecycleTests(unittest.TestCase):
+    def test_missing_optional_clock_never_blocks_video_startup(self) -> None:
+        publisher = object.__new__(VideoSharePublisher)
+        publisher._clock_provider = lambda: None
+        publisher._clock_lock = threading.Lock()
+        publisher._clock_generation = 0
+
+        started_at = time.monotonic()
+        reference, anchor = publisher._sample_clock_reference()
+
+        self.assertIsNone(reference)
+        self.assertIsNone(anchor)
+        self.assertLess(time.monotonic() - started_at, 0.05)
+
+    def test_clock_provider_change_is_visible_to_running_publishers(self) -> None:
+        publisher = object.__new__(VideoSharePublisher)
+        publisher._clock_provider = lambda: None
+        publisher._clock_lock = threading.Lock()
+        publisher._clock_generation = 0
+        initial_generation, _ = publisher._clock_provider_snapshot()
+        expected_time = time.time()
+
+        publisher.set_clock_provider(lambda: datetime.fromtimestamp(expected_time, UTC))
+
+        generation, provider = publisher._clock_provider_snapshot()
+        reference, anchor = publisher._sample_clock_reference(provider)
+        self.assertGreater(generation, initial_generation)
+        self.assertIsNotNone(reference)
+        self.assertIsNotNone(anchor)
+        self.assertAlmostEqual(reference.timestamp(), expected_time, delta=0.001)
+
     def test_recording_finalization_requires_confirmed_eos(self) -> None:
         class FakeGst:
             SECOND = 1

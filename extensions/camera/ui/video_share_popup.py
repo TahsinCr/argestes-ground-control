@@ -26,6 +26,7 @@ from extensions.camera.models import (
     VideoSourceConfig,
     VideoSourceStats,
 )
+from src.extension.api import ClockReferenceRegistry
 from src.ui.i18n import t
 from src.ui.themes.style import ThemePalette
 
@@ -34,6 +35,7 @@ class VideoSharePopup(QDialog):
     """Compact editor for the camera-only Video Link rebroadcast targets."""
 
     shares_saved = pyqtSignal(tuple)
+    clock_reference_changed = pyqtSignal(str)
 
     _STATUS_COLORS = {
         "active": "success",
@@ -48,6 +50,8 @@ class VideoSharePopup(QDialog):
         parent: QWidget | None = None,
         *,
         language: str = "tr",
+        clock_references: ClockReferenceRegistry | None = None,
+        show_clock_selector: bool = False,
     ) -> None:
         super().__init__(
             parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
@@ -57,6 +61,9 @@ class VideoSharePopup(QDialog):
         self.setMaximumHeight(590)
         self._theme = theme
         self._language = language
+        self._clock_references = clock_references
+        self._clock_reference_id = "system.utc"
+        self._show_clock_selector = bool(show_clock_selector)
         self._shares: list[VideoShareConfig] = []
         self._states: dict[str, VideoShareState] = {}
         self._network_interfaces: tuple[tuple[str, str], ...] = ()
@@ -70,6 +77,10 @@ class VideoSharePopup(QDialog):
         self._render_timer.timeout.connect(self._render)
         self._build_ui()
         self.set_theme(theme)
+
+    def set_clock_reference(self, identifier: str) -> None:
+        self._clock_reference_id = str(identifier or "system.utc")
+        self._refresh_clock_references()
 
     def set_theme(self, theme: ThemePalette) -> None:
         self._theme = theme
@@ -88,6 +99,7 @@ class VideoSharePopup(QDialog):
         self.back_button.setText(t("common.action.back", language))
         self.detail_label.setText(t("video.output.description", language))
         self.add_button.setText(t("video.output.add", language))
+        self.clock_label.setText(t("video.clock.label", language))
         self._render()
 
     def show_shares(
@@ -173,10 +185,60 @@ class VideoSharePopup(QDialog):
         self.interface_row.addWidget(self.interface_label)
         self.interface_row.addWidget(self.interface_combo, 1)
         root.addLayout(self.interface_row)
+        self.clock_row = QHBoxLayout()
+        self.clock_label = QLabel(t("video.clock.label", self._language), self)
+        self.clock_label.setProperty("role", "detail")
+        self.clock_combo = QComboBox(self)
+        self.clock_combo.currentIndexChanged.connect(
+            self._clock_reference_selected
+        )
+        self.clock_row.addWidget(self.clock_label)
+        self.clock_row.addWidget(self.clock_combo, 1)
+        root.addLayout(self.clock_row)
+        self.clock_label.setVisible(self._show_clock_selector)
+        self.clock_combo.setVisible(self._show_clock_selector)
+        if self._show_clock_selector:
+            self._refresh_clock_references()
         self.add_button = QPushButton(t("video.output.add", self._language), self)
         self.add_button.setProperty("role", "primary")
         self.add_button.clicked.connect(lambda: self._edit_share(None))
         root.addWidget(self.add_button)
+
+    def _refresh_clock_references(self) -> None:
+        if not self._show_clock_selector:
+            return
+        references = (
+            self._clock_references.references() if self._clock_references else ()
+        )
+        self.clock_combo.blockSignals(True)
+        self.clock_combo.clear()
+        for reference in references:
+            owner = t(f"extension.{reference.extension_id}.name", self._language)
+            if owner == f"extension.{reference.extension_id}.name":
+                owner = reference.extension_id
+            label = reference.title
+            if reference.extension_id != "system":
+                label = f"{label} · {owner}"
+            self.clock_combo.addItem(
+                label,
+                reference.identifier,
+            )
+        if self.clock_combo.findData(self._clock_reference_id) < 0:
+            self.clock_combo.addItem(
+                f"{self._clock_reference_id} · {t('video.clock.unavailable', self._language)}",
+                self._clock_reference_id,
+            )
+        self.clock_combo.setCurrentIndex(
+            max(0, self.clock_combo.findData(self._clock_reference_id))
+        )
+        self.clock_combo.blockSignals(False)
+
+    def _clock_reference_selected(self, _index: int) -> None:
+        identifier = str(self.clock_combo.currentData() or "")
+        if not identifier or identifier == self._clock_reference_id:
+            return
+        self._clock_reference_id = identifier
+        self.clock_reference_changed.emit(identifier)
 
     def _render(self) -> None:
         self._editing = False

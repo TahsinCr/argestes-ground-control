@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from src.core.dependency import BaseDependencyContainer
+from .clocks import ClockReferenceRegistry
 
 if TYPE_CHECKING:
     from src.models.connections import ConnectionProfile
@@ -38,6 +39,7 @@ class ExtensionContext:
     base_dir: Path
     settings: dict[str, Any]
     services: BaseDependencyContainer
+    clock_references: ClockReferenceRegistry | None = None
 
 
 @dataclass(frozen=True, slots=True)

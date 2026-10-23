@@ -7,12 +7,21 @@ Release headings link each entry to its release date.
 
 ### Added
 
+* Added a shared clock-reference registry to the Extension API. Clock sources
+  expose stable identifiers and provider labels separately; the camera settings
+  page can select system UTC or an available TEKNOFEST profile clock. Removed or
+  inactive sources remain visible as unavailable instead of silently changing
+  the selected clock.
 * Added a GitHub Actions test workflow that checks out the Core submodule and
   installs the Qt platform libraries and extension test dependencies, then runs
   the application and Core suites in an offscreen Qt environment.
 
 ### Changed
 
+* Camera timestamps no longer delay or stop a video output when its selected
+  clock is unavailable. Selecting another clock takes effect in active outputs
+  without restarting their pipelines; the timestamp stays hidden until the new
+  source provides a valid sample.
 * Rebranded the application as Argestes Ground Station, updated the repository
   checkout instructions and aligned the desktop identity and default local paths
   with the new name. New TEKNOFEST profiles now use neutral sample credentials.

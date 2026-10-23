@@ -1,5 +1,6 @@
 """Stable, UI-independent extension API (major version 1)."""
 
+from .clocks import ClockReference, ClockReferenceRegistry
 from .contracts import (
     API_MAJOR,
     ConnectionProfiles,
@@ -20,6 +21,8 @@ from .parameters import ParameterService
 
 __all__ = [
     "API_MAJOR",
+    "ClockReference",
+    "ClockReferenceRegistry",
     "ConnectionProfiles",
     "ConnectionSource",
     "ConnectionBinding",
