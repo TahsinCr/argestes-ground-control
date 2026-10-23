@@ -47,6 +47,9 @@ Release headings link each entry to its release date.
 
 ### Fixed
 
+* Fixed blank map layers when the local tile-cache server starts after the map
+  page. The WebEngine request allowlist now follows the server's current
+  loopback address instead of rejecting proxied vector and satellite tiles.
 * Extension discovery now reconciles the workspace UI when a refresh unloads a
   removed package or one of its dependents. Stale panel/status contributions and
   categories are removed without rebuilding unaffected extensions.

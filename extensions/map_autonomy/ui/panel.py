@@ -131,19 +131,26 @@ class MapRequestInterceptor(QWebEngineUrlRequestInterceptor):
         self._map_document = map_document
         self._tile_cache_url = tile_cache_url
 
+    def set_tile_cache_url(self, tile_cache_url: str) -> None:
+        """Track the cache listener when it starts or binds a new port."""
+        self._tile_cache_url = tile_cache_url
+
+    def allows_request(self, request_url: QUrl, *, main_frame: bool = False) -> bool:
+        return _map_request_allowed(
+            request_url,
+            web_root=self._web_root,
+            map_document=self._map_document,
+            tile_cache_url=self._tile_cache_url,
+            main_frame=main_frame,
+        )
+
     def interceptRequest(self, info) -> None:  # pragma: no cover - Qt callback
         request_url = info.requestUrl()
         main_frame = (
             info.resourceType()
             == QWebEngineUrlRequestInfo.ResourceType.ResourceTypeMainFrame
         )
-        if not _map_request_allowed(
-            request_url,
-            web_root=self._web_root,
-            map_document=self._map_document,
-            tile_cache_url=self._tile_cache_url,
-            main_frame=main_frame,
-        ):
+        if not self.allows_request(request_url, main_frame=main_frame):
             info.block(True)
             return
         if request_url.scheme() in {"http", "https"}:
@@ -1209,6 +1216,8 @@ class MapPanel(PanelFrame):
         base_url = self._tile_cache.base_url
         if base_url != getattr(self, "_cache_base_url", ""):
             self._cache_base_url = base_url
+            if self._interceptor is not None:
+                self._interceptor.set_tile_cache_url(base_url)
             self._send_ui_config()
         self._pending_cache_count = count
         if not self._cache_count_timer.isActive():

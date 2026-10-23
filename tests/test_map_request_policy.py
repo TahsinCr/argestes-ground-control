@@ -6,10 +6,40 @@ import unittest
 
 from PyQt6.QtCore import QUrl
 
-from extensions.map_autonomy.ui.panel import _map_request_allowed
+from extensions.map_autonomy.ui.panel import MapRequestInterceptor, _map_request_allowed
 
 
 class MapRequestPolicyTests(unittest.TestCase):
+    def test_interceptor_tracks_cache_server_starting_after_map_load(self) -> None:
+        web_root = (
+            Path(__file__).resolve().parents[1]
+            / "extensions"
+            / "map_autonomy"
+            / "web"
+        )
+        interceptor = MapRequestInterceptor(
+            web_root=web_root,
+            map_document=web_root / "map.html",
+            tile_cache_url="",
+        )
+        tile_url = QUrl(
+            "http://127.0.0.1:43817/tile/carto/dark_nolabels/2/1/1.png"
+        )
+
+        self.assertFalse(interceptor.allows_request(tile_url))
+        interceptor.set_tile_cache_url("http://127.0.0.1:43817")
+        self.assertTrue(interceptor.allows_request(tile_url))
+        self.assertFalse(
+            interceptor.allows_request(
+                QUrl("http://127.0.0.1:43818/tile/carto/dark_nolabels/2/1/1.png")
+            )
+        )
+        self.assertTrue(
+            interceptor.allows_request(
+                QUrl("http://127.0.0.1:43817/tile/esri/world-imagery/2/1/1.jpg")
+            )
+        )
+
     def test_only_packaged_map_assets_are_readable_as_file_urls(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "web"
