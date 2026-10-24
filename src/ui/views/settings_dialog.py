@@ -40,6 +40,7 @@ class SettingsDialog(QDialog):
         sections: tuple[SectionSpec, ...] | None = None,
         extension_host=None,
         current_settings=None,
+        logging_service=None,
     ) -> None:
         super().__init__(parent)
         self._ui_language = language
@@ -47,6 +48,9 @@ class SettingsDialog(QDialog):
         self._settings = settings
         self._current_settings = current_settings
         self._extension_host = extension_host
+        self._logging_service = logging_service
+        self._storage_page_index = None
+        self._storage_page = None
         self._extension_pages = {}
         self._sections = SETTINGS_SECTIONS if sections is None else sections
         self._widgets: dict[str, QWidget] = {}
@@ -88,6 +92,10 @@ class SettingsDialog(QDialog):
             self.categories.addItem("General" if language == "en" else "Genel")
             self.pages = QStackedWidget(self)
             self.pages.addWidget(scroll)
+            if logging_service is not None:
+                self._storage_page_index = 1
+                self.categories.addItem(t("dialog.settings.logs", language))
+                self.pages.addWidget(QWidget(self.pages))
             self._extension_items = [
                 item
                 for item in extension_host.list_extensions()
@@ -234,10 +242,28 @@ class SettingsDialog(QDialog):
                 if self._ui_language == "en"
                 else "Kapat"
             )
-        if index and index not in self._extension_pages:
+        if (
+            self._storage_page_index is not None
+            and index == self._storage_page_index
+            and self._storage_page is None
+        ):
+            from src.ui.widgets.log_storage_page import LogStoragePage
+
+            widget = LogStoragePage(self._logging_service, self._ui_language, self.pages)
+            container = self.pages.widget(index)
+            layout = QVBoxLayout(container)
+            layout.setContentsMargins(0, 0, 0, 0)
+            scroll = QScrollArea(container)
+            scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(widget)
+            layout.addWidget(scroll)
+            self._storage_page = widget
+        elif index and index not in self._extension_pages:
             from src.ui.widgets.settings_page import ConfigSettingsPage
 
-            item = self._extension_items[index - 1]
+            extension_index = index - (2 if self._storage_page_index is not None else 1)
+            item = self._extension_items[extension_index]
             contribution = self._extension_host.settings_contribution(
                 item.manifest.identifier
             )

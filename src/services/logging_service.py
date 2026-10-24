@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import os
+import re
+import shutil
 import threading
 from collections import deque
 from dataclasses import replace
@@ -173,6 +175,90 @@ class LoggingService(LogService):
     @property
     def log_path(self) -> Path | None:
         return self._log_path
+
+    def storage_files(self) -> tuple[dict[str, Any], ...]:
+        """Return managed session log files without following links outside the log folder."""
+
+        if self._log_path is None:
+            return ()
+        root = self._log_path.parent.resolve()
+        with self._lock:
+            files = []
+            for candidate in root.glob("gcs_*.json*"):
+                if candidate.is_symlink() or not candidate.is_file():
+                    continue
+                name = candidate.name
+                if not (
+                    name.endswith(".json")
+                    or re.fullmatch(r"gcs_.+\.json\.\d+", name)
+                ):
+                    continue
+                try:
+                    if candidate.resolve().parent != root:
+                        continue
+                    size = candidate.stat().st_size
+                except OSError:
+                    continue
+                files.append(
+                    {
+                        "name": name,
+                        "size_bytes": size,
+                        "active": self._is_active_session_file(name),
+                    }
+                )
+            return tuple(sorted(files, key=lambda item: item["name"], reverse=True))
+
+    def storage_summary(self) -> dict[str, int]:
+        files = self.storage_files()
+        return {
+            "file_count": len(files),
+            "total_bytes": sum(item["size_bytes"] for item in files),
+            "archived_count": sum(not item["active"] for item in files),
+        }
+
+    def export_log(self, name: str, destination: Path) -> None:
+        source = self._managed_log_path(name)
+        destination = Path(destination).expanduser()
+        if source is None:
+            raise ValueError("Unknown managed session log")
+        if destination.is_symlink():
+            raise ValueError("The export destination must not be a symbolic link")
+        if destination.parent.resolve() == self._log_path.parent.resolve():
+            raise ValueError("Export the log outside the managed session folder")
+        if destination.resolve() == source.resolve():
+            raise ValueError("The export destination must differ from the source log")
+        if not destination.parent.is_dir():
+            raise ValueError("The export destination folder does not exist")
+        with self._lock:
+            # Log writes and rotation use this same lock, so the copied JSON is
+            # a complete, consistent point-in-time file.
+            shutil.copyfile(source, destination)
+
+    def delete_archived_log(self, name: str) -> int:
+        source = self._managed_log_path(name)
+        if source is None:
+            raise ValueError("Unknown managed session log")
+        if self._is_active_session_file(source.name):
+            raise ValueError("The current session log cannot be deleted")
+        with self._lock:
+            size = source.stat().st_size
+            source.unlink()
+            return size
+
+    def _managed_log_path(self, name: str) -> Path | None:
+        if self._log_path is None or Path(name).name != name:
+            return None
+        for item in self.storage_files():
+            if item["name"] == name:
+                return self._log_path.parent.resolve() / name
+        return None
+
+    def _is_active_session_file(self, name: str) -> bool:
+        if self._log_path is None:
+            return False
+        return name == self._log_path.name or bool(
+            re.fullmatch(re.escape(self._log_path.name) + r"\.\d+", name)
+        )
 
     def flush(self) -> None:
         if self._log_path is None or not self._log_path.exists():

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import unittest
 import json
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -41,6 +41,33 @@ class LoggingServiceTests(unittest.TestCase):
                 self.assertTrue(rotated.exists())
                 self.assertIsInstance(json.loads(rotated.read_text()), list)
             self.assertFalse(path.with_name(path.name + ".3").exists())
+
+    def test_storage_manager_exports_and_deletes_only_archived_session_files(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            active = root / "gcs_2026-10-24_12-00-00.json"
+            archived = root / "gcs_2026-10-23_12-00-00.json"
+            service = LoggingService(log_path=active)
+            service.log("TEST", "active")
+            archived.write_text('[{"message":"archived"}]', encoding="utf-8")
+
+            summary = service.storage_summary()
+            self.assertEqual(summary["file_count"], 2)
+            self.assertEqual(summary["archived_count"], 1)
+            self.assertEqual(summary["total_bytes"], active.stat().st_size + archived.stat().st_size)
+            with self.assertRaisesRegex(ValueError, "current session"):
+                service.delete_archived_log(active.name)
+
+            with TemporaryDirectory() as export_directory:
+                exported = Path(export_directory) / "export.json"
+                service.export_log(active.name, exported)
+                self.assertEqual(
+                    json.loads(exported.read_text()), json.loads(active.read_text())
+                )
+            archived_size = archived.stat().st_size
+            self.assertEqual(service.delete_archived_log(archived.name), archived_size)
+            self.assertFalse(archived.exists())
+            self.assertEqual(service.storage_summary()["archived_count"], 0)
 
 
 if __name__ == "__main__":

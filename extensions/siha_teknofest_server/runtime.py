@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import UTC, datetime
 from http.cookiejar import CookieJar
+from pathlib import Path
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 from src.core.events import EventBus
@@ -226,8 +229,10 @@ def telemetry_payload(snapshot, config, server_time=None):
 
 class CompetitionDatabase:
     def __init__(self, path):
+        path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
+        self._write_lock = threading.RLock()
         with closing(sqlite3.connect(path)) as connection, connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("""CREATE TABLE IF NOT EXISTS exchanges (
@@ -236,19 +241,102 @@ class CompetitionDatabase:
                 duration REAL NOT NULL)""")
 
     def record(self, server, path, payload, response, error, duration):
-        with closing(sqlite3.connect(self.path, timeout=3)) as connection, connection:
-            connection.execute(
-                "INSERT INTO exchanges VALUES(NULL,?,?,?,?,?,?,?)",
-                (
-                    datetime.now(UTC).isoformat(),
-                    server,
-                    path,
-                    json.dumps(payload, ensure_ascii=False),
-                    json.dumps(response, ensure_ascii=False),
-                    error,
-                    duration,
-                ),
-            )
+        with self._write_lock:
+            with closing(sqlite3.connect(self.path, timeout=3)) as connection, connection:
+                connection.execute(
+                    "INSERT INTO exchanges VALUES(NULL,?,?,?,?,?,?,?)",
+                    (
+                        datetime.now(UTC).isoformat(),
+                        server,
+                        path,
+                        json.dumps(payload, ensure_ascii=False),
+                        json.dumps(response, ensure_ascii=False),
+                        error,
+                        duration,
+                    ),
+                )
+
+    def storage_summary(self):
+        with closing(sqlite3.connect(self.path, timeout=3)) as connection:
+            count, oldest, newest = connection.execute(
+                "SELECT COUNT(*), MIN(timestamp), MAX(timestamp) FROM exchanges"
+            ).fetchone()
+        files = (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm"))
+        size_bytes = 0
+        for file_path in files:
+            try:
+                size_bytes += file_path.stat().st_size
+            except OSError:
+                continue
+        return {
+            "records": int(count),
+            "size_bytes": size_bytes,
+            "oldest": oldest,
+            "newest": newest,
+        }
+
+    def export_jsonl(self, destination):
+        destination = Path(destination).expanduser()
+        if destination.is_symlink() or not destination.parent.is_dir():
+            raise ValueError("Choose an existing folder and a regular export file")
+        protected = {
+            self.path.resolve(),
+            Path(f"{self.path}-wal").resolve(),
+            Path(f"{self.path}-shm").resolve(),
+        }
+        if destination.resolve() in protected:
+            raise ValueError("The export destination must not replace the database")
+        temporary_path = None
+        count = 0
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                newline="\n",
+                prefix=f".{destination.name}.",
+                suffix=".tmp",
+                dir=destination.parent,
+                delete=False,
+            ) as output:
+                temporary_path = Path(output.name)
+                with closing(sqlite3.connect(self.path, timeout=3)) as connection:
+                    cursor = connection.execute(
+                        "SELECT id, timestamp, server, endpoint, request, response, error, duration "
+                        "FROM exchanges ORDER BY id"
+                    )
+                    while rows := cursor.fetchmany(256):
+                        for row in rows:
+                            record = dict(
+                                zip(
+                                    ("id", "timestamp", "server", "endpoint", "request", "response", "error", "duration"),
+                                    row,
+                                )
+                            )
+                            for key in ("request", "response"):
+                                if record[key] is not None:
+                                    try:
+                                        record[key] = json.loads(record[key])
+                                    except (TypeError, ValueError):
+                                        pass
+                            output.write(
+                                json.dumps(record, ensure_ascii=False, default=str) + "\n"
+                            )
+                            count += 1
+            os.replace(temporary_path, destination)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+        return count
+
+    def clear_history(self):
+        with self._write_lock:
+            with closing(sqlite3.connect(self.path, timeout=3)) as connection:
+                cursor = connection.execute("DELETE FROM exchanges")
+                removed = cursor.rowcount
+                connection.commit()
+                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                connection.execute("VACUUM")
+        return max(0, removed)
 
 
 class CompetitionRuntime:

@@ -798,6 +798,7 @@ class MainWindow(QMainWindow):
             self,
             extension_host=self.extension_host,
             current_settings=lambda: self.settings_service.current,
+            logging_service=self.log_service.backend,
         )
         dialog.resize(
             max(620, min(1100, int(self.width() * 0.85))),

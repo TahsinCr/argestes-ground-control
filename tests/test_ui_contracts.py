@@ -623,11 +623,17 @@ class UiContractTests(unittest.TestCase):
                 window,
                 extension_host=window.extension_host,
                 current_settings=lambda: window.settings_service.current,
+                logging_service=window.log_service.backend,
             )
             try:
                 self.assertFalse(dialog._extension_pages)
                 ids = [item.manifest.identifier for item in dialog._extension_items]
-                for index, identifier in enumerate(ids, 1):
+                self.assertEqual(dialog.categories.item(1).text(), "Kayıtlar")
+                dialog.categories.setCurrentRow(1)
+                self.app.processEvents()
+                self.assertIsNotNone(dialog._storage_page)
+                self.assertFalse(dialog._storage_page.isWindow())
+                for index, identifier in enumerate(ids, 2):
                     dialog.categories.setCurrentRow(index)
                     self.app.processEvents()
                     page = dialog._extension_pages[index]
@@ -651,7 +657,7 @@ class UiContractTests(unittest.TestCase):
                     ).isHidden()
                 )
                 self.assertIn("mavlink", ids)
-                protocol_page = dialog._extension_pages[ids.index("mavlink") + 1]
+                protocol_page = dialog._extension_pages[ids.index("mavlink") + 2]
                 self.assertIn("backend.mavlink.dialect", protocol_page._widgets)
                 labels = [
                     button.text()

@@ -14,9 +14,9 @@ from PyQt6.QtWidgets import QApplication
 from src.core.events import EventBus
 from src.models.logs import LogEntry
 from src.models.telemetry import TelemetrySnapshot
-from src.ui.adapters.runtime import QtRuntimeServices
-from src.ui.adapters.services import QtLoggingService, QtTelemetryService
 from src.services.logging_service import LoggingService
+from src.ui.adapters.runtime import QtRuntimeServices
+from src.ui.adapters.services import QtLoggingService, QtTelemetryService, _QtAdapter
 
 
 class _TelemetryBackend:
@@ -89,6 +89,52 @@ class QtRuntimeThreadingTests(unittest.TestCase):
         self.assertEqual(received_on, [])
         QTest.qWait(50)
         self.assertEqual(received_on, [threading.get_ident()])
+        adapter.close()
+        adapter.deleteLater()
+        self.app.processEvents()
+
+    def test_adapter_coalesces_only_explicit_latest_state_events(self) -> None:
+        adapter = _QtAdapter()
+        received: list[str] = []
+
+        adapter._post(received.append, "state-old", coalesce_key=("status", "vehicle"))
+        adapter._post(received.append, "command-1")
+        adapter._post(received.append, "state-new", coalesce_key=("status", "vehicle"))
+        adapter._post(received.append, "command-2")
+
+        self.assertEqual(adapter._pending_events.qsize(), 3)
+        QTest.qWait(50)
+        self.assertEqual(received.count("state-old"), 0)
+        self.assertEqual(received.count("state-new"), 1)
+        self.assertEqual(
+            [item for item in received if item.startswith("command-")],
+            ["command-1", "command-2"],
+        )
+        adapter.close()
+        adapter.deleteLater()
+        self.app.processEvents()
+
+    def test_adapter_coalesces_connection_snapshots_per_channel(self) -> None:
+        adapter = _QtAdapter()
+        received: list[tuple[str, str]] = []
+
+        for channel, value in (
+            ("camera", "old"),
+            ("vehicle", "old"),
+            ("camera", "new"),
+            ("vehicle", "new"),
+        ):
+            adapter._post(
+                received.append,
+                (channel, value),
+                coalesce_key=("connection.status", channel),
+            )
+
+        self.assertEqual(adapter._pending_events.qsize(), 2)
+        QTest.qWait(50)
+        self.assertEqual(
+            dict(received), {"camera": "new", "vehicle": "new"}
+        )
         adapter.close()
         adapter.deleteLater()
         self.app.processEvents()
@@ -169,6 +215,32 @@ class QtRuntimeThreadingTests(unittest.TestCase):
         adapter.close()
         adapter.deleteLater()
         self.app.processEvents()
+
+    def test_log_ui_overflow_is_marked_without_losing_persisted_records(self) -> None:
+        import json
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as directory:
+            backend = LoggingService(log_path=Path(directory) / "gcs_test.json")
+            adapter = QtLoggingService(backend)
+            batches: list[tuple[LogEntry, ...]] = []
+            adapter.entries_emitted.connect(batches.append)
+
+            for index in range(adapter._MAX_PENDING_UI_LOGS + 5):
+                backend.log("TEST", f"record-{index}")
+
+            QTest.qWait(80)
+            self.assertEqual(len(batches), 1)
+            self.assertEqual(len(batches[0]), adapter._MAX_PENDING_UI_LOGS + 1)
+            self.assertEqual(batches[0][0].action, "ui.log_entries_omitted")
+            self.assertEqual(batches[0][0].details["omitted_count"], 5)
+            self.assertEqual(batches[0][-1].message, "record-5004")
+            self.assertEqual(len(json.loads((Path(directory) / "gcs_test.json").read_text())),
+                             adapter._MAX_PENDING_UI_LOGS + 5)
+            adapter.close()
+            adapter.deleteLater()
+            self.app.processEvents()
 
     def test_backend_start_does_not_block_gui(self) -> None:
         backend = _BlockingBackend()

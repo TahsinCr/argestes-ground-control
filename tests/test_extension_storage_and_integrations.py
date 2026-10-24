@@ -6,12 +6,16 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import closing
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import Mock
 
+from extensions.siha_teknofest_server.runtime import (
+    CompetitionDatabase,
+    ServerSession,
+    validate_servers,
+)
 from src.container import create_container
 from src.extension.api.protocol import ActiveProtocol
 from src.extension.host import ExtensionHost
@@ -19,7 +23,6 @@ from src.models.logs import LogEntry
 from src.models.telemetry import TelemetrySnapshot
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
-from extensions.siha_teknofest_server.runtime import CompetitionDatabase, ServerSession, validate_servers
 
 
 class ExtensionStorageTests(unittest.TestCase):
@@ -97,6 +100,31 @@ class ExtensionStorageTests(unittest.TestCase):
 
 
 class CompetitionDeliveryTests(unittest.TestCase):
+    def test_competition_history_can_be_summarized_exported_and_cleared(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = CompetitionDatabase(root / "history.sqlite3")
+            database.record("srv", "/api/giris", None, {"takim_numarasi": 7}, "", 0.1)
+            database.record("srv", "/api/sunucusaati", None, {"saat": 12}, "", 0.2)
+
+            summary = database.storage_summary()
+            self.assertEqual(summary["records"], 2)
+            self.assertGreater(summary["size_bytes"], 0)
+            self.assertIsNotNone(summary["oldest"])
+            self.assertIsNotNone(summary["newest"])
+            with self.assertRaisesRegex(ValueError, "must not replace the database"):
+                database.export_jsonl(database.path)
+            self.assertEqual(database.storage_summary()["records"], 2)
+
+            exported = root / "history.jsonl"
+            self.assertEqual(database.export_jsonl(exported), 2)
+            rows = [json.loads(line) for line in exported.read_text().splitlines()]
+            self.assertEqual([row["endpoint"] for row in rows], ["/api/giris", "/api/sunucusaati"])
+            self.assertIsNone(rows[0]["request"])
+
+            self.assertEqual(database.clear_history(), 2)
+            self.assertEqual(database.storage_summary()["records"], 0)
+
     def test_http_session_delivers_data_and_records_sql_without_credentials(self):
         delivered = threading.Event()
         bodies = []
@@ -146,7 +174,7 @@ class CompetitionDeliveryTests(unittest.TestCase):
                 self.assertEqual(bodies[0]["takim_numarasi"], 21)
                 self.assertEqual(bodies[0]["iha_enlem"], 39.0)
                 self.assertEqual(bodies[0]["gps_saati"]["saat"], 12)
-                with sqlite3.connect(database.path) as connection:
+                with closing(sqlite3.connect(database.path)) as connection, connection:
                     rows = connection.execute("SELECT endpoint,request,response FROM exchanges").fetchall()
                 self.assertEqual(rows[0][0], "/api/giris")
                 self.assertEqual(json.loads(rows[0][1]), None)

@@ -13,6 +13,14 @@ Release headings link each entry to its release date.
   nested value types without changing their saved layout or specialized UI.
 * Added `tools/qt_queue_probe.py` to measure EventBus-to-Qt delivery, callback
   duration, sampled queue depth and event-loop delay with configurable workloads.
+* Added a standalone `tools/camera_capture_probe.py` for measuring the camera
+  extension's real GStreamer USB capture path without saving or displaying frames.
+* Added **Logs** to Settings to inspect session-log storage, export a selected
+  JSON file or remove archived sessions. The current session is protected and
+  automatic deletion remains off.
+* Added a **Request history** tab to SIHA Teknofest Server settings with SQLite
+  row count, database/WAL/SHM disk usage, date range, JSONL export and explicit
+  clear-and-compact actions.
 * Extended the isolated map WebEngine smoke test to rebuild the view twice and
   verify that Leaflet and WebChannel initialize after each recreation.
 * Registered Extension API clock sources can now be selected alongside vehicle
@@ -40,8 +48,13 @@ Release headings link each entry to its release date.
   rejected by the API itself without a protocol adapter.
 * Qt event draining now yields after a four-millisecond callback budget as well
   as the existing batch limit. Synthetic slow-callback measurements showed
-  prolonged event-loop stalls with count-only batching; delivery order and all
-  queued events are preserved.
+  prolonged event-loop stalls with count-only batching; ordered event delivery
+  remains intact while the GUI yields between batches.
+* Qt service events now follow explicit consumption semantics: settings and
+  per-channel connection snapshots coalesce to their newest pending state, while
+  command results, settings failures and connection-operation outcomes remain
+  ordered and lossless. The log panel's pending UI buffer is bounded; omitted
+  display rows are marked, while the central session log remains complete.
 * Organized camera settings into separate **Camera**, **Streaming**, and
   **Recording** tabs. Each output tab now shows and edits only its own target
   type, while the existing quick-access output popup remains available.

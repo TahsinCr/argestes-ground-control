@@ -1,18 +1,20 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import queue
 import threading
 import time
 import traceback
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Hashable
+from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal, pyqtSlot
 
 from src.core.events import Subscription
-from src.models.logs import LogEntry
 from src.models.connections import ConnectionStatus
+from src.models.logs import LogEntry
 from src.models.settings import SettingsModel
 from src.models.telemetry import TelemetrySnapshot
 from src.services.abstracts.commands import CommandService
@@ -20,6 +22,13 @@ from src.services.abstracts.connections import ConnectionControlService
 from src.services.abstracts.telemetry import TelemetryService
 from src.services.logging_service import LoggingService
 from src.services.settings import DELETE_SETTING, SettingsService
+
+
+@dataclass(slots=True)
+class _PendingDispatch:
+    callback: Callable[..., None]
+    args: tuple[Any, ...]
+    coalesce_key: Hashable | None = None
 
 
 class _QtAdapter(QObject):
@@ -32,9 +41,8 @@ class _QtAdapter(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._subscriptions: list[Subscription] = []
-        self._pending_events: queue.SimpleQueue[
-            tuple[Callable[..., None], tuple[Any, ...]]
-        ] = queue.SimpleQueue()
+        self._pending_events: queue.SimpleQueue[_PendingDispatch] = queue.SimpleQueue()
+        self._coalesced_events: dict[Hashable, _PendingDispatch] = {}
         self._dispatch_lock = threading.Lock()
         self._dispatch_scheduled = False
         self._closed = False
@@ -46,21 +54,48 @@ class _QtAdapter(QObject):
         )
         self.destroyed.connect(self._cancel_subscriptions)
 
-    def _subscribe(self, stream, callback: Callable[[Any], None]) -> None:
-        """Move a backend event to the GUI queue without touching the Qt API."""
+    def _subscribe(
+        self,
+        stream,
+        callback: Callable[[Any], None],
+        *,
+        latest_by: Callable[[Any], Hashable | None] | None = None,
+    ) -> None:
+        """Queue events; only explicitly replaceable snapshots may be coalesced."""
+
+        def enqueue(value: Any) -> None:
+            key = latest_by(value) if latest_by is not None else None
+            self._post(callback, value, coalesce_key=key)
 
         self._subscriptions.append(
-            stream.subscribe(lambda value: self._post(callback, value))
+            stream.subscribe(enqueue)
         )
 
-    def _post(self, callback: Callable[..., None], *args: Any) -> None:
-        """Pure-Python dispatch point safe for worker threads to call."""
+    def _post(
+        self,
+        callback: Callable[..., None],
+        *args: Any,
+        coalesce_key: Hashable | None = None,
+    ) -> None:
+        """Queue a reliable event, or replace a pending snapshot with its latest value."""
 
         should_schedule = False
         with self._dispatch_lock:
             if self._closed:
                 return
-            self._pending_events.put((callback, args))
+            pending = (
+                self._coalesced_events.get(coalesce_key)
+                if coalesce_key is not None
+                else None
+            )
+            if pending is not None:
+                pending.callback = callback
+                pending.args = args
+            else:
+                pending = _PendingDispatch(callback, args, coalesce_key)
+                self._pending_events.put(pending)
+                if coalesce_key is not None:
+                    self._coalesced_events[coalesce_key] = pending
             if not self._dispatch_scheduled:
                 self._dispatch_scheduled = True
                 should_schedule = True
@@ -77,12 +112,20 @@ class _QtAdapter(QObject):
                 return
         deadline = time.monotonic() + self._MAX_DISPATCH_SECONDS
         for _index in range(self._MAX_DISPATCH_BATCH):
+            with self._dispatch_lock:
+                if self._closed:
+                    break
+                try:
+                    pending = self._pending_events.get_nowait()
+                except queue.Empty:
+                    break
+                if (
+                    pending.coalesce_key is not None
+                    and self._coalesced_events.get(pending.coalesce_key) is pending
+                ):
+                    del self._coalesced_events[pending.coalesce_key]
             try:
-                callback, args = self._pending_events.get_nowait()
-            except queue.Empty:
-                break
-            try:
-                callback(*args)
+                pending.callback(*pending.args)
             except Exception:
                 # Never let a Python exception escape a Qt slot. PyQt may
                 # abort the process when that happens, especially while the
@@ -109,12 +152,13 @@ class _QtAdapter(QObject):
                 return
             self._closed = True
             self._dispatch_scheduled = False
+            self._coalesced_events.clear()
+            while True:
+                try:
+                    self._pending_events.get_nowait()
+                except queue.Empty:
+                    break
         self._cancel_subscriptions()
-        while True:
-            try:
-                self._pending_events.get_nowait()
-            except queue.Empty:
-                break
 
     def _start_worker(
         self,
@@ -170,12 +214,14 @@ class _QtAdapter(QObject):
 class QtLoggingService(_QtAdapter):
     entries_emitted = pyqtSignal(object)
     _UI_BATCH_INTERVAL_MS = 50
+    _MAX_PENDING_UI_LOGS = 5_000
 
     def __init__(self, backend: LoggingService, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.backend = backend
         self._log_lock = threading.Lock()
-        self._pending_logs: list[LogEntry] = []
+        self._pending_logs: deque[LogEntry] = deque()
+        self._omitted_pending_logs = 0
         self._log_batch_scheduled = False
         self._subscriptions.append(backend.entries.subscribe(self._capture_log))
         self._log_timer = QTimer(self)
@@ -186,6 +232,9 @@ class QtLoggingService(_QtAdapter):
     def _capture_log(self, entry: LogEntry) -> None:
         should_schedule = False
         with self._log_lock:
+            if len(self._pending_logs) >= self._MAX_PENDING_UI_LOGS:
+                self._pending_logs.popleft()
+                self._omitted_pending_logs += 1
             self._pending_logs.append(entry)
             if not self._log_batch_scheduled:
                 self._log_batch_scheduled = True
@@ -203,7 +252,23 @@ class QtLoggingService(_QtAdapter):
         with self._log_lock:
             entries = tuple(self._pending_logs)
             self._pending_logs.clear()
+            omitted = self._omitted_pending_logs
+            self._omitted_pending_logs = 0
             self._log_batch_scheduled = False
+        if omitted:
+            entries = (
+                LogEntry(
+                    source="LOG",
+                    action="ui.log_entries_omitted",
+                    severity="warning",
+                    message=(
+                        f"{omitted} older log entries were omitted from the UI buffer; "
+                        "they remain in the session log file."
+                    ),
+                    details={"omitted_count": omitted},
+                ),
+                *entries,
+            )
         if entries:
             self.entries_emitted.emit(entries)
 
@@ -211,6 +276,7 @@ class QtLoggingService(_QtAdapter):
         self._log_timer.stop()
         with self._log_lock:
             self._pending_logs.clear()
+            self._omitted_pending_logs = 0
             self._log_batch_scheduled = False
         super().close()
 
@@ -246,7 +312,11 @@ class QtSettingsService(_QtAdapter):
         self._last_submitted = backend.current.to_dict()
         self._save_lock = threading.Lock()
         self._save_worker_running = False
-        self._subscribe(backend.changed, self.settings_changed.emit)
+        self._subscribe(
+            backend.changed,
+            self.settings_changed.emit,
+            latest_by=lambda _settings: ("settings.snapshot",),
+        )
 
     @property
     def current(self) -> SettingsModel:
@@ -545,7 +615,11 @@ class QtConnectionControlService(_QtAdapter):
         self.backend = backend
         self._operations_lock = threading.Lock()
         self._operations: dict[str, threading.Thread] = {}
-        self._subscribe(backend.changed, self.status_changed.emit)
+        self._subscribe(
+            backend.changed,
+            self.status_changed.emit,
+            latest_by=lambda status: ("connection.status", status.channel),
+        )
 
     def status(self, channel: str) -> ConnectionStatus:
         return self.backend.status(channel)

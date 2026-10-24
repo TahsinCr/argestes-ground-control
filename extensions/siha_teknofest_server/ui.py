@@ -1,5 +1,8 @@
 """Archived profile cards and an independent profile editor."""
 
+import time
+from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from PyQt6.QtCore import Qt, QTimer
@@ -9,13 +12,16 @@ from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPushButton,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -31,6 +37,14 @@ from .models import CompetitionServerConfig
 from .runtime import CompetitionRuntime
 
 
+def _format_bytes(value):
+    size = float(max(0, value))
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if size < 1024 or unit == "TiB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+
+
 class ServerPanel(QWidget):
     def __init__(self, context, parent=None, *, popup_mode=False):
         super().__init__(parent)
@@ -39,6 +53,14 @@ class ServerPanel(QWidget):
         self.language = self.settings.current.ui.language
         self.popup_mode, self.pending, self.anchor = popup_mode, None, None
         self.profiles, self._signature = [], None
+        self._history_executor = (
+            None
+            if popup_mode
+            else ThreadPoolExecutor(max_workers=1, thread_name_prefix="CompetitionHistory")
+        )
+        self._history_future: Future | None = None
+        self._history_last_refresh = 0.0
+        self._history_status = ""
         self.popup = CompetitionServersPopup(
             palette_for(self.settings.current.ui.theme), self, language=self.language
         )
@@ -52,13 +74,18 @@ class ServerPanel(QWidget):
             self.popup.back_button.hide()
             layout = QVBoxLayout(self)
             layout.setContentsMargins(0, 0, 0, 0)
-            layout.addWidget(self.popup)
+            self.tabs = QTabWidget(self)
+            self.tabs.addTab(self.popup, t("teknofest.servers_tab", self.language))
+            self.history_page = self._build_history_page()
+            self.tabs.addTab(self.history_page, t("teknofest.history_tab", self.language))
+            layout.addWidget(self.tabs)
         self.timer = QTimer(self)
         self.timer.setInterval(400)
         self.timer.timeout.connect(self.refresh)
         self.refresh()
 
     def refresh(self):
+        self._finish_history_operation()
         if self.pending is not None and self.pending.done():
             error = self.pending.exception()
             self.pending = None
@@ -87,6 +114,145 @@ class ServerPanel(QWidget):
                 running=False,
                 available=self.pending is None,
             )
+        if (
+            not self.popup_mode
+            and self._history_future is None
+            and time.monotonic() - self._history_last_refresh >= 2.0
+        ):
+            self._refresh_history_stats()
+
+    def _build_history_page(self):
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+        heading = QLabel(t("teknofest.history_title", self.language), page)
+        heading.setObjectName("sectionTitle")
+        description = QLabel(t("teknofest.history_description", self.language), page)
+        description.setObjectName("mutedLabel")
+        description.setWordWrap(True)
+        layout.addWidget(heading)
+        layout.addWidget(description)
+
+        summary = QGroupBox(t("teknofest.history_storage", self.language), page)
+        form = QFormLayout(summary)
+        self.history_count = QLabel("—", summary)
+        self.history_size = QLabel("—", summary)
+        self.history_range = QLabel("—", summary)
+        self.history_path = QLabel(self.runtime.database.path.name, summary)
+        for label in (self.history_path,):
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        form.addRow(t("teknofest.history_records", self.language), self.history_count)
+        form.addRow(t("teknofest.history_size", self.language), self.history_size)
+        form.addRow(t("teknofest.history_range", self.language), self.history_range)
+        form.addRow(t("teknofest.history_file", self.language), self.history_path)
+        layout.addWidget(summary)
+
+        note = QLabel(t("teknofest.history_retention_note", self.language), page)
+        note.setObjectName("mutedLabel")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addStretch(1)
+
+        self.history_status = QLabel("", page)
+        self.history_status.setObjectName("mutedLabel")
+        layout.addWidget(self.history_status)
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        self.history_export = QPushButton(t("teknofest.history_export", self.language), page)
+        self.history_clear = QPushButton(t("teknofest.history_clear", self.language), page)
+        self.history_clear.setObjectName("dangerButton")
+        self.history_export.clicked.connect(self._export_history)
+        self.history_clear.clicked.connect(self._clear_history)
+        actions.addWidget(self.history_export)
+        actions.addWidget(self.history_clear)
+        layout.addLayout(actions)
+        return page
+
+    def _refresh_history_stats(self):
+        self._history_last_refresh = time.monotonic()
+        try:
+            summary = self.runtime.database.storage_summary()
+        except (OSError, RuntimeError, ValueError) as error:
+            self.history_status.setText(str(error))
+            return
+        self.history_count.setText(str(summary["records"]))
+        self.history_size.setText(_format_bytes(summary["size_bytes"]))
+        oldest, newest = summary["oldest"], summary["newest"]
+        self.history_range.setText(
+            f"{oldest or '—'}  →  {newest or '—'}"
+        )
+        self.history_status.setText(self._history_status)
+
+    def _finish_history_operation(self):
+        future = self._history_future
+        if future is None or not future.done():
+            return
+        self._history_future = None
+        try:
+            result = future.result()
+            self._history_status = (
+                t("teknofest.history_exported", self.language, count=result)
+                if isinstance(result, int)
+                else t("teknofest.history_cleared", self.language, count=result["removed"])
+            )
+        except Exception as error:
+            self._history_status = t(
+                "teknofest.history_operation_failed", self.language, error=str(error)
+            )
+        self.history_export.setEnabled(True)
+        self.history_clear.setEnabled(True)
+        self._history_last_refresh = 0.0
+
+    def _export_history(self):
+        if self._history_future is not None:
+            return
+        destination, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            t("teknofest.history_export", self.language),
+            "teknofest-history.jsonl",
+            "JSON Lines (*.jsonl)",
+        )
+        if not destination:
+            return
+        destination = Path(destination)
+        if destination.suffix.lower() != ".jsonl":
+            destination = destination.with_suffix(".jsonl")
+        if destination.exists():
+            answer = QMessageBox.question(
+                self,
+                t("teknofest.history_export", self.language),
+                t("teknofest.history_overwrite", self.language),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self.history_export.setEnabled(False)
+        self.history_clear.setEnabled(False)
+        self.history_status.setText(t("teknofest.history_working", self.language))
+        self._history_future = self._history_executor.submit(
+            self.runtime.database.export_jsonl, destination
+        )
+
+    def _clear_history(self):
+        if self._history_future is not None:
+            return
+        answer = QMessageBox.warning(
+            self,
+            t("teknofest.history_clear", self.language),
+            t("teknofest.history_clear_confirm", self.language),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.history_export.setEnabled(False)
+        self.history_clear.setEnabled(False)
+        self.history_status.setText(t("teknofest.history_working", self.language))
+        self._history_future = self._history_executor.submit(
+            lambda: {"removed": self.runtime.database.clear_history()}
+        )
 
     def save_profiles(self, profiles):
         try:
@@ -221,6 +387,9 @@ class ServerPanel(QWidget):
     def set_language(self, language):
         self.language = language
         self.popup.set_language(language)
+        if not self.popup_mode:
+            self.tabs.setTabText(0, t("teknofest.servers_tab", language))
+            self.tabs.setTabText(1, t("teknofest.history_tab", language))
 
     def showEvent(self, event):
         self.refresh()
@@ -233,6 +402,8 @@ class ServerPanel(QWidget):
 
     def prepare_shutdown(self):
         self.timer.stop()
+        if self._history_executor is not None:
+            self._history_executor.shutdown(wait=False, cancel_futures=True)
         self.popup.close()
 
 
