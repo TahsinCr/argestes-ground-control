@@ -4,7 +4,7 @@ import os
 import stat
 import threading
 from copy import deepcopy
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from uuid import uuid4
 
@@ -13,6 +13,14 @@ from src.models.settings import SettingsModel
 from src.services.abstracts.settings import SettingsRepository
 from src.services.logging_service import ServiceLogger
 from src.services.storage import ensure_directory, load_json_file, save_json_file
+
+
+class _DeleteSetting:
+    def __deepcopy__(self, _memo):
+        return self
+
+
+DELETE_SETTING = _DeleteSetting()
 
 
 class SettingsService(SettingsRepository):
@@ -271,6 +279,44 @@ class SettingsService(SettingsRepository):
         with self._lock:
             if hasattr(self, "_settings"):
                 snapshot.extensions = deepcopy(self._settings.extensions)
+            committed = self._commit_locked(snapshot)
+        self._notify_commit(committed, notify=notify)
+
+    def apply_changes(
+        self,
+        changes: Mapping[tuple[str, ...], object],
+        *,
+        notify: bool = True,
+    ) -> None:
+        """Atomically apply changed model paths to the latest settings.
+
+        Extension state and extension-owned configuration remain owned by the
+        extension host and cannot be changed through this UI persistence path.
+        """
+        if not changes:
+            return
+        with self._lock:
+            payload = self._settings.to_dict()
+            for path, value in changes.items():
+                if not path or path[0] == "extensions":
+                    raise ValueError(
+                        "UI ayar güncellemesi extensions alanını değiştiremez"
+                    )
+                if any(not isinstance(part, str) or not part for part in path):
+                    raise ValueError("Ayar yolu geçersiz")
+                target = payload
+                for part in path[:-1]:
+                    child = target.get(part)
+                    if not isinstance(child, dict):
+                        child = {}
+                        target[part] = child
+                    target = child
+                key = path[-1]
+                if value is DELETE_SETTING:
+                    target.pop(key, None)
+                else:
+                    target[key] = deepcopy(value)
+            snapshot = SettingsModel.from_dict(payload)
             committed = self._commit_locked(snapshot)
         self._notify_commit(committed, notify=notify)
 

@@ -452,20 +452,27 @@ class PlannerService(Service):
     def _sync_from_vehicle(self) -> None:
         if self._vehicle is None:
             return
+        with self._lock:
+            expected_overlays = tuple(
+                item.to_dict() for item in self._state.overlays
+            )
+            expected_loop = self._state.mission_loop
         try:
             overlays = self._vehicle.download_mission()
             if self._stop_event.is_set():
                 return
-            current = self.state
-            retained = [
-                item
-                for item in current.overlays
-                if item.is_source_managed or not item.is_vehicle_mission
-            ]
-            self.set_overlays([*retained, *overlays])
-            self.set_mission_loop(
-                any(bool(item.metadata.get("mission_loop", False)) for item in overlays)
-            )
+            if not self._apply_vehicle_mission(
+                overlays,
+                expected_overlays=expected_overlays,
+                expected_loop=expected_loop,
+            ):
+                self._log(
+                    "warning",
+                    "mission.download_conflict",
+                    "Yerel görev indirme sırasında değişti; araç planı uygulanmadı",
+                    {"downloaded_overlay_count": len(overlays)},
+                )
+                return
         except MissionTransferInterrupted:
             # A manual upload has priority; a future reconnect can refresh the plan.
             return
@@ -494,6 +501,52 @@ class PlannerService(Service):
             with self._lock:
                 if self._sync_thread is threading.current_thread():
                     self._sync_thread = None
+
+    def _apply_vehicle_mission(
+        self,
+        overlays: Iterable[MapOverlay],
+        *,
+        expected_overlays: tuple[dict[str, Any], ...],
+        expected_loop: bool,
+    ) -> bool:
+        replacement = [MapOverlay.from_dict(item.to_dict()) for item in overlays]
+        vehicle_loop = any(
+            bool(item.metadata.get("mission_loop", False)) for item in replacement
+        )
+        with self._lock:
+            current_overlays = tuple(
+                item.to_dict() for item in self._state.overlays
+            )
+            if (
+                self._stop_event.is_set()
+                or current_overlays != expected_overlays
+                or self._state.mission_loop != expected_loop
+            ):
+                return False
+            retained = [
+                item
+                for item in self._state.overlays
+                if item.is_source_managed or not item.is_vehicle_mission
+            ]
+            combined = [*retained, *replacement]
+            identifiers = [item.overlay_id for item in combined]
+            if len(identifiers) != len(set(identifiers)):
+                raise ValueError("Görev öğesi kimlikleri benzersiz olmalı")
+            if (
+                [item.to_dict() for item in self._state.overlays]
+                == [item.to_dict() for item in combined]
+                and self._state.mission_loop == vehicle_loop
+            ):
+                return True
+            self._state = self._state.copy(
+                overlays=combined,
+                selected_overlay_id=None,
+                mission_loop=vehicle_loop,
+                revision=self._state.revision + 1,
+            )
+            snapshot = MissionState.from_dict(self._state.to_dict())
+        self._changed.publish(snapshot)
+        return True
 
     @staticmethod
     def _initial_state() -> MissionState:

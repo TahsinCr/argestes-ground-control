@@ -4,6 +4,8 @@ import json
 import os
 import stat
 import tempfile
+import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -12,10 +14,69 @@ from unittest.mock import patch
 from src.models.settings import SettingsModel
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
+from src.ui.adapters.services import QtSettingsService
 from src.ui.config.settings_schema import iter_fields
 
 
 class SettingsTests(unittest.TestCase):
+    def test_pending_save_merge_keeps_newer_nested_value_after_parent_failure(
+        self,
+    ) -> None:
+        pending = {("ui",): {"theme": "dark", "map_layer": "vector"}}
+
+        QtSettingsService._merge_pending_change(
+            pending, ("ui", "theme"), "light"
+        )
+
+        self.assertEqual(
+            pending,
+            {("ui",): {"theme": "light", "map_layer": "vector"}},
+        )
+
+    def test_async_saves_from_separate_adapters_merge_changed_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            backend = SettingsService(Path(directory))
+            base = backend.current.to_dict()
+            theme_payload = json.loads(json.dumps(base))
+            theme_payload["ui"]["theme"] = "light"
+            map_payload = json.loads(json.dumps(base))
+            map_payload["ui"]["map_layer"] = "satellite"
+            first = QtSettingsService(backend)
+            second = QtSettingsService(backend)
+
+            first.save_async(SettingsModel.from_dict(theme_payload))
+            second.save_async(SettingsModel.from_dict(map_payload))
+
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                current = backend.current
+                if current.theme == "light" and current.map_layer == "satellite":
+                    break
+                time.sleep(0.01)
+
+            self.assertEqual(backend.current.theme, "light")
+            self.assertEqual(backend.current.map_layer, "satellite")
+            self.assertEqual(backend.current.extensions, base["extensions"])
+
+    def test_async_save_preserves_unrelated_backend_update_from_old_snapshot(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            backend = SettingsService(Path(directory))
+            payload = backend.current.to_dict()
+            payload["ui"]["theme"] = "light"
+            adapter = QtSettingsService(backend)
+
+            adapter.save_async(SettingsModel.from_dict(payload))
+            backend.set_value("ui.map_layer", "satellite")
+
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline and backend.current.theme != "light":
+                time.sleep(0.01)
+
+            self.assertEqual(backend.current.theme, "light")
+            self.assertEqual(backend.current.map_layer, "satellite")
+
     @unittest.skipUnless(os.name == "posix", "POSIX file modes are required")
     def test_existing_settings_file_is_restricted_to_its_owner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

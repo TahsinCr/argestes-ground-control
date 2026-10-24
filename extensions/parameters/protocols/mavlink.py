@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import struct
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -19,6 +20,7 @@ from extensions.mavlink.ports import MavlinkVehiclePort
 @dataclass(slots=True)
 class _PendingWrite:
     expected: float
+    value_type: int | None
     event: threading.Event
     confirmed: bool = False
 
@@ -145,9 +147,11 @@ class VehicleParameterService(MutableParameterService):
                 )
             pending = {
                 key: _PendingWrite(
-                    self._numeric_value(key, value), threading.Event()
+                    self._wire_float32(self._numeric_value(key, value)),
+                    parameter.value_type,
+                    threading.Event(),
                 )
-                for key, (_, value) in parameters.items()
+                for key, (parameter, value) in parameters.items()
             }
             self._pending_writes.update(pending)
 
@@ -307,11 +311,13 @@ class VehicleParameterService(MutableParameterService):
             else:
                 received_parameters = ()
             pending = self._pending_writes.get(key)
-            confirmed = pending is not None and math.isclose(
-                raw_value,
-                pending.expected,
-                rel_tol=1e-5,
-                abs_tol=1e-5,
+            confirmed = (
+                pending is not None
+                and raw_value == pending.expected
+                and (
+                    pending.value_type is None
+                    or value_type == pending.value_type
+                )
             )
             if confirmed:
                 pending.confirmed = True
@@ -450,6 +456,14 @@ class VehicleParameterService(MutableParameterService):
             if math.isfinite(numeric):
                 return numeric
         raise TypeError(f"Parametre sonlu sayısal olmalı: {key}")
+
+    @staticmethod
+    def _wire_float32(value: float) -> float:
+        """Return the exact IEEE-754 value carried by MAVLink PARAM_VALUE."""
+        try:
+            return struct.unpack(">f", struct.pack(">f", value))[0]
+        except (OverflowError, struct.error) as exc:
+            raise ValueError("Parametre MAVLink float32 aralığının dışında") from exc
 
     @staticmethod
     def _category_for(key: str) -> str:

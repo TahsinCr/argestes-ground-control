@@ -670,10 +670,33 @@ class VehicleServiceTests(unittest.TestCase):
             def call_mav(self, method: str, *args) -> None:
                 self.sent.append((method, args))
 
-            def wait_for(self, message_type, **_kwargs):
+            def wait_for(self, message_type, **kwargs):
                 self.waited_for.append(message_type)
                 if message_type == "COMMAND_ACK":
-                    return SimpleNamespace(command=400, result=0)
+                    predicate = kwargs.get("predicate")
+                    foreign = SimpleNamespace(
+                        command=400,
+                        result=0,
+                        get_srcSystem=lambda: 9,
+                        get_srcComponent=lambda: 1,
+                    )
+                    companion = SimpleNamespace(
+                        command=400,
+                        result=0,
+                        get_srcSystem=lambda: 1,
+                        get_srcComponent=lambda: 191,
+                    )
+                    acknowledgement = SimpleNamespace(
+                        command=400,
+                        result=0,
+                        get_srcSystem=lambda: 1,
+                        get_srcComponent=lambda: 1,
+                    )
+                    if predicate(foreign) or predicate(companion):
+                        raise AssertionError("foreign COMMAND_ACK matched")
+                    if not predicate(acknowledgement):
+                        raise AssertionError("target COMMAND_ACK did not match")
+                    return acknowledgement
                 return SimpleNamespace(base_mode=128)
 
         client = Client()
@@ -808,6 +831,49 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual({item.key: item.value for item in service.current}["KNOWN"], 7)
         self.assertGreaterEqual(len(published), 2)
         service.stop()
+
+    def test_parameter_echo_matches_float32_wire_value_without_relative_tolerance(self) -> None:
+        service = VehicleParameterService(_FakeVehicle())  # type: ignore[arg-type]
+        large_write = SimpleNamespace(
+            expected=1_000_000.0,
+            value_type=6,
+            event=threading.Event(),
+            confirmed=False,
+        )
+        service._pending_writes["LARGE"] = large_write
+        service._consume_message(
+            SimpleNamespace(
+                get_type=lambda: "PARAM_VALUE",
+                param_id=b"LARGE\x00",
+                param_value=1_000_009.0,
+                param_count=1,
+                param_index=0,
+                param_type=6,
+            )
+        )
+        self.assertFalse(large_write.confirmed)
+        self.assertFalse(large_write.event.is_set())
+
+        expected_float = VehicleParameterService._wire_float32(0.1)
+        float_write = SimpleNamespace(
+            expected=expected_float,
+            value_type=9,
+            event=threading.Event(),
+            confirmed=False,
+        )
+        service._pending_writes["FLOAT"] = float_write
+        service._consume_message(
+            SimpleNamespace(
+                get_type=lambda: "PARAM_VALUE",
+                param_id=b"FLOAT\x00",
+                param_value=expected_float,
+                param_count=1,
+                param_index=0,
+                param_type=9,
+            )
+        )
+        self.assertTrue(float_write.confirmed)
+        self.assertTrue(float_write.event.is_set())
 
     def test_partial_parameter_write_reports_confirmed_uncertain_and_unattempted(self) -> None:
         class _PartialVehicle(_FakeVehicle):
@@ -1599,7 +1665,24 @@ class VehicleServiceTests(unittest.TestCase):
             def call_mav(self, method: str, *args) -> None:
                 self.sent.append((method, args))
 
-            def wait_for(self, *_args, **_kwargs):
+            def wait_for(self, *_args, **kwargs):
+                response = self.responses[0]
+                predicate = kwargs.get("predicate")
+                if predicate is not None:
+                    foreign = SimpleNamespace(
+                        get_srcSystem=lambda: 2,
+                        get_srcComponent=lambda: 1,
+                    )
+                    foreign_component = SimpleNamespace(
+                        get_srcSystem=lambda: 1,
+                        get_srcComponent=lambda: 191,
+                    )
+                    if predicate(foreign) or predicate(foreign_component):
+                        raise AssertionError("foreign mission response matched")
+                    response.get_srcSystem = lambda: 1
+                    response.get_srcComponent = lambda: 1
+                    if not predicate(response):
+                        raise AssertionError("target mission response did not match")
                 return self.responses.pop(0)
 
         client = Client()
@@ -1623,6 +1706,83 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(client.sent[2][1][2], 1)
         self.assertEqual(client.sent[2][1][11:13], (391_000_000, 321_000_000))
         self.assertEqual(client.sent[3][1], (1, 1, 1))
+
+    def test_mission_download_filters_count_by_target_source(self) -> None:
+        mavlink = SimpleNamespace(
+            MAV_MISSION_TYPE_MISSION=0,
+            MAV_MISSION_ACCEPTED=0,
+        )
+
+        class Client:
+            endpoint = SimpleNamespace(uri="test")
+            connection = SimpleNamespace(target_system=7, target_component=1)
+            router = SimpleNamespace(sequence=0)
+            is_connected = True
+
+            def __init__(self) -> None:
+                self.mavlink = mavlink
+
+            def call_mav(self, *_args) -> None:
+                pass
+
+            def wait_for(self, *_args, **kwargs):
+                predicate = kwargs["predicate"]
+                foreign = SimpleNamespace(
+                    get_srcSystem=lambda: 8,
+                    get_srcComponent=lambda: 1,
+                    count=0,
+                )
+                if predicate(foreign):
+                    raise AssertionError("foreign MISSION_COUNT matched")
+                target = SimpleNamespace(
+                    get_srcSystem=lambda: 7,
+                    get_srcComponent=lambda: 1,
+                    count=0,
+                )
+                if not predicate(target):
+                    raise AssertionError("target MISSION_COUNT did not match")
+                return target
+
+        vehicle = MavlinkVehicleService(Client())  # type: ignore[arg-type]
+        vehicle._state = VehicleConnectionState(True, "test", 7, 1)
+
+        self.assertEqual(vehicle.download_mission(), [])
+
+    def test_mission_download_filters_item_by_target_source(self) -> None:
+        target = SimpleNamespace(
+            get_srcSystem=lambda: 7,
+            get_srcComponent=lambda: 1,
+            seq=0,
+        )
+
+        class Client:
+            endpoint = SimpleNamespace(uri="test")
+            connection = SimpleNamespace(target_system=7, target_component=1)
+            router = SimpleNamespace(sequence=0)
+            is_connected = True
+
+            def wait_for(self, _message_types, *, predicate, **_kwargs):
+                foreign_component = SimpleNamespace(
+                    get_srcSystem=lambda: 7,
+                    get_srcComponent=lambda: 191,
+                    seq=0,
+                )
+                if predicate(foreign_component):
+                    raise AssertionError("foreign MISSION_ITEM matched")
+                if not predicate(target):
+                    raise AssertionError("target MISSION_ITEM did not match")
+                return target
+
+        vehicle = MavlinkVehicleService(Client())  # type: ignore[arg-type]
+
+        received = vehicle._wait_for_mission_download(
+            "MISSION_ITEM_INT",
+            after_sequence=0,
+            target=(7, 1),
+            predicate=lambda message: int(message.seq) == 0,
+        )
+
+        self.assertIs(received, target)
 
     def test_operator_upload_preempts_an_incomplete_background_mission_download(
         self,

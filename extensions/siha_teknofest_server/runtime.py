@@ -269,6 +269,7 @@ class CompetitionRuntime:
         self.worker = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="CompetitionControl"
         )
+        self._lifecycle_lock = threading.RLock()
         self._closed = False
         self._load()
 
@@ -370,29 +371,31 @@ class CompetitionRuntime:
                 identifier: session.running
                 for identifier, session in previous_sessions.items()
             }
-            stopped = {
-                identifier: session.stop()
-                for identifier, session in previous_sessions.items()
-            }
+            stopped = self._stop_sessions(previous_sessions)
             if not all(stopped.values()):
-                for identifier, session in previous_sessions.items():
-                    if was_running.get(identifier) and stopped.get(identifier):
-                        session.start()
+                with self._lifecycle_lock:
+                    if not self._closed:
+                        for identifier, session in previous_sessions.items():
+                            if was_running.get(identifier) and stopped.get(identifier):
+                                session.start()
                 raise RuntimeError(
                     "An existing TEKNOFEST session is still stopping; profiles were not changed"
                 )
-            try:
-                self.settings.update_extension(
-                    "siha_teknofest_server", config={"servers": prepared}
-                )
-            except Exception:
-                for identifier, session in previous_sessions.items():
-                    if was_running.get(identifier):
-                        session.start()
-                raise
-            self.sessions = new_sessions
-            self._sync_clock_references()
-            self.start()
+            with self._lifecycle_lock:
+                if self._closed:
+                    return
+                try:
+                    self.settings.update_extension(
+                        "siha_teknofest_server", config={"servers": prepared}
+                    )
+                except Exception:
+                    for identifier, session in previous_sessions.items():
+                        if was_running.get(identifier):
+                            session.start()
+                    raise
+                self.sessions = new_sessions
+                self._sync_clock_references()
+                self.start()
 
         return self.worker.submit(apply)
 
@@ -421,19 +424,44 @@ class CompetitionRuntime:
         )
 
     def stop(self):
-        self._closed = True
-        self.worker.shutdown(wait=True, cancel_futures=True)
-        for session in self.sessions.values():
-            if not session.stop():
+        with self._lifecycle_lock:
+            self._closed = True
+            sessions = dict(self.sessions)
+        # Active configuration work can be waiting for bounded session cleanup.
+        # Cancel queued requests and let that worker finish without holding the
+        # extension host or UI shutdown path open.
+        self.worker.shutdown(wait=False, cancel_futures=True)
+        stopped = self._stop_sessions(sessions)
+        for identifier, did_stop in stopped.items():
+            if not did_stop:
                 self.logger.event(
                     "server.shutdown_timeout",
                     "TEKNOFEST session did not stop before its shutdown deadline",
                     severity="danger",
-                    details={"server": session.config["identifier"]},
+                    details={"server": identifier},
                 )
         if self.clock_references is not None:
             self.clock_references.unregister_owner("siha_teknofest_server")
         self._clock_reference_ids.clear()
+
+    @staticmethod
+    def _stop_sessions(sessions):
+        """Signal every session first, then join against one shared deadline."""
+        items = tuple(sessions.items())
+        for _identifier, session in items:
+            session.stop(timeout_s=0)
+        grace = max(
+            (
+                float(session.config.get("timeout_s", 3)) + 1.0
+                for _identifier, session in items
+            ),
+            default=0.0,
+        )
+        deadline = time.monotonic() + grace
+        return {
+            identifier: session.stop(timeout_s=max(0.0, deadline - time.monotonic()))
+            for identifier, session in items
+        }
 
 
 def validate_servers(configs):

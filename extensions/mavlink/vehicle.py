@@ -82,6 +82,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         self._subscriptions: list[Subscription] = []
         self._started = False
         self._state_lock = threading.RLock()
+        self._command_ack_lock = threading.Lock()
         self._mission_transfer_lock = threading.Lock()
         self._mission_download_cancel = threading.Event()
         self._last_heartbeat = 0.0
@@ -599,6 +600,9 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                     raise TimeoutError("Görev yükleme isteği zaman aşımına uğradı")
                 request = self._client.wait_for(
                     {"MISSION_REQUEST_INT", "MISSION_REQUEST"},
+                    predicate=lambda message: self._message_source_matches(
+                        message, system, component
+                    ),
                     timeout=min(self._operation_timeout, remaining),
                     after_sequence=boundary,
                 )
@@ -618,6 +622,9 @@ class MavlinkVehicleService(MavlinkVehiclePort):
 
             acknowledgement = self._client.wait_for(
                 "MISSION_ACK",
+                predicate=lambda message: self._message_source_matches(
+                    message, system, component
+                ),
                 timeout=self._operation_timeout,
                 after_sequence=boundary,
             )
@@ -653,6 +660,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
             count_message = self._wait_for_mission_download(
                 "MISSION_COUNT",
                 after_sequence=boundary,
+                target=(system, component),
             )
             count = int(count_message.count)
             overlays: list[MapOverlay] = []
@@ -672,6 +680,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                         int(message.seq) == expected
                     ),
                     after_sequence=boundary,
+                    target=(system, component),
                 )
                 if (
                     int(getattr(item, "command", -1))
@@ -707,6 +716,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         message_types,
         *,
         after_sequence: int,
+        target: tuple[int, int],
         predicate=None,
     ) -> Any:
         deadline = time.monotonic() + self._operation_timeout
@@ -728,7 +738,10 @@ class MavlinkVehicleService(MavlinkVehiclePort):
             try:
                 return self._client.wait_for(
                     message_types,
-                    predicate=predicate,
+                    predicate=lambda message: (
+                        self._message_source_matches(message, *target)
+                        and (predicate is None or predicate(message))
+                    ),
                     timeout=min(0.25, remaining),
                     after_sequence=after_sequence,
                 )
@@ -741,6 +754,22 @@ class MavlinkVehicleService(MavlinkVehiclePort):
             raise ConnectionError("Uçuş cihazı bağlı değil")
         connection = self._client.connection
         return connection.target_system, connection.target_component
+
+    @staticmethod
+    def _message_source_matches(
+        message: Any, system: int, component: int
+    ) -> bool:
+        get_system = getattr(message, "get_srcSystem", None)
+        get_component = getattr(message, "get_srcComponent", None)
+        if not callable(get_system) or not callable(get_component):
+            return False
+        try:
+            return (
+                int(get_system()) == int(system)
+                and int(get_component()) == int(component)
+            )
+        except (TypeError, ValueError):
+            return False
 
     def _arm(self, armed: bool, *, force: bool = False) -> bool:
         command = self._client.mavlink.MAV_CMD_COMPONENT_ARM_DISARM
@@ -1042,6 +1071,15 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         return True
 
     def _command_long(self, command: int, *parameters: float | int) -> None:
+        # COMMAND_ACK carries a command id but no transaction id. Serialize
+        # requests here as well as at the command-service boundary so direct
+        # adapter callers cannot consume one another's acknowledgements.
+        with self._command_ack_lock:
+            self._command_long_transaction(command, *parameters)
+
+    def _command_long_transaction(
+        self, command: int, *parameters: float | int
+    ) -> None:
         system, component = self._target
         values = [float(value) for value in parameters[:7]]
         values.extend([0.0] * (7 - len(values)))
@@ -1068,7 +1106,12 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                 try:
                     acknowledgement = self._client.wait_for(
                         "COMMAND_ACK",
-                        predicate=lambda message: int(message.command) == int(command),
+                        predicate=lambda message: (
+                            self._message_source_matches(
+                                message, system, component
+                            )
+                            and int(message.command) == int(command)
+                        ),
                         timeout=remaining,
                         after_sequence=boundary,
                     )

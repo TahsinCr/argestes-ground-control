@@ -14,6 +14,64 @@ from extensions.siha_teknofest_server.runtime import (
 
 
 class TeknofestSessionLifecycleTests(unittest.TestCase):
+    def test_runtime_signals_all_sessions_before_waiting_for_any(self) -> None:
+        sessions = []
+
+        class FakeSession:
+            def __init__(self) -> None:
+                self.config = {"timeout_s": 0.1}
+                self.signaled = False
+
+            def stop(self, *, timeout_s=None) -> bool:
+                if timeout_s == 0:
+                    self.signaled = True
+                    return False
+                if not all(session.signaled for session in sessions):
+                    raise AssertionError("session join started before stop fanout")
+                return True
+
+        sessions.extend((FakeSession(), FakeSession(), FakeSession()))
+        stopped = CompetitionRuntime._stop_sessions(
+            {str(index): session for index, session in enumerate(sessions)}
+        )
+
+        self.assertEqual(stopped, {"0": True, "1": True, "2": True})
+
+    def test_runtime_shutdown_does_not_wait_for_management_executor(self) -> None:
+        class Session:
+            config = {"timeout_s": 0.1}
+
+            def __init__(self) -> None:
+                self.timeouts = []
+
+            def stop(self, *, timeout_s=None) -> bool:
+                self.timeouts.append(timeout_s)
+                return True
+
+        class Worker:
+            def __init__(self) -> None:
+                self.wait = None
+
+            def shutdown(self, *, wait, cancel_futures) -> None:
+                self.wait = wait
+                self.cancel_futures = cancel_futures
+
+        runtime = object.__new__(CompetitionRuntime)
+        runtime._lifecycle_lock = threading.RLock()
+        runtime._closed = False
+        runtime.sessions = {"server": Session()}
+        runtime.worker = Worker()
+        runtime.logger = SimpleNamespace(event=lambda *args, **kwargs: None)
+        runtime.clock_references = None
+        runtime._clock_reference_ids = set()
+
+        runtime.stop()
+
+        self.assertFalse(runtime.worker.wait)
+        self.assertTrue(runtime.worker.cancel_futures)
+        self.assertTrue(runtime._closed)
+        self.assertEqual(len(runtime.sessions["server"].timeouts), 2)
+
     def test_login_response_requires_a_valid_team_number(self) -> None:
         self.assertEqual(parse_login_response({"takim_numarasi": 21}), 21)
         self.assertEqual(parse_login_response(21), 21)
@@ -56,11 +114,13 @@ class TeknofestSessionLifecycleTests(unittest.TestCase):
 
         class Session:
             running = True
+            config = {"timeout_s": 0.1}
 
-            def stop(self):
+            def stop(self, *, timeout_s=None):
                 return False
 
         runtime = object.__new__(CompetitionRuntime)
+        runtime._lifecycle_lock = threading.RLock()
         runtime._closed = False
         runtime.settings = Settings()
         runtime.telemetry = SimpleNamespace(current=None)
@@ -100,11 +160,12 @@ class TeknofestSessionLifecycleTests(unittest.TestCase):
 
         class Session:
             running = True
+            config = {"timeout_s": 0.1}
 
             def __init__(self, can_stop):
                 self.can_stop = can_stop
 
-            def stop(self):
+            def stop(self, *, timeout_s=None):
                 if self.can_stop:
                     self.running = False
                 return self.can_stop
@@ -113,6 +174,7 @@ class TeknofestSessionLifecycleTests(unittest.TestCase):
                 self.running = True
 
         runtime = object.__new__(CompetitionRuntime)
+        runtime._lifecycle_lock = threading.RLock()
         runtime._closed = False
         runtime.settings = Settings()
         runtime.telemetry = SimpleNamespace(current=None)

@@ -127,6 +127,43 @@ class MissionTests(unittest.TestCase):
         offline = PlannerService(vehicle=OfflineVehicle())  # type: ignore[arg-type]
         self.assertFalse(offline.request_vehicle_sync())
 
+    def test_vehicle_download_does_not_overwrite_edits_made_while_waiting(self) -> None:
+        downloaded = MapOverlay(
+            "vehicle-wp",
+            "waypoint",
+            "Vehicle WP",
+            [[39.91, 32.81, 120]],
+            "#fff",
+            35,
+        )
+        local = MapOverlay(
+            "operator-wp",
+            "waypoint",
+            "Operator WP",
+            [[39.92, 32.82, 130]],
+            "#fff",
+            35,
+        )
+
+        class Vehicle:
+            connected = True
+            state = VehicleConnectionState(True, "test", 1, 1)
+            planner: PlannerService
+
+            def download_mission(self):
+                self.planner.upsert_overlay(local)
+                return [downloaded]
+
+        vehicle = Vehicle()
+        service = PlannerService(vehicle=vehicle)  # type: ignore[arg-type]
+        vehicle.planner = service
+
+        service._sync_from_vehicle()
+
+        self.assertEqual(
+            [item.overlay_id for item in service.state.overlays], ["operator-wp"]
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

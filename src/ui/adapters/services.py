@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import queue
 import threading
 import time
@@ -18,7 +19,7 @@ from src.services.abstracts.commands import CommandService
 from src.services.abstracts.connections import ConnectionControlService
 from src.services.abstracts.telemetry import TelemetryService
 from src.services.logging_service import LoggingService
-from src.services.settings import SettingsService
+from src.services.settings import DELETE_SETTING, SettingsService
 
 
 class _QtAdapter(QObject):
@@ -241,7 +242,8 @@ class QtSettingsService(_QtAdapter):
     def __init__(self, backend: SettingsService, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.backend = backend
-        self._pending_save: SettingsModel | None = None
+        self._pending_changes: dict[tuple[str, ...], object] = {}
+        self._last_submitted = backend.current.to_dict()
         self._save_lock = threading.Lock()
         self._save_worker_running = False
         self._subscribe(backend.changed, self.settings_changed.emit)
@@ -252,6 +254,8 @@ class QtSettingsService(_QtAdapter):
 
     def save(self, settings: SettingsModel) -> None:
         self.backend.save(settings)
+        with self._save_lock:
+            self._last_submitted = self.backend.current.to_dict()
 
     def save_async(self, settings: SettingsModel) -> None:
         """Persist the latest popup change without blocking the Qt event loop.
@@ -260,13 +264,77 @@ class QtSettingsService(_QtAdapter):
         intermediate configuration.
         """
 
-        snapshot = SettingsModel.from_dict(settings.to_dict())
+        snapshot = SettingsModel.from_dict(settings.to_dict()).to_dict()
         with self._save_lock:
-            self._pending_save = snapshot
-            if self._save_worker_running:
+            changes = self._diff_settings(self._last_submitted, snapshot)
+            self._last_submitted = snapshot
+            for path, value in changes.items():
+                self._merge_pending_change(self._pending_changes, path, value)
+            if not self._pending_changes or self._save_worker_running:
                 return
             self._save_worker_running = True
         self._start_worker(self._drain_saves, name="QtSettingsSave")
+
+    @classmethod
+    def _diff_settings(
+        cls,
+        before: object,
+        after: object,
+        path: tuple[str, ...] = (),
+    ) -> dict[tuple[str, ...], object]:
+        if path[:1] == ("extensions",):
+            return {}
+        if isinstance(before, dict) and isinstance(after, dict):
+            changes: dict[tuple[str, ...], object] = {}
+            for key in sorted(before.keys() | after.keys()):
+                child_path = (*path, str(key))
+                if key not in after:
+                    if child_path:
+                        changes[child_path] = DELETE_SETTING
+                elif key not in before:
+                    value = after[key]
+                    if isinstance(value, dict) and value:
+                        changes.update(cls._diff_settings({}, value, child_path))
+                    else:
+                        changes[child_path] = value
+                elif before[key] != after[key]:
+                    changes.update(cls._diff_settings(before[key], after[key], child_path))
+            return changes
+        if path and before != after:
+            return {path: after}
+        return {}
+
+    @staticmethod
+    def _merge_pending_change(
+        pending: dict[tuple[str, ...], object],
+        path: tuple[str, ...],
+        value: object,
+    ) -> None:
+        for existing_path, existing_value in tuple(pending.items()):
+            if existing_path == path:
+                pending.pop(existing_path)
+                continue
+            if path[: len(existing_path)] == existing_path:
+                if isinstance(existing_value, dict):
+                    nested = deepcopy(existing_value)
+                    target = nested
+                    for part in path[len(existing_path) : -1]:
+                        child = target.get(part)
+                        if not isinstance(child, dict):
+                            child = {}
+                            target[part] = child
+                        target = child
+                    key = path[-1]
+                    if value is DELETE_SETTING:
+                        target.pop(key, None)
+                    else:
+                        target[key] = deepcopy(value)
+                    pending[existing_path] = nested
+                    return
+                pending.pop(existing_path)
+            elif existing_path[: len(path)] == path:
+                pending.pop(existing_path)
+        pending[path] = deepcopy(value)
 
     def _drain_saves(self) -> None:
         while True:
@@ -275,18 +343,25 @@ class QtSettingsService(_QtAdapter):
             # complete settings/UI refresh path.
             time.sleep(self._POPUP_SAVE_DEBOUNCE_S)
             with self._save_lock:
-                pending = self._pending_save
-                self._pending_save = None
-            if pending is None:
+                pending = self._pending_changes
+                self._pending_changes = {}
+            if not pending:
                 with self._save_lock:
-                    if self._pending_save is None:
+                    if not self._pending_changes:
                         self._save_worker_running = False
                         return
                 continue
             try:
-                self.backend.save(pending)
+                self.backend.apply_changes(pending)
             except Exception as exc:
                 self._post(self.save_failed.emit, str(exc))
+                with self._save_lock:
+                    failed_changes = pending
+                    for path, value in self._pending_changes.items():
+                        self._merge_pending_change(failed_changes, path, value)
+                    self._pending_changes = failed_changes
+                    self._save_worker_running = False
+                return
 
     def patch(self, **changes: object) -> None:
         self.backend.patch(**changes)

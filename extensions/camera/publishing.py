@@ -420,6 +420,8 @@ class VideoSharePublisher:
             next_at = time.monotonic()
             sequence = 0
             previous: VideoFrame | None = None
+            signal_lost_frame: VideoFrame | None = None
+            source_stale = False
             while not stop_event.is_set():
                 if config.fixed_frame_rate:
                     next_at += 1.0 / config.fps
@@ -435,7 +437,8 @@ class VideoSharePublisher:
                     self._frame_event.wait(0.5)
                     self._frame_event.clear()
                 frame = self._current_frame(config)
-                if config.output_type == "record" and not self._frame_is_fresh(config):
+                frame_fresh = self._frame_is_fresh(config)
+                if config.output_type == "record" and not frame_fresh:
                     self._set_state(
                         config.identifier,
                         "waiting",
@@ -445,7 +448,36 @@ class VideoSharePublisher:
                     previous = None
                     next_at = time.monotonic()
                     continue
-                frame = frame or previous
+                if config.output_type == "stream" and not frame_fresh:
+                    if previous is None:
+                        continue
+                    if (
+                        signal_lost_frame is None
+                        or (signal_lost_frame.width, signal_lost_frame.height)
+                        != (previous.width, previous.height)
+                    ):
+                        signal_lost_frame = self._signal_lost_frame(previous)
+                    frame = signal_lost_frame
+                    if not source_stale:
+                        source_stale = True
+                        self._set_state(
+                            config.identifier,
+                            "waiting",
+                            "Kamera sinyali kesildi; boş NO SIGNAL görüntüsü yayında",
+                            stop_event=stop_event,
+                        )
+                else:
+                    frame = frame or previous
+                    if frame is None:
+                        continue
+                    if source_stale:
+                        source_stale = False
+                        self._set_state(
+                            config.identifier,
+                            "active",
+                            detail,
+                            stop_event=stop_event,
+                        )
                 if frame is None:
                     continue
                 if (
@@ -456,7 +488,7 @@ class VideoSharePublisher:
                     raise RuntimeError(
                         "Yayın sırasında çözünürlük değişti; paylaşım yeniden başlatılmalı"
                     )
-                if clock is not None:
+                if clock is not None and not source_stale:
                     if config.timestamp_enabled:
                         current_generation, clock_provider = (
                             self._clock_provider_snapshot()
@@ -495,6 +527,8 @@ class VideoSharePublisher:
                             )
                     else:
                         clock.set_property("text", "")
+                elif clock is not None:
+                    clock.set_property("text", "NO SIGNAL")
                 # Wrap the immutable frame bytes directly; allocating and
                 # copying an RGBA buffer per camera at 30 FPS is prohibitively
                 # expensive for multi-camera recording.
@@ -564,6 +598,16 @@ class VideoSharePublisher:
                     self._latest_frame,
                 )
             return self._latest_source_frames.get(config.source_id)
+
+    @staticmethod
+    def _signal_lost_frame(reference: VideoFrame) -> VideoFrame:
+        return VideoFrame(
+            width=reference.width,
+            height=reference.height,
+            data=b"\x00\x00\x00\xff" * (reference.width * reference.height),
+            pixel_format="rgba8888",
+            stride=reference.width * 4,
+        )
 
     def _frame_is_fresh(self, config: VideoShareConfig) -> bool:
         with self._frames_lock:

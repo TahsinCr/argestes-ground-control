@@ -17,6 +17,7 @@ except ImportError:  # pragma: no cover - Linux-only device API
     fcntl = None  # type: ignore[assignment]
 
 from src.core.events import EventBus, Subscription
+from src.extension.api.vehicle import RcControl
 from src.models.commands import CommandRequest
 from extensions.joystick.models import (
     JoystickButtonConfig,
@@ -28,6 +29,7 @@ from extensions.joystick.models import (
 from extensions.joystick.contracts import JoystickService
 from src.services.abstracts.settings import SettingsRepository
 from src.services.abstracts.vehicle import VehicleService
+from src.services.abstracts.commands import CommandService
 from src.services.logging_service import ServiceLogger
 
 
@@ -47,10 +49,14 @@ class LinuxRcJoystickService(JoystickService):
         self,
         settings: SettingsRepository,
         vehicle: VehicleService,
+        rc_control: RcControl,
+        commands: CommandService,
         logger: ServiceLogger | None = None,
     ) -> None:
         self._settings = settings
         self._vehicle = vehicle
+        self._rc_control = rc_control
+        self._commands = commands
         self._logger = logger
         self._changed = EventBus[JoystickState]()
         self._state = JoystickState()
@@ -249,12 +255,15 @@ class LinuxRcJoystickService(JoystickService):
                 if now >= next_send:
                     next_send = now + send_interval
                     if transmitting:
-                        self._vehicle.send_rc_override(pwm)
+                        self._rc_control.send_rc_override(pwm)
                 self._wake_event.wait(min(0.01, max(0.001, next_send - now)))
                 self._wake_event.clear()
         finally:
             os.close(descriptor)
-            self._cancel_button_actions(wait=True)
+            # Do not hold RC cleanup while an already dispatched command waits
+            # for its protocol timeout. The generation check rejects stale
+            # work and the single-flight lock remains held until completion.
+            self._cancel_button_actions(wait=False)
             self._release_override()
             self._publish(JoystickState())
 
@@ -314,16 +323,19 @@ class LinuxRcJoystickService(JoystickService):
                 current = generation == self._action_generation
             if not current or self._stop_event.is_set() or not self._vehicle.connected:
                 return
-            accepted = self._vehicle.execute(
+            result = self._commands.dispatch(
                 CommandRequest(assignment.action, parameters, source="joystick")
             )
+            accepted = result.accepted
             self._event(
                 "joystick.button_action",
-                f"Joystick buton aksiyonu {'gönderildi' if accepted else 'reddedildi'}: {assignment.action}",
+                result.message
+                or f"Joystick buton aksiyonu {'gönderildi' if accepted else 'reddedildi'}: {assignment.action}",
                 "success" if accepted else "warning",
                 {
                     "button": assignment.button + 1,
                     "action": assignment.action,
+                    "confirmed": bool(result.details.get("confirmed", False)),
                     **parameters,
                 },
             )
@@ -473,7 +485,7 @@ class LinuxRcJoystickService(JoystickService):
 
     def _release_override(self) -> None:
         try:
-            self._vehicle.release_rc_override()
+            self._rc_control.release_rc_override()
         except (ConnectionError, OSError):
             pass
 

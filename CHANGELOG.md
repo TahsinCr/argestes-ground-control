@@ -124,7 +124,8 @@ Release headings link each entry to its release date.
   still-running plugin.
 * Joystick button actions now use a single reusable worker and reject work from
   a closed or superseded device session. Shutdown cancels queued actions without
-  blocking the UI on an in-flight command; that command cannot be forcibly
+  blocking the UI on an in-flight command; device-session cleanup also releases
+  RC overrides without waiting for that command. The command cannot be forcibly
   interrupted and is reported in the log. Joystick transport errors still
   release RC overrides before controlled recovery.
 * Camera target reconfiguration now waits for the previous recording pipeline
@@ -145,10 +146,31 @@ Release headings link each entry to its release date.
   repeated workspace teardown.
 * Quick-command feedback now says when a request was accepted by the command
   service without claiming that the vehicle has completed it.
+* MAVLink command acknowledgements and mission-transfer replies are now matched
+  to the configured target system and component. `COMMAND_LONG` exchanges are
+  serialized in the vehicle service as well, protecting callers that do not
+  originate in the shared command dispatcher.
+* Parameter writes are confirmed against the exact float32 value sent over the
+  MAVLink wire and, when available, the returned parameter type. Large values
+  can no longer pass confirmation through a magnitude-based tolerance.
+* Asynchronous settings saves now queue changed paths and apply them to the
+  latest model under the settings service lock. Independent adapter updates no
+  longer write stale snapshots over one another; pending values are retained
+  and merged if persistence fails.
+* Vehicle mission downloads now apply atomically only if the local mission is
+  unchanged since the download began. An operator edit made in the meantime is
+  kept, and the conflict is recorded instead of silently replacing the plan.
+* A live stream now replaces a stale camera image with a black `NO SIGNAL`
+  frame, then returns to the live feed when fresh frames resume. Recording keeps
+  its existing pause-and-resume behavior.
 * TEKNOFEST profile updates now stop existing sessions before replacing their
   configuration. If a session misses its shutdown deadline, the update is
   rejected rather than allowing overlapping sessions, and any earlier sessions
   stopped during that attempt are restarted.
+* TEKNOFEST shutdown now signals all sessions before joining them against one
+  shared deadline, cancels queued management work and does not wait on its
+  executor from the extension shutdown path. A profile update already in flight
+  cannot start sessions after shutdown has begun.
 * TEKNOFEST login responses are validated before a profile is marked connected;
   a successful HTTP response with an invalid payload no longer appears online.
 * Unreadable settings files are preserved under a unique `settings.corrupt-*`

@@ -1,4 +1,6 @@
 from src.extension.api import ExtensionRegistrar
+from src.services.abstracts.commands import CommandService
+from src.services.abstracts.vehicle import VehicleService
 from src.services.settings import SettingsService
 from src.services.logging_service import LoggingService
 from .contracts import JoystickService
@@ -11,10 +13,19 @@ class JoystickExtension:
         self.context = context
         registrar.singleton(
             JoystickService,
-            lambda settings, logging: LinuxRcJoystickService(
-                settings, controller(context), logging.child("JOYSTICK")
+            lambda settings, vehicle, commands, logging: LinuxRcJoystickService(
+                settings,
+                vehicle,
+                controller(context),
+                commands,
+                logging.child("JOYSTICK"),
             ),
-            dependencies={"settings": SettingsService, "logging": LoggingService},
+            dependencies={
+                "settings": SettingsService,
+                "vehicle": VehicleService,
+                "commands": CommandService,
+                "logging": LoggingService,
+            },
         )
         registrar.settings_page(self.settings)
 

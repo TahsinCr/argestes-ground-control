@@ -8,9 +8,26 @@ from types import SimpleNamespace
 
 from src.core.events import EventBus
 from extensions.camera.publishing import VideoSharePublisher
+from extensions.camera.models import VideoFrame
 
 
 class VideoPublisherLifecycleTests(unittest.TestCase):
+    def test_signal_lost_stream_frame_is_opaque_black_at_source_dimensions(self) -> None:
+        source = VideoFrame(
+            width=2,
+            height=1,
+            data=b"\xff\x00\x00\xff" * 2,
+            pixel_format="rgba8888",
+            stride=8,
+        )
+
+        blank = VideoSharePublisher._signal_lost_frame(source)
+
+        self.assertEqual((blank.width, blank.height), (2, 1))
+        self.assertEqual(blank.pixel_format, "rgba8888")
+        self.assertEqual(blank.stride, 8)
+        self.assertEqual(blank.data, b"\x00\x00\x00\xff" * 2)
+
     def test_missing_optional_clock_never_blocks_video_startup(self) -> None:
         publisher = object.__new__(VideoSharePublisher)
         publisher._clock_provider = lambda: None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import unittest
 from concurrent.futures import Future
 from types import SimpleNamespace
@@ -39,10 +40,11 @@ class _InlineWorker:
 
 class _Session:
     def __init__(self, *, running: bool = False) -> None:
+        self.config = {"timeout_s": 0.1}
         self.running = running
         self.stopped = False
 
-    def stop(self) -> bool:
+    def stop(self, *, timeout_s=None) -> bool:
         self.stopped = True
         self.running = False
         return True
@@ -60,6 +62,7 @@ def _runtime(settings, logger):
     runtime.logger = logger
     runtime.sessions = {}
     runtime.worker = _InlineWorker()
+    runtime._lifecycle_lock = threading.RLock()
     runtime._closed = False
     return runtime
 
