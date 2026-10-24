@@ -569,14 +569,12 @@ class TileCacheServer(TileCacheService):
         self._total_bytes = 0
         tiles_root = self._tiles_root
         if not self.index_dirty_path.exists():
-            loaded, changed = self._load_index_snapshot_locked()
-            if loaded:
+            if self._load_index_snapshot_locked():
                 previous_total = self._total_bytes
                 previous_count = len(self._index)
                 self._prune_if_needed_locked()
                 if (
-                    changed
-                    or len(self._index) != previous_count
+                    len(self._index) != previous_count
                     or self._total_bytes != previous_total
                 ):
                     self._persist_index_locked()
@@ -596,32 +594,35 @@ class TileCacheServer(TileCacheService):
         self._prune_if_needed_locked()
         self._persist_index_locked()
 
-    def _load_index_snapshot_locked(self) -> tuple[bool, bool]:
+    def _load_index_snapshot_locked(self) -> bool:
         try:
             payload = json.loads(self.index_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
-            return False, False
+            return False
         if (
             not isinstance(payload, dict)
             or payload.get("version") != 2
             or not isinstance(payload.get("entries"), list)
         ):
-            return False, False
+            return False
 
         entries: dict[str, dict] = {}
         total_bytes = 0
         for item in payload["entries"]:
             if not isinstance(item, list) or len(item) != 8:
-                return False, False
+                return False
             try:
                 provider, variant, z, x, y, extension, stored_size, updated_at = item
                 if (
                     not isinstance(provider, str)
                     or not isinstance(variant, str)
                     or not isinstance(extension, str)
-                    or any(type(value) is not int for value in (z, x, y, stored_size, updated_at))
+                    or any(
+                        type(value) is not int
+                        for value in (z, x, y, stored_size, updated_at)
+                    )
                 ):
-                    return False, False
+                    return False
                 if (
                     not self._safe_component(provider)
                     or not self._safe_component(variant)
@@ -636,7 +637,7 @@ class TileCacheServer(TileCacheService):
                     or (provider == "esri" and variant != "world-imagery")
                     or provider not in {"carto", "esri"}
                 ):
-                    return False, False
+                    return False
                 tile = TileRequest(
                     provider,
                     variant,
@@ -654,11 +655,11 @@ class TileCacheServer(TileCacheService):
                     f"{y}.{extension}",
                 )
             except (TypeError, ValueError):
-                return False, False
+                return False
             if stored_size <= 0:
-                return False, False
+                return False
             if tile.key in entries:
-                return False, False
+                return False
             entries[tile.key] = {
                 "key": tile.key,
                 "provider": tile.provider,
@@ -675,7 +676,7 @@ class TileCacheServer(TileCacheService):
 
         self._index = entries
         self._total_bytes = total_bytes
-        return True, False
+        return True
 
     def _tile_from_path(self, path: Path) -> TileRequest | None:
         if not path.is_file() or path.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
