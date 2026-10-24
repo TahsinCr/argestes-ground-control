@@ -86,7 +86,9 @@ class ConnectionEditor(QWidget):
 
     def _connect_profile(self, profile: ConnectionProfile) -> None:
         status = self.connection_service.status("telemetry")
-        if status.connected and profile.identifier == self.profiles.active_identifier:
+        if self.profiles_panel.is_connecting(profile.identifier) or (
+            status.connected and profile.identifier == self.profiles.active_identifier
+        ):
             self.connection_service.disconnect("telemetry")
             return
         self.profiles_panel.set_connecting(profile.identifier)

@@ -147,7 +147,9 @@ class VehicleParameterService(MutableParameterService):
                 )
             pending = {
                 key: _PendingWrite(
-                    self._wire_float32(self._numeric_value(key, value)),
+                    self._expected_wire_value(
+                        key, value, parameter.value_type
+                    ),
                     parameter.value_type,
                     threading.Event(),
                 )
@@ -253,6 +255,19 @@ class VehicleParameterService(MutableParameterService):
     def _consume_message(self, message: Any) -> None:
         if str(message.get_type()).upper() != "PARAM_VALUE":
             return
+        state = self._vehicle.state
+        for getter_name, expected in (
+            ("get_srcSystem", state.system_id),
+            ("get_srcComponent", state.component_id),
+        ):
+            getter = getattr(message, getter_name, None)
+            if expected is None or not callable(getter):
+                continue
+            try:
+                if int(getter()) != int(expected):
+                    return
+            except Exception:
+                return
         key = self._parameter_name(message.param_id)
         if not key:
             return
@@ -464,6 +479,29 @@ class VehicleParameterService(MutableParameterService):
             return struct.unpack(">f", struct.pack(">f", value))[0]
         except (OverflowError, struct.error) as exc:
             raise ValueError("Parametre MAVLink float32 aralığının dışında") from exc
+
+    @classmethod
+    def _expected_wire_value(
+        cls, key: str, value: object, value_type: int | None
+    ) -> float:
+        numeric = cls._numeric_value(key, value)
+        wire_value = cls._wire_float32(numeric)
+        # The current ArduPilot-compatible path uses C-cast encoding. Refuse
+        # integer writes that float32 would silently round to another value.
+        if value_type in {1, 2, 3, 4, 5, 6, 7, 8}:
+            intended = (
+                int(value)
+                if isinstance(value, int) and not isinstance(value, bool)
+                else int(numeric)
+                if numeric.is_integer()
+                else None
+            )
+            if intended is None or int(wire_value) != intended:
+                raise ValueError(
+                    f"{key} değeri mevcut MAVLink C-cast kodlamasında tam "
+                    "olarak temsil edilemiyor"
+                )
+        return wire_value
 
     @staticmethod
     def _category_for(key: str) -> str:

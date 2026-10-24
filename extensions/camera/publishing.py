@@ -356,6 +356,12 @@ class VideoSharePublisher:
             self._latest_source_frame_at[item.source_id] = time.monotonic()
         self._frame_event.set()
 
+    def remove_source(self, source_id: str) -> None:
+        """Release the last frame retained for a stopped camera source."""
+        with self._frames_lock:
+            self._latest_source_frames.pop(source_id, None)
+            self._latest_source_frame_at.pop(source_id, None)
+
     def _run_target(
         self, config: VideoShareConfig, stop_event: threading.Event
     ) -> None:

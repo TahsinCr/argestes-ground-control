@@ -100,6 +100,39 @@ class ExtensionStorageTests(unittest.TestCase):
 
 
 class CompetitionDeliveryTests(unittest.TestCase):
+    def test_database_history_failure_does_not_mask_http_response(self):
+        class Database:
+            @staticmethod
+            def record(*_args):
+                raise OSError("database is read-only")
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"ok": true}')
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            session = ServerSession(
+                {"identifier": "local", "base_url": f"http://127.0.0.1:{server.server_port}", "timeout_s": 1},
+                lambda: TelemetrySnapshot.zero(),
+                Database(),
+                None,
+            )
+            self.assertEqual(session.request("/health"), {"ok": True})
+            self.assertEqual(session.history_write_failures, 1)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
     def test_competition_history_can_be_summarized_exported_and_cleared(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -1019,6 +1019,7 @@ class MultiVideoService(VideoService):
             source.stop()
         for subscription in self._source_subscriptions.pop(identifier, ()):
             subscription.cancel()
+        self._share_publisher.remove_source(identifier)
 
     def _reconcile_running_sources(self) -> None:
         desired = {

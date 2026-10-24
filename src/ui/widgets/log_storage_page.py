@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QFileDialog,
     QGroupBox,
@@ -34,6 +35,11 @@ class LogStoragePage(QWidget):
         super().__init__(parent)
         self.logging_service = logging_service
         self.language = language
+        self._export_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="LogExport"
+        )
+        self._export_future: Future | None = None
+        self._export_name = ""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -74,6 +80,9 @@ class LogStoragePage(QWidget):
         self.refresh_button.clicked.connect(self.refresh)
         self.export_button.clicked.connect(self._export_selected)
         self.delete_button.clicked.connect(self._delete_selected)
+        self._export_timer = QTimer(self)
+        self._export_timer.setInterval(100)
+        self._export_timer.timeout.connect(self._finish_export)
         actions.addWidget(self.refresh_button)
         actions.addStretch(1)
         actions.addWidget(self.export_button)
@@ -113,8 +122,10 @@ class LogStoragePage(QWidget):
     def _selection_changed(self, current, _previous) -> None:
         selected = current is not None
         active = bool(current.data(Qt.ItemDataRole.UserRole + 1)) if selected else False
-        self.export_button.setEnabled(selected)
-        self.delete_button.setEnabled(selected and not active)
+        busy = self._export_future is not None
+        self.refresh_button.setEnabled(not busy)
+        self.export_button.setEnabled(selected and not busy)
+        self.delete_button.setEnabled(selected and not active and not busy)
 
     def _export_selected(self) -> None:
         item = self.files.currentItem()
@@ -140,11 +151,32 @@ class LogStoragePage(QWidget):
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
+        self._export_name = name
+        self._export_future = self._export_executor.submit(
+            self.logging_service.export_log, name, target
+        )
+        self.status.setText(self._text("exporting"))
+        self._selection_changed(item, None)
+        self._export_timer.start()
+
+    def _finish_export(self) -> None:
+        future = self._export_future
+        if future is None or not future.done():
+            return
+        self._export_timer.stop()
+        self._export_future = None
         try:
-            self.logging_service.export_log(name, target)
-            self.status.setText(self._text("exported", name=name))
-        except (OSError, ValueError) as error:
+            future.result()
+            self.status.setText(self._text("exported", name=self._export_name))
+        except Exception as error:
             self.status.setText(self._text("failed", error=str(error)))
+        finally:
+            self._selection_changed(self.files.currentItem(), None)
+
+    def closeEvent(self, event) -> None:
+        self._export_timer.stop()
+        self._export_executor.shutdown(wait=False, cancel_futures=True)
+        super().closeEvent(event)
 
     def _delete_selected(self) -> None:
         item = self.files.currentItem()

@@ -59,6 +59,7 @@ class ServerPanel(QWidget):
             else ThreadPoolExecutor(max_workers=1, thread_name_prefix="CompetitionHistory")
         )
         self._history_future: Future | None = None
+        self._history_stats_future: Future | None = None
         self._history_last_refresh = 0.0
         self._history_status = ""
         self.popup = CompetitionServersPopup(
@@ -86,6 +87,7 @@ class ServerPanel(QWidget):
 
     def refresh(self):
         self._finish_history_operation()
+        self._finish_history_stats()
         if self.pending is not None and self.pending.done():
             error = self.pending.exception()
             self.pending = None
@@ -117,6 +119,7 @@ class ServerPanel(QWidget):
         if (
             not self.popup_mode
             and self._history_future is None
+            and self._history_stats_future is None
             and time.monotonic() - self._history_last_refresh >= 2.0
         ):
             self._refresh_history_stats()
@@ -171,9 +174,20 @@ class ServerPanel(QWidget):
 
     def _refresh_history_stats(self):
         self._history_last_refresh = time.monotonic()
+        if self._history_executor is None or self._history_stats_future is not None:
+            return
+        self._history_stats_future = self._history_executor.submit(
+            self.runtime.database.storage_summary
+        )
+
+    def _finish_history_stats(self):
+        future = self._history_stats_future
+        if future is None or not future.done():
+            return
+        self._history_stats_future = None
         try:
-            summary = self.runtime.database.storage_summary()
-        except (OSError, RuntimeError, ValueError) as error:
+            summary = future.result()
+        except Exception as error:
             self.history_status.setText(str(error))
             return
         self.history_count.setText(str(summary["records"]))

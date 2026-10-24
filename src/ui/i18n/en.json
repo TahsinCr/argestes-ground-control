@@ -91,6 +91,7 @@
   "settings.logs.export": "Export selected",
   "settings.logs.delete": "Delete archived log",
   "settings.logs.overwrite": "Overwrite the selected file?",
+  "settings.logs.exporting": "Exporting a consistent copy of the log…",
   "settings.logs.exported": "Exported {name}.",
   "settings.logs.delete_confirm": "{name} will be permanently deleted. This cannot be undone. Continue?",
   "settings.logs.deleted": "Deleted {name}.",

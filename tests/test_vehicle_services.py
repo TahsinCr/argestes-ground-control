@@ -875,6 +875,37 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertTrue(float_write.confirmed)
         self.assertTrue(float_write.event.is_set())
 
+    def test_parameter_write_rejects_integer_lost_by_float32_cast(self) -> None:
+        vehicle = _FakeVehicle()
+        service = VehicleParameterService(vehicle)  # type: ignore[arg-type]
+        service.replace(
+            [Parameter(key="LARGE_INT", value=1, unit="-", category="test", description="", value_type=6)]
+        )
+
+        with self.assertRaisesRegex(ValueError, "tam olarak temsil edilemiyor"):
+            service.update_values({"LARGE_INT": 16_777_217})
+
+        self.assertEqual(vehicle.parameter_writes, [])
+
+    def test_parameter_values_from_other_mavlink_component_are_ignored(self) -> None:
+        service = VehicleParameterService(_FakeVehicle())  # type: ignore[arg-type]
+
+        for source_system, source_component in ((2, 1), (1, 2)):
+            service._consume_message(
+                SimpleNamespace(
+                    get_type=lambda: "PARAM_VALUE",
+                    get_srcSystem=lambda value=source_system: value,
+                    get_srcComponent=lambda value=source_component: value,
+                    param_id=b"FOREIGN\x00",
+                    param_value=42.0,
+                    param_count=1,
+                    param_index=0,
+                    param_type=6,
+                )
+            )
+
+        self.assertEqual(service.current, ())
+
     def test_partial_parameter_write_reports_confirmed_uncertain_and_unattempted(self) -> None:
         class _PartialVehicle(_FakeVehicle):
             def set_parameter(

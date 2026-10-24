@@ -614,7 +614,7 @@ class QtConnectionControlService(_QtAdapter):
         super().__init__(parent)
         self.backend = backend
         self._operations_lock = threading.Lock()
-        self._operations: dict[str, threading.Thread] = {}
+        self._operations: dict[tuple[str, str], threading.Thread] = {}
         self._subscribe(
             backend.changed,
             self.status_changed.emit,
@@ -639,28 +639,53 @@ class QtConnectionControlService(_QtAdapter):
         channel: str,
         options: dict[str, object],
     ) -> threading.Thread:
-        with self._operations_lock:
-            active = self._operations.get(channel)
-            if active is not None and active.is_alive():
-                return active
-        self.operation_started.emit(channel)
+        ready = threading.Event()
 
         def execute() -> None:
-            try:
-                self._execute(action, channel, dict(options))
-            finally:
-                with self._operations_lock:
-                    self._operations.pop(channel, None)
+            ready.wait()
+            result = self._execute(action, channel, dict(options))
+            current = threading.current_thread()
+            with self._operations_lock:
+                key = (channel, action)
+                if self._operations.get(key) is current:
+                    self._operations.pop(key, None)
+            # Every operation reports its own completion. In particular, a
+            # disconnect must clear the UI's pending state even if it was
+            # issued to interrupt a still-unwinding reconnect worker.
+            self._post(self.operation_finished.emit, channel, *result)
 
-        worker = self._start_worker(
-            execute,
-            name=f"QtConnection-{action}-{channel}",
-        )
         with self._operations_lock:
-            self._operations[channel] = worker
+            for key, active_worker in tuple(self._operations.items()):
+                if not active_worker.is_alive():
+                    self._operations.pop(key, None)
+            active = {
+                current_action: active_worker
+                for (current_channel, current_action), active_worker in self._operations.items()
+                if current_channel == channel and active_worker.is_alive()
+            }
+            if action == "disconnect":
+                existing_disconnect = active.get("disconnect")
+                if existing_disconnect is not None:
+                    return existing_disconnect
+            elif active:
+                return next(iter(active.values()))
+
+            worker = self._start_worker(
+                execute,
+                name=f"QtConnection-{action}-{channel}",
+            )
+            if worker.ident is None:
+                return worker
+            self._operations[(channel, action)] = worker
+
+        if not active:
+            self.operation_started.emit(channel)
+        ready.set()
         return worker
 
-    def _execute(self, action: str, channel: str, options: dict[str, object]) -> None:
+    def _execute(
+        self, action: str, channel: str, options: dict[str, object]
+    ) -> tuple[bool, str, object | None]:
         try:
             if action == "reconnect":
                 status = self.backend.reconnect(channel, options)
@@ -672,12 +697,9 @@ class QtConnectionControlService(_QtAdapter):
                 status = self.backend.disconnect(channel)
                 message = "Bağlantı kapatıldı"
         except Exception as exc:
-            self._post(
-                self.operation_finished.emit,
-                channel,
-                False,
-                str(exc),
-                self.backend.status(channel),
-            )
-            return
-        self._post(self.operation_finished.emit, channel, True, message, status)
+            try:
+                status = self.backend.status(channel)
+            except Exception:
+                status = None
+            return False, str(exc), status
+        return True, message, status

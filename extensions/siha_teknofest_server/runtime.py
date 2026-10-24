@@ -38,6 +38,7 @@ class ServerSession:
         self.logger = logger
         self.connected = False
         self.error = ""
+        self.history_write_failures = 0
         self._stop = threading.Event()
         self._thread = None
         self._opener = build_opener(HTTPCookieProcessor(CookieJar()))
@@ -101,14 +102,27 @@ class ServerSession:
             raise
         finally:
             # Never persist credentials, including login request bodies.
-            self.database.record(
-                self.config["identifier"],
-                path,
-                None if path == "/api/giris" else payload,
-                response,
-                error,
-                time.monotonic() - started,
-            )
+            try:
+                self.database.record(
+                    self.config["identifier"],
+                    path,
+                    None if path == "/api/giris" else payload,
+                    response,
+                    error,
+                    time.monotonic() - started,
+                )
+            except Exception as database_error:
+                # History is best-effort: a local SQLite failure must not turn
+                # a successful competition-server response into a request error.
+                self.history_write_failures += 1
+                if self.logger is not None:
+                    try:
+                        self.logger.error(
+                            "Could not persist server exchange history "
+                            f"(failure {self.history_write_failures}): {database_error}"
+                        )
+                    except Exception:
+                        pass
 
     def _run(self):
         backoff = 1.0

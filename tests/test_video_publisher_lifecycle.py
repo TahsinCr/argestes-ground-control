@@ -8,10 +8,27 @@ from types import SimpleNamespace
 
 from src.core.events import EventBus
 from extensions.camera.publishing import VideoSharePublisher
-from extensions.camera.models import VideoFrame
+from extensions.camera.models import VideoFrame, VideoSourceFrame
 
 
 class VideoPublisherLifecycleTests(unittest.TestCase):
+    def test_removed_source_releases_cached_frame_and_timestamp(self) -> None:
+        publisher = VideoSharePublisher(EventBus(), source_frames=EventBus())
+        frame = VideoFrame(
+            width=1,
+            height=1,
+            data=b"\x00\x00\x00\xff",
+            pixel_format="rgba8888",
+            stride=4,
+        )
+        publisher._on_source_frame(VideoSourceFrame("camera-a", frame))
+
+        publisher.remove_source("camera-a")
+
+        self.assertNotIn("camera-a", publisher._latest_source_frames)
+        self.assertNotIn("camera-a", publisher._latest_source_frame_at)
+        self.assertIsNone(publisher._current_frame(SimpleNamespace(source_id="camera-a")))
+
     def test_signal_lost_stream_frame_is_opaque_black_at_source_dimensions(self) -> None:
         source = VideoFrame(
             width=2,

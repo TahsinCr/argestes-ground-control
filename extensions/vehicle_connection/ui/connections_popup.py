@@ -101,6 +101,9 @@ class ConnectionsPanel(QDialog):
         )
         self._render()
 
+    def is_connecting(self, identifier: str) -> bool:
+        return self._connecting_identifier == identifier
+
     def finish_connection(
         self,
         *,
@@ -260,7 +263,7 @@ class ConnectionsPanel(QDialog):
         connect = QPushButton(
             t(
                 "connection.action.disconnect"
-                if active and self._connected
+                if (active and self._connected) or is_connecting
                 else "connection.profile.connecting"
                 if busy
                 else "connection.action.connect",
@@ -270,9 +273,10 @@ class ConnectionsPanel(QDialog):
         )
         connect.setProperty("compact", "true")
         connect.setProperty(
-            "role", "danger" if active and self._connected else "primary"
+            "role",
+            "danger" if (active and self._connected) or is_connecting else "primary",
         )
-        connect.setEnabled(not operation_active)
+        connect.setEnabled(not operation_active or is_connecting)
         connect.clicked.connect(
             lambda _=False, p=profile: self.profile_connect_requested.emit(p)
         )

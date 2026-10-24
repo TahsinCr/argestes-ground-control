@@ -91,6 +91,7 @@
   "settings.logs.export": "Seçileni dışa aktar",
   "settings.logs.delete": "Eski kaydı sil",
   "settings.logs.overwrite": "Seçilen dosyanın üzerine yazılsın mı?",
+  "settings.logs.exporting": "Kayıt güvenli bir kopya olarak dışa aktarılıyor…",
   "settings.logs.exported": "{name} dışa aktarıldı.",
   "settings.logs.delete_confirm": "{name} kalıcı olarak silinecek. Bu işlem geri alınamaz. Devam edilsin mi?",
   "settings.logs.deleted": "{name} silindi.",

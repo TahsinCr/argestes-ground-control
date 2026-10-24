@@ -43,6 +43,9 @@ Release headings link each entry to its release date.
 
 ### Changed
 
+* TEKNOFEST request-history statistics and session-log exports now run outside
+  the GUI thread. Log exports retain the existing locked, point-in-time copy so
+  the selected JSON remains consistent while the logger is active.
 * Extension clock publishing now uses a host-bound owner context. Extensions
   publish a local key through `publish()`; cross-owner updates and removals are
   rejected by the API itself without a protocol adapter.
@@ -75,6 +78,20 @@ Release headings link each entry to its release date.
 
 ### Fixed
 
+* Disconnect requests now reach the connection backend while a reconnect is
+  still running. The connection popup exposes cancellation during that state,
+  and each operation reports its own completion so the UI does not wait for a
+  cancelled connection attempt to unwind.
+* A local TEKNOFEST SQLite history failure no longer turns a successful HTTP
+  response into a failed server operation; a session counter tracks dropped
+  history rows and the failure is recorded through the extension logger when
+  available.
+* Removed camera sources now release their cached last frame and timestamp,
+  preventing memory from accumulating as source profiles are replaced.
+* MAVLink `PARAM_VALUE` updates from a different system or component are
+  ignored by the parameter extension. Integer writes that the current C-cast
+  path would round in float32 are rejected before transmission rather than
+  silently changing the requested value.
 * Clock samples dated more than two seconds in the future no longer appear
   fresh. Their value remains available with unknown freshness and no fabricated
   zero-age measurement.

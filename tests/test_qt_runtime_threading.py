@@ -5,11 +5,14 @@ import threading
 import time
 import unittest
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QLabel
 
 from src.core.events import EventBus
 from src.models.logs import LogEntry
@@ -17,6 +20,8 @@ from src.models.telemetry import TelemetrySnapshot
 from src.services.logging_service import LoggingService
 from src.ui.adapters.runtime import QtRuntimeServices
 from src.ui.adapters.services import QtLoggingService, QtTelemetryService, _QtAdapter
+from src.ui.widgets.log_storage_page import LogStoragePage
+from extensions.siha_teknofest_server.ui import ServerPanel
 
 
 class _TelemetryBackend:
@@ -264,6 +269,155 @@ class QtRuntimeThreadingTests(unittest.TestCase):
             self.assertTrue(all(adapter.closed for adapter in adapters))
         finally:
             self.app.disconnect(connection)
+
+    def test_disconnect_reaches_backend_while_reconnect_is_waiting(self) -> None:
+        from types import SimpleNamespace
+
+        from src.ui.adapters.services import QtConnectionControlService
+
+        reconnect_started = threading.Event()
+        disconnect_called = threading.Event()
+        release_reconnect = threading.Event()
+        completed: list[tuple[str, bool, str]] = []
+
+        class Backend:
+            changed = EventBus()
+
+            @staticmethod
+            def status(_channel):
+                return SimpleNamespace(
+                    summary="connecting",
+                    connected=False,
+                    options={"running": True},
+                )
+
+            def reconnect(self, _channel, _options):
+                reconnect_started.set()
+                release_reconnect.wait(timeout=2.0)
+                return self.status(_channel)
+
+            def disconnect(self, _channel):
+                disconnect_called.set()
+                release_reconnect.set()
+                return self.status(_channel)
+
+            def repair_serial_access(self, _channel):
+                return self.status(_channel)
+
+        adapter = QtConnectionControlService(Backend())
+        adapter.operation_finished.connect(
+            lambda channel, ok, message, _status: completed.append((channel, ok, message))
+        )
+        reconnect = adapter.reconnect("telemetry", {})
+        self.assertTrue(reconnect_started.wait(timeout=1.0))
+        try:
+            disconnect = adapter.disconnect("telemetry")
+            self.assertIsNot(disconnect, reconnect)
+            self.assertTrue(disconnect_called.wait(timeout=1.0))
+        finally:
+            release_reconnect.set()
+            reconnect.join(timeout=1.0)
+            if "disconnect" in locals():
+                disconnect.join(timeout=1.0)
+            deadline = time.monotonic() + 1.0
+            while len(completed) < 2 and time.monotonic() < deadline:
+                QTest.qWait(10)
+            adapter.close()
+        self.assertEqual(len(completed), 2)
+        self.assertTrue(any(message == "Bağlantı kapatıldı" for _, _, message in completed))
+
+    def test_log_export_runs_off_gui_thread_and_keeps_ui_responsive(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        worker_thread: list[int] = []
+
+        class LoggingStub:
+            def storage_summary(self):
+                return {"file_count": 1, "total_bytes": 4, "archived_count": 0}
+
+            def storage_files(self):
+                return [{"name": "session.json", "size_bytes": 4, "active": True}]
+
+            def export_log(self, _name, destination):
+                worker_thread.append(threading.get_ident())
+                started.set()
+                release.wait(timeout=2.0)
+                Path(destination).write_text("{}", encoding="utf-8")
+
+        with TemporaryDirectory() as directory:
+            destination = Path(directory) / "export.json"
+            page = LogStoragePage(LoggingStub(), "en")
+            page.files.setCurrentRow(0)
+            try:
+                with patch(
+                    "src.ui.widgets.log_storage_page.QFileDialog.getSaveFileName",
+                    return_value=(str(destination), "JSON (*.json)"),
+                ):
+                    page._export_selected()
+                self.assertTrue(started.wait(timeout=1.0))
+                self.assertNotEqual(worker_thread[0], threading.get_ident())
+                self.assertIsNotNone(page._export_future)
+                self.assertIn("Exporting", page.status.text())
+                release.set()
+                deadline = time.monotonic() + 1.0
+                while page._export_future is not None and time.monotonic() < deadline:
+                    QTest.qWait(10)
+                self.assertIsNone(page._export_future)
+                self.assertTrue(destination.exists())
+                self.assertTrue(page.export_button.isEnabled())
+            finally:
+                release.set()
+                page.close()
+
+    def test_competition_history_summary_runs_off_gui_thread(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        worker_thread: list[int] = []
+
+        class DatabaseStub:
+            def storage_summary(self):
+                worker_thread.append(threading.get_ident())
+                started.set()
+                release.wait(timeout=2.0)
+                return {
+                    "records": 3,
+                    "size_bytes": 2048,
+                    "oldest": "oldest",
+                    "newest": "newest",
+                }
+
+        from concurrent.futures import ThreadPoolExecutor
+        from types import SimpleNamespace
+
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="HistoryTest")
+        panel = SimpleNamespace(
+            _history_last_refresh=0.0,
+            _history_executor=executor,
+            _history_stats_future=None,
+            _history_status="Ready",
+            language="en",
+            runtime=SimpleNamespace(database=DatabaseStub()),
+            history_status=QLabel(""),
+            history_count=QLabel("—"),
+            history_size=QLabel("—"),
+            history_range=QLabel("—"),
+        )
+        try:
+            started_at = time.monotonic()
+            ServerPanel._refresh_history_stats(panel)
+            self.assertLess(time.monotonic() - started_at, 0.1)
+            self.assertTrue(started.wait(timeout=1.0))
+            self.assertNotEqual(worker_thread[0], threading.get_ident())
+            self.assertEqual(panel.history_count.text(), "—")
+            release.set()
+            panel._history_stats_future.result(timeout=1.0)
+            ServerPanel._finish_history_stats(panel)
+            self.assertEqual(panel.history_count.text(), "3")
+            self.assertEqual(panel.history_size.text(), "2.0 KiB")
+            self.assertEqual(panel.history_range.text(), "oldest  →  newest")
+        finally:
+            release.set()
+            executor.shutdown(wait=True, cancel_futures=True)
 
 
 if __name__ == "__main__":
