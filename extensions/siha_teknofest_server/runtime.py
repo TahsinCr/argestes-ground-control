@@ -365,7 +365,7 @@ class CompetitionRuntime:
         self.clock_references = getattr(context, "clock_references", None)
         self._clock_reference_ids: set[str] = set()
         self.database = CompetitionDatabase(
-            context.base_dir / "data" / "siha_teknofest_server" / "history.sqlite3"
+            context.base_dir / "data" / "siha_teknofest_history.sqlite3"
         )
         self.sessions = {}
         self._profile_generations = {}

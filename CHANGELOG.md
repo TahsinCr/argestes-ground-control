@@ -82,6 +82,9 @@ Release headings link each entry to its release date.
 * Warm tile-cache hits use the already-read payload size and update the existing
   LRU timestamp in place, avoiding repeated file metadata calls and index-entry
   reconstruction without changing the timestamp's one-second resolution.
+* TEKNOFEST request history is stored directly at
+  `data/siha_teknofest_history.sqlite3`; the former nested database is not
+  migrated automatically.
 
 ### Fixed
 
