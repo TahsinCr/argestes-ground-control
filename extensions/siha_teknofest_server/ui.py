@@ -284,7 +284,7 @@ class ServerPanel(QWidget):
         if session.running:
             self.pending = self.runtime.disconnect(profile.identifier)
         else:
-            self.runtime.connect(profile.identifier)
+            self.pending = self.runtime.connect(profile.identifier)
         self.refresh()
 
     def open(self, anchor):

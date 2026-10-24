@@ -195,6 +195,18 @@ class VideoShareConfig(Model):
             object.__setattr__(self, "fps", 30)
             object.__setattr__(self, "fixed_frame_rate", True)
 
+    def validate_output_compatibility(self) -> None:
+        """Reject stream formats the configured sink muxer cannot carry."""
+
+        if (
+            self.output_type == "stream"
+            and self.connection_type == "rtmp"
+            and self.codec == "h265"
+        ):
+            raise ValueError(
+                "Standart RTMP/FLV yayını H.264 gerektirir; H.265 için desteklenen bir çıkış seçin"
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class VideoShareState(Model):

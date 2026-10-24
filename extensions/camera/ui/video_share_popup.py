@@ -642,6 +642,7 @@ class VideoSharePopup(QDialog):
                     source_id=str(source.currentData() or "panel"),
                     output_type=str(output_type.currentData() or "stream"),
                 )
+                updated.validate_output_compatibility()
             except ValueError as exc:
                 error.setText(str(exc))
                 return

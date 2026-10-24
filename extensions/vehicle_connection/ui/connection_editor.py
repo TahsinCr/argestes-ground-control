@@ -34,12 +34,15 @@ class ConnectionEditor(QWidget):
         )
         self.profiles = context.services.resolve(ConnectionProfiles)
         self.language = language
+        self._latest_operation_id = 0
+        self._pending_profile_identifier = ""
         self.profiles_panel = ConnectionsPanel(theme, self, language=language)
         self.profiles_panel.profiles_saved.connect(self._save_profiles)
         self.profiles_panel.profile_edit_requested.connect(self._edit_profile)
         self.profiles_panel.profile_connect_requested.connect(self._connect_profile)
         self.settings_service.settings_changed.connect(self._settings_changed)
         self.connection_service.status_changed.connect(lambda _: self._show_profiles())
+        self.connection_service.operation_started.connect(self._operation_started)
         self.connection_service.operation_finished.connect(self._operation_finished)
         self._show_profiles()
 
@@ -53,13 +56,39 @@ class ConnectionEditor(QWidget):
         self.language = language
         self.profiles_panel.set_language(language)
 
-    def _operation_finished(self, *_args):
-        status = self.connection_service.status("telemetry")
+    def _operation_started(self, channel: str, operation_id: int, _action: str) -> None:
+        if channel != "telemetry":
+            return
+        self._latest_operation_id = operation_id
+        if self._pending_profile_identifier:
+            self.profiles_panel.set_connecting(self._pending_profile_identifier)
+
+    def _operation_finished(
+        self,
+        channel: str,
+        operation_id: int,
+        _action: str,
+        successful: bool,
+        message: str,
+        status,
+    ) -> None:
+        if channel != "telemetry" or operation_id != self._latest_operation_id:
+            return
+        status = status or self.connection_service.status(channel)
+        detail = status.detail
+        if not successful:
+            detail = (
+                t("connection.operation.in_progress", self.language)
+                if message == "operation_in_progress"
+                else message or detail
+            )
+        elif not detail:
+            detail = message
         self.profiles_panel.finish_connection(
             active_identifier=self.profiles.active_identifier,
             connected=status.connected,
             running=bool(status.options.get("running", status.connected)),
-            detail=status.detail,
+            detail=detail,
         )
 
     def prepare_shutdown(self):
@@ -86,23 +115,26 @@ class ConnectionEditor(QWidget):
 
     def _connect_profile(self, profile: ConnectionProfile) -> None:
         status = self.connection_service.status("telemetry")
-        if self.profiles_panel.is_connecting(profile.identifier) or (
-            status.connected and profile.identifier == self.profiles.active_identifier
-        ):
-            self.connection_service.disconnect("telemetry")
-            return
-        self.profiles_panel.set_connecting(profile.identifier)
-        self.connection_service.reconnect(
-            "telemetry",
-            {
-                "profile_id": profile.identifier,
-                "profile_name": profile.name,
-                "endpoint": profile.endpoint,
-                "baud": profile.baud,
-                "timeout_s": profile.heartbeat_timeout,
-                "auto_connect": profile.auto_connect,
-            },
-        )
+        self._pending_profile_identifier = profile.identifier
+        try:
+            if self.profiles_panel.is_connecting(profile.identifier) or (
+                status.connected and profile.identifier == self.profiles.active_identifier
+            ):
+                self.connection_service.disconnect("telemetry")
+                return
+            self.connection_service.reconnect(
+                "telemetry",
+                {
+                    "profile_id": profile.identifier,
+                    "profile_name": profile.name,
+                    "endpoint": profile.endpoint,
+                    "baud": profile.baud,
+                    "timeout_s": profile.heartbeat_timeout,
+                    "auto_connect": profile.auto_connect,
+                },
+            )
+        finally:
+            self._pending_profile_identifier = ""
 
     def _edit_profile(self, profile: ConnectionProfile | None) -> None:
         existing = tuple(self.profiles.profiles)

@@ -82,12 +82,10 @@ class BatteryAlarmService:
         if signature != self._settings_signature:
             self._active = False
             self._warning_active = False
-            self._failsafe_dispatched = False
-            self._failsafe_pending = False
-            self._failsafe_attempts = 0
-            self._failsafe_retry_after = 0.0
+            if not self._failsafe_dispatched and not self._failsafe_pending:
+                self._failsafe_attempts = 0
+                self._failsafe_retry_after = 0.0
             self._failsafe_unavailable_logged = False
-            self._failsafe_generation += 1
             self._last_logged_percent = None
             self._settings_signature = signature
 
@@ -125,19 +123,16 @@ class BatteryAlarmService:
                 self._last_logged_percent = percent
                 self._emit_alarm(snapshot, settings, warning_value)
 
-        if not failsafe_active:
-            if self._failsafe_pending:
-                self._failsafe_generation += 1
-                timer = self._failsafe_timeout_timer
-                self._failsafe_timeout_timer = None
-                if timer is not None:
-                    timer.cancel()
-            self._failsafe_dispatched = False
-            self._failsafe_pending = False
-            self._failsafe_attempts = 0
-            self._failsafe_retry_after = 0.0
-            self._failsafe_unavailable_logged = False
-        else:
+        confirmed_safe_boundary = telemetry_available and (
+            not snapshot.armed
+            or (
+                failsafe_value is not None
+                and failsafe_value >= settings.failsafe_threshold
+            )
+        )
+        if confirmed_safe_boundary:
+            self._reset_failsafe_episode()
+        elif failsafe_active:
             self._dispatch_failsafe_if_required(
                 snapshot,
                 settings,
@@ -145,6 +140,21 @@ class BatteryAlarmService:
             )
         self._active = warning_active or failsafe_active
         return self._active
+
+    def _reset_failsafe_episode(self) -> None:
+        """Clear a failsafe latch only after telemetry confirms a safe boundary."""
+
+        if self._failsafe_pending:
+            self._failsafe_generation += 1
+            timer = self._failsafe_timeout_timer
+            self._failsafe_timeout_timer = None
+            if timer is not None:
+                timer.cancel()
+        self._failsafe_dispatched = False
+        self._failsafe_pending = False
+        self._failsafe_attempts = 0
+        self._failsafe_retry_after = 0.0
+        self._failsafe_unavailable_logged = False
 
     def _dispatch_failsafe_if_required(
         self,

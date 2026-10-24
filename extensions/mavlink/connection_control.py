@@ -428,53 +428,63 @@ class VehicleConnectionControlService(ConnectionControlService):
     def _apply_profile_options(
         self, options: dict[str, Any]
     ) -> VehicleConnectionConfig:
-        current = self._settings.current
-        mavlink = current.backend.mavlink
-        profile_id = str(
-            options.get("profile_id", current.backend.active_mavlink_connection_id)
-        ).strip()
-        existing = next(
-            (
-                item
-                for item in current.backend.mavlink_connections
-                if item.identifier == profile_id
-            ),
-            None,
-        )
-        profile = MavlinkConnectionConfig(
-            identifier=profile_id
-            or (
-                existing.identifier
-                if existing is not None
-                else MavlinkConnectionConfig().identifier
-            ),
-            name=str(
+        selected: dict[str, Any] = {}
+
+        def mutate(current: SettingsModel) -> SettingsModel:
+            mavlink = current.backend.mavlink
+            profile_id = str(
                 options.get(
-                    "profile_name",
-                    existing.name if existing is not None else "Telemetri",
+                    "profile_id", current.backend.active_mavlink_connection_id
                 )
             ).strip()
-            or "Telemetri",
-            endpoint=str(options.get("endpoint", mavlink.endpoint)).strip(),
-            baud=int(options.get("baud", mavlink.baud)),
-            heartbeat_timeout=int(
-                float(options.get("timeout_s", mavlink.heartbeat_timeout))
-            ),
-            auto_connect=bool(options.get("auto_connect", mavlink.auto_connect)),
-        )
-        profiles = [
-            profile if item.identifier == profile.identifier else item
-            for item in current.backend.mavlink_connections
-        ]
-        if existing is None:
-            profiles.append(profile)
-        payload = current.to_dict()
-        payload["backend"]["mavlink"] = asdict(profile.to_mavlink(mavlink))
-        payload["backend"]["mavlink_connections"] = [
-            item.to_dict() for item in profiles
-        ]
-        payload["backend"]["active_mavlink_connection_id"] = profile.identifier
-        self._settings.save(SettingsModel.from_dict(payload))
+            existing = next(
+                (
+                    item
+                    for item in current.backend.mavlink_connections
+                    if item.identifier == profile_id
+                ),
+                None,
+            )
+            profile = MavlinkConnectionConfig(
+                identifier=profile_id
+                or (
+                    existing.identifier
+                    if existing is not None
+                    else MavlinkConnectionConfig().identifier
+                ),
+                name=str(
+                    options.get(
+                        "profile_name",
+                        existing.name if existing is not None else "Telemetri",
+                    )
+                ).strip()
+                or "Telemetri",
+                endpoint=str(options.get("endpoint", mavlink.endpoint)).strip(),
+                baud=int(options.get("baud", mavlink.baud)),
+                heartbeat_timeout=int(
+                    float(options.get("timeout_s", mavlink.heartbeat_timeout))
+                ),
+                auto_connect=bool(options.get("auto_connect", mavlink.auto_connect)),
+            )
+            profiles = [
+                profile if item.identifier == profile.identifier else item
+                for item in current.backend.mavlink_connections
+            ]
+            if existing is None:
+                profiles.append(profile)
+            payload = current.to_dict()
+            payload["backend"]["mavlink"] = asdict(profile.to_mavlink(mavlink))
+            payload["backend"]["mavlink_connections"] = [
+                item.to_dict() for item in profiles
+            ]
+            payload["backend"]["active_mavlink_connection_id"] = profile.identifier
+            selected["profile"] = profile
+            selected["mavlink"] = mavlink
+            return SettingsModel.from_dict(payload)
+
+        self._settings.update(mutate)
+        profile = selected["profile"]
+        mavlink = selected["mavlink"]
         return VehicleConnectionConfig(
             profile.endpoint,
             profile.heartbeat_timeout,

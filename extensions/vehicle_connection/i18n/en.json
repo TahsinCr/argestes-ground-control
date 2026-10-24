@@ -1,5 +1,6 @@
 {
   "connection.profiles.unsupported": "The active connection provider does not support profile editing.",
+  "connection.operation.in_progress": "Another connection operation is still running; try again when it finishes.",
   "connection.action.connect": "Connect",
   "connection.action.disconnect": "Disconnect",
   "connection.action.reconnect": "Reconnect",

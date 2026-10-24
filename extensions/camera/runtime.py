@@ -191,6 +191,8 @@ class CameraRuntime:
             outputs,
             previous.clock_reference_id,
         )
+        for output in config.outputs:
+            output.validate_output_compatibility()
         self.settings.save(config)
         self._worker.submit(self._apply_outputs, config)
 

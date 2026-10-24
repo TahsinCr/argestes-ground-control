@@ -306,6 +306,48 @@ class BatteryAlarmTests(unittest.TestCase):
         future.set_result(type("Accepted", (), {"accepted": True, "message": ""})())
         service.close()
 
+    def test_unknown_failsafe_survives_link_loss_and_resets_only_after_safe_recovery(self) -> None:
+        future: Future = Future()
+        requested_modes: list[str] = []
+
+        def request(mode: str):
+            requested_modes.append(mode)
+            if len(requested_modes) == 1:
+                return future
+            return type("Accepted", (), {"accepted": True, "message": ""})()
+
+        service = BatteryAlarmService(self.logs.child("BATTERY"), request)
+        service.FAILSAFE_TIMEOUT_S = 0.02
+        settings = BatteryAlarmSettings(
+            failsafe_enabled=True,
+            failsafe_mode="percent",
+            failsafe_threshold=10,
+        )
+        critical = self.base.copy(
+            armed=True,
+            battery_percent=9,
+            flight_mode="AUTO",
+        )
+
+        service.evaluate(critical, settings)
+        deadline = time.monotonic() + 1.0
+        while service._failsafe_pending and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertTrue(service._failsafe_dispatched)
+
+        disconnected = critical.copy(telemetry_link=False)
+        service.evaluate(disconnected, settings)
+        service.evaluate(critical, settings)
+        self.assertEqual(requested_modes, ["RTL"])
+
+        disarmed = critical.copy(armed=False, flight_mode="STANDBY")
+        service.evaluate(disarmed, settings)
+        service.evaluate(critical, settings)
+        self.assertEqual(requested_modes, ["RTL", "RTL"])
+
+        future.set_result(type("Accepted", (), {"accepted": True, "message": ""})())
+        service.close()
+
     def test_close_invalidates_pending_failsafe_completion(self) -> None:
         future: Future = Future()
         service = BatteryAlarmService(self.logs.child("BATTERY"), lambda _mode: future)

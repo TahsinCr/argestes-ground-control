@@ -1,5 +1,6 @@
 {
   "connection.profiles.unsupported": "Etkin bağlantı sağlayıcısı profil düzenlemeyi desteklemiyor.",
+  "connection.operation.in_progress": "Başka bir bağlantı işlemi sürüyor; tamamlanınca yeniden deneyin.",
   "connection.action.connect": "Bağlan",
   "connection.action.disconnect": "Bağlantıyı Kes",
   "connection.action.reconnect": "Yeniden Bağlan",

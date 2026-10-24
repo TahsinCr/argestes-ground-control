@@ -78,6 +78,25 @@ Release headings link each entry to its release date.
 
 ### Fixed
 
+* Camera-panel video outputs now take the frame and freshness timestamp from the
+  same selected camera. Switching sources can no longer label a cached frame
+  from another camera as the new source.
+* Failsafe dispatch state now survives temporary telemetry loss and resets only
+  at a confirmed safe boundary (disarmed or battery value back above threshold
+  with valid telemetry), preventing an ambiguous command outcome from causing
+  an automatic duplicate RTL.
+* Connection operations now carry per-channel IDs and action names. A new
+  reconnect request during an active operation reports an explicit busy result,
+  and stale completions cannot clear the current UI operation state.
+* H.265/RTMP combinations are rejected before saving, and camera output
+  endpoints and recording paths are applied as GStreamer element properties
+  instead of being interpolated into pipeline syntax. Low-resolution general
+  streams are no longer blocked by the competition resolution floor.
+* Battery settings and MAVLink connection-profile updates now modify only
+  their owned settings fields, preserving unrelated changes from newer
+  snapshots.
+* SIHA Teknofest Server connect, disconnect and profile configuration requests
+  now share its serialized worker; a stopped runtime rejects new work.
 * Disconnect requests now reach the connection backend while a reconnect is
   still running. The connection popup exposes cancellation during that state,
   and each operation reports its own completion so the UI does not wait for a

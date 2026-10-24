@@ -306,7 +306,9 @@ class QtRuntimeThreadingTests(unittest.TestCase):
 
         adapter = QtConnectionControlService(Backend())
         adapter.operation_finished.connect(
-            lambda channel, ok, message, _status: completed.append((channel, ok, message))
+            lambda channel, _operation_id, _action, ok, message, _status: completed.append(
+                (channel, ok, message)
+            )
         )
         reconnect = adapter.reconnect("telemetry", {})
         self.assertTrue(reconnect_started.wait(timeout=1.0))

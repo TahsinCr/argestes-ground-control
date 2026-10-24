@@ -603,8 +603,8 @@ class QtCommandService(_QtAdapter):
 
 class QtConnectionControlService(_QtAdapter):
     status_changed = pyqtSignal(object)
-    operation_started = pyqtSignal(str)
-    operation_finished = pyqtSignal(str, bool, str, object)
+    operation_started = pyqtSignal(str, int, str)
+    operation_finished = pyqtSignal(str, int, str, bool, str, object)
 
     def __init__(
         self,
@@ -615,6 +615,7 @@ class QtConnectionControlService(_QtAdapter):
         self.backend = backend
         self._operations_lock = threading.Lock()
         self._operations: dict[tuple[str, str], threading.Thread] = {}
+        self._operation_sequences: dict[str, int] = {}
         self._subscribe(
             backend.changed,
             self.status_changed.emit,
@@ -640,6 +641,9 @@ class QtConnectionControlService(_QtAdapter):
         options: dict[str, object],
     ) -> threading.Thread:
         ready = threading.Event()
+        operation_id = 0
+        rejection: str | None = None
+        worker: threading.Thread | None = None
 
         def execute() -> None:
             ready.wait()
@@ -649,10 +653,13 @@ class QtConnectionControlService(_QtAdapter):
                 key = (channel, action)
                 if self._operations.get(key) is current:
                     self._operations.pop(key, None)
-            # Every operation reports its own completion. In particular, a
-            # disconnect must clear the UI's pending state even if it was
-            # issued to interrupt a still-unwinding reconnect worker.
-            self._post(self.operation_finished.emit, channel, *result)
+            self._post(
+                self.operation_finished.emit,
+                channel,
+                operation_id,
+                action,
+                *result,
+            )
 
         with self._operations_lock:
             for key, active_worker in tuple(self._operations.items()):
@@ -663,24 +670,45 @@ class QtConnectionControlService(_QtAdapter):
                 for (current_channel, current_action), active_worker in self._operations.items()
                 if current_channel == channel and active_worker.is_alive()
             }
-            if action == "disconnect":
-                existing_disconnect = active.get("disconnect")
-                if existing_disconnect is not None:
-                    return existing_disconnect
-            elif active:
-                return next(iter(active.values()))
+            if action == "disconnect" and active.get("disconnect") is not None:
+                return active["disconnect"]
+            if action != "disconnect" and active:
+                rejection = "operation_in_progress"
+            sequence = self._operation_sequences.get(channel, 0) + 1
+            self._operation_sequences[channel] = sequence
+            operation_id = sequence
+            if rejection is None:
+                worker = self._start_worker(
+                    execute,
+                    name=f"QtConnection-{action}-{channel}",
+                )
+                if worker.ident is not None:
+                    self._operations[(channel, action)] = worker
 
-            worker = self._start_worker(
-                execute,
-                name=f"QtConnection-{action}-{channel}",
+        self.operation_started.emit(channel, operation_id, action)
+        if rejection is not None:
+            def report_rejection() -> None:
+                try:
+                    status = self.backend.status(channel)
+                except Exception:
+                    status = None
+                self._post(
+                    self.operation_finished.emit,
+                    channel,
+                    operation_id,
+                    action,
+                    False,
+                    rejection,
+                    status,
+                )
+
+            return self._start_worker(
+                report_rejection,
+                name=f"QtConnection-{action}-{channel}-rejected",
             )
-            if worker.ident is None:
-                return worker
-            self._operations[(channel, action)] = worker
-
-        if not active:
-            self.operation_started.emit(channel)
         ready.set()
+        if worker is None:
+            raise RuntimeError("Connection operation worker was not created")
         return worker
 
     def _execute(

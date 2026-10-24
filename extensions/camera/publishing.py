@@ -369,10 +369,10 @@ class VideoSharePublisher:
         appsrc: Any | None = None
         finalization_result: VideoFinalizationResult | None = None
         try:
+            config.validate_output_compatibility()
             frame = self._wait_for_frame(config, stop_event)
             if frame is None:
                 return
-            self._validate_minimum_resolution(config, frame)
             clock_reference: datetime | None = None
             clock_started_at: float | None = None
             next_clock_check = 0.0
@@ -395,10 +395,10 @@ class VideoSharePublisher:
                     config,
                     frame,
                     encoder_chain=encoder_chain,
-                    output_path=output_path,
                 )
             )
             pipeline = active_pipeline
+            self._configure_sink(active_pipeline, config, output_path=output_path)
             appsrc = active_pipeline.get_by_name("yki_share_src")
             clock = active_pipeline.get_by_name("yki_share_clock")
             if appsrc is None:
@@ -599,10 +599,9 @@ class VideoSharePublisher:
     def _current_frame(self, config: VideoShareConfig) -> VideoFrame | None:
         with self._frames_lock:
             if config.source_id == "panel":
-                return self._latest_source_frames.get(
-                    self._active_source(),
-                    self._latest_frame,
-                )
+                if self._source_subscription is None:
+                    return self._latest_frame
+                return self._latest_source_frames.get(self._active_source())
             return self._latest_source_frames.get(config.source_id)
 
     @staticmethod
@@ -617,11 +616,15 @@ class VideoSharePublisher:
 
     def _frame_is_fresh(self, config: VideoShareConfig) -> bool:
         with self._frames_lock:
-            received_at = (
-                self._latest_frame_at
-                if config.source_id == "panel"
-                else self._latest_source_frame_at.get(config.source_id, 0.0)
-            )
+            if config.source_id == "panel":
+                if self._source_subscription is None:
+                    received_at = self._latest_frame_at
+                else:
+                    received_at = self._latest_source_frame_at.get(
+                        self._active_source(), 0.0
+                    )
+            else:
+                received_at = self._latest_source_frame_at.get(config.source_id, 0.0)
         return time.monotonic() - received_at <= _RECORDING_FRAME_STALE_S
 
     def _wait_for_frame(
@@ -666,15 +669,6 @@ class VideoSharePublisher:
         if timestamp is None:
             return None, None
         return timestamp, time.monotonic()
-
-    @staticmethod
-    def _validate_minimum_resolution(config: VideoShareConfig, frame: VideoFrame) -> None:
-        """Apply competition output constraints without restricting local files."""
-
-        if config.output_type != "record" and (frame.width < 640 or frame.height < 480):
-            raise RuntimeError(
-                f"Kaynak çözünürlük şartname altı: {frame.width}x{frame.height}"
-            )
 
     @staticmethod
     def _finalize_recording(
@@ -754,7 +748,6 @@ class VideoSharePublisher:
         frame: VideoFrame,
         *,
         encoder_chain: str | None = None,
-        output_path: Path | None = None,
     ) -> str:
         h264 = config.codec in {"h264", "h264-baseline"}
         if h264:
@@ -771,7 +764,7 @@ class VideoSharePublisher:
             )
             rtp_payloader = "rtph265pay pt=96 config-interval=1"
         encoder = encoder_chain or encoder
-        sink = self._sink_description(config, rtp_payloader, output_path=output_path)
+        sink = self._sink_description(config, rtp_payloader)
         return (
             f"appsrc name=yki_share_src is-live=true block=false max-bytes={max(1, frame.width * frame.height * 4)} format=time "
             f"caps=video/x-raw,format=RGBA,width={frame.width},height={frame.height},framerate={config.fps}/1 "
@@ -785,33 +778,70 @@ class VideoSharePublisher:
     def _sink_description(
         config: VideoShareConfig,
         rtp_payloader: str,
-        *,
-        output_path: Path | None = None,
     ) -> str:
         if config.output_type == "record":
-            if output_path is None:
-                raise ValueError("Kayıt dosyası yolu oluşturulmadı")
             parser = (
                 "h264parse"
                 if config.codec in {"h264", "h264-baseline"}
                 else "h265parse"
             )
-            location = str(output_path).replace("\\", "\\\\").replace('"', '\\"')
             return (
                 f"{parser} ! mp4mux faststart=true ! "
-                f'filesink location="{location}" sync=false async=false'
+                "filesink name=ags_video_output sync=false async=false"
             )
+        if config.connection_type == "udp":
+            return "mpegtsmux alignment=7 ! udpsink name=ags_video_output sync=false async=false"
+        if config.connection_type == "srt":
+            return "mpegtsmux ! srtsink name=ags_video_output"
+        if config.connection_type == "rtmp":
+            return "flvmux streamable=true ! rtmpsink name=ags_video_output"
+        return f"{rtp_payloader} ! rtspclientsink name=ags_video_output"
+
+    @staticmethod
+    def _configure_sink(
+        pipeline: Any,
+        config: VideoShareConfig,
+        *,
+        output_path: Path | None = None,
+    ) -> None:
+        """Set user-controlled sink values as GObject properties, not parser text."""
+
+        sink = pipeline.get_by_name("ags_video_output")
+        if sink is None:
+            raise RuntimeError("Video paylaşım pipeline çıkış öğesi üretmedi")
+        if config.output_type == "record":
+            if output_path is None:
+                raise ValueError("Kayıt dosyası yolu oluşturulmadı")
+            sink.set_property("location", str(output_path))
+            return
+
         if config.connection_type == "udp":
             parsed = urlparse(
                 config.endpoint
                 if "://" in config.endpoint
                 else f"udp://{config.endpoint}"
             )
-            if not parsed.hostname or not parsed.port:
-                raise ValueError("UDP video paylaşım adresi host:port biçiminde olmalı")
-            options = ""
             try:
-                is_multicast = ipaddress.ip_address(parsed.hostname).is_multicast
+                hostname = parsed.hostname
+                port = parsed.port
+            except ValueError as exc:
+                raise ValueError("UDP video paylaşım adresi geçersiz") from exc
+            if (
+                parsed.scheme != "udp"
+                or not hostname
+                or port is None
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.path not in {"", "/"}
+                or parsed.query
+                or parsed.fragment
+                or not VideoSharePublisher._valid_host(hostname)
+            ):
+                raise ValueError("UDP video paylaşım adresi host:port biçiminde olmalı")
+            sink.set_property("host", hostname)
+            sink.set_property("port", port)
+            try:
+                is_multicast = ipaddress.ip_address(hostname).is_multicast
             except ValueError:
                 is_multicast = False
             if is_multicast and config.network_interface:
@@ -822,20 +852,51 @@ class VideoSharePublisher:
                     raise RuntimeError(
                         f"Seçilen multicast ağ arayüzü aktif değil: {config.network_interface}"
                     )
-                options = (
-                    f" bind-address={address}"
-                    f" multicast-iface={config.network_interface}"
+                sink.set_property("bind-address", address)
+                sink.set_property("multicast-iface", config.network_interface)
+            return
+
+        endpoint = config.endpoint
+        if any(
+            character.isspace()
+            or ord(character) < 32
+            or ord(character) == 127
+            or character in {'"', "\\"}
+            for character in endpoint
+        ):
+            raise ValueError("Video paylaşım URI adresi geçersiz")
+        try:
+            parsed = urlparse(endpoint)
+            hostname = parsed.hostname
+            _port = parsed.port
+        except ValueError as exc:
+            raise ValueError("Video paylaşım URI adresi geçersiz") from exc
+        schemes = {
+            "srt": {"srt"},
+            "rtmp": {"rtmp", "rtmps"},
+            "rtsp": {"rtsp", "rtsps"},
+        }[config.connection_type]
+        if (
+            parsed.scheme.lower() not in schemes
+            or not parsed.netloc
+            or not hostname
+            or not VideoSharePublisher._valid_host(hostname)
+        ):
+            raise ValueError("Video paylaşım URI türü veya adresi geçersiz")
+        sink.set_property("uri" if config.connection_type == "srt" else "location", endpoint)
+
+    @staticmethod
+    def _valid_host(hostname: str) -> bool:
+        try:
+            ipaddress.ip_address(hostname)
+            return True
+        except ValueError:
+            return bool(
+                re.fullmatch(
+                    r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*\.?",
+                    hostname,
                 )
-            return (
-                "mpegtsmux alignment=7 ! "
-                f"udpsink host={parsed.hostname} port={parsed.port}"
-                f"{options} sync=false async=false"
             )
-        if config.connection_type == "srt":
-            return f'mpegtsmux ! srtsink uri="{config.endpoint}"'
-        if config.connection_type == "rtmp":
-            return f'flvmux streamable=true ! rtmpsink location="{config.endpoint}"'
-        return f'{rtp_payloader} ! rtspclientsink location="{config.endpoint}"'
 
     @staticmethod
     def _encoder_chain(Gst: Any, config: VideoShareConfig) -> tuple[str, str]:

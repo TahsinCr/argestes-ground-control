@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import time
 import unittest
+import tempfile
 from types import SimpleNamespace
+from pathlib import Path
 
 from src.core.events import EventBus
 from src.models.telemetry import TelemetrySnapshot
 from src.models.vehicle import VehicleConnectionState
+from src.services.settings import SettingsService
 from extensions.mavlink.connection_control import VehicleConnectionControlService
 
 
@@ -187,3 +190,30 @@ class VehicleConnectionControlTests(unittest.TestCase):
         self.assertEqual(retry_attempt, 1)
         self.assertIsNotNone(retry_at)
         self.assertGreaterEqual(float(retry_at) - time.monotonic(), 0.8)
+
+    def test_profile_change_preserves_unrelated_settings_from_latest_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = SettingsService(Path(directory))
+            settings.apply_changes(
+                {
+                    ("ui", "language"): "en",
+                    ("backend", "mavlink", "dialect"): "common",
+                }
+            )
+            service = object.__new__(VehicleConnectionControlService)
+            service._settings = settings
+
+            service._apply_profile_options(
+                {
+                    "profile_id": "field-link",
+                    "profile_name": "Field link",
+                    "endpoint": "udpin:127.0.0.1:14550",
+                    "baud": 57600,
+                    "timeout_s": 8,
+                }
+            )
+
+            current = settings.current
+            self.assertEqual(current.ui.language, "en")
+            self.assertEqual(current.backend.mavlink.dialect, "common")
+            self.assertEqual(current.backend.mavlink.endpoint, "udpin:127.0.0.1:14550")

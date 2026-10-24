@@ -432,20 +432,45 @@ class CompetitionRuntime:
         )
 
     def start(self):
-        for session in self.sessions.values():
-            if session.config.get("auto_connect", False):
-                session.start()
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("Competition extension stopped")
+            for session in self.sessions.values():
+                if session.config.get("auto_connect", False):
+                    session.start()
 
     def connect(self, identifier):
-        self.sessions[identifier].start()
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("Competition extension stopped")
+            return self.worker.submit(self._start_session, identifier)
 
     def disconnect(self, identifier):
-        return self.worker.submit(self.sessions[identifier].stop)
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("Competition extension stopped")
+            return self.worker.submit(self._stop_session, identifier)
+
+    def _start_session(self, identifier):
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("Competition extension stopped")
+            session = self.sessions.get(identifier)
+            if session is None:
+                raise ValueError("Unknown TEKNOFEST server profile")
+            session.start()
+
+    def _stop_session(self, identifier):
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("Competition extension stopped")
+            session = self.sessions.get(identifier)
+            if session is None:
+                raise ValueError("Unknown TEKNOFEST server profile")
+            return session.stop()
 
     def configure(self, configs):
         configs = validate_servers(configs)
-        if self._closed:
-            raise RuntimeError("Competition extension stopped")
 
         def apply():
             existing = self.settings.extension_config(
@@ -499,7 +524,10 @@ class CompetitionRuntime:
                 self._sync_clock_references()
                 self.start()
 
-        return self.worker.submit(apply)
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("Competition extension stopped")
+            return self.worker.submit(apply)
 
     def refresh_reference_data(self, identifier):
         def refresh():

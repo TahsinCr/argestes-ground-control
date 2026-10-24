@@ -121,7 +121,6 @@ class BatteryExtension:
         from .ui.settings_popup import BatterySettingsPopup
         from src.services.settings import SettingsService
         from src.services.abstracts.telemetry import TelemetryService
-        from src.models.settings import SettingsModel
         from src.ui.themes.palette import palette_for
 
         settings = context.services.resolve(SettingsService)
@@ -135,11 +134,12 @@ class BatteryExtension:
 
         def save(values):
             payload = settings.current.to_dict()
+            changes = {}
             for key, value in values.items():
                 for section in ("battery_alarm", "battery_telemetry"):
                     if key in payload["backend"][section]:
-                        payload["backend"][section][key] = value
-            settings.save(SettingsModel.from_dict(payload))
+                        changes[("backend", section, key)] = value
+            settings.apply_changes(changes)
             dialog.set_result(True, "Ayarlar kaydedildi")
 
         dialog.save_requested.connect(save)
