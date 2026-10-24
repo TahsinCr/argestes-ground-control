@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from src.core.events import EventBus, Subscription
+from src.extension.api.parameters import ParameterSyncState, ParameterSyncStatus
 from src.models.commands import CommandRequest, CommandResult
 from src.models.mission import MapOverlay
 from src.models.parameters import Parameter
@@ -928,6 +929,7 @@ class VehicleServiceTests(unittest.TestCase):
                 for key in ("FIRST", "SECOND", "THIRD")
             ]
         )
+        service._set_sync_status(ParameterSyncStatus(ParameterSyncState.COMPLETE))
 
         with self.assertRaises(RuntimeError) as caught:
             service.update_values({"FIRST": 2.0, "SECOND": 3.0, "THIRD": 4.0})
@@ -969,6 +971,63 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(service.sync_status.state.value, "disconnected")
         service.stop()
 
+    def test_mavlink_parameter_writes_require_a_complete_catalogue(self) -> None:
+        vehicle = _FakeVehicle()
+        service = VehicleParameterService(vehicle)  # type: ignore[arg-type]
+        service.replace(
+            [Parameter(key="KNOWN", value=3, unit="-", category="test", description="")]
+        )
+
+        for state in (
+            ParameterSyncState.IDLE,
+            ParameterSyncState.LOADING,
+            ParameterSyncState.PARTIAL,
+            ParameterSyncState.FAILED,
+            ParameterSyncState.DISCONNECTED,
+        ):
+            with self.subTest(state=state.value):
+                service._set_sync_status(ParameterSyncStatus(state))
+                with self.assertRaisesRegex(RuntimeError, state.value):
+                    service.update_values({"KNOWN": 7})
+        self.assertEqual(vehicle.parameter_writes, [])
+        service.stop()
+
+    def test_invalid_parameter_indexes_cannot_complete_catalogue(self) -> None:
+        vehicle = _FakeVehicle()
+        service = VehicleParameterService(vehicle)  # type: ignore[arg-type]
+        service.start()
+
+        for name, index in (("FIRST", 99), ("SECOND", 100)):
+            vehicle.publish(
+                _Message(
+                    message_type="PARAM_VALUE",
+                    param_id=name.encode("ascii"),
+                    param_value=1.0,
+                    param_count=2,
+                    param_index=index,
+                    param_type=9,
+                )
+            )
+
+        self.assertTrue(service._loading)
+        self.assertEqual(service.sync_status.state, ParameterSyncState.LOADING)
+        self.assertEqual(service.sync_status.received_count, 0)
+
+        for name, index in (("FIRST", 0), ("SECOND", 1)):
+            vehicle.publish(
+                _Message(
+                    message_type="PARAM_VALUE",
+                    param_id=name.encode("ascii"),
+                    param_value=1.0,
+                    param_count=2,
+                    param_index=index,
+                    param_type=9,
+                )
+            )
+        self.assertEqual(service.sync_status.state, ParameterSyncState.COMPLETE)
+        self.assertEqual(len(service.current), 2)
+        service.stop()
+
     def test_incomplete_parameter_list_is_retried_and_reported(self) -> None:
         vehicle = _FakeVehicle()
         logs = LoggingService()
@@ -1005,7 +1064,7 @@ class VehicleServiceTests(unittest.TestCase):
             )
         )
 
-        service._check_refresh_timeout()
+        service._check_refresh_timeout(service._refresh_generation)
 
         status = service.sync_status
         still_loading = service._loading
@@ -1017,6 +1076,86 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(status.state.value, "partial")
         self.assertEqual(status.received_count, 1)
         self.assertEqual(status.expected_count, 3)
+
+    def test_stale_parameter_refresh_timer_cannot_change_new_refresh(self) -> None:
+        vehicle = _FakeVehicle()
+        service = VehicleParameterService(
+            vehicle,  # type: ignore[arg-type]
+            write_timeout=1.0,
+            max_refresh_attempts=2,
+        )
+        service.start()
+        old_generation = service._refresh_generation
+        service.refresh()
+        new_generation = service._refresh_generation
+        try:
+            service._check_refresh_timeout(old_generation)
+            self.assertNotEqual(old_generation, new_generation)
+            self.assertTrue(service._loading)
+            self.assertEqual(service._refresh_attempt, 1)
+            self.assertEqual(vehicle.parameter_requests, 2)
+            self.assertEqual(service.sync_status.state, ParameterSyncState.LOADING)
+        finally:
+            service.stop()
+
+    def test_old_parameter_completion_cannot_overwrite_new_refresh(self) -> None:
+        vehicle = _FakeVehicle()
+        service = VehicleParameterService(
+            vehicle,  # type: ignore[arg-type]
+            write_timeout=1.0,
+        )
+        service.start()
+        replace_started = threading.Event()
+        refresh_started = threading.Event()
+        continue_replace = threading.Event()
+        original_replace = service.replace
+
+        def pause_old_completion(parameters) -> None:
+            values = tuple(parameters)
+            if values:
+                replace_started.set()
+                if not continue_replace.wait(5.0):
+                    raise TimeoutError("test did not release parameter completion")
+            original_replace(values)
+
+        service.replace = pause_old_completion
+        publisher = threading.Thread(
+            target=lambda: vehicle.publish(
+                _Message(
+                    message_type="PARAM_VALUE",
+                    param_id=b"OLD_REFRESH\x00",
+                    param_value=1.0,
+                    param_count=1,
+                    param_index=0,
+                    param_type=9,
+                )
+            )
+        )
+        publisher.start()
+
+        def refresh_new_catalogue() -> None:
+            refresh_started.set()
+            service.refresh()
+
+        refresher = threading.Thread(target=refresh_new_catalogue)
+        try:
+            self.assertTrue(replace_started.wait(1.0))
+            refresher.start()
+            self.assertTrue(refresh_started.wait(1.0))
+        finally:
+            continue_replace.set()
+            publisher.join(1.0)
+            if refresher.ident is not None:
+                refresher.join(1.0)
+
+        try:
+            self.assertFalse(publisher.is_alive())
+            self.assertFalse(refresher.is_alive())
+            self.assertTrue(service._loading)
+            self.assertEqual(service.sync_status.state, ParameterSyncState.LOADING)
+            self.assertEqual(service.current, ())
+        finally:
+            service.stop()
 
     def test_parameter_catalogue_is_published_in_streaming_batches(self) -> None:
         vehicle = _FakeVehicle()

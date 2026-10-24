@@ -61,6 +61,7 @@ class VehicleParameterService(MutableParameterService):
         self._pending_writes: dict[str, _PendingWrite] = {}
         self._refresh_attempt = 0
         self._refresh_progress_count = 0
+        self._refresh_generation = 0
         self._refresh_timer: threading.Timer | None = None
         self._defaults_thread: threading.Thread | None = None
         self._defaults_reload_pending = False
@@ -89,6 +90,7 @@ class VehicleParameterService(MutableParameterService):
             subscription.cancel()
         self._subscriptions.clear()
         with self._sync_lock:
+            self._refresh_generation += 1
             self._defaults_generation += 1
             self._defaults_reload_pending = False
             self._cancel_refresh_timer()
@@ -99,16 +101,22 @@ class VehicleParameterService(MutableParameterService):
             self._progress_buffer.clear()
             self._received_indexes.clear()
             self._loading = False
-        self._set_sync_status(ParameterSyncStatus())
+            self._set_sync_status(ParameterSyncStatus())
 
     def refresh(self) -> None:
         if not self._vehicle.connected:
-            self._set_sync_status(
-                ParameterSyncStatus(ParameterSyncState.DISCONNECTED)
-            )
+            with self._sync_lock:
+                self._refresh_generation += 1
+                self._cancel_refresh_timer()
+                self._loading = False
+                self._set_sync_status(
+                    ParameterSyncStatus(ParameterSyncState.DISCONNECTED)
+                )
             raise ConnectionError("Parametre listesi için uçuş cihazı bağlı değil")
-        self.replace(())
         with self._sync_lock:
+            self._refresh_generation += 1
+            generation = self._refresh_generation
+            self.replace(())
             self._defaults_generation += 1
             self._cancel_refresh_timer()
             self._parameter_buffer.clear()
@@ -119,23 +127,24 @@ class VehicleParameterService(MutableParameterService):
             self._refresh_attempt = 1
             self._refresh_progress_count = 0
             self._last_progress_publish = time.monotonic()
-        self._set_sync_status(ParameterSyncStatus(ParameterSyncState.LOADING))
+            self._set_sync_status(ParameterSyncStatus(ParameterSyncState.LOADING))
         try:
             self._vehicle.request_parameters()
         except Exception:
             with self._sync_lock:
-                self._loading = False
-                received = len(self._received_indexes) or len(self._parameter_buffer)
-                expected = self._expected_count
-            self._set_sync_status(
-                ParameterSyncStatus(
-                    ParameterSyncState.FAILED,
-                    received,
-                    expected or None,
-                )
-            )
+                if generation == self._refresh_generation:
+                    self._loading = False
+                    received = len(self._received_indexes) or len(self._parameter_buffer)
+                    expected = self._expected_count
+                    self._set_sync_status(
+                        ParameterSyncStatus(
+                            ParameterSyncState.FAILED,
+                            received,
+                            expected or None,
+                        )
+                    )
             raise
-        self._arm_refresh_timer()
+        self._arm_refresh_timer(generation)
 
     def update_values(self, changes: dict[str, object]) -> None:
         if not changes:
@@ -174,6 +183,12 @@ class VehicleParameterService(MutableParameterService):
                 )
                 for key, (parameter, value) in parameters.items()
             }
+            sync_state = self.sync_status.state
+            if sync_state is not ParameterSyncState.COMPLETE:
+                raise RuntimeError(
+                    "MAVLink parametre listesi yazma öncesi eksiksiz olmalı "
+                    f"(geçerli durum: {sync_state.value})"
+                )
             self._pending_writes.update(pending)
 
         started = time.monotonic()
@@ -260,6 +275,7 @@ class VehicleParameterService(MutableParameterService):
             self.refresh()
         elif not state.connected:
             with self._sync_lock:
+                self._refresh_generation += 1
                 self._defaults_generation += 1
                 self._defaults_reload_pending = False
                 self._cancel_refresh_timer()
@@ -269,8 +285,10 @@ class VehicleParameterService(MutableParameterService):
                 self._received_indexes.clear()
                 for pending in self._pending_writes.values():
                     pending.event.set()
-            self._set_sync_status(ParameterSyncStatus(ParameterSyncState.DISCONNECTED))
-            self.replace(())
+                self._set_sync_status(
+                    ParameterSyncStatus(ParameterSyncState.DISCONNECTED)
+                )
+                self.replace(())
 
     def _consume_message(self, message: Any) -> None:
         if str(message.get_type()).upper() != "PARAM_VALUE":
@@ -313,6 +331,7 @@ class VehicleParameterService(MutableParameterService):
         index = int(getattr(message, "param_index", -1))
 
         with self._sync_lock:
+            refresh_generation = self._refresh_generation
             loading = self._loading
             complete = False
             progress_parameters: tuple[Parameter, ...] = ()
@@ -321,12 +340,12 @@ class VehicleParameterService(MutableParameterService):
             if loading:
                 self._parameter_buffer[key] = parameter
                 self._progress_buffer[key] = parameter
-                if index >= 0:
-                    self._received_indexes.add(index)
                 self._expected_count = max(self._expected_count, count)
-                complete = self._expected_count > 0 and (
-                    len(self._received_indexes) >= self._expected_count
-                    or len(self._parameter_buffer) >= self._expected_count
+                if count > 0 and 0 <= index < count:
+                    self._received_indexes.add(index)
+                complete = (
+                    self._expected_count > 0
+                    and len(self._received_indexes) >= self._expected_count
                 )
                 if complete:
                     expected_count = self._expected_count
@@ -366,36 +385,54 @@ class VehicleParameterService(MutableParameterService):
                 pending.confirmed = True
 
         if progress_parameters:
-            self.upsert_many(progress_parameters)
-            if partial_status is not None:
-                self._set_sync_status(partial_status)
+            with self._sync_lock:
+                if (
+                    refresh_generation == self._refresh_generation
+                    and self._loading
+                ):
+                    self.upsert_many(progress_parameters)
+                    if partial_status is not None:
+                        self._set_sync_status(partial_status)
         if complete:
-            self.replace(received_parameters)
-            self._set_sync_status(
-                ParameterSyncStatus(
-                    ParameterSyncState.COMPLETE,
-                    len(received_parameters),
-                    expected_count,
+            with self._sync_lock:
+                completed_current_refresh = (
+                    refresh_generation == self._refresh_generation
+                    and not self._loading
                 )
-            )
-            self._event(
-                "parameter.sync_received",
-                f"Uçuş cihazından {len(received_parameters)} parametrenin tamamı alındı",
-                severity="success",
-                details={"parameter_count": len(received_parameters)},
-            )
-            self._start_default_load()
+                if completed_current_refresh:
+                    self.replace(received_parameters)
+                    self._set_sync_status(
+                        ParameterSyncStatus(
+                            ParameterSyncState.COMPLETE,
+                            len(received_parameters),
+                            expected_count,
+                        )
+                    )
+            if completed_current_refresh:
+                self._event(
+                    "parameter.sync_received",
+                    f"Uçuş cihazından {len(received_parameters)} parametrenin tamamı alındı",
+                    severity="success",
+                    details={"parameter_count": len(received_parameters)},
+                )
+                self._start_default_load()
         elif not loading:
             previous = existing.value if existing is not None else None
-            self.upsert(parameter)
-            if confirmed:
+            with self._sync_lock:
+                applied_live_update = (
+                    refresh_generation == self._refresh_generation
+                    and not self._loading
+                )
+                if applied_live_update:
+                    self.upsert(parameter)
+            if applied_live_update and confirmed:
                 self._event(
                     "parameter.value_echo",
                     f"{key} uçuş cihazı tarafından doğrulandı",
                     severity="success",
                     details={"parameter": key, "previous": previous, "value": value},
                 )
-            elif previous != value:
+            elif applied_live_update and previous != value:
                 self._event(
                     "parameter.vehicle_update",
                     f"{key} uçuş cihazından güncellendi",
@@ -565,10 +602,16 @@ class VehicleParameterService(MutableParameterService):
             "vehicle",
         )
 
-    def _arm_refresh_timer(self) -> None:
+    def _arm_refresh_timer(self, generation: int) -> None:
         with self._sync_lock:
+            if generation != self._refresh_generation or not self._loading:
+                return
             self._cancel_refresh_timer()
-            timer = threading.Timer(self._write_timeout, self._check_refresh_timeout)
+            timer = threading.Timer(
+                self._write_timeout,
+                self._check_refresh_timeout,
+                args=(generation,),
+            )
             timer.name = "VehicleParameterRefreshTimeout"
             timer.daemon = True
             self._refresh_timer = timer
@@ -580,9 +623,9 @@ class VehicleParameterService(MutableParameterService):
         if timer is not None:
             timer.cancel()
 
-    def _check_refresh_timeout(self) -> None:
+    def _check_refresh_timeout(self, generation: int) -> None:
         with self._sync_lock:
-            if not self._loading:
+            if generation != self._refresh_generation or not self._loading:
                 return
             progress_parameters = tuple(self._progress_buffer.values())
             self._progress_buffer.clear()
@@ -614,25 +657,34 @@ class VehicleParameterService(MutableParameterService):
                 retry = True
                 keep_waiting = False
         if progress_parameters:
-            self.upsert_many(progress_parameters)
+            with self._sync_lock:
+                if generation != self._refresh_generation:
+                    return
+                self.upsert_many(progress_parameters)
         if keep_waiting:
-            self._set_sync_status(
-                ParameterSyncStatus(
-                    ParameterSyncState.PARTIAL if received else ParameterSyncState.LOADING,
-                    received,
-                    expected or None,
+            with self._sync_lock:
+                if generation != self._refresh_generation or not self._loading:
+                    return
+                self._set_sync_status(
+                    ParameterSyncStatus(
+                        ParameterSyncState.PARTIAL if received else ParameterSyncState.LOADING,
+                        received,
+                        expected or None,
+                    )
                 )
-            )
-            self._arm_refresh_timer()
+                self._arm_refresh_timer(generation)
             return
         if not retry:
-            self._set_sync_status(
-                ParameterSyncStatus(
-                    ParameterSyncState.FAILED,
-                    received,
-                    expected or None,
+            with self._sync_lock:
+                if generation != self._refresh_generation:
+                    return
+                self._set_sync_status(
+                    ParameterSyncStatus(
+                        ParameterSyncState.FAILED,
+                        received,
+                        expected or None,
+                    )
                 )
-            )
             self._event(
                 "parameter.sync_failed",
                 "Araç parametre listesi eksiksiz alınamadı",
@@ -640,13 +692,16 @@ class VehicleParameterService(MutableParameterService):
                 details={"received_count": received, "expected_count": expected},
             )
             return
-        self._set_sync_status(
-            ParameterSyncStatus(
-                ParameterSyncState.PARTIAL if received else ParameterSyncState.LOADING,
-                received,
-                expected or None,
+        with self._sync_lock:
+            if generation != self._refresh_generation or not self._loading:
+                return
+            self._set_sync_status(
+                ParameterSyncStatus(
+                    ParameterSyncState.PARTIAL if received else ParameterSyncState.LOADING,
+                    received,
+                    expected or None,
+                )
             )
-        )
         self._event(
             "parameter.sync_retry",
             f"Eksik parametre listesi yeniden isteniyor ({attempt}/{self._max_refresh_attempts})",
@@ -654,14 +709,17 @@ class VehicleParameterService(MutableParameterService):
             details={"received_count": received, "expected_count": expected},
         )
         try:
-            self._vehicle.request_parameters()
+            with self._sync_lock:
+                if generation != self._refresh_generation or not self._loading:
+                    return
+                self._vehicle.request_parameters()
         except Exception as exc:
             self._event(
                 "parameter.sync_retry_failed",
                 f"Parametre listesi yeniden istenemedi: {exc}",
                 severity="danger",
             )
-        self._arm_refresh_timer()
+        self._arm_refresh_timer(generation)
 
     def _event(
         self,

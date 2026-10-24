@@ -121,7 +121,12 @@ class TileCacheServer(TileCacheService):
         self, *, cache_path: str | Path, enabled: bool, limit_mb: int
     ) -> None:
         with self._lock:
-            self._cache_path = Path(cache_path)
+            new_cache_path = Path(cache_path)
+            if new_cache_path != self._cache_path:
+                # Requests already in flight belong to the previous cache
+                # root. Invalidate their writes before switching the index.
+                self._generation += 1
+                self._cache_path = new_cache_path
             self._enabled = enabled
             self._limit_mb = limit_mb
             self._load_from_disk_locked()
@@ -275,7 +280,7 @@ class TileCacheServer(TileCacheService):
     def entries(self) -> list[dict[str, Any]]:
         with self._lock:
             return sorted(
-                self._index.values(),
+                (dict(item) for item in self._index.values()),
                 key=lambda item: (
                     item.get("provider", ""),
                     item.get("variant", ""),
@@ -415,30 +420,44 @@ class TileCacheServer(TileCacheService):
         )
 
     def _read_cached_tile(self, tile: TileRequest) -> bytes | None:
-        path = self._tile_path(tile)
+        with self._lock:
+            generation = self._generation
+            path = self._tile_path(tile)
         try:
             payload = path.read_bytes()
         except (FileNotFoundError, IsADirectoryError):
-            self._remove_index_entry(tile)
+            self._remove_index_entry(tile, generation=generation)
             return None
         except OSError:
             return None
         if not payload:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            self._remove_index_entry(tile)
+            self._discard_invalid_cached_tile(tile, path, generation)
             return None
         if not self._looks_like_image(payload, tile.extension):
+            self._discard_invalid_cached_tile(tile, path, generation)
+            return None
+        self._touch_index(
+            tile,
+            path,
+            persist=False,
+            size=len(payload),
+            generation=generation,
+        )
+        return payload
+
+    def _discard_invalid_cached_tile(
+        self, tile: TileRequest, path: Path, generation: int
+    ) -> None:
+        # Keep the generation check and file removal atomic with respect to
+        # clear()/configure(), so a stale read cannot delete a newer tile.
+        with self._lock:
+            if generation != self._generation:
+                return
             try:
                 path.unlink(missing_ok=True)
             except OSError:
                 pass
-            self._remove_index_entry(tile)
-            return None
-        self._touch_index(tile, path, persist=False, size=len(payload))
-        return payload
+            self._remove_index_entry(tile, generation=generation)
 
     def _fetch_remote_tile(self, tile: TileRequest) -> tuple[bytes | None, str | None]:
         url = self._remote_url(tile)
@@ -563,6 +582,7 @@ class TileCacheServer(TileCacheService):
         *,
         persist: bool,
         size: int | None = None,
+        generation: int | None = None,
     ) -> None:
         updated_at = int(time.time())
         try:
@@ -571,6 +591,8 @@ class TileCacheServer(TileCacheService):
         except OSError:
             return
         with self._lock:
+            if generation is not None and generation != self._generation:
+                return
             previous = self._index.get(tile.key)
             if (
                 not persist
@@ -585,6 +607,8 @@ class TileCacheServer(TileCacheService):
         except (OSError, ValueError):
             return
         with self._lock:
+            if generation is not None and generation != self._generation:
+                return
             previous = self._index.get(tile.key)
             if previous is not None:
                 self._total_bytes -= int(previous.get("size", 0))
@@ -604,8 +628,12 @@ class TileCacheServer(TileCacheService):
             if persist:
                 self._persist_index_locked()
 
-    def _remove_index_entry(self, tile: TileRequest) -> None:
+    def _remove_index_entry(
+        self, tile: TileRequest, *, generation: int | None = None
+    ) -> None:
         with self._lock:
+            if generation is not None and generation != self._generation:
+                return
             removed = self._index.pop(tile.key, None)
             if removed is None:
                 return

@@ -75,6 +75,15 @@ class ServerSession:
         with self._request_lock:
             return self._request(path, payload)
 
+    def request_authenticated(self, path, payload=None):
+        """Send a management event only through an active authenticated session."""
+        with self._request_lock:
+            if self._stop.is_set():
+                raise RuntimeError("Competition server session is stopping")
+            if not self.connected:
+                raise RuntimeError("Competition server login is not complete")
+            return self._request(path, payload)
+
     def _request(self, path, payload=None):
         base = str(self.config["base_url"]).rstrip("/")
         if not base.startswith(("http://", "https://")):
@@ -574,7 +583,7 @@ class CompetitionRuntime:
                 "TEKNOFEST server profile changed before the event was sent; "
                 "submit the event again for the current profile"
             )
-        return session.request(path, payload)
+        return session.request_authenticated(path, payload)
 
     def submit_lock_event(self, identifier, event):
         return self._submit_profile_event(

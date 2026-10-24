@@ -55,18 +55,22 @@ HTTP endpoint only:
 
 The probe records enqueue-to-start wait and task execution separately, uses the
 real runtime configuration and request path, and reports the client HTTP round
-trip beside loopback handler time. Queue and profile-stop holds are explicitly
-synthetic; the tool never contacts a real TEKNOFEST host or vehicle. It is useful
-for identifying which portion of a controlled scenario occupies the serial
-executor, not for predicting a radio or competition-server SLA.
+trip beside loopback handler time. Its endpoint returns a valid login and server
+clock, and the probe waits for authentication before queueing management events.
+Queue and profile-stop holds are explicitly synthetic; the tool never contacts
+a real TEKNOFEST host or vehicle. It is useful for identifying which portion of
+a controlled scenario occupies the serial executor, not for predicting a radio
+or competition-server SLA.
 
-On 24 October 2026, the 20-event run with a 20 ms queue hold, 25 ms old-profile
-stop and 15 ms loopback response delay completed all events. Profile replacement
-executed in 29.9 ms; the client request round trip was 16.3 ms at P50, and event
-queue wait was 184.0 ms at P50 / 314.4 ms at P95. The wait accumulates because
-the same worker deliberately processes each delayed request in order. This
-synthetic result does not justify a second worker pool; real server and radio
-timings still need to be measured before changing event ordering.
+On 24 October 2026, the authenticated 20-event run with a 20 ms queue hold,
+25 ms old-profile stop and 15 ms loopback response delay completed all events.
+Profile replacement executed in 30.0 ms; the client request round trip was
+16.0 ms at P50. Across all management-worker tasks, queue wait was 149.4 ms at
+P50 / 310.2 ms at P95; for event submissions alone it was 181.9 ms at P50 /
+310.2 ms at P95. The wait accumulates because the same worker deliberately
+processes each delayed request in order. This synthetic result does not justify
+a second worker pool; real server and radio timings still need to be measured
+before changing event ordering.
 
 ## Tile-cache hit probe
 
@@ -89,6 +93,29 @@ repeated metadata calls and rebuilding an unchanged index entry brought the
 cache-hit median down from about 22.3 µs to roughly 10.8 µs across repeated runs.
 The cache remains file-backed, and its LRU timestamp still advances at the
 existing one-second resolution.
+
+## Tile-cache file-tree probe
+
+Measure startup index rebuild, JSON persistence, warm cache hits, eight-way
+concurrent hits, and pruning using real temporary files:
+
+```sh
+.venv/bin/python tools/tile_cache_storage_probe.py
+.venv/bin/python tools/tile_cache_storage_probe.py --counts 10000,50000,100000 --hit-iterations 500
+```
+
+The probe does not contact a tile provider. It writes one valid 68-byte 1x1 PNG
+per tile, so the directory tree and file count are real but payload sizes do not
+represent a normal map. On this machine `/tmp` is `tmpfs`; the measurements below
+are a warm-cache indexing baseline, not SSD/HDD performance.
+
+On 24 October 2026, startup index rebuild took 505 ms / 2.54 s / 5.07 s for
+10k / 50k / 100k files. Persisting the 100k-entry index took 108 ms. Warm hit
+P50 remained 16 µs across all three sizes; eight concurrent cache hits had a
+P95 of 0.42–0.45 ms. Pruning a 100k-file cache to a 1 MiB limit and persisting
+the remainder took 119 ms on tmpfs. These results confirm that rebuilding the
+index is the largest measured cost at this scale, but do not justify changing
+the on-disk format or locking strategy without a run on the target filesystem.
 
 For a running application, import `AdapterProbe` from `tools.qt_queue_probe` in
 a development/debugger session and construct it with an existing Qt service

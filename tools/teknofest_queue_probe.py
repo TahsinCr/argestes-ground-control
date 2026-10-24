@@ -81,21 +81,33 @@ class LoopbackHandler(BaseHTTPRequestHandler):
     durations: list[float] = []
     durations_lock = threading.Lock()
 
-    def do_POST(self) -> None:
-        length = int(self.headers.get("Content-Length", "0"))
-        self.rfile.read(length)
+    def _send_json(self, payload: bytes) -> None:
         started_at = time.perf_counter()
         if self.response_delay_s:
             time.sleep(self.response_delay_s)
         elapsed = time.perf_counter() - started_at
         with self.durations_lock:
             self.durations.append(elapsed)
-        payload = b'{"accepted":true}'
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def do_GET(self) -> None:
+        if self.path == "/api/sunucusaati":
+            self._send_json(b'{"gun":24,"saat":12,"dakika":0,"saniye":0}')
+        else:
+            self._send_json(b'{"accepted":true}')
+
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        self.rfile.read(length)
+        if self.path == "/api/giris":
+            payload = b'{"takim_numarasi":1}'
+        else:
+            payload = b'{"accepted":true}'
+        self._send_json(payload)
 
     def log_message(self, _format: str, *_args) -> None:
         return
@@ -168,9 +180,11 @@ def main() -> int:
     runtime._lifecycle_lock = threading.RLock()
     runtime._closed = False
     runtime.settings = Settings([initial_config])
-    runtime.telemetry = SimpleNamespace(current=None)
+    runtime.telemetry = SimpleNamespace(
+        current=SimpleNamespace(has_valid_position=False)
+    )
     runtime.database = MemoryDatabase()
-    runtime.logger = None
+    runtime.logger = SimpleNamespace(event=lambda *_args, **_kwargs: None)
     runtime.clock_references = None
     runtime._clock_reference_ids = set()
     runtime.sessions = {identifier: PreviousSession()}
@@ -190,6 +204,18 @@ def main() -> int:
         configure = runtime.configure([config])
         configure.result(timeout=30.0)
         configure_wall_s = time.perf_counter() - configure_started
+
+        runtime.connect(identifier).result(timeout=5.0)
+        session = runtime.sessions[identifier]
+        login_deadline = time.monotonic() + 5.0
+        while not session.connected and time.monotonic() < login_deadline:
+            if not session.running:
+                break
+            time.sleep(0.01)
+        if not session.connected:
+            raise RuntimeError(
+                f"loopback server login did not complete: {session.error or 'no response'}"
+            )
 
         blocker = worker.submit(hold_management_queue)
         if not entered.wait(2.0):

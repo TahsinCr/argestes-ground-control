@@ -142,6 +142,9 @@ class TeknofestSessionLifecycleTests(unittest.TestCase):
                 self.requests.append((path, payload))
                 return {"accepted": True}
 
+            def request_authenticated(self, path, payload):
+                return self.request(path, payload)
+
         previous = Session(old_config)
         replacement = Session(new_config)
         runtime = object.__new__(CompetitionRuntime)
@@ -190,6 +193,36 @@ class TeknofestSessionLifecycleTests(unittest.TestCase):
         finally:
             release.set()
             runtime.stop()
+
+    def test_management_request_waits_for_authenticated_session(self) -> None:
+        session = ServerSession(
+            {
+                "identifier": "server",
+                "base_url": "http://127.0.0.1:1",
+                "timeout_s": 0.1,
+            },
+            snapshot=lambda: None,
+            database=None,
+            logger=None,
+        )
+        requests = []
+        session._request = lambda path, payload=None: requests.append((path, payload))
+
+        with self.assertRaisesRegex(RuntimeError, "login is not complete"):
+            session.request_authenticated("/api/kilitlenme_bilgisi", {"event": 1})
+        self.assertEqual(requests, [])
+
+        session.connected = True
+        session._stop.set()
+        with self.assertRaisesRegex(RuntimeError, "session is stopping"):
+            session.request_authenticated("/api/kilitlenme_bilgisi", {"event": 2})
+        self.assertEqual(requests, [])
+
+        session._stop.clear()
+        self.assertIsNone(
+            session.request_authenticated("/api/kilitlenme_bilgisi", {"event": 3})
+        )
+        self.assertEqual(requests, [("/api/kilitlenme_bilgisi", {"event": 3})])
 
     def test_runtime_signals_all_sessions_before_waiting_for_any(self) -> None:
         sessions = []

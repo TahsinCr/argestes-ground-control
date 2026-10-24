@@ -17,6 +17,9 @@ Release headings link each entry to its release date.
   management-queue wait, profile replacement time and HTTP/server response time.
 * Added `tools/tile_cache_probe.py` to compare warm cache hits with direct reads
   at synthetic 10k, 50k and 100k index sizes.
+* Added `tools/tile_cache_storage_probe.py` to measure index rebuild and
+  persistence, real file-backed cache hits, concurrent reads and pruning without
+  contacting a map provider.
 * Added a standalone `tools/camera_capture_probe.py` for measuring the camera
   extension's real GStreamer USB capture path without saving or displaying frames.
 * Added **Logs** to Settings to inspect session-log storage, export a selected
@@ -47,6 +50,9 @@ Release headings link each entry to its release date.
 
 ### Changed
 
+* Updated the GitHub Actions checkout and Python setup steps to their current
+  Node.js 24-compatible major releases, removing the Node.js 20 deprecation
+  warning from the workflow.
 * Bumped the Extension API major version to 2. Every package manifest must now
   declare `api_major`; all bundled packages target the new strict clock and
   parameter-provider contracts.
@@ -91,6 +97,19 @@ Release headings link each entry to its release date.
 
 ### Fixed
 
+* Tile-cache reads now carry their starting generation through metadata updates
+  and invalid-file cleanup. Clearing or switching cache roots can no longer let
+  an older read or fetch restore metadata, overwrite the new cache, or delete a
+  tile created after the cache changed. Cache inspection returns independent
+  metadata dictionaries instead of exposing the live index.
+* TEKNOFEST management events now require an authenticated, non-stopping server
+  session at the point the request lock is acquired. A queued event can no
+  longer overtake login or start after session shutdown; failed delivery remains
+  explicit and is not retried automatically.
+* MAVLink parameter writes are rejected until the provider has a complete
+  catalogue. Timer and streamed catalogue updates are scoped to the active
+  refresh generation, and `PARAM_VALUE` indexes outside `0..param_count-1` no
+  longer count toward catalogue completion.
 * Camera-panel video outputs now take the frame and freshness timestamp from the
   same selected camera. Switching sources can no longer label a cached frame
   from another camera as the new source.
