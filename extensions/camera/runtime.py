@@ -3,18 +3,26 @@
 from __future__ import annotations
 
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
 from src.extension.api import ClockQuality, ClockReferenceRegistry
+from src.core.events import Subscription
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
 
 from .capture import MultiVideoService
-from .models import VideoShareConfig, VideoSourceConfig
+from .models import VideoShareConfig, VideoSourceConfig, VideoSourceStats
+
+
+@dataclass(slots=True)
+class _ConnectionAttempt:
+    ready: threading.Event
+    cancelled: bool = False
+    started: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +131,13 @@ class CameraRuntime:
         self._worker = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="CameraConfig"
         )
+        self._connection_worker = ThreadPoolExecutor(
+            max_workers=3, thread_name_prefix="CameraConnect"
+        )
+        self._connection_attempts: dict[str, _ConnectionAttempt] = {}
+        self._video_subscription: Subscription = self.video.source_stats_changed.subscribe(
+            self._source_stats_changed
+        )
         self._started = False
         self._lock = threading.RLock()
 
@@ -138,15 +153,20 @@ class CameraRuntime:
     def stop(self) -> None:
         with self._lock:
             self._started = False
+            for attempt in self._connection_attempts.values():
+                attempt.cancelled = True
+                attempt.ready.set()
+        self._connection_worker.shutdown(wait=True, cancel_futures=True)
         self._worker.shutdown(wait=True, cancel_futures=True)
+        self._video_subscription.cancel()
         if not self.video.close():
             raise RuntimeError("One or more camera output workers did not shut down")
 
     def save_sources(
         self, sources: tuple[VideoSourceConfig, ...], active_id: str
-    ) -> None:
-        if not sources:
-            raise ValueError("At least one camera source is required")
+    ) -> Future[None]:
+        if not sources or active_id not in {item.identifier for item in sources}:
+            raise ValueError("Active camera must be one of the configured sources")
         previous = self.settings.current
         config = CameraConfiguration(
             sources,
@@ -155,7 +175,7 @@ class CameraRuntime:
             previous.clock_reference_id,
         )
         self.settings.save(config)
-        self._worker.submit(self._apply_sources, config)
+        return self._worker.submit(self._apply_sources, config)
 
     def _apply_sources(self, config: CameraConfiguration) -> None:
         self.video.configure_sources(config.sources, config.active_source_id)
@@ -235,12 +255,104 @@ class CameraRuntime:
 
     def connect_source(self, identifier: str) -> Future[None]:
         config = self.settings.current
-        if identifier not in {item.identifier for item in config.sources}:
+        source = next(
+            (item for item in config.sources if item.identifier == identifier), None
+        )
+        if source is None:
             raise ValueError("Unknown camera source")
-        if identifier != config.active_source_id:
-            self.save_sources(config.sources, identifier)
-        return self._worker.submit(self._connect_source, identifier)
+        if source.source_type != "mock" and not source.source_uri:
+            raise ValueError(f"{source.name}: video source address is empty")
+        with self._lock:
+            if identifier in self._connection_attempts:
+                raise RuntimeError("Camera connection is already in progress")
+            attempt = _ConnectionAttempt(threading.Event())
+            self._connection_attempts[identifier] = attempt
+        try:
+            apply_future = (
+                self.save_sources(config.sources, identifier)
+                if identifier != config.active_source_id
+                else None
+            )
+            return self._connection_worker.submit(
+                self._connect_source, identifier, source, attempt, apply_future
+            )
+        except Exception:
+            self._finish_connection_attempt(identifier, attempt)
+            raise
 
-    def _connect_source(self, identifier: str) -> None:
-        self.video.set_active_source(identifier)
-        self.video.reconnect()
+    def cancel_source_connection(self, identifier: str) -> bool:
+        with self._lock:
+            attempt = self._connection_attempts.get(identifier)
+            if any(
+                item.source_id == identifier and item.stats.connected
+                for item in self.video.source_stats
+            ):
+                return True
+            if attempt is not None:
+                attempt.cancelled = True
+                attempt.ready.set()
+            elif not any(
+                item.source_id == identifier and item.stats.connecting
+                for item in self.video.source_stats
+            ):
+                return False
+        if attempt is None:
+            try:
+                self._worker.submit(self.video.disconnect_source, identifier)
+            except RuntimeError:
+                return False
+        return True
+
+    def _source_stats_changed(self, update: VideoSourceStats) -> None:
+        with self._lock:
+            attempt = self._connection_attempts.get(update.source_id)
+            if attempt is None:
+                return
+            if update.stats.connected or update.stats.connecting:
+                attempt.started = True
+            elif attempt.started:
+                attempt.ready.set()
+
+    def _finish_connection_attempt(
+        self, identifier: str, attempt: _ConnectionAttempt
+    ) -> None:
+        with self._lock:
+            if self._connection_attempts.get(identifier) is attempt:
+                self._connection_attempts.pop(identifier, None)
+
+    def _connect_source(
+        self,
+        identifier: str,
+        source: VideoSourceConfig,
+        attempt: _ConnectionAttempt,
+        apply_future: Future[None] | None,
+    ) -> None:
+        try:
+            if apply_future is not None:
+                apply_future.result()
+            if attempt.cancelled:
+                raise CancelledError()
+            self.video.reconnect_source(identifier)
+            if any(
+                item.source_id == identifier and item.stats.connected
+                for item in self.video.source_stats
+            ):
+                return
+            if not attempt.ready.wait(source.connection_timeout_s):
+                self.video.disconnect_source(identifier)
+                raise TimeoutError(
+                    f"{source.name}: connection timed out after "
+                    f"{source.connection_timeout_s:g} s"
+                )
+            if attempt.cancelled:
+                raise CancelledError()
+            if not any(
+                item.source_id == identifier and item.stats.connected
+                for item in self.video.source_stats
+            ):
+                raise TimeoutError(f"{source.name}: video source did not connect")
+        except CancelledError:
+            self.video.disconnect_source(identifier)
+            raise
+        finally:
+            self._finish_connection_attempt(identifier, attempt)

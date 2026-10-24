@@ -36,10 +36,12 @@ class ConnectionEditor(QWidget):
         self.language = language
         self._latest_operation_id = 0
         self._pending_profile_identifier = ""
+        self._pending_delete_identifier = ""
         self.profiles_panel = ConnectionsPanel(theme, self, language=language)
         self.profiles_panel.profiles_saved.connect(self._save_profiles)
         self.profiles_panel.profile_edit_requested.connect(self._edit_profile)
         self.profiles_panel.profile_connect_requested.connect(self._connect_profile)
+        self.profiles_panel.profile_delete_requested.connect(self._delete_profile)
         self.settings_service.settings_changed.connect(self._settings_changed)
         self.connection_service.status_changed.connect(lambda _: self._show_profiles())
         self.connection_service.operation_started.connect(self._operation_started)
@@ -90,6 +92,18 @@ class ConnectionEditor(QWidget):
             running=bool(status.options.get("running", status.connected)),
             detail=detail,
         )
+        self._pending_profile_identifier = ""
+        deleting = self._pending_delete_identifier
+        if deleting:
+            self._pending_delete_identifier = ""
+            if successful and not status.connected and not status.options.get("running", False):
+                self._remove_profile(deleting)
+            else:
+                QMessageBox.warning(
+                    self,
+                    t("extension.vehicle_connection.name", self.language),
+                    message or detail or t("connection.profile.delete_failed", self.language),
+                )
 
     def prepare_shutdown(self):
         self.profiles_panel.close()
@@ -135,6 +149,30 @@ class ConnectionEditor(QWidget):
             )
         finally:
             self._pending_profile_identifier = ""
+
+    def _delete_profile(self, identifier: str) -> None:
+        if not any(item.identifier == identifier for item in self.profiles.profiles):
+            return
+        status = self.connection_service.status("telemetry")
+        is_active = identifier == self.profiles.active_identifier
+        if self.profiles_panel.is_connecting(identifier) or (
+            is_active
+            and (status.connected or bool(status.options.get("running", False)))
+        ):
+            self._pending_delete_identifier = identifier
+            self._pending_profile_identifier = identifier
+            self.connection_service.disconnect("telemetry")
+            return
+        self._remove_profile(identifier)
+
+    def _remove_profile(self, identifier: str) -> None:
+        profiles = tuple(
+            item for item in self.profiles.profiles if item.identifier != identifier
+        )
+        active = self.profiles.active_identifier
+        if active == identifier:
+            active = profiles[0].identifier if profiles else ""
+        self._save_profiles(profiles, active)
 
     def _edit_profile(self, profile: ConnectionProfile | None) -> None:
         existing = tuple(self.profiles.profiles)
@@ -193,6 +231,8 @@ class ConnectionEditor(QWidget):
 
     def _save_profiles(self, profiles, active_identifier: str | None = None) -> None:
         try:
+            if not profiles:
+                active_identifier = ""
             self.settings_service.save_async(
                 self.profiles.settings_payload(profiles, active_identifier)
             )

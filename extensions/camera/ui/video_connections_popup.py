@@ -47,6 +47,7 @@ class VideoConnectionsPopup(QDialog):
         self._sources: list[VideoSourceConfig] = []
         self._active_identifier = ""
         self._connected_source_ids: frozenset[str] = frozenset()
+        self._connecting_source_ids: frozenset[str] = frozenset()
         self._connected = False
         self._build_ui()
         self.set_theme(theme)
@@ -82,15 +83,25 @@ class VideoConnectionsPopup(QDialog):
         self._connected_source_ids = frozenset(
             item.source_id for item in source_stats if item.stats.connected
         )
+        self._connecting_source_ids = frozenset(
+            item.source_id for item in source_stats if item.stats.connecting
+        )
         self._render()
 
     def update_source_stats(self, source_stats: tuple[VideoSourceStats, ...]) -> None:
         connected = frozenset(
             item.source_id for item in source_stats if item.stats.connected
         )
-        if connected == self._connected_source_ids:
+        connecting = frozenset(
+            item.source_id for item in source_stats if item.stats.connecting
+        )
+        if (
+            connected == self._connected_source_ids
+            and connecting == self._connecting_source_ids
+        ):
             return
         self._connected_source_ids = connected
+        self._connecting_source_ids = connecting
         self._render()
 
     def _build_ui(self) -> None:
@@ -134,6 +145,7 @@ class VideoConnectionsPopup(QDialog):
                 item.widget().deleteLater()
         for source in self._sources:
             active = source.identifier == self._active_identifier
+            connecting = source.identifier in self._connecting_source_ids
             connected = source.identifier in self._connected_source_ids or (
                 active and self._connected and not self._connected_source_ids
             )
@@ -153,6 +165,7 @@ class VideoConnectionsPopup(QDialog):
             row.addWidget(name, 1)
             edit = QPushButton("Düzenle", card)
             edit.setProperty("compact", "true")
+            edit.setEnabled(not connecting)
             edit.clicked.connect(lambda _=False, value=source: self._edit(value))
             row.addWidget(edit)
             layout.addLayout(row)
@@ -164,10 +177,11 @@ class VideoConnectionsPopup(QDialog):
             endpoint.setWordWrap(True)
             layout.addWidget(endpoint)
             info = QLabel(
-                f"{source.latency_ms} ms · {source.frame_timeout_s:g} sn · {'Bağlı' if connected else 'Etkin' if active else 'Beklemede'}",
+                f"{source.latency_ms} ms · {t('camera.connection.timeout', self._language)} {source.connection_timeout_s:g} sn · {t('camera.frame.timeout', self._language)} {source.frame_timeout_s:g} sn · {t('camera.connection.state.connected' if connected else 'camera.connection.state.connecting' if connecting else 'camera.connection.state.active' if active else 'camera.connection.state.waiting', self._language)}",
                 card,
             )
             info.setProperty("role", "detail")
+            info.setWordWrap(True)
             layout.addWidget(info)
             actions = QHBoxLayout()
             auto = QPushButton(
@@ -175,6 +189,7 @@ class VideoConnectionsPopup(QDialog):
             )
             auto.setCheckable(True)
             auto.setChecked(source.auto_connect)
+            auto.setEnabled(not connecting)
             auto.setProperty("compact", "true")
             auto.setProperty("role", "primary" if source.auto_connect else "secondary")
             auto.clicked.connect(
@@ -184,11 +199,18 @@ class VideoConnectionsPopup(QDialog):
             )
             actions.addWidget(auto)
             select = QPushButton(
-                "Bağlı" if connected else "Bağlan" if active else "Seç", card
+                t("camera.connection.cancel", self._language)
+                if connecting
+                else t("camera.connection.state.connected", self._language)
+                if connected
+                else t("camera.connection.connect", self._language)
+                if active
+                else t("camera.connection.select", self._language),
+                card,
             )
             select.setProperty("compact", "true")
-            select.setProperty("role", "danger" if connected else "primary")
-            select.setEnabled(not connected)
+            select.setProperty("role", "danger" if connecting else "primary")
+            select.setEnabled(connecting or not connected)
             select.clicked.connect(
                 lambda _=False, identifier=source.identifier: self._select(identifier)
             )
@@ -196,7 +218,7 @@ class VideoConnectionsPopup(QDialog):
             delete = QPushButton("Sil", card)
             delete.setProperty("compact", "true")
             delete.setProperty("role", "danger")
-            delete.setEnabled(len(self._sources) > 1)
+            delete.setEnabled(len(self._sources) > 1 and not connecting)
             delete.clicked.connect(
                 lambda _=False, identifier=source.identifier: self._delete(identifier)
             )
@@ -235,13 +257,20 @@ class VideoConnectionsPopup(QDialog):
         timeout.setRange(1, 60)
         timeout.setValue(int(current.frame_timeout_s if current else 3))
         timeout.setSuffix(" s")
+        connection_timeout = QSpinBox(dialog)
+        connection_timeout.setRange(1, 120)
+        connection_timeout.setValue(
+            int(current.connection_timeout_s if current else 10)
+        )
+        connection_timeout.setSuffix(" s")
         for label, field in (
             ("Ad", name),
             ("Kaynak", uri),
             ("Bağlantı tipi", kind),
             ("Codec", codec),
             ("Gecikme", latency),
-            ("Zaman aşımı", timeout),
+            (t("camera.connection.timeout", self._language), connection_timeout),
+            (t("camera.frame.timeout", self._language), timeout),
         ):
             form.addRow(label, field)
         root.addLayout(form)
@@ -270,6 +299,7 @@ class VideoConnectionsPopup(QDialog):
                     codec=codec.currentText(),
                     latency_ms=latency.value(),
                     frame_timeout_s=timeout.value(),
+                    connection_timeout_s=connection_timeout.value(),
                     auto_connect=auto.isChecked(),
                 )
             except ValueError:
@@ -291,6 +321,9 @@ class VideoConnectionsPopup(QDialog):
         self.sources_saved.emit(tuple(self._sources), active)
 
     def _select(self, identifier: str) -> None:
+        if identifier in self._connecting_source_ids:
+            self.source_connect_requested.emit(identifier)
+            return
         if identifier != self._active_identifier:
             self._save(identifier)
             return

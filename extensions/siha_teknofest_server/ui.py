@@ -338,7 +338,7 @@ class ServerPanel(QWidget):
         team, timeout = QSpinBox(box), QDoubleSpinBox(box)
         team.setRange(1, 9999)
         team.setValue(profile.team_number)
-        timeout.setRange(0.1, 15)
+        timeout.setRange(0.1, 120)
         timeout.setValue(profile.timeout_s)
         timeout.setSuffix(" s")
         auto = QCheckBox(t("teknofest.auto", self.language), box)

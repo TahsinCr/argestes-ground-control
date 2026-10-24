@@ -236,16 +236,17 @@ class CompetitionServersPopup(QDialog):
         connect = QPushButton(
             t("teknofest.disconnect", self._language)
             if connected
-            else t("teknofest.connecting", self._language)
+            else t("teknofest.cancel_connection", self._language)
             if is_connecting
             else t("teknofest.connect", self._language),
             card,
         )
+        connect.setObjectName("serverConnectButton")
         connect.setProperty(
-            "role", "danger" if connected else "primary"
+            "role", "danger" if connected or is_connecting else "primary"
         )
         connect.setProperty("compact", "true")
-        connect.setEnabled(self._available and not is_connecting)
+        connect.setEnabled(self._available)
         connect.clicked.connect(
             lambda _checked=False, item=server: self.server_connect_requested.emit(item)
         )

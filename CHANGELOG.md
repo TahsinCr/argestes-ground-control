@@ -47,6 +47,9 @@ Release headings link each entry to its release date.
 * Added a GitHub Actions test workflow that checks out the Core submodule and
   installs the Qt platform libraries and extension test dependencies, then runs
   the application and Core suites in an offscreen Qt environment.
+* Added a per-camera connection timeout, separate from the existing stale-frame
+  timeout. A source that never produces its first frame now stops instead of
+  remaining in a connecting state indefinitely.
 
 ### Changed
 
@@ -94,9 +97,19 @@ Release headings link each entry to its release date.
 * TEKNOFEST request history is stored directly at
   `data/siha_teknofest_history.sqlite3`; the former nested database is not
   migrated automatically.
+* Vehicle profiles can now be removed down to zero; deleting the active profile
+  first stops its connection, and the empty state disables auto-connect until a
+  new profile is added. Vehicle, camera and server connection cards now expose a
+  cancel action while a connection is in progress. The server timeout setting
+  is explicitly a per-request timeout and matches its supported 0.1–120 s range.
 
 ### Fixed
 
+* Camera connection attempts now distinguish the initial disconnected state
+  from a failed attempt: they finish promptly after a source has started and
+  then fails, can be cancelled without waiting for their timeout, and stop only
+  the selected source. Empty source addresses are rejected before starting a
+  manual connection.
 * Tile-cache reads now carry their starting generation through metadata updates
   and invalid-file cleanup. Clearing or switching cache roots can no longer let
   an older read or fetch restore metadata, overwrite the new cache, or delete a

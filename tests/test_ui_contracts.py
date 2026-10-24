@@ -29,6 +29,10 @@ from PyQt6.QtWidgets import (
 
 from extensions.battery.ui.meter import BatteryMeter
 from extensions.battery.ui.settings_popup import BatterySettingsPopup
+from extensions.siha_teknofest_server.connections_popup import CompetitionServersPopup
+from extensions.siha_teknofest_server.models import CompetitionServerConfig
+from extensions.vehicle_connection.ui.connections_popup import ConnectionsPanel
+from src.models.connections import ConnectionProfile
 from extensions.flight_dynamics.ui.panel import AttitudeIndicator
 from extensions.map_autonomy.ui.panel import MapPanel, MapWebBridge
 from extensions.parameters.ui.panel import ParametersPanel
@@ -826,6 +830,44 @@ class UiContractTests(unittest.TestCase):
                 self.app.processEvents()
             finally:
                 backend.shutdown()
+
+    def test_last_vehicle_profile_delete_action_is_available(self) -> None:
+        panel = ConnectionsPanel(DARK, language="en")
+        profile = ConnectionProfile("only", "Only", "udp:0.0.0.0:14550")
+        panel.show_profiles(
+            (profile,),
+            active_identifier="only",
+            connected=False,
+            running=False,
+            detail="",
+        )
+        delete = panel.findChild(QPushButton, "deleteProfileButton")
+        self.assertIsNotNone(delete)
+        self.assertTrue(delete.isEnabled())
+        emitted: list[str] = []
+        panel.profile_delete_requested.connect(emitted.append)
+        delete.click()
+        self.assertEqual(emitted, ["only"])
+        panel.close()
+
+    def test_teknofest_connect_button_cancels_an_in_progress_request(self) -> None:
+        popup = CompetitionServersPopup(DARK, language="en")
+        server = CompetitionServerConfig(
+            identifier="test", name="Test", base_url="http://127.0.0.1:5000"
+        )
+        popup._server_states = {server.identifier: (False, True, "Connecting")}
+        popup.show_servers(
+            (server,),
+            active_identifier="",
+            connected=False,
+            running=False,
+            available=True,
+        )
+        cancel = popup.findChild(QPushButton, "serverConnectButton")
+        self.assertIsNotNone(cancel)
+        self.assertTrue(cancel.isEnabled())
+        self.assertEqual(cancel.text(), "Cancel connection")
+        popup.close()
 
     def test_disabled_connection_removes_only_its_connection_chip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

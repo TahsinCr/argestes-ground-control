@@ -24,6 +24,11 @@
           "frame_timeout_s": {
             "type": "number"
           },
+          "connection_timeout_s": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 120
+          },
           "auto_connect": {
             "type": "boolean"
           },

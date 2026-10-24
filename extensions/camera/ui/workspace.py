@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from concurrent.futures import CancelledError
 
 from PyQt6.QtCore import QPoint, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage
@@ -169,6 +170,8 @@ class CameraWorkspace(VideoPanel):
             self.set_recording_busy(False)
 
     def _connect(self, identifier: str) -> None:
+        if self.runtime.cancel_source_connection(identifier):
+            return
         self.set_reconnect_busy(True)
         try:
             future = self.runtime.connect_source(identifier)
@@ -182,6 +185,8 @@ class CameraWorkspace(VideoPanel):
                 return
             try:
                 result.result()
+            except CancelledError:
+                self.reconnect_completed.emit(True, "")
             except Exception as exc:
                 self.reconnect_completed.emit(False, str(exc))
             else:
@@ -191,6 +196,7 @@ class CameraWorkspace(VideoPanel):
 
     def _reconnect_completed(self, success: bool, detail: str) -> None:
         self.set_reconnect_busy(False)
+        self._sync_settings()
         if not success:
             QMessageBox.warning(self, "Camera", detail)
 

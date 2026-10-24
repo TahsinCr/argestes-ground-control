@@ -131,6 +131,15 @@ class MutableVideoService(VideoService):
         self.stop()
         self.start()
 
+    def reconnect_source(self, identifier: str) -> None:
+        if identifier != self._source_identifier:
+            raise ValueError(f"Bilinmeyen video bağlantısı: {identifier}")
+        self.reconnect()
+
+    def disconnect_source(self, identifier: str) -> None:
+        if identifier == self._source_identifier:
+            self.stop()
+
     def push(self, frame: VideoFrame) -> None:
         self._set_connected(True)
         self._frames.publish(frame)
@@ -150,14 +159,15 @@ class MutableVideoService(VideoService):
     def _set_connected(self, connected: bool) -> None:
         value = bool(connected)
         with self._connection_lock:
-            if value == self._connected:
-                return
+            changed = value != self._connected
             self._connected = value
-        self._connection_changed.publish(value)
+        if changed:
+            self._connection_changed.publish(value)
         current = self.stats
         self._publish_stats(
             VideoStreamStats(
                 connected=value,
+                connecting=False,
                 quality_percent=current.quality_percent if value else 0,
                 frames_received=current.frames_received,
                 fps=current.fps if value else 0.0,
@@ -195,6 +205,7 @@ class GStreamerVideoService(MutableVideoService):
         latency_ms: int = 100,
         codec: str = "h265",
         frame_timeout_s: float = 3.0,
+        connection_timeout_s: float = 10.0,
     ) -> None:
         super().__init__(logger)
         self._source_type = source_type.strip().lower()
@@ -202,16 +213,20 @@ class GStreamerVideoService(MutableVideoService):
         self._latency_ms = max(0, int(latency_ms))
         self._codec = codec.strip().lower()
         self._frame_timeout_s = float(frame_timeout_s)
+        self._connection_timeout_s = float(connection_timeout_s)
         if self._codec not in {"h264", "h265", "mjpeg"}:
             raise ValueError(f"Desteklenmeyen GStreamer codec: {codec}")
         if self._frame_timeout_s <= 0:
             raise ValueError("Video kare zaman aşımı pozitif olmalı")
+        if self._connection_timeout_s <= 0:
+            raise ValueError("Video bağlantı zaman aşımı pozitif olmalı")
         self._pipeline: Any | None = None
         self._gst: Any | None = None
         self._bus_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._frame_count = 0
         self._last_frame_at = 0.0
+        self._started_at = 0.0
         self._last_frame_pipeline_age_s = 0.0
         self._last_stats_at = 0.0
         self._target_fps: float | None = None
@@ -266,6 +281,15 @@ class GStreamerVideoService(MutableVideoService):
         self.stop()
         self.start()
 
+    def reconnect_source(self, identifier: str) -> None:
+        if identifier != self._source_identifier:
+            raise ValueError(f"Bilinmeyen video bağlantısı: {identifier}")
+        self.reconnect()
+
+    def disconnect_source(self, identifier: str) -> None:
+        if identifier == self._source_identifier:
+            self.stop()
+
     def start(self) -> None:
         if self._started:
             return
@@ -299,19 +323,24 @@ class GStreamerVideoService(MutableVideoService):
             self._resolution_publish_pending = False
             self._last_resolution_verify_at = 0.0
         self._sink_pad = sink_pad
-        result = pipeline.set_state(Gst.State.PLAYING)
-        if result == Gst.StateChangeReturn.FAILURE:
-            pipeline.set_state(Gst.State.NULL)
-            raise RuntimeError("GStreamer pipeline PLAYING durumuna geçemedi")
         self._pipeline = pipeline
         self._stop_event.clear()
         self._last_frame_at = 0.0
+        self._started_at = time.monotonic()
         self._last_frame_pipeline_age_s = 0.0
         self._frame_count = 0
         self._last_stats_at = 0.0
         self._target_fps = None
-        self._publish_stats(VideoStreamStats())
         self._started = True
+        self._publish_stats(VideoStreamStats(connecting=True))
+        result = pipeline.set_state(Gst.State.PLAYING)
+        if result == Gst.StateChangeReturn.FAILURE:
+            self._started = False
+            self._pipeline = None
+            self._stop_event.set()
+            pipeline.set_state(Gst.State.NULL)
+            self._set_connected(False)
+            raise RuntimeError("GStreamer pipeline PLAYING durumuna geçemedi")
         self._bus_thread = threading.Thread(
             target=self._watch_bus,
             name="GStreamerBus",
@@ -326,6 +355,7 @@ class GStreamerVideoService(MutableVideoService):
                 "codec": self._codec,
                 "latency_ms": self._latency_ms,
                 "frame_timeout_s": self._frame_timeout_s,
+                "connection_timeout_s": self._connection_timeout_s,
             },
         )
 
@@ -591,6 +621,7 @@ class GStreamerVideoService(MutableVideoService):
             if message is None:
                 self._verify_negotiated_resolution()
                 self._check_frame_timeout()
+                self._check_connection_timeout()
                 continue
             if message.type == Gst.MessageType.ERROR:
                 error, debug = message.parse_error()
@@ -610,6 +641,7 @@ class GStreamerVideoService(MutableVideoService):
                 self._stop_event.set()
             self._verify_negotiated_resolution()
             self._check_frame_timeout()
+            self._check_connection_timeout()
 
     def _verify_negotiated_resolution(self, now: float | None = None) -> None:
         checked_at = time.monotonic() if now is None else float(now)
@@ -660,6 +692,29 @@ class GStreamerVideoService(MutableVideoService):
             severity="warning",
             details={"frame_timeout_s": self._frame_timeout_s},
         )
+
+    def _check_connection_timeout(self, now: float | None = None) -> None:
+        if (
+            not self._started
+            or self._stop_event.is_set()
+            or self.connected
+            or self._last_frame_at > 0
+        ):
+            return
+        elapsed = (time.monotonic() if now is None else float(now)) - self._started_at
+        if elapsed <= self._connection_timeout_s:
+            return
+        self._event(
+            "video.connection_timeout",
+            f"Video bağlantısı {elapsed:.1f} saniyede kare üretmedi",
+            severity="warning",
+            details={"connection_timeout_s": self._connection_timeout_s},
+        )
+        self._set_connected(False)
+        self._stop_event.set()
+        pipeline = self._pipeline
+        if pipeline is not None and self._gst is not None:
+            pipeline.set_state(self._gst.State.NULL)
 
     def _load_gstreamer(self) -> Any:
         if self._gst is not None:
@@ -794,6 +849,7 @@ class MultiVideoService(VideoService):
         self._active_identifier = str(active_identifier)
         self._started = False
         self._manual_source_ids: set[str] = set()
+        self._suppressed_source_ids: set[str] = set()
         self._lock = threading.RLock()
         self._share_publisher = VideoSharePublisher(
             self._frames,
@@ -883,6 +939,7 @@ class MultiVideoService(VideoService):
                 != self._capture_signature(old)
             }
             for identifier in removed_or_changed:
+                self._suppressed_source_ids.discard(identifier)
                 self._remove_source(identifier)
             self._configs = next_configs
             for config in configs:
@@ -928,6 +985,7 @@ class MultiVideoService(VideoService):
             codec=codec,
             frame_timeout_s=frame_timeout_s,
             auto_connect=current.auto_connect,
+            connection_timeout_s=current.connection_timeout_s,
         )
         configs = tuple(
             updated if item.identifier == updated.identifier else item
@@ -944,6 +1002,7 @@ class MultiVideoService(VideoService):
         with self._lock:
             self._started = False
             self._manual_source_ids.clear()
+            self._suppressed_source_ids.clear()
             for source in self._sources.values():
                 source.stop()
         self._share_publisher.stop()
@@ -964,14 +1023,34 @@ class MultiVideoService(VideoService):
         return closed
 
     def reconnect(self) -> None:
-        source = self._sources.get(self._active_identifier)
-        if source is None:
-            return
-        self._started = True
-        self._manual_source_ids.add(self._active_identifier)
-        source.reconnect()
         with self._lock:
+            identifier = self._active_identifier
+        if identifier:
+            self.reconnect_source(identifier)
+
+    def reconnect_source(self, identifier: str) -> None:
+        with self._lock:
+            source = self._sources.get(identifier)
+            if source is None:
+                raise ValueError(f"Bilinmeyen video bağlantısı: {identifier}")
+            self._started = True
+            self._active_identifier = identifier
+            self._suppressed_source_ids.discard(identifier)
+            self._manual_source_ids.add(identifier)
+            source.reconnect()
             self._reconcile_running_sources()
+        self._publish_focused_state()
+
+    def disconnect_source(self, identifier: str) -> None:
+        with self._lock:
+            source = self._sources.get(identifier)
+            if source is None:
+                return
+            self._manual_source_ids.discard(identifier)
+            self._suppressed_source_ids.add(identifier)
+            source.stop()
+            self._reconcile_running_sources()
+        self._publish_focused_state()
 
     def push(self, frame: VideoFrame) -> None:
         source = self._sources.get(self._active_identifier)
@@ -989,6 +1068,7 @@ class MultiVideoService(VideoService):
                 latency_ms=config.latency_ms,
                 codec=config.codec,
                 frame_timeout_s=config.frame_timeout_s,
+                connection_timeout_s=config.connection_timeout_s,
             )
         source.set_active_source(config.identifier)
         subscriptions = [
@@ -1032,6 +1112,7 @@ class MultiVideoService(VideoService):
             for config in self._share_configs
         ):
             desired.add(self._active_identifier)
+        desired.difference_update(self._suppressed_source_ids)
         for identifier, source in self._sources.items():
             if identifier in desired:
                 self._start_source(identifier)
@@ -1074,4 +1155,5 @@ class MultiVideoService(VideoService):
             config.codec,
             config.latency_ms,
             config.frame_timeout_s,
+            config.connection_timeout_s,
         )

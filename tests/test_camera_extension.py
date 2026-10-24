@@ -5,20 +5,165 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from pathlib import Path
+from threading import Event, RLock
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --no-sandbox")
 
-from extensions.camera.models import VideoShareConfig, VideoSourceConfig
-from extensions.camera.runtime import CameraRuntime, CameraSettingsStore
+from extensions.camera.capture import GStreamerVideoService
+from extensions.camera.models import VideoShareConfig, VideoSourceConfig, VideoStreamStats
+from extensions.camera.runtime import CameraRuntime, CameraSettingsStore, _ConnectionAttempt
 from src.container import create_container
 from src.extension.host import ExtensionHost
 from src.services.settings import SettingsService
 
 
 class CameraExtensionTests(unittest.TestCase):
+    def test_connection_timeout_is_validated_and_failed_attempts_finish_promptly(self) -> None:
+        source = VideoSourceConfig(
+            identifier="front",
+            name="Front",
+            source_uri="udp://0.0.0.0:5600",
+            connection_timeout_s=25,
+        )
+        self.assertEqual(source.connection_timeout_s, 25.0)
+        with self.assertRaises(ValueError):
+            VideoSourceConfig(
+                identifier="invalid",
+                name="Invalid",
+                source_uri="udp://0.0.0.0:5600",
+                connection_timeout_s=0,
+            )
+
+        attempt = _ConnectionAttempt(Event())
+        runtime = SimpleNamespace(
+            _lock=RLock(), _connection_attempts={"front": attempt}
+        )
+        CameraRuntime._source_stats_changed(
+            runtime,
+            SimpleNamespace(source_id="front", stats=VideoStreamStats()),
+        )
+        self.assertFalse(attempt.ready.is_set())
+
+        CameraRuntime._source_stats_changed(
+            runtime,
+            SimpleNamespace(source_id="front", stats=VideoStreamStats(connecting=True)),
+        )
+        self.assertTrue(attempt.started)
+        self.assertFalse(attempt.ready.is_set())
+
+        CameraRuntime._source_stats_changed(
+            runtime,
+            SimpleNamespace(source_id="front", stats=VideoStreamStats()),
+        )
+        self.assertTrue(attempt.ready.is_set())
+
+    def test_camera_connection_can_be_cancelled_without_waiting_for_timeout(self) -> None:
+        attempt = _ConnectionAttempt(Event())
+        reconnect_started, disconnected = Event(), Event()
+
+        class Video:
+            source_stats = ()
+
+            def reconnect_source(self, _identifier: str) -> None:
+                reconnect_started.set()
+
+            def disconnect_source(self, _identifier: str) -> None:
+                disconnected.set()
+
+        runtime = SimpleNamespace(
+            _lock=RLock(),
+            _connection_attempts={"front": attempt},
+            video=Video(),
+        )
+        runtime._finish_connection_attempt = lambda identifier, current: (
+            CameraRuntime._finish_connection_attempt(runtime, identifier, current)
+        )
+        source = VideoSourceConfig(
+            identifier="front",
+            name="Front",
+            source_uri="udp://0.0.0.0:5600",
+            connection_timeout_s=30,
+        )
+
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            future = worker.submit(
+                CameraRuntime._connect_source,
+                runtime,
+                "front",
+                source,
+                attempt,
+                None,
+            )
+            self.assertTrue(reconnect_started.wait(1))
+            self.assertTrue(CameraRuntime.cancel_source_connection(runtime, "front"))
+            with self.assertRaises(CancelledError):
+                future.result(1)
+        self.assertTrue(attempt.cancelled)
+        self.assertTrue(disconnected.is_set())
+
+    def test_camera_connection_timeout_stops_a_source_without_a_first_frame(self) -> None:
+        disconnected = Event()
+
+        class Video:
+            source_stats = ()
+
+            def reconnect_source(self, _identifier: str) -> None:
+                pass
+
+            def disconnect_source(self, _identifier: str) -> None:
+                disconnected.set()
+
+        attempt = _ConnectionAttempt(Event())
+        runtime = SimpleNamespace(
+            _lock=RLock(),
+            _connection_attempts={"front": attempt},
+            video=Video(),
+        )
+        runtime._finish_connection_attempt = lambda identifier, current: (
+            CameraRuntime._finish_connection_attempt(runtime, identifier, current)
+        )
+        source = VideoSourceConfig(
+            identifier="front",
+            name="Front",
+            source_uri="udp://0.0.0.0:5600",
+            connection_timeout_s=1,
+        )
+
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            future = worker.submit(
+                CameraRuntime._connect_source,
+                runtime,
+                "front",
+                source,
+                attempt,
+                None,
+            )
+            with self.assertRaises(TimeoutError):
+                future.result(2)
+        self.assertTrue(disconnected.is_set())
+
+    def test_capture_watchdog_stops_when_no_first_video_frame_arrives(self) -> None:
+        service = GStreamerVideoService(
+            "udp", "udp://0.0.0.0:5600", connection_timeout_s=1
+        )
+        service._started = True
+        service._started_at = 10
+        service._last_frame_at = 0
+        events: list[tuple[str, dict]] = []
+        service._event = lambda name, *_args, **kwargs: events.append(
+            (name, kwargs)
+        )
+
+        service._check_connection_timeout(now=12)
+
+        self.assertTrue(service._stop_event.is_set())
+        self.assertEqual(events[0][0], "video.connection_timeout")
+
     def test_camera_is_optional_and_does_not_auto_connect_without_profile_flag(
         self,
     ) -> None:

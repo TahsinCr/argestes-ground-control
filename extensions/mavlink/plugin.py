@@ -261,6 +261,5 @@ class MavlinkConnectionSource:
         payload["backend"]["mavlink_connections"] = [
             item.to_dict() for item in profiles
         ]
-        if active_identifier is not None:
-            payload["backend"]["active_mavlink_connection_id"] = active_identifier
+        payload["backend"]["active_mavlink_connection_id"] = active_identifier or ""
         return SettingsModel.from_dict(payload)

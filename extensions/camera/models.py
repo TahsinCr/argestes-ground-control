@@ -18,6 +18,7 @@ class VideoStreamStats(Model):
     width: int = 0
     height: int = 0
     frame_age_s: float | None = None
+    connecting: bool = False
 
     def __post_init__(self) -> None:
         if not 0 <= self.quality_percent <= 100:
@@ -30,6 +31,7 @@ class VideoStreamStats(Model):
     def to_dict(self) -> dict[str, object]:
         return {
             "connected": self.connected,
+            "connecting": self.connecting,
             "quality_percent": self.quality_percent,
             "frames_received": self.frames_received,
             "fps": self.fps,
@@ -92,6 +94,7 @@ class VideoSourceConfig(Model):
     codec: str = "h265"
     latency_ms: int = 100
     frame_timeout_s: float = 3.0
+    connection_timeout_s: float = 10.0
     auto_connect: bool = False
     identifier: str = field(default_factory=lambda: uuid4().hex)
 
@@ -121,6 +124,8 @@ class VideoSourceConfig(Model):
             raise ValueError("Video gecikmesi 0..10000 ms aralığında olmalı")
         if not 1 <= float(self.frame_timeout_s) <= 60:
             raise ValueError("Video kare zaman aşımı 1..60 saniye aralığında olmalı")
+        if not 1 <= float(self.connection_timeout_s) <= 120:
+            raise ValueError("Video bağlantı zaman aşımı 1..120 saniye aralığında olmalı")
         object.__setattr__(self, "identifier", identifier)
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "source_type", source_type)
@@ -128,6 +133,7 @@ class VideoSourceConfig(Model):
         object.__setattr__(self, "codec", codec)
         object.__setattr__(self, "latency_ms", int(self.latency_ms))
         object.__setattr__(self, "frame_timeout_s", float(self.frame_timeout_s))
+        object.__setattr__(self, "connection_timeout_s", float(self.connection_timeout_s))
         object.__setattr__(self, "auto_connect", bool(self.auto_connect))
 
 

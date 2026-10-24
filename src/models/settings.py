@@ -252,11 +252,13 @@ class BackendSettings:
                 else MavlinkConnectionConfig(**value)
                 for value in self.mavlink_connections
             ]
-        if not self.mavlink_connections:
-            raise ValueError("En az bir telemetri profili gerekli")
         identifiers = [profile.identifier for profile in self.mavlink_connections]
         if len(identifiers) != len(set(identifiers)):
             raise ValueError("Telemetri profil kimlikleri benzersiz olmalı")
+        if not self.mavlink_connections:
+            self.active_mavlink_connection_id = ""
+            self.mavlink.auto_connect = False
+            return
         selected = next(
             (
                 profile

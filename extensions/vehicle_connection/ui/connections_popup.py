@@ -25,6 +25,7 @@ class ConnectionsPanel(QDialog):
     profiles_saved = pyqtSignal(tuple)
     profile_edit_requested = pyqtSignal(object)
     profile_connect_requested = pyqtSignal(object)
+    profile_delete_requested = pyqtSignal(str)
 
     def __init__(
         self,
@@ -282,11 +283,12 @@ class ConnectionsPanel(QDialog):
         )
         actions.addWidget(connect)
         delete = QPushButton(t("connection.profiles.delete", self._language), card)
+        delete.setObjectName("deleteProfileButton")
         delete.setProperty("compact", "true")
         delete.setProperty("role", "danger")
-        delete.setEnabled(len(self._profiles) > 1 and not operation_active)
+        delete.setEnabled(True)
         delete.clicked.connect(
-            lambda _=False, ident=profile.identifier: self._delete(ident)
+            lambda _=False, ident=profile.identifier: self.profile_delete_requested.emit(ident)
         )
         actions.addWidget(delete)
         layout.addLayout(actions)
@@ -301,6 +303,4 @@ class ConnectionsPanel(QDialog):
         self._render_timer.start()
 
     def _delete(self, identifier: str) -> None:
-        self._profiles = [p for p in self._profiles if p.identifier != identifier]
-        self.profiles_saved.emit(tuple(self._profiles))
-        self._render()
+        self.profile_delete_requested.emit(identifier)

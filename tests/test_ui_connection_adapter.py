@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from src.core.events import EventBus
 from src.ui.adapters.services import QtConnectionControlService
+from src.models.connections import ConnectionProfile
 from extensions.vehicle_connection.ui.connection_editor import ConnectionEditor
 
 
@@ -130,6 +131,48 @@ class QtConnectionControlAdapterTests(unittest.TestCase):
 
 
 class ConnectionEditorOperationTests(unittest.TestCase):
+    def test_deleting_the_last_active_profile_disconnects_before_removal(self) -> None:
+        profile = ConnectionProfile("only", "Only", "udp:0.0.0.0:14550")
+        status = SimpleNamespace(connected=True, detail="", options={"running": True})
+        saved: list[tuple[tuple[ConnectionProfile, ...], str]] = []
+        disconnected: list[str] = []
+
+        class Panel:
+            def is_connecting(self, _identifier: str) -> bool:
+                return False
+
+            def finish_connection(self, **_kwargs) -> None:
+                pass
+
+        editor = SimpleNamespace(
+            profiles=SimpleNamespace(profiles=(profile,), active_identifier="only"),
+            profiles_panel=Panel(),
+            connection_service=SimpleNamespace(
+                status=lambda _channel: status,
+                disconnect=lambda channel: disconnected.append(channel),
+            ),
+            _save_profiles=lambda profiles, active: saved.append((profiles, active)),
+            _remove_profile=lambda identifier: ConnectionEditor._remove_profile(
+                editor, identifier
+            ),
+            _latest_operation_id=4,
+            _pending_profile_identifier="",
+            _pending_delete_identifier="",
+            language="en",
+        )
+
+        ConnectionEditor._delete_profile(editor, "only")
+
+        self.assertEqual(disconnected, ["telemetry"])
+        self.assertEqual(saved, [])
+
+        status = SimpleNamespace(connected=False, detail="", options={"running": False})
+        ConnectionEditor._operation_finished(
+            editor, "telemetry", 4, "disconnect", True, "", status
+        )
+
+        self.assertEqual(saved, [((), "")])
+
     def test_stale_operation_completion_cannot_clear_current_ui_state(self) -> None:
         class Panel:
             calls = 0

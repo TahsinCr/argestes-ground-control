@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
-from src.models.settings import SettingsModel
+from src.models.settings import BackendSettings, SettingsModel
 from src.services.logging_service import LoggingService
 from src.services.settings import SettingsService
 from src.ui.adapters.services import QtSettingsService
@@ -19,6 +19,13 @@ from src.ui.config.settings_schema import iter_fields
 
 
 class SettingsTests(unittest.TestCase):
+    def test_vehicle_connection_profiles_can_be_empty_after_explicit_deletion(self) -> None:
+        backend = BackendSettings(mavlink_connections=[])
+
+        self.assertEqual(backend.mavlink_connections, [])
+        self.assertEqual(backend.active_mavlink_connection_id, "")
+        self.assertFalse(backend.mavlink.auto_connect)
+
     def test_pending_save_merge_keeps_newer_nested_value_after_parent_failure(
         self,
     ) -> None:
