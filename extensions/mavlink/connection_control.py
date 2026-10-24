@@ -13,6 +13,7 @@ from dataclasses import asdict
 from typing import Any
 
 from src.core.events import EventBus, Subscription
+from src.extension.api import ConnectionPhase
 from src.models.connections import ConnectionStatus
 from src.models.settings import MavlinkConnectionConfig, SettingsModel
 from src.models.vehicle import VehicleConnectionConfig, VehicleConnectionState
@@ -63,6 +64,7 @@ class VehicleConnectionControlService(ConnectionControlService):
         self._manual_disconnect = False
         self._initial_connect_pending = False
         self._recovery_inflight = False
+        self._disconnect_inflight = False
         self._generation = 0
         self._protocol_options = self._protocol_signature(self._settings.current)
 
@@ -101,6 +103,7 @@ class VehicleConnectionControlService(ConnectionControlService):
         with self._state_lock:
             self._generation += 1
             self._manual_disconnect = True
+            self._disconnect_inflight = True
             self._next_retry_at = None
             self._initial_connect_pending = False
         # VehicleService.start can be waiting for a heartbeat while this
@@ -119,6 +122,7 @@ class VehicleConnectionControlService(ConnectionControlService):
             self._retry_attempt = 0
             self._initial_connect_pending = False
             self._recovery_inflight = False
+            self._disconnect_inflight = False
 
     def status(self, channel: str) -> ConnectionStatus:
         key = self._normalize(channel)
@@ -126,6 +130,7 @@ class VehicleConnectionControlService(ConnectionControlService):
             return ConnectionStatus(
                 key,
                 False,
+                ConnectionPhase.DISCONNECTED,
                 "Bağlantı bu çalışma kipinde etkin değil",
                 "Bu ortak backend yalnız araç MAVLink bağlantısını yönetir.",
                 options={"available": False},
@@ -166,10 +171,23 @@ class VehicleConnectionControlService(ConnectionControlService):
             summary = "GPS verisi alınıyor" if ready else "GPS verisi bekleniyor"
             detail = snapshot.gps_fix or "NO FIX"
 
+        with self._state_lock:
+            connecting = self._recovery_inflight
+            disconnecting = self._disconnect_inflight
+        phase = (
+            ConnectionPhase.CONNECTING
+            if connecting
+            else ConnectionPhase.DISCONNECTING
+            if disconnecting
+            else ConnectionPhase.CONNECTED
+            if connected
+            else ConnectionPhase.DISCONNECTED
+        )
         profile = self._active_profile()
         return ConnectionStatus(
             key,
             ready,
+            phase,
             summary,
             detail,
             vehicle_state.endpoint or settings.endpoint,
@@ -184,7 +202,7 @@ class VehicleConnectionControlService(ConnectionControlService):
                 "retry_attempt": self._retry_attempt,
                 "available": True,
             },
-            can_disconnect=connected,
+            can_disconnect=connected or connecting or disconnecting,
         )
 
     def reconnect(self, channel: str, options: dict[str, Any]) -> ConnectionStatus:
@@ -193,16 +211,43 @@ class VehicleConnectionControlService(ConnectionControlService):
             with self._state_lock:
                 self._manual_disconnect = False
                 self._generation += 1
+                generation = self._generation
                 self._recovery_inflight = True
-            config = self._apply_profile_options(options)
+                self._disconnect_inflight = False
             self._event(
                 "connection.reconnect_requested", "Araç bağlantısı yeniden başlatılıyor"
             )
+            self._publish_vehicle_channels()
             try:
+                config = self._apply_profile_options(options)
+                with self._state_lock:
+                    cancelled = (
+                        generation != self._generation or self._manual_disconnect
+                    )
+                if cancelled:
+                    self._event(
+                        "connection.reconnect_cancelled",
+                        "Araç bağlantısı kullanıcı isteğiyle iptal edildi",
+                        severity="info",
+                    )
+                    self._publish_vehicle_channels()
+                    return self.status(key)
                 self._vehicle.reconnect(config)
             except Exception as exc:
                 with self._state_lock:
-                    self._recovery_inflight = False
+                    cancelled = (
+                        generation != self._generation or self._manual_disconnect
+                    )
+                    if generation == self._generation:
+                        self._recovery_inflight = False
+                if cancelled:
+                    self._event(
+                        "connection.reconnect_cancelled",
+                        "Araç bağlantısı kullanıcı isteğiyle iptal edildi",
+                        severity="info",
+                    )
+                    self._publish_vehicle_channels()
+                    return self.status(key)
                 self._event(
                     "connection.reconnect_failed",
                     f"Araç bağlantısı kurulamadı: {exc}",
@@ -212,7 +257,22 @@ class VehicleConnectionControlService(ConnectionControlService):
                 self._publish_vehicle_channels()
                 raise
             with self._state_lock:
-                self._recovery_inflight = False
+                cancelled = (
+                    generation != self._generation or self._manual_disconnect
+                )
+                if generation == self._generation:
+                    self._recovery_inflight = False
+            if cancelled:
+                # A transport may win a heartbeat race with the cancel request.
+                # Close it once more after its blocking start returns.
+                self._vehicle.stop()
+                self._event(
+                    "connection.reconnect_cancelled",
+                    "Araç bağlantısı kullanıcı isteğiyle iptal edildi",
+                    severity="info",
+                )
+                self._publish_vehicle_channels()
+                return self.status(key)
             self._reset_recovery()
             self._publish_vehicle_channels()
             result = self.status(key)
@@ -233,15 +293,22 @@ class VehicleConnectionControlService(ConnectionControlService):
         with self._state_lock:
             self._manual_disconnect = True
             self._generation += 1
+            self._recovery_inflight = False
+            self._disconnect_inflight = True
             self._reset_recovery()
-        self._vehicle.stop()
-        with self._operation_lock:
-            self._event(
-                "connection.disconnected",
-                "Araç bağlantısı kullanıcı isteğiyle kapatıldı",
-            )
-            self._publish_vehicle_channels()
-            return self.status(key)
+        self._publish_vehicle_channels()
+        try:
+            self._vehicle.stop()
+        finally:
+            with self._operation_lock:
+                with self._state_lock:
+                    self._disconnect_inflight = False
+                self._event(
+                    "connection.disconnected",
+                    "Araç bağlantısı kullanıcı isteğiyle kapatıldı",
+                )
+                self._publish_vehicle_channels()
+        return self.status(key)
 
     def repair_serial_access(self, channel: str) -> ConnectionStatus:
         self._require_vehicle_channel(channel)
@@ -349,6 +416,8 @@ class VehicleConnectionControlService(ConnectionControlService):
             attempt = self._retry_attempt + 1
             with self._state_lock:
                 self._recovery_inflight = True
+                self._disconnect_inflight = False
+            self._publish_vehicle_channels()
             self._event(
                 "connection.reconnect_attempt",
                 f"Araç bağlantısı otomatik olarak yeniden deneniyor ({attempt}. deneme)",

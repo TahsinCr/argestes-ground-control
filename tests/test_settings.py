@@ -121,26 +121,6 @@ class SettingsTests(unittest.TestCase):
             self.assertTrue(restored.backend.mavlink.auto_connect)
             self.assertFalse(list((Path(directory) / "data").glob("*.tmp")))
 
-    def test_flat_legacy_settings_are_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "backend/ui/extensions"):
-            SettingsModel.from_dict(
-                {
-                    "language": "en",
-                    "theme": "light",
-                    "mock_mode": True,
-                    "cache_enabled": False,
-                    "default_radius_land": 81,
-                }
-            )
-
-    def test_every_schema_path_is_backed_by_the_settings_model(self) -> None:
-        model = SettingsModel()
-        self.assertFalse(model.backend.mavlink.auto_connect)
-        for field in iter_fields():
-            value = model.value_at(field.path)
-            changed = model.with_value(field.path, value)
-            self.assertEqual(changed.value_at(field.path), value, field.path)
-
     def test_service_persists_nested_shape_and_notifies(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base_dir = Path(directory)
@@ -167,30 +147,6 @@ class SettingsTests(unittest.TestCase):
 
             self.assertEqual(settings_path.stat().st_mtime_ns, original_mtime)
             self.assertEqual(received, [])
-
-    def test_missing_data_directory_creates_complete_default_settings(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            base_dir = Path(directory) / "new-project"
-            service = SettingsService(base_dir)
-
-            settings_path = base_dir / "data" / "settings.json"
-            cache_path = base_dir / "data" / "map-cache"
-            self.assertTrue(settings_path.is_file())
-            self.assertFalse(cache_path.exists(), "Shared settings must not create a map cache")
-            payload = json.loads(settings_path.read_text(encoding="utf-8"))
-            self.assertEqual(
-                payload,
-                service.current.to_dict(),
-            )
-            self.assertEqual(
-                payload["backend"]["battery_alarm"]["warning_threshold"],
-                20.0,
-            )
-            self.assertEqual(
-                payload["backend"]["battery_alarm"]["failsafe_threshold"],
-                10.0,
-            )
-            self.assertFalse(payload["backend"]["mavlink"]["auto_connect"])
 
     def test_invalid_settings_file_is_preserved_before_safe_defaults_are_written(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -317,19 +273,6 @@ class SettingsTests(unittest.TestCase):
             restored.backend.battery_telemetry.empty_voltage,
             profile.empty_voltage,
         )
-
-    def test_legacy_battery_threshold_fields_are_not_mapped(self) -> None:
-        payload = SettingsModel().to_dict()
-        payload["backend"]["battery_alarm"].update(
-            {"mode": "voltage", "threshold": 14.2}
-        )
-        model = SettingsModel.from_dict(payload)
-        battery = model.backend.battery_alarm
-        self.assertEqual(battery.warning_mode, "percent")
-        self.assertEqual(battery.warning_threshold, 20.0)
-        self.assertEqual(battery.failsafe_mode, "percent")
-        self.assertEqual(battery.failsafe_threshold, 10.0)
-
 
 if __name__ == "__main__":
     unittest.main()

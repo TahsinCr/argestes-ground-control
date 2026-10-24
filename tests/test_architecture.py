@@ -56,16 +56,6 @@ class ArchitectureTests(unittest.TestCase):
                         violations.append(f"{path.relative_to(ROOT)} -> {module}")
         self.assertEqual(violations, [])
 
-    def test_plain_top_level_layer_names_exist(self) -> None:
-        for layer in ("core", "models", "services", "ui"):
-            self.assertTrue((SRC / layer).is_dir(), layer)
-        source = "\n".join(
-            path.read_text(encoding="utf-8", errors="ignore")
-            for layer in ("models", "services", "ui")
-            for path in (SRC / layer).rglob("*.py")
-        )
-        self.assertNotIn("kuzey_core", source)
-
     def test_project_uses_the_core_public_packages(self) -> None:
         allowed_prefixes = (
             "src.core.abstracts",

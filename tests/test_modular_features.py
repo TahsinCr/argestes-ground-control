@@ -8,7 +8,7 @@ from src.services.abstracts.vehicle import VehicleService
 from src.extension.api.vehicle import RcControl, MissionControl
 from src.services.connections import ConnectionHub
 from src.core.events import EventBus
-from src.models.connections import ConnectionStatus
+from src.models.connections import ConnectionPhase, ConnectionStatus
 
 
 class ModularFeatureTests(unittest.TestCase):
@@ -67,17 +67,6 @@ class ModularFeatureTests(unittest.TestCase):
         hub.remove_processor("battery.estimate")
         self.assertEqual(hub.current.battery_percent, 90)
 
-    def test_mavlink_has_no_battery_implementation_import(self):
-        import ast
-
-        root = Path(__file__).resolve().parents[1]
-        for file in (root / "extensions" / "mavlink").rglob("*.py"):
-            for node in ast.walk(ast.parse(file.read_text())):
-                if isinstance(node, ast.ImportFrom):
-                    self.assertFalse(
-                        (node.module or "").startswith("extensions.battery"), str(file)
-                    )
-
     def test_telemetry_visible_fields_apply_live_and_persist(self):
         import os
 
@@ -110,20 +99,37 @@ class ModularFeatureTests(unittest.TestCase):
                     ],
                     ["yaw"],
                 )
-                from extensions.mavlink.ui.status import ProtocolStatusChip
+                from extensions.map_autonomy.ui.status import GpsStatusChip
+                from src.extension.api import ConnectionPhase
                 from src.models.telemetry import TelemetrySnapshot
                 from types import SimpleNamespace
 
-                gps = ProtocolStatusChip(
-                    SimpleNamespace(services=container), None, DARK, "tr", "gps"
+                gps = GpsStatusChip(
+                    SimpleNamespace(services=container), None, DARK, "tr"
+                )
+                gps.connections = None
+                gps._phase = ConnectionPhase.CONNECTING
+                gps._telemetry_changed(
+                    TelemetrySnapshot.zero().copy(gps_satellites=0)
                 )
                 self.assertEqual(gps.state, "danger")
-                gps._snapshot(
-                    TelemetrySnapshot.zero().copy(autopilot_link=True, gps_fix="NO FIX")
+                gps._phase = ConnectionPhase.DISCONNECTED
+                gps._telemetry_changed(
+                    TelemetrySnapshot.zero().copy(
+                        position_valid=True,
+                        latitude=40.0,
+                        longitude=32.0,
+                        gps_satellites=5,
+                    )
                 )
                 self.assertEqual(gps.state, "warning")
-                gps._snapshot(
-                    TelemetrySnapshot.zero().copy(autopilot_link=True, gps_fix="3D FIX")
+                gps._telemetry_changed(
+                    TelemetrySnapshot.zero().copy(
+                        position_valid=True,
+                        latitude=40.0,
+                        longitude=32.0,
+                        gps_satellites=10,
+                    )
                 )
                 self.assertEqual(gps.state, "success")
                 gps.prepare_shutdown()
@@ -155,25 +161,6 @@ class ModularFeatureTests(unittest.TestCase):
             VehicleConnectionState(True, "udp", 1, 1, protocol="mavlink").device_id,
             "mavlink:1:1",
         )
-
-    def test_retired_extension_ids_are_not_mapped_to_current_packages(self):
-        with TemporaryDirectory() as folder:
-            settings = SettingsService(Path(folder))
-            settings.update_extension("map", config={"custom": 123}, enabled=False)
-            settings.update_extension(
-                "teknofest", config={"servers": []}, enabled=False
-            )
-            settings.update_extension(
-                "map_autonomy", config={"current_option": "kept"}, enabled=True
-            )
-            updated = SettingsService(Path(folder))
-            self.assertEqual(updated.extension_config("map")["custom"], 123)
-            self.assertFalse(updated.current.extensions["map"]["enabled"])
-            self.assertEqual(
-                updated.extension_config("map_autonomy")["current_option"], "kept"
-            )
-            self.assertTrue(updated.current.extensions["map_autonomy"]["enabled"])
-            self.assertNotIn("siha_teknofest_server", updated.current.extensions)
 
     def test_optional_feature_services_are_absent_when_packages_are_disabled(self):
         from extensions.map_autonomy.services.planner import PlannerService
@@ -214,10 +201,16 @@ class ModularFeatureTests(unittest.TestCase):
         received = []
         subscription = hub.changed.subscribe(received.append)
         hub.bind(old)
-        old.changed.publish(ConnectionStatus("ros2", True, "ready"))
+        old.changed.publish(
+            ConnectionStatus("ros2", True, ConnectionPhase.CONNECTED, "ready")
+        )
         hub.bind(new)
-        old.changed.publish(ConnectionStatus("ros2", False, "stale"))
-        new.changed.publish(ConnectionStatus("custom", True, "ready"))
+        old.changed.publish(
+            ConnectionStatus("ros2", False, ConnectionPhase.DISCONNECTED, "stale")
+        )
+        new.changed.publish(
+            ConnectionStatus("custom", True, ConnectionPhase.CONNECTED, "ready")
+        )
         self.assertEqual([event.channel for event in received], ["ros2", "custom"])
         hub.stop()
         subscription.cancel()

@@ -38,7 +38,6 @@
   "mavlink.dialect.ardupilotmega": "ArduPilot Mega",
   "mavlink.dialect.common": "MAVLink Common",
   "status.autopilot": "OTOPILOT",
-  "status.gps": "GPS",
   "extension.mavlink.name": "MAVLink",
   "extension.mavlink.description": "GPS, otopilot, araç verileri ve MAVLink komutları",
   "extension.mavlink.category": "Protokol"

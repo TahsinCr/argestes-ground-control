@@ -75,6 +75,7 @@
   "connection.profiles.edit": "Edit",
   "connection.profile.connected": "Connected",
   "connection.profile.connecting": "Connecting",
+  "connection.profile.disconnecting": "Disconnecting",
   "connection.profile.waiting": "Waiting",
   "connection.profile.auto_on": "AUTO: ON",
   "connection.profile.auto_off": "AUTO: OFF",

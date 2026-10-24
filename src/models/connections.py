@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 from src.core.abstracts import Model
@@ -21,19 +22,28 @@ class ConnectionProfile:
         return asdict(self)
 
 
+class ConnectionPhase(str, Enum):
+    """Shared lifecycle phase for connection status indicators."""
+
+    DISCONNECTED = "disconnected"
+    CONNECTING = "connecting"
+    DISCONNECTING = "disconnecting"
+    CONNECTED = "connected"
+
+
 @dataclass(frozen=True, slots=True)
 class ConnectionStatus(Model):
     """UI-independent current state of a connection channel."""
 
     channel: str
     connected: bool
+    phase: ConnectionPhase
     summary: str
     detail: str = ""
     endpoint: str = ""
     timeout_s: float = 0.0
     options: dict[str, Any] = field(default_factory=dict)
     can_disconnect: bool = True
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "channel": self.channel,
@@ -44,4 +54,5 @@ class ConnectionStatus(Model):
             "timeout_s": self.timeout_s,
             "options": dict(self.options),
             "can_disconnect": self.can_disconnect,
+            "phase": self.phase.value,
         }

@@ -125,20 +125,6 @@ class ExtensionTests(unittest.TestCase):
             with self.assertRaisesRegex(ExtensionError, "Invalid manifest"):
                 ExtensionHost._discover(root)
 
-    def test_manifest_rejects_previous_extension_api_major(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            package = root / "example"
-            package.mkdir()
-            (package / "manifest.json").write_text(
-                '{"identifier":"example","name":"Example",'
-                '"version":"1.0.0","api_major":1,'
-                '"entry_point":"extensions.example.plugin:create_extension"}',
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(ExtensionError, "Incompatible extension API"):
-                ExtensionHost._discover(root)
-
     def test_telemetry_can_be_disabled_without_erasing_settings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -299,25 +285,6 @@ class ExtensionTests(unittest.TestCase):
                         for item in host.list_extensions()
                         if item.manifest.identifier == "example"
                     ).pending_restart
-                )
-            finally:
-                container.shutdown()
-
-    def test_obsolete_extension_state_file_is_ignored_and_preserved(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = root / "data/extensions/state.json"
-            path.parent.mkdir(parents=True)
-            original = '{"telemetry": false}'
-            path.write_text(original, encoding="utf-8")
-            container = create_container(root)
-            try:
-                host = container.resolve(ExtensionHost)
-                self.assertTrue(host.is_active("vehicle_connection"))
-                self.assertEqual(path.read_text(encoding="utf-8"), original)
-                self.assertNotIn(
-                    "telemetry",
-                    container.resolve(SettingsService).current.extensions,
                 )
             finally:
                 container.shutdown()

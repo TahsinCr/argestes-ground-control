@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from src.core.events import EventBus
 from src.ui.adapters.services import QtConnectionControlService
-from src.models.connections import ConnectionProfile
+from src.models.connections import ConnectionPhase, ConnectionProfile
 from extensions.vehicle_connection.ui.connection_editor import ConnectionEditor
 
 
@@ -133,7 +133,12 @@ class QtConnectionControlAdapterTests(unittest.TestCase):
 class ConnectionEditorOperationTests(unittest.TestCase):
     def test_deleting_the_last_active_profile_disconnects_before_removal(self) -> None:
         profile = ConnectionProfile("only", "Only", "udp:0.0.0.0:14550")
-        status = SimpleNamespace(connected=True, detail="", options={"running": True})
+        status = SimpleNamespace(
+            connected=True,
+            detail="",
+            phase=ConnectionPhase.CONNECTED,
+            can_disconnect=True,
+        )
         saved: list[tuple[tuple[ConnectionProfile, ...], str]] = []
         disconnected: list[str] = []
 
@@ -166,7 +171,12 @@ class ConnectionEditorOperationTests(unittest.TestCase):
         self.assertEqual(disconnected, ["telemetry"])
         self.assertEqual(saved, [])
 
-        status = SimpleNamespace(connected=False, detail="", options={"running": False})
+        status = SimpleNamespace(
+            connected=False,
+            detail="",
+            phase=ConnectionPhase.DISCONNECTED,
+            can_disconnect=False,
+        )
         ConnectionEditor._operation_finished(
             editor, "telemetry", 4, "disconnect", True, "", status
         )

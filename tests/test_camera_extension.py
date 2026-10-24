@@ -65,20 +65,33 @@ class CameraExtensionTests(unittest.TestCase):
     def test_camera_connection_can_be_cancelled_without_waiting_for_timeout(self) -> None:
         attempt = _ConnectionAttempt(Event())
         reconnect_started, disconnected = Event(), Event()
+        release_reconnect = Event()
 
         class Video:
             source_stats = ()
 
             def reconnect_source(self, _identifier: str) -> None:
                 reconnect_started.set()
+                release_reconnect.wait(1)
+                self.source_stats = (
+                    SimpleNamespace(
+                        source_id="front", stats=VideoStreamStats(connected=True)
+                    ),
+                )
 
             def disconnect_source(self, _identifier: str) -> None:
                 disconnected.set()
+                self.source_stats = ()
+
+        class Worker:
+            def submit(self, callback, *args):
+                callback(*args)
 
         runtime = SimpleNamespace(
             _lock=RLock(),
             _connection_attempts={"front": attempt},
             video=Video(),
+            _worker=Worker(),
         )
         runtime._finish_connection_attempt = lambda identifier, current: (
             CameraRuntime._finish_connection_attempt(runtime, identifier, current)
@@ -101,9 +114,33 @@ class CameraExtensionTests(unittest.TestCase):
             )
             self.assertTrue(reconnect_started.wait(1))
             self.assertTrue(CameraRuntime.cancel_source_connection(runtime, "front"))
+            release_reconnect.set()
             with self.assertRaises(CancelledError):
                 future.result(1)
         self.assertTrue(attempt.cancelled)
+        self.assertTrue(disconnected.is_set())
+
+    def test_connected_camera_toggle_schedules_a_disconnect(self) -> None:
+        disconnected = Event()
+
+        class Video:
+            source_stats = (
+                SimpleNamespace(
+                    source_id="front", stats=VideoStreamStats(connected=True)
+                ),
+            )
+
+            def disconnect_source(self, _identifier: str) -> None:
+                disconnected.set()
+
+        class Worker:
+            def submit(self, callback, *args):
+                callback(*args)
+
+        runtime = SimpleNamespace(
+            _lock=RLock(), _connection_attempts={}, video=Video(), _worker=Worker()
+        )
+        self.assertTrue(CameraRuntime.cancel_source_connection(runtime, "front"))
         self.assertTrue(disconnected.is_set())
 
     def test_camera_connection_timeout_stops_a_source_without_a_first_frame(self) -> None:
@@ -367,7 +404,7 @@ with tempfile.TemporaryDirectory() as directory:
     assert camera_dock in window.workspace.tabifiedDockWidgets(window.primary_dock)
     window.extension_panel._toggle("vehicle_connection", False)
     assert not any(key.startswith("vehicle_connection.") for key in window._extension_status_by_id)
-    assert not window._extension_status_by_id["mavlink.gps"].isHidden()
+    assert not window._extension_status_by_id["map_autonomy.gps"].isHidden()
     assert not window._extension_status_by_id["mavlink.autopilot"].isHidden()
     window.extension_panel._toggle("vehicle_connection", True)
     assert "vehicle_connection.connection" in window._extension_status_by_id

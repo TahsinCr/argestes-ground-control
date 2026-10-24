@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import tempfile
+import threading
 import time
 import unittest
-import tempfile
-from types import SimpleNamespace
 from pathlib import Path
 
 from src.core.events import EventBus
+from src.models.connections import ConnectionPhase
+from src.models.settings import SettingsModel
 from src.models.telemetry import TelemetrySnapshot
 from src.models.vehicle import VehicleConnectionState
 from src.services.settings import SettingsService
@@ -18,22 +20,34 @@ class _Settings:
         self, *, autoreconnect: bool = True, auto_connect: bool = False
     ) -> None:
         self.changed = EventBus()
-        self.current = SimpleNamespace(
-            backend=SimpleNamespace(
-                mavlink=SimpleNamespace(
-                    endpoint="udpin:0.0.0.0:14550",
-                    baud=115200,
-                    heartbeat_timeout=10,
-                    auto_connect=auto_connect,
-                    autoreconnect=autoreconnect,
-                    dialect="ardupilotmega",
-                    source_system=255,
-                    source_component=0,
-                ),
-                active_mavlink_connection_id="telemetry",
-                mavlink_connections=(),
-            )
-        )
+        self.current = SettingsModel()
+        self.current.backend.mavlink.endpoint = "udpin:0.0.0.0:14550"
+        self.current.backend.mavlink.baud = 115200
+        self.current.backend.mavlink.heartbeat_timeout = 10
+        self.current.backend.mavlink.auto_connect = auto_connect
+        self.current.backend.mavlink.autoreconnect = autoreconnect
+        self.current.backend.mavlink.dialect = "ardupilotmega"
+        self.current.backend.mavlink.source_system = 255
+        self.current.backend.mavlink.source_component = 0
+        self.current.backend.active_mavlink_connection_id = "telemetry"
+
+    def update(self, mutator, *, notify=True):
+        self.current = mutator(self.current)
+        if notify:
+            self.changed.publish(self.current)
+        return self.current
+
+
+class _BlockingSettings(_Settings):
+    def __init__(self) -> None:
+        super().__init__(autoreconnect=False)
+        self.update_started = threading.Event()
+        self.finish_update = threading.Event()
+
+    def update(self, mutator, *, notify=True):
+        self.update_started.set()
+        self.finish_update.wait(1)
+        return super().update(mutator, notify=notify)
 
 
 class _Vehicle:
@@ -73,6 +87,23 @@ class _FailingVehicle(_Vehicle):
         # internal stop.  It must not reset the exponential retry delay.
         self.lose_heartbeat()
         raise ConnectionError("test transport unavailable")
+
+
+class _LateConnectingVehicle(_Vehicle):
+    def __init__(self) -> None:
+        super().__init__()
+        self.connected = False
+        self.state = VehicleConnectionState(False, "udpin:0.0.0.0:14550")
+        self.started = threading.Event()
+        self.finish_connect = threading.Event()
+
+    def reconnect(self, _config=None) -> None:
+        self.reconnect_calls += 1
+        self.started.set()
+        self.finish_connect.wait(1)
+        self.connected = True
+        self.state = VehicleConnectionState(True, "udpin:0.0.0.0:14550", 1, 1)
+        self.connection_changed.publish(self.state)
 
 
 class VehicleConnectionControlTests(unittest.TestCase):
@@ -127,6 +158,102 @@ class VehicleConnectionControlTests(unittest.TestCase):
         self.assertEqual(self.vehicle.stop_calls, 1)
         self.assertEqual(self.vehicle.reconnect_calls, 0)
         self.assertFalse(self.service.status("telemetry").connected)
+
+    def test_disconnect_cancels_a_late_successful_connection_attempt(self) -> None:
+        settings = _Settings(autoreconnect=False)
+        vehicle = _LateConnectingVehicle()
+        service = VehicleConnectionControlService(
+            settings=settings,  # type: ignore[arg-type]
+            vehicle=vehicle,  # type: ignore[arg-type]
+            telemetry=_Telemetry(),  # type: ignore[arg-type]
+        )
+        statuses = []
+        subscription = service.changed.subscribe(statuses.append)
+        service.start()
+        connect = threading.Thread(
+            target=lambda: service.reconnect("telemetry", {}), daemon=True
+        )
+        disconnect = threading.Thread(
+            target=lambda: service.disconnect("telemetry"), daemon=True
+        )
+        try:
+            connect.start()
+            self.assertTrue(vehicle.started.wait(1))
+            self.assertEqual(
+                service.status("telemetry").phase, ConnectionPhase.CONNECTING
+            )
+            disconnect.start()
+            deadline = time.monotonic() + 1
+            while (
+                service.status("telemetry").phase != ConnectionPhase.DISCONNECTING
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.005)
+            self.assertEqual(
+                service.status("telemetry").phase, ConnectionPhase.DISCONNECTING
+            )
+            vehicle.finish_connect.set()
+            connect.join(1)
+            disconnect.join(1)
+            self.assertFalse(connect.is_alive())
+            self.assertFalse(disconnect.is_alive())
+            self.assertFalse(vehicle.connected)
+            self.assertGreaterEqual(vehicle.stop_calls, 2)
+            self.assertTrue(
+                any(item.phase == ConnectionPhase.CONNECTING for item in statuses)
+            )
+            self.assertEqual(
+                service.status("telemetry").phase, ConnectionPhase.DISCONNECTED
+            )
+        finally:
+            vehicle.finish_connect.set()
+            subscription.cancel()
+            service.stop()
+
+    def test_disconnect_during_profile_save_prevents_transport_open(self) -> None:
+        settings = _BlockingSettings()
+        vehicle = _Vehicle()
+        service = VehicleConnectionControlService(
+            settings=settings,  # type: ignore[arg-type]
+            vehicle=vehicle,  # type: ignore[arg-type]
+            telemetry=_Telemetry(),  # type: ignore[arg-type]
+        )
+        service.start()
+        connect = threading.Thread(
+            target=lambda: service.reconnect("telemetry", {}), daemon=True
+        )
+        disconnect = threading.Thread(
+            target=lambda: service.disconnect("telemetry"), daemon=True
+        )
+        try:
+            connect.start()
+            self.assertTrue(settings.update_started.wait(1))
+            self.assertEqual(
+                service.status("telemetry").phase, ConnectionPhase.CONNECTING
+            )
+            disconnect.start()
+            deadline = time.monotonic() + 1
+            while (
+                service.status("telemetry").phase != ConnectionPhase.DISCONNECTING
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.005)
+            self.assertEqual(
+                service.status("telemetry").phase, ConnectionPhase.DISCONNECTING
+            )
+            settings.finish_update.set()
+            connect.join(1)
+            disconnect.join(1)
+            self.assertFalse(connect.is_alive())
+            self.assertFalse(disconnect.is_alive())
+            self.assertEqual(vehicle.reconnect_calls, 0)
+            self.assertFalse(vehicle.connected)
+            self.assertEqual(
+                service.status("telemetry").phase, ConnectionPhase.DISCONNECTED
+            )
+        finally:
+            settings.finish_update.set()
+            service.stop()
 
     def test_auto_connect_is_attempted_once_without_enabling_recovery(self) -> None:
         self.service.stop()

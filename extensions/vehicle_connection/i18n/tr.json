@@ -75,6 +75,7 @@
   "connection.profiles.edit": "Düzenle",
   "connection.profile.connected": "Bağlı",
   "connection.profile.connecting": "Bağlanıyor",
+  "connection.profile.disconnecting": "Bağlantı kesiliyor",
   "connection.profile.waiting": "Beklemede",
   "connection.profile.auto_on": "OTO: AÇIK",
   "connection.profile.auto_off": "OTO: KAPALI",

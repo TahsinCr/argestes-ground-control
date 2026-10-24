@@ -13,6 +13,7 @@
   "teknofest.save": "Kaydet",
   "teknofest.connect": "Bağlan",
   "teknofest.disconnect": "Bağlantıyı kes",
+  "teknofest.disconnecting": "Bağlantı kesiliyor…",
   "teknofest.connected": "Bağlı",
   "teknofest.disconnected": "Bağlı değil",
   "teknofest.invalid_url": "Geçerli bir HTTP(S) adresi girin.",

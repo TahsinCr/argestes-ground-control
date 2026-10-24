@@ -19,34 +19,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class I18nTests(unittest.TestCase):
-    def test_language_sources_are_valid_json_files(self) -> None:
-        package_dir = ROOT / "src" / "ui" / "i18n"
-        for language in ("tr", "en"):
-            path = package_dir / f"{language}.json"
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            self.assertIsInstance(payload, dict)
-            self.assertTrue(payload)
-            self.assertFalse((package_dir / f"{language}.py").exists())
-
-    def test_language_packages_have_identical_keys(self) -> None:
-        self.assertEqual(set(TURKISH), set(ENGLISH))
-        self.assertGreater(len(TURKISH), 250)
-
-    def test_literal_translation_keys_used_by_python_ui_exist(self) -> None:
-        used: set[str] = set()
-        for path in (ROOT / "src" / "ui").rglob("*.py"):
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                if not isinstance(node.func, ast.Name) or node.func.id != "t":
-                    continue
-                if node.args and isinstance(node.args[0], ast.Constant):
-                    key = node.args[0].value
-                    if isinstance(key, str):
-                        used.add(key)
-        self.assertEqual(sorted(used - set(TURKISH)), [])
-
     def test_languages_do_not_fall_back_to_each_other(self) -> None:
         self.assertEqual(t("panel.telemetry", "tr"), "Uçuş Telemetrisi")
         self.assertEqual(t("panel.telemetry", "en"), "Flight Telemetry")

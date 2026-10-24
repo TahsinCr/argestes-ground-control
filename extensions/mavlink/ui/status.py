@@ -1,7 +1,7 @@
-"""Protocol-owned GPS and autopilot health; indicators never open popups."""
+"""MAVLink-owned autopilot connection status; it never opens a popup."""
 
-from src.services.abstracts.telemetry import TelemetryService
-from src.ui.adapters.services import QtTelemetryService
+from src.services.abstracts.connections import ConnectionControlService
+from src.ui.adapters.services import QtConnectionControlService
 from src.ui.i18n import t
 from src.ui.widgets.common import StatusChip
 
@@ -11,23 +11,17 @@ class ProtocolStatusChip(StatusChip):
         self.channel = channel
         super().__init__(t(f"status.{channel}", language), parent)
         self.set_theme(theme)
-        self.bridge = QtTelemetryService(
-            context.services.resolve(TelemetryService), self
+        self.bridge = QtConnectionControlService(
+            context.services.resolve(ConnectionControlService), self
         )
-        self.bridge.telemetry_updated.connect(self._snapshot)
-        self._snapshot(self.bridge.current)
+        self.bridge.status_changed.connect(self._connection_changed)
+        self._connection_changed(self.bridge.status(channel))
 
-    def _snapshot(self, snapshot):
-        if self.channel == "autopilot":
-            self.set_state("success" if snapshot.autopilot_link else "danger")
-        else:
-            self.set_state(
-                "danger"
-                if not snapshot.autopilot_link
-                else "warning"
-                if snapshot.gps_fix in {"", "NO_GPS", "NO_FIX", "NO GPS", "NO FIX"}
-                else "success"
-            )
+    def _connection_changed(self, status):
+        if status.channel != self.channel:
+            return
+        self.set_connection_phase(status.phase)
+        self.setToolTip(status.detail)
 
     def set_language(self, language):
         self.set_label(t(f"status.{self.channel}", language))

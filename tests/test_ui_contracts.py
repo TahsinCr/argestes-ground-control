@@ -32,7 +32,7 @@ from extensions.battery.ui.settings_popup import BatterySettingsPopup
 from extensions.siha_teknofest_server.connections_popup import CompetitionServersPopup
 from extensions.siha_teknofest_server.models import CompetitionServerConfig
 from extensions.vehicle_connection.ui.connections_popup import ConnectionsPanel
-from src.models.connections import ConnectionProfile
+from src.models.connections import ConnectionPhase, ConnectionProfile
 from extensions.flight_dynamics.ui.panel import AttitudeIndicator
 from extensions.map_autonomy.ui.panel import MapPanel, MapWebBridge
 from extensions.parameters.ui.panel import ParametersPanel
@@ -52,7 +52,8 @@ from src.ui.themes.stylesheet import build_stylesheet
 from src.ui.views.main_window import MainWindow
 from src.ui.views.settings_dialog import SettingsDialog
 from src.ui.widgets.activity_bar import ActivityBar
-from src.ui.widgets.common import SignalMeter
+from src.ui.widgets.common import SignalMeter, StatusChip
+from extensions.map_autonomy.gps import gps_quality_state
 from src.ui.widgets.logs import EventLogPanel
 from src.ui.widgets.title_bar import AppTitleBar, FramelessResizeController
 
@@ -810,9 +811,10 @@ class UiContractTests(unittest.TestCase):
                     "vehicle_connection.connection"
                 ].indicator
                 indicators = (
-                    window._extension_status_by_id["mavlink.gps"],
+                    window._extension_status_by_id["map_autonomy.gps"],
                     window._extension_status_by_id["mavlink.autopilot"],
                 )
+                self.assertNotIn("mavlink.gps", window._extension_status_by_id)
                 for indicator in indicators:
                     self.assertEqual(indicator.receivers(indicator.clicked), 0)
                     indicator.clicked.emit()
@@ -831,14 +833,34 @@ class UiContractTests(unittest.TestCase):
             finally:
                 backend.shutdown()
 
+    def test_connection_status_chips_render_each_phase_consistently(self) -> None:
+        chip = StatusChip("Link")
+        for phase, state in (
+            (ConnectionPhase.CONNECTING, "warning"),
+            (ConnectionPhase.DISCONNECTING, "warning"),
+            (ConnectionPhase.CONNECTED, "success"),
+            (ConnectionPhase.DISCONNECTED, "danger"),
+        ):
+            chip.set_connection_phase(phase)
+            self.assertEqual(chip._state, state)
+
+    def test_map_gps_quality_uses_configured_satellite_bands(self) -> None:
+        self.assertEqual(
+            gps_quality_state(None, good_min=10, fair_min=5), "danger"
+        )
+        self.assertEqual(gps_quality_state(0, good_min=10, fair_min=5), "danger")
+        self.assertEqual(gps_quality_state(4, good_min=10, fair_min=5), "danger")
+        self.assertEqual(gps_quality_state(5, good_min=10, fair_min=5), "warning")
+        self.assertEqual(gps_quality_state(9, good_min=10, fair_min=5), "warning")
+        self.assertEqual(gps_quality_state(10, good_min=10, fair_min=5), "success")
+
     def test_last_vehicle_profile_delete_action_is_available(self) -> None:
         panel = ConnectionsPanel(DARK, language="en")
         profile = ConnectionProfile("only", "Only", "udp:0.0.0.0:14550")
         panel.show_profiles(
             (profile,),
             active_identifier="only",
-            connected=False,
-            running=False,
+            phase=ConnectionPhase.DISCONNECTED,
             detail="",
         )
         delete = panel.findChild(QPushButton, "deleteProfileButton")
@@ -850,23 +872,67 @@ class UiContractTests(unittest.TestCase):
         self.assertEqual(emitted, ["only"])
         panel.close()
 
+    def test_vehicle_profile_can_cancel_recovery_and_disables_during_disconnect(self) -> None:
+        panel = ConnectionsPanel(DARK, language="en")
+        profile = ConnectionProfile("only", "Only", "udp:0.0.0.0:14550")
+        panel.show_profiles(
+            (profile,),
+            active_identifier="only",
+            phase=ConnectionPhase.CONNECTING,
+        )
+        self.assertTrue(panel.is_connecting("only"))
+        cancel = [
+            button
+            for button in panel.findChildren(QPushButton)
+            if button.text() == "Disconnect"
+        ][-1]
+        self.assertTrue(cancel.isEnabled())
+
+        panel.show_profiles(
+            (profile,),
+            active_identifier="only",
+            phase=ConnectionPhase.DISCONNECTING,
+        )
+        disconnecting = [
+            button
+            for button in panel.findChildren(QPushButton)
+            if button.text() == "Disconnecting"
+        ][-1]
+        self.assertFalse(disconnecting.isEnabled())
+        panel.close()
+
     def test_teknofest_connect_button_cancels_an_in_progress_request(self) -> None:
         popup = CompetitionServersPopup(DARK, language="en")
         server = CompetitionServerConfig(
             identifier="test", name="Test", base_url="http://127.0.0.1:5000"
         )
-        popup._server_states = {server.identifier: (False, True, "Connecting")}
+        popup._server_states = {server.identifier: (False, False, "")}
         popup.show_servers(
             (server,),
             active_identifier="",
             connected=False,
             running=False,
-            available=True,
+            available=False,
+            pending_identifier=server.identifier,
+            pending_action="connect",
         )
-        cancel = popup.findChild(QPushButton, "serverConnectButton")
+        cancel = popup.findChildren(QPushButton, "serverConnectButton")[-1]
         self.assertIsNotNone(cancel)
         self.assertTrue(cancel.isEnabled())
         self.assertEqual(cancel.text(), "Cancel connection")
+        popup.show_servers(
+            (server,),
+            active_identifier="",
+            connected=False,
+            running=False,
+            available=False,
+            pending_identifier=server.identifier,
+            pending_action="disconnect",
+        )
+        disconnecting = popup.findChildren(QPushButton, "serverConnectButton")[-1]
+        self.assertIsNotNone(disconnecting)
+        self.assertFalse(disconnecting.isEnabled())
+        self.assertEqual(disconnecting.text(), "Disconnecting…")
         popup.close()
 
     def test_disabled_connection_removes_only_its_connection_chip(self) -> None:
@@ -894,7 +960,10 @@ class UiContractTests(unittest.TestCase):
                     0,
                 )
                 self.assertGreaterEqual(
-                    footer.indexOf(window._extension_status_by_id["mavlink.gps"]), 0
+                    footer.indexOf(
+                        window._extension_status_by_id["map_autonomy.gps"]
+                    ),
+                    0,
                 )
                 window.close()
                 ui.shutdown()

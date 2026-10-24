@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
 )
 
 from src.extension.api.contracts import ConnectionProfiles
+from src.extension.api import ConnectionPhase
 from src.models.connections import ConnectionProfile
 from src.services.abstracts.connections import ConnectionControlService
 from src.services.settings import SettingsService
@@ -88,15 +89,14 @@ class ConnectionEditor(QWidget):
             detail = message
         self.profiles_panel.finish_connection(
             active_identifier=self.profiles.active_identifier,
-            connected=status.connected,
-            running=bool(status.options.get("running", status.connected)),
+            phase=status.phase,
             detail=detail,
         )
         self._pending_profile_identifier = ""
         deleting = self._pending_delete_identifier
         if deleting:
             self._pending_delete_identifier = ""
-            if successful and not status.connected and not status.options.get("running", False):
+            if successful and status.phase == ConnectionPhase.DISCONNECTED:
                 self._remove_profile(deleting)
             else:
                 QMessageBox.warning(
@@ -115,8 +115,7 @@ class ConnectionEditor(QWidget):
         self.profiles_panel.show_profiles(
             self.profiles.profiles,
             active_identifier=self.profiles.active_identifier,
-            connected=status.connected,
-            running=bool(status.options.get("running", status.connected)),
+            phase=status.phase,
             detail=status.detail,
         )
 
@@ -131,8 +130,12 @@ class ConnectionEditor(QWidget):
         status = self.connection_service.status("telemetry")
         self._pending_profile_identifier = profile.identifier
         try:
+            if status.phase == ConnectionPhase.DISCONNECTING:
+                return
             if self.profiles_panel.is_connecting(profile.identifier) or (
-                status.connected and profile.identifier == self.profiles.active_identifier
+                status.phase
+                in {ConnectionPhase.CONNECTING, ConnectionPhase.CONNECTED}
+                and profile.identifier == self.profiles.active_identifier
             ):
                 self.connection_service.disconnect("telemetry")
                 return
@@ -156,8 +159,7 @@ class ConnectionEditor(QWidget):
         status = self.connection_service.status("telemetry")
         is_active = identifier == self.profiles.active_identifier
         if self.profiles_panel.is_connecting(identifier) or (
-            is_active
-            and (status.connected or bool(status.options.get("running", False)))
+            is_active and status.can_disconnect
         ):
             self._pending_delete_identifier = identifier
             self._pending_profile_identifier = identifier

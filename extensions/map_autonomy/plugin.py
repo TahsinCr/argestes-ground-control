@@ -62,6 +62,13 @@ class MapExtension:
             dependencies={"settings": SettingsService, "runtime": AsyncRuntime},
         )
         registrar.settings_page(lambda anchor: self.settings(context, anchor))
+        registrar.status_widget(
+            "gps",
+            lambda parent, theme, language: self._gps_status(
+                context, parent, theme, language
+            ),
+            order=300,
+        )
         registrar.visual_view(
             "view",
             lambda parent, theme, language: self.create(
@@ -162,6 +169,12 @@ class MapExtension:
             anchor,
             cache=context.services.resolve(TileCacheServer),
         )
+
+    @staticmethod
+    def _gps_status(context, parent, theme, language):
+        from .ui.status import GpsStatusChip
+
+        return GpsStatusChip(context, parent, theme, language)
 
 
 def create_extension():

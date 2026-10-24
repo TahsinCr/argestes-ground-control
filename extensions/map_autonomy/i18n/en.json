@@ -39,11 +39,22 @@
   "extension.map_autonomy.category": "Navigation",
   "extension.map_autonomy.description": "Map and mission planning; currently MAVLink navigation",
   "map.settings.layer": "Map layer",
+  "map.settings.gps_satellites_good_min": "Minimum satellites for good GPS",
+  "map.settings.gps_satellites_fair_min": "Minimum satellites for fair GPS",
   "map.settings.map_center_min_zoom": "Centering zoom",
   "map.settings.vehicle_trail_limit": "Vehicle trail length",
   "map.settings.contact_trail_limit": "Contact trail length",
   "dialog.settings.cache": "Map Cache",
   "dialog.settings.cache_limit": "Cache Limit",
   "dialog.settings.cache_path": "Cache Folder",
-  "dialog.settings.clear_cache": "Clear Cache"
+  "dialog.settings.clear_cache": "Clear Cache",
+  "status.gps": "GPS",
+  "status.gps.satellites": "SAT",
+  "status.gps.satellites.unknown": "-- SAT",
+  "status.gps.connecting": "Vehicle connection in progress",
+  "status.gps.disconnecting": "Disconnecting",
+  "status.gps.quality.good": "Satellite count is good",
+  "status.gps.quality.fair": "Satellite count is fair",
+  "status.gps.quality.poor": "Too few satellites or no GPS data",
+  "status.gps.thresholds": "Good: at least {good}; fair: at least {fair} satellites"
 }

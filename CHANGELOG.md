@@ -50,9 +50,19 @@ Release headings link each entry to its release date.
 * Added a per-camera connection timeout, separate from the existing stale-frame
   timeout. A source that never produces its first frame now stops instead of
   remaining in a connecting state indefinitely.
+* Added a shared connection phase to the Extension API and a single status-chip
+  color mapping: connecting/disconnecting is yellow, connected is green, and
+  disconnected is red.
+* Added configurable GPS quality bands to Map & Autonomy settings. The default
+  thresholds are 5 satellites for fair and 10 for good; missing or stale GPS
+  data remains red.
 
 ### Changed
 
+* Connection lifecycle status now requires an explicit `ConnectionPhase`.
+  Vehicle connection cards use that phase as their single state source; the
+  unused delayed refresh path and duplicated connected/running flags were
+  removed.
 * Updated the GitHub Actions checkout and Python setup steps to their current
   Node.js 24-compatible major releases, removing the Node.js 20 deprecation
   warning from the workflow.
@@ -102,6 +112,9 @@ Release headings link each entry to its release date.
   new profile is added. Vehicle, camera and server connection cards now expose a
   cancel action while a connection is in progress. The server timeout setting
   is explicitly a per-request timeout and matches its supported 0.1–120 s range.
+* The bottom GPS status indicator and its satellite-quality settings now belong
+  to Map & Autonomy. MAVLink continues to provide protocol-level GPS data and
+  autopilot connection status.
 
 ### Fixed
 
@@ -110,6 +123,15 @@ Release headings link each entry to its release date.
   then fails, can be cancelled without waiting for their timeout, and stop only
   the selected source. Empty source addresses are rejected before starting a
   manual connection.
+* Vehicle cancellation now invalidates an in-progress profile update before
+  transport startup and stops any late connection that wins a heartbeat race.
+  The profile controls reflect automatic recovery and disable duplicate actions
+  once disconnection is underway.
+* Camera cancel now disconnects an already-active source as well as a pending
+  one. A cancellation that races with source configuration or pipeline startup
+  is completed on the camera worker, without blocking the UI.
+* The TEKNOFEST connection popup keeps Cancel available during its initial
+  startup task and disables repeated actions while the disconnect is finishing.
 * Tile-cache reads now carry their starting generation through metadata updates
   and invalid-file cleanup. Clearing or switching cache roots can no longer let
   an older read or fetch restore metadata, overwrite the new cache, or delete a

@@ -38,6 +38,18 @@ class MapSettings(QtSettingsService):
         settings.ui.__post_init__()
         return settings
 
+    @property
+    def gps_satellite_thresholds(self) -> tuple[int, int]:
+        config = self.backend.extension_config("map_autonomy")
+        try:
+            fair = int(config.get("gps_satellites_fair_min", 5))
+            good = int(config.get("gps_satellites_good_min", 10))
+        except (TypeError, ValueError):
+            return 10, 5
+        fair = min(29, max(1, fair))
+        good = min(30, max(fair + 1, good))
+        return good, fair
+
     def patch(self, **changes):
         self._start_worker(
             lambda: self.backend.update_extension("map_autonomy", config=changes),
@@ -69,6 +81,21 @@ def configure(settings, anchor, cache=None):
     layer.addItem(t("map.layer.satellite", language), "satellite")
     layer.setCurrentIndex(layer.findData(current.current.ui.map_layer))
     form.addRow(t("map.settings.layer", language), layer)
+    good_min_value, fair_min_value = current.gps_satellite_thresholds
+    gps_good_min = QSpinBox(dialog)
+    gps_good_min.setRange(2, 30)
+    gps_good_min.setValue(good_min_value)
+    gps_fair_min = QSpinBox(dialog)
+    gps_fair_min.setRange(1, 29)
+    gps_fair_min.setValue(fair_min_value)
+    gps_good_min.valueChanged.connect(
+        lambda value: gps_fair_min.setMaximum(value - 1)
+    )
+    gps_fair_min.valueChanged.connect(
+        lambda value: gps_good_min.setMinimum(value + 1)
+    )
+    form.addRow(t("map.settings.gps_satellites_good_min", language), gps_good_min)
+    form.addRow(t("map.settings.gps_satellites_fair_min", language), gps_fair_min)
     fields = {}
     for key, low, high in (
         ("map_center_min_zoom", 1, 22),
@@ -105,6 +132,8 @@ def configure(settings, anchor, cache=None):
 
     def apply():
         values = {key: field.value() for key, field in fields.items()}
+        values["gps_satellites_good_min"] = gps_good_min.value()
+        values["gps_satellites_fair_min"] = gps_fair_min.value()
         values["map_layer"] = layer.currentData()
         values["cache"] = {
             "enabled": cache_enabled.isChecked(),

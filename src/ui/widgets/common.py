@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.models.connections import ConnectionPhase
 from src.ui.i18n import t
 from src.ui.themes.style import ThemePalette
 
@@ -192,6 +193,17 @@ class StatusChip(QFrame):
             return
         self._state = state
         self._restyle()
+
+    def set_connection_phase(self, phase: ConnectionPhase | str) -> None:
+        """Apply the shared connection-to-color mapping to this status chip."""
+        value = phase.value if isinstance(phase, ConnectionPhase) else str(phase)
+        state = {
+            ConnectionPhase.CONNECTING.value: "warning",
+            ConnectionPhase.DISCONNECTING.value: "warning",
+            ConnectionPhase.CONNECTED.value: "success",
+            ConnectionPhase.DISCONNECTED.value: "danger",
+        }.get(value, "danger")
+        self.set_state(state)
 
     def _restyle(self) -> None:
         if not self._theme:

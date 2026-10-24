@@ -1,7 +1,7 @@
 """Stable, protocol-neutral facade for an optional connection extension."""
 
 from src.core.events import EventBus
-from src.models.connections import ConnectionStatus
+from src.models.connections import ConnectionPhase, ConnectionStatus
 from src.services.abstracts.connections import ConnectionControlService
 import threading
 
@@ -45,7 +45,11 @@ class ConnectionHub(ConnectionControlService):
         if self._controller is not None:
             return self._controller.status(channel)
         return ConnectionStatus(
-            channel, False, "Connection extension inactive", can_disconnect=False
+            channel,
+            False,
+            ConnectionPhase.DISCONNECTED,
+            "Connection extension inactive",
+            can_disconnect=False,
         )
 
     def _active(self):

@@ -18,6 +18,7 @@ from extensions.camera.models import (
 )
 from extensions.camera.publishing import active_ipv4_interfaces
 from extensions.camera.runtime import CameraRuntime
+from src.extension.api import ConnectionPhase
 from src.ui.i18n import t
 from src.ui.themes.style import ThemePalette
 from src.ui.widgets.common import StatusChip
@@ -319,7 +320,13 @@ class CameraStatusWidget(QWidget):
         self._shares(workspace.runtime.video.share_states)
 
     def _stats(self, stats: VideoStreamStats) -> None:
-        self.video_chip.set_state("success" if stats.connected else "danger")
+        self.video_chip.set_connection_phase(
+            ConnectionPhase.CONNECTED
+            if stats.connected
+            else ConnectionPhase.CONNECTING
+            if stats.connecting
+            else ConnectionPhase.DISCONNECTED
+        )
         config = self.workspace.runtime.settings.current
         source = next(
             (
@@ -335,9 +342,14 @@ class CameraStatusWidget(QWidget):
         )
 
     def _shares(self, states: tuple[VideoShareState, ...]) -> None:
-        self.share_chip.set_state(
-            "success" if any(item.active for item in states) else "danger"
+        phase = (
+            ConnectionPhase.CONNECTING
+            if any(item.status == "waiting" for item in states)
+            else ConnectionPhase.CONNECTED
+            if any(item.active for item in states)
+            else ConnectionPhase.DISCONNECTED
         )
+        self.share_chip.set_connection_phase(phase)
         self.share_chip.setToolTip(
             "\n".join(
                 f"{item.identifier[:8]}: {item.detail}"

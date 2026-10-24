@@ -105,14 +105,13 @@ class MavlinkExtension:
         )
         registrar.singleton(ActiveProtocol, lambda: ActiveProtocol("mavlink"))
         registrar.settings_page(lambda parent: self._settings_page(context, parent))
-        for channel in ("autopilot", "gps"):
-            registrar.status_widget(
-                channel,
-                lambda parent, theme, language, selected=channel: self._status(
-                    context, parent, theme, language, selected
-                ),
-                order=300,
-            )
+        registrar.status_widget(
+            "autopilot",
+            lambda parent, theme, language: self._status(
+                context, parent, theme, language, "autopilot"
+            ),
+            order=300,
+        )
         registrar.singleton(
             VehicleStack,
             _create_vehicle_stack,

@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.extension.api import ConnectionPhase
 from src.services.settings import SettingsService
 from src.ui.i18n import t
 from src.ui.themes.palette import palette_for
@@ -52,6 +53,8 @@ class ServerPanel(QWidget):
         self.runtime = context.services.resolve(CompetitionRuntime)
         self.language = self.settings.current.ui.language
         self.popup_mode, self.pending, self.anchor = popup_mode, None, None
+        self._pending_identifier = ""
+        self._pending_action = ""
         self.profiles, self._signature = [], None
         self._history_executor = (
             None
@@ -91,6 +94,8 @@ class ServerPanel(QWidget):
         if self.pending is not None and self.pending.done():
             error = self.pending.exception()
             self.pending = None
+            self._pending_identifier = ""
+            self._pending_action = ""
             if error:
                 QMessageBox.warning(self, "TEKNOFEST", str(error))
         profiles = tuple(
@@ -105,7 +110,13 @@ class ServerPanel(QWidget):
             key: (session.connected, session.running, session.error)
             for key, session in self.runtime.sessions.copy().items()
         }
-        signature = (profiles, tuple(states.items()), self.pending is None)
+        signature = (
+            profiles,
+            tuple(states.items()),
+            self.pending is None,
+            self._pending_identifier,
+            self._pending_action,
+        )
         if signature != self._signature:
             self._signature, self.profiles = signature, list(profiles)
             self.popup._server_states = states
@@ -115,6 +126,8 @@ class ServerPanel(QWidget):
                 connected=False,
                 running=False,
                 available=self.pending is None,
+                pending_identifier=self._pending_identifier,
+                pending_action=self._pending_action,
             )
         if (
             not self.popup_mode
@@ -279,9 +292,20 @@ class ServerPanel(QWidget):
 
     def connect_profile(self, profile):
         session = self.runtime.sessions.get(profile.identifier)
-        if session is None or self.pending is not None:
+        if session is None:
             return
-        if session.running:
+        if self.pending is not None:
+            if (
+                self._pending_action != "connect"
+                or self._pending_identifier != profile.identifier
+            ):
+                return
+            action = "disconnect"
+        else:
+            action = "disconnect" if session.running else "connect"
+        self._pending_identifier = profile.identifier
+        self._pending_action = action
+        if action == "disconnect":
             self.pending = self.runtime.disconnect(profile.identifier)
         else:
             self.pending = self.runtime.connect(profile.identifier)
@@ -449,11 +473,15 @@ class ServerStatusWidget(QWidget):
         self.panel.open(self.indicator)
 
     def refresh(self):
-        self.indicator.set_state(
-            "success"
-            if any(item.connected for item in self.runtime.sessions.copy().values())
-            else "danger"
+        sessions = tuple(self.runtime.sessions.copy().values())
+        phase = (
+            ConnectionPhase.CONNECTED
+            if any(item.connected for item in sessions)
+            else ConnectionPhase.CONNECTING
+            if any(item.running for item in sessions)
+            else ConnectionPhase.DISCONNECTED
         )
+        self.indicator.set_connection_phase(phase)
         if (
             self.panel is not None
             and not self.popup.isVisible()

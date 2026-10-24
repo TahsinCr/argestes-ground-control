@@ -13,6 +13,7 @@
   "teknofest.save": "Save",
   "teknofest.connect": "Connect",
   "teknofest.disconnect": "Disconnect",
+  "teknofest.disconnecting": "Disconnecting…",
   "teknofest.connected": "Connected",
   "teknofest.disconnected": "Disconnected",
   "teknofest.invalid_url": "Enter a valid HTTP(S) address.",

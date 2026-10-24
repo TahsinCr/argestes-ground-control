@@ -1,4 +1,6 @@
-"""Stable, UI-independent extension API (major version 1)."""
+"""Stable, UI-independent extension API (major version 2)."""
+
+from src.models.connections import ConnectionPhase
 
 from .clocks import (
     ClockQuality,
@@ -34,6 +36,7 @@ __all__ = [
     "ClockReferenceRegistry",
     "ClockSample",
     "ClockStatus",
+    "ConnectionPhase",
     "ConnectionProfiles",
     "ConnectionSource",
     "ConnectionBinding",

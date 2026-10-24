@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -23,6 +23,7 @@ class _ConnectionAttempt:
     ready: threading.Event
     cancelled: bool = False
     started: bool = False
+    cancel_requested: threading.Event = field(default_factory=threading.Event)
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +156,7 @@ class CameraRuntime:
             self._started = False
             for attempt in self._connection_attempts.values():
                 attempt.cancelled = True
+                attempt.cancel_requested.set()
                 attempt.ready.set()
         self._connection_worker.shutdown(wait=True, cancel_futures=True)
         self._worker.shutdown(wait=True, cancel_futures=True)
@@ -283,24 +285,28 @@ class CameraRuntime:
     def cancel_source_connection(self, identifier: str) -> bool:
         with self._lock:
             attempt = self._connection_attempts.get(identifier)
-            if any(
+            connected = any(
                 item.source_id == identifier and item.stats.connected
                 for item in self.video.source_stats
-            ):
-                return True
-            if attempt is not None:
-                attempt.cancelled = True
-                attempt.ready.set()
-            elif not any(
+            )
+            connecting = any(
                 item.source_id == identifier and item.stats.connecting
                 for item in self.video.source_stats
-            ):
+            )
+            if attempt is not None:
+                attempt.cancelled = True
+                attempt.cancel_requested.set()
+                attempt.ready.set()
+            elif not connected and not connecting:
                 return False
-        if attempt is None:
-            try:
-                self._worker.submit(self.video.disconnect_source, identifier)
-            except RuntimeError:
-                return False
+        # Queue capture changes behind pending source configuration; never block
+        # the UI on GStreamer state transitions or a configuration lock.
+        try:
+            self._worker.submit(self.video.disconnect_source, identifier)
+        except RuntimeError:
+            # The camera extension is already shutting down; its lifecycle
+            # stop owns final pipeline cleanup.
+            return attempt is not None
         return True
 
     def _source_stats_changed(self, update: VideoSourceStats) -> None:
@@ -329,10 +335,17 @@ class CameraRuntime:
     ) -> None:
         try:
             if apply_future is not None:
+                while not apply_future.done():
+                    if attempt.cancel_requested.wait(0.05):
+                        raise CancelledError()
+                if attempt.cancel_requested.is_set():
+                    raise CancelledError()
                 apply_future.result()
             if attempt.cancelled:
                 raise CancelledError()
             self.video.reconnect_source(identifier)
+            if attempt.cancelled or attempt.cancel_requested.is_set():
+                raise CancelledError()
             if any(
                 item.source_id == identifier and item.stats.connected
                 for item in self.video.source_stats

@@ -2,6 +2,7 @@
 
 from PyQt6.QtWidgets import QHBoxLayout, QWidget
 
+from src.models.connections import ConnectionPhase
 from src.services.abstracts.connections import ConnectionControlService
 from src.services.abstracts.telemetry import TelemetryService
 from src.ui.adapters.services import QtConnectionControlService, QtTelemetryService
@@ -63,17 +64,16 @@ class ConnectionStatusWidget(QWidget):
             else:
                 self.indicator.set_value(int(snapshot.rc_rssi), "RC RSSI")
         else:
-            self.indicator.set_state("success" if snapshot.telemetry_link else "danger")
+            if self.connections is None:
+                self.indicator.set_connection_phase(
+                    ConnectionPhase.CONNECTED
+                    if snapshot.telemetry_link
+                    else ConnectionPhase.DISCONNECTED
+                )
 
     def _connection_changed(self, status):
         if status.channel == "telemetry":
-            self.indicator.set_state(
-                "success"
-                if status.connected
-                else "warning"
-                if status.detail
-                else "danger"
-            )
+            self.indicator.set_connection_phase(status.phase)
             self.indicator.setToolTip(status.detail)
 
     def set_theme(self, theme):

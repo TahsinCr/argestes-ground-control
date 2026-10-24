@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from PyQt6.QtCore import QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.extension.api import ConnectionPhase
 from src.models.connections import ConnectionProfile
 from src.ui.i18n import t
 from src.ui.themes.style import ThemePalette
@@ -41,13 +42,9 @@ class ConnectionsPanel(QDialog):
         self._theme, self._language = theme, language
         self._profiles: list[ConnectionProfile] = []
         self._active_identifier = ""
-        self._connected = self._running = False
+        self._phase = ConnectionPhase.DISCONNECTED
         self._connecting_identifier = ""
         self._detail = ""
-        self._render_timer = QTimer(self)
-        self._render_timer.setSingleShot(True)
-        self._render_timer.setInterval(40)
-        self._render_timer.timeout.connect(self._render)
         self._build_ui()
         self.set_theme(theme)
 
@@ -76,18 +73,14 @@ class ConnectionsPanel(QDialog):
         profiles: tuple[ConnectionProfile, ...],
         *,
         active_identifier: str,
-        connected: bool,
-        running: bool,
+        phase: ConnectionPhase,
         detail: str = "",
     ) -> None:
         self._profiles = list(profiles)
-        self._active_identifier, self._connected, self._running, self._detail = (
-            active_identifier,
-            connected,
-            running,
-            detail,
-        )
-        if self._connected:
+        self._active_identifier = active_identifier
+        self._phase = phase
+        self._detail = detail
+        if phase == ConnectionPhase.CONNECTED:
             self._connecting_identifier = ""
         self._render()
 
@@ -95,55 +88,29 @@ class ConnectionsPanel(QDialog):
         if self._connecting_identifier == identifier:
             return
         self._connecting_identifier = identifier
-        self._active_identifier, self._connected, self._running = (
-            identifier,
-            False,
-            True,
-        )
+        self._active_identifier = identifier
+        self._phase = ConnectionPhase.CONNECTING
         self._render()
 
     def is_connecting(self, identifier: str) -> bool:
-        return self._connecting_identifier == identifier
+        return self._connecting_identifier == identifier or (
+            self._active_identifier == identifier
+            and self._phase == ConnectionPhase.CONNECTING
+        )
 
     def finish_connection(
         self,
         *,
         active_identifier: str,
-        connected: bool,
-        running: bool,
+        phase: ConnectionPhase,
         detail: str = "",
     ) -> None:
         """Unlock the selected profile after its asynchronous operation ends."""
         self._connecting_identifier = ""
         self._active_identifier = active_identifier
-        self._connected = bool(connected)
-        self._running = bool(running)
         self._detail = detail
+        self._phase = phase
         self._render()
-
-    def update_connection(
-        self,
-        *,
-        active_identifier: str,
-        connected: bool,
-        running: bool,
-        detail: str = "",
-    ) -> None:
-        signature = (active_identifier, bool(connected), bool(running), detail)
-        previous = (
-            self._active_identifier,
-            self._connected,
-            self._running,
-            self._detail,
-        )
-        if signature == previous:
-            return
-        self._active_identifier, self._connected, self._running, self._detail = (
-            signature
-        )
-        if self._connected:
-            self._connecting_identifier = ""
-        self._render_timer.start()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -193,11 +160,15 @@ class ConnectionsPanel(QDialog):
 
     def _add_card(self, profile: ConnectionProfile) -> None:
         active = profile.identifier == self._active_identifier
+        in_progress = self._phase in {
+            ConnectionPhase.CONNECTING,
+            ConnectionPhase.DISCONNECTING,
+        }
         color = (
             self._theme.success
-            if active and self._connected
+            if active and self._phase == ConnectionPhase.CONNECTED
             else self._theme.warning
-            if active and self._running
+            if active and in_progress
             else self._theme.danger
         )
         card = QFrame(self.host)
@@ -205,7 +176,9 @@ class ConnectionsPanel(QDialog):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(8, 7, 8, 7)
         layout.setSpacing(3)
-        operation_active = bool(self._connecting_identifier)
+        operation_active = bool(self._connecting_identifier) or (
+            active and in_progress
+        )
         row = QHBoxLayout()
         dot = QLabel("●", card)
         dot.setStyleSheet(f"color: {color};")
@@ -225,15 +198,17 @@ class ConnectionsPanel(QDialog):
         endpoint.setProperty("role", "detail")
         endpoint.setWordWrap(True)
         layout.addWidget(endpoint)
-        is_connecting = profile.identifier == self._connecting_identifier
-        state = t(
-            "connection.profile.connected"
-            if active and self._connected
-            else "connection.profile.connecting"
-            if is_connecting
-            else "connection.profile.waiting",
-            self._language,
-        )
+        is_connecting = self.is_connecting(profile.identifier)
+        disconnecting = active and self._phase == ConnectionPhase.DISCONNECTING
+        if active and self._phase == ConnectionPhase.CONNECTED:
+            state_key = "connection.profile.connected"
+        elif is_connecting:
+            state_key = "connection.profile.connecting"
+        elif disconnecting:
+            state_key = "connection.profile.disconnecting"
+        else:
+            state_key = "connection.profile.waiting"
+        state = t(state_key, self._language)
         info = QLabel(
             f"{profile.baud} baud · {profile.heartbeat_timeout} sn · {self._detail if active and self._detail else state}",
             card,
@@ -260,24 +235,29 @@ class ConnectionsPanel(QDialog):
             lambda checked, ident=profile.identifier: self._set_auto(ident, checked)
         )
         actions.addWidget(auto)
-        busy = is_connecting
-        connect = QPushButton(
-            t(
-                "connection.action.disconnect"
-                if (active and self._connected) or is_connecting
-                else "connection.profile.connecting"
-                if busy
-                else "connection.action.connect",
-                self._language,
-            ),
-            card,
+        disconnect_action = (
+            active and self._phase == ConnectionPhase.CONNECTED
+        ) or is_connecting
+        connect_key = (
+            "connection.profile.disconnecting"
+            if disconnecting
+            else "connection.action.disconnect"
+            if disconnect_action
+            else "connection.action.connect"
         )
+        connect = QPushButton(t(connect_key, self._language), card)
         connect.setProperty("compact", "true")
         connect.setProperty(
             "role",
-            "danger" if (active and self._connected) or is_connecting else "primary",
+            "danger"
+            if disconnect_action
+            else "secondary"
+            if disconnecting
+            else "primary",
         )
-        connect.setEnabled(not operation_active or is_connecting)
+        connect.setEnabled(
+            (not operation_active or is_connecting) and not disconnecting
+        )
         connect.clicked.connect(
             lambda _=False, p=profile: self.profile_connect_requested.emit(p)
         )

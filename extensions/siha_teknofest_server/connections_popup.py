@@ -49,6 +49,8 @@ class CompetitionServersPopup(QDialog):
         self._running = False
         self._detail = ""
         self._available = True
+        self._pending_identifier = ""
+        self._pending_action = ""
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
         self._render_timer.setInterval(40)
@@ -117,6 +119,8 @@ class CompetitionServersPopup(QDialog):
         running: bool,
         detail: str = "",
         available: bool = True,
+        pending_identifier: str = "",
+        pending_action: str = "",
     ) -> None:
         self._servers = list(servers)
         self._active_identifier = active_identifier
@@ -124,6 +128,8 @@ class CompetitionServersPopup(QDialog):
         self._running = running
         self._detail = detail
         self._available = bool(available)
+        self._pending_identifier = pending_identifier
+        self._pending_action = pending_action
         self._render()
 
     def _build_ui(self) -> None:
@@ -173,6 +179,10 @@ class CompetitionServersPopup(QDialog):
         connected, running, detail = self._server_states.get(
             server.identifier, (False, False, "")
         )
+        pending_target = server.identifier == self._pending_identifier
+        pending_connect = pending_target and self._pending_action == "connect"
+        pending_disconnect = pending_target and self._pending_action == "disconnect"
+        running = running or pending_connect or pending_disconnect
         status = "success" if connected else "warning" if running else "danger"
         card = QFrame(self.list_host)
         card.setProperty("role", "server-card")
@@ -234,7 +244,9 @@ class CompetitionServersPopup(QDialog):
         actions.addWidget(auto)
         is_connecting = running and not connected
         connect = QPushButton(
-            t("teknofest.disconnect", self._language)
+            t("teknofest.disconnecting", self._language)
+            if pending_disconnect
+            else t("teknofest.disconnect", self._language)
             if connected
             else t("teknofest.cancel_connection", self._language)
             if is_connecting
@@ -246,7 +258,7 @@ class CompetitionServersPopup(QDialog):
             "role", "danger" if connected or is_connecting else "primary"
         )
         connect.setProperty("compact", "true")
-        connect.setEnabled(self._available)
+        connect.setEnabled((self._available or pending_connect) and not pending_disconnect)
         connect.clicked.connect(
             lambda _checked=False, item=server: self.server_connect_requested.emit(item)
         )

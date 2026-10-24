@@ -33,6 +33,16 @@
     "contact_trail_limit": {
       "type": "integer",
       "minimum": 1
+    },
+    "gps_satellites_good_min": {
+      "type": "integer",
+      "minimum": 2,
+      "maximum": 30
+    },
+    "gps_satellites_fair_min": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 29
     }
   }
 }

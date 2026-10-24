@@ -39,11 +39,22 @@
   "extension.map_autonomy.category": "Seyrüsefer",
   "extension.map_autonomy.description": "Harita ve görev planlama; şu an MAVLink seyrüsefer sağlayıcısı",
   "map.settings.layer": "Harita katmanı",
+  "map.settings.gps_satellites_good_min": "İyi GPS için en az uydu",
+  "map.settings.gps_satellites_fair_min": "İdare eder GPS için en az uydu",
   "map.settings.map_center_min_zoom": "Merkezleme yakınlığı",
   "map.settings.vehicle_trail_limit": "Araç iz uzunluğu",
   "map.settings.contact_trail_limit": "Diğer araçların iz uzunluğu",
   "dialog.settings.cache": "Harita Önbelleği",
   "dialog.settings.cache_limit": "Önbellek Limiti",
   "dialog.settings.cache_path": "Önbellek Klasörü",
-  "dialog.settings.clear_cache": "Cache Temizle"
+  "dialog.settings.clear_cache": "Cache Temizle",
+  "status.gps": "GPS",
+  "status.gps.satellites": "SAT",
+  "status.gps.satellites.unknown": "-- SAT",
+  "status.gps.connecting": "Araç bağlantısı kuruluyor",
+  "status.gps.disconnecting": "Bağlantı kesiliyor",
+  "status.gps.quality.good": "Uydu sayısı iyi",
+  "status.gps.quality.fair": "Uydu sayısı idare eder",
+  "status.gps.quality.poor": "Uydu sayısı yetersiz veya GPS verisi yok",
+  "status.gps.thresholds": "İyi: en az {good}, idare eder: en az {fair} uydu"
 }
