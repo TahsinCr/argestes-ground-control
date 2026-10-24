@@ -326,7 +326,8 @@ class VideoSharePopup(QDialog):
             return
         if (
             self._clock_references is None
-            or self._clock_references.current_time(identifier) is None
+            or self._clock_references.status(identifier).quality
+            in {ClockQuality.UNAVAILABLE, ClockQuality.STALE}
         ):
             self.clock_combo.blockSignals(True)
             self.clock_combo.setCurrentIndex(

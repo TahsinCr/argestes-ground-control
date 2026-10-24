@@ -1,7 +1,7 @@
 {
   "identifier": "joystick", "name": "Joystick", "category": "Control",
   "description": "RC axis/PWM calibration and button actions; currently supports MAVLink",
-  "version": "1.0.0", "api_major": 1,
+  "version": "1.0.0", "api_major": 2,
   "entry_point": "extensions.joystick.plugin:create_extension",
   "requires": ["vehicle.rc"], "provides": ["controller.rc"],
   "default_enabled": false, "settings": {}

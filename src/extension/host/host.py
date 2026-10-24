@@ -88,15 +88,6 @@ class ExtensionHost:
             for key, entry in self._settings_service.current.extensions.items()
             if "enabled" in entry
         }
-        if "telemetry" in self._stored:
-            if not isinstance(self._stored["telemetry"], bool):
-                raise ExtensionError("Invalid enabled state for telemetry")
-            migrated = dict(self._stored)
-            if "vehicle_connection" not in migrated:
-                migrated["vehicle_connection"] = migrated["telemetry"]
-            del migrated["telemetry"]
-            self._save_states(migrated, remove="telemetry")
-            self._stored = migrated
         self._manifests = self._discover(
             Path(__file__).resolve().parents[3] / "extensions"
         )
@@ -141,18 +132,12 @@ class ExtensionHost:
             raise
         self._save_states(states)
 
-    def _save_states(self, states, *, remove=None):
+    def _save_states(self, states):
         def mutate(settings):
             for key, enabled in states.items():
                 entry = settings.extensions.setdefault(key, {})
                 entry["enabled"] = enabled
                 entry.setdefault("config", {})
-            if remove is not None:
-                old = settings.extensions.pop(remove, {})
-                if old.get("config"):
-                    settings.extensions.setdefault("vehicle_connection", {}).setdefault(
-                        "config", old["config"]
-                    )
             return settings
 
         self._settings_service.update(mutate, notify=False)
@@ -172,7 +157,7 @@ class ExtensionHost:
                     category=payload.get("category", "Other"),
                     version=payload["version"],
                     entry_point=payload["entry_point"],
-                    api_major=payload.get("api_major", API_MAJOR),
+                    api_major=payload["api_major"],
                     provides=tuple(payload.get("provides", ())),
                     requires=tuple(payload.get("requires", ())),
                     default_enabled=bool(payload.get("default_enabled", False)),
@@ -523,7 +508,6 @@ class ExtensionHost:
                     f"{identifier}.{view.identifier}",
                     view.factory,
                     view.primary,
-                    view.legacy_key,
                     view.region,
                     view.title,
                     view.initial_visible,

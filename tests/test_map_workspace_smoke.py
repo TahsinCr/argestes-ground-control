@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -84,8 +83,7 @@ def _run_smoke():
                 key for key, panel in window.workspace.panels.items()
                 if not panel.isHidden()
             ] == ["map_autonomy.view"]
-            fixture = ROOT / "tests" / "fixtures" / "orphaned_dock_state.json"
-            payload = json.loads(fixture.read_text(encoding="utf-8"))
+            payload = window.workspace.capture_layout()
             assert window.workspace.restore_layout(payload, restore_window=False)
             QTest.qWait(30)
             assert dock.geometry() == window.workspace.rect(), dock.geometry()

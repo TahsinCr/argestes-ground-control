@@ -51,7 +51,7 @@ class MainWindow(QMainWindow):
         self.extension_host = extension_host
         self.theme = theme
         self._settings = settings_service.current
-        self.language = self._settings.language
+        self.language = self._settings.ui.language
         self._layout_restored = False
         self._workspace_disconnected = False
         self._visual_regions = {}
@@ -307,7 +307,6 @@ class MainWindow(QMainWindow):
             preference.area if preference else areas[contribution.region],
             allowed_areas=self._WORKSPACE_AREAS,
             floatable=False,
-            legacy_key=contribution.legacy_key,
         )
         neighbors = [
             self.workspace.panels[item]
@@ -347,7 +346,7 @@ class MainWindow(QMainWindow):
         self._visual_regions[key] = contribution.region
         if contribution.region == "left":
             self._flight_docks = (*self._flight_docks, dock)
-        if contribution.legacy_key == "parameters":
+        if contribution.identifier == "parameters.view":
             self.parameters_dock = dock
         self.workspace_views.track_panel(dock)
         dock.setVisible(
@@ -545,7 +544,7 @@ class MainWindow(QMainWindow):
             dock.setWindowTitle(labels.get(key, self._visual_title(key)))
 
     def _set_theme_choice(self, theme_name: str) -> None:
-        if self._settings.theme == theme_name:
+        if self._settings.ui.theme == theme_name:
             return
         payload = self._settings.to_dict()
         payload["ui"]["theme"] = theme_name
@@ -813,10 +812,10 @@ class MainWindow(QMainWindow):
         self._settings = settings
         if previous.ui == settings.ui:
             return
-        self.language = settings.language
+        self.language = settings.ui.language
         app = QApplication.instance()
         if app is not None:
-            self.theme = apply_theme(app, settings.theme)
+            self.theme = apply_theme(app, settings.ui.theme)
         self.setWindowTitle(t("app.title", self.language))
         self.title_bar.set_theme(self.theme)
         self.title_bar.set_title(self.windowTitle())

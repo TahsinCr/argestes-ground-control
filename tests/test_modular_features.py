@@ -156,20 +156,24 @@ class ModularFeatureTests(unittest.TestCase):
             "mavlink:1:1",
         )
 
-    def test_renamed_extension_configs_keep_disabled_state_and_unknown_fields(self):
+    def test_retired_extension_ids_are_not_mapped_to_current_packages(self):
         with TemporaryDirectory() as folder:
             settings = SettingsService(Path(folder))
             settings.update_extension("map", config={"custom": 123}, enabled=False)
             settings.update_extension(
                 "teknofest", config={"servers": []}, enabled=False
             )
-            updated = SettingsService(Path(folder))
-            self.assertEqual(updated.extension_config("map_autonomy")["custom"], 123)
-            self.assertFalse(updated.current.extensions["map_autonomy"]["enabled"])
-            self.assertFalse(
-                updated.current.extensions["siha_teknofest_server"]["enabled"]
+            settings.update_extension(
+                "map_autonomy", config={"current_option": "kept"}, enabled=True
             )
-            self.assertNotIn("map", updated.current.extensions)
+            updated = SettingsService(Path(folder))
+            self.assertEqual(updated.extension_config("map")["custom"], 123)
+            self.assertFalse(updated.current.extensions["map"]["enabled"])
+            self.assertEqual(
+                updated.extension_config("map_autonomy")["current_option"], "kept"
+            )
+            self.assertTrue(updated.current.extensions["map_autonomy"]["enabled"])
+            self.assertNotIn("siha_teknofest_server", updated.current.extensions)
 
     def test_optional_feature_services_are_absent_when_packages_are_disabled(self):
         from extensions.map_autonomy.services.planner import PlannerService

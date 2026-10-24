@@ -4,7 +4,7 @@
   "description": "Transport connection, recovery and connection status",
   "category": "Connection",
   "version": "1.0.0",
-  "api_major": 1,
+  "api_major": 2,
   "entry_point": "extensions.vehicle_connection.plugin:create_extension",
   "requires": ["vehicle.connection.source"],
   "provides": ["vehicle.connection"],

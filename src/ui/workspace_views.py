@@ -71,11 +71,11 @@ class WorkspaceViews(QObject):
                     if not isinstance(group.get("layout"), dict):
                         group.pop("layout", None)
                     if not isinstance(group.get("icon"), str):
-                        group["icon"] = "SP_ComputerIcon"
+                        group["icon"] = "grid"
                     categories.append(group)
                 view["categories"] = categories
                 if not isinstance(view.get("icon"), str):
-                    view["icon"] = "SP_DesktopIcon"
+                    view["icon"] = "layout"
                 self.views.append(view)
             self.active_id = stored.get("active", "")
         except (OSError, ValueError, TypeError, AttributeError):
@@ -85,7 +85,7 @@ class WorkspaceViews(QObject):
                 {
                     "id": uuid4().hex,
                     "name": "Ana görünüm",
-                    "icon": "SP_DesktopIcon",
+                    "icon": "layout",
                     "layout": self.workspace.capture_layout(),
                     "categories": list(groups),
                 }

@@ -15,6 +15,7 @@ from extensions.camera.models import VideoShareConfig, VideoSourceConfig
 from extensions.camera.runtime import CameraRuntime, CameraSettingsStore
 from src.container import create_container
 from src.extension.host import ExtensionHost
+from src.services.settings import SettingsService
 
 
 class CameraExtensionTests(unittest.TestCase):
@@ -59,13 +60,10 @@ class CameraExtensionTests(unittest.TestCase):
             finally:
                 container.shutdown()
 
-    def test_camera_configuration_migrates_legacy_profiles_and_keeps_outputs(
-        self,
-    ) -> None:
+    def test_camera_configuration_reads_current_extension_settings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            settings = root / "data/settings.json"
-            settings.parent.mkdir(parents=True)
+            settings = SettingsService(root)
             source = VideoSourceConfig(
                 identifier="front",
                 name="Ön",
@@ -81,39 +79,22 @@ class CameraExtensionTests(unittest.TestCase):
                 output_type="stream",
                 enabled=False,
             )
-            import json
             from dataclasses import asdict
 
-            source_payload = asdict(source)
-            source_payload.update(
-                {"aim_enabled": True, "aim_x": 0.25, "aim_y": 0.75}
+            settings.update_extension(
+                "camera",
+                config={
+                    "video_sources": [asdict(source)],
+                    "active_video_source_id": "front",
+                    "video_shares": [asdict(output)],
+                },
             )
-            settings.write_text(
-                json.dumps(
-                    {
-                        "backend": {
-                            "video_sources": [source_payload],
-                            "active_video_source_id": "front",
-                            "video_shares": [asdict(output)],
-                        }
-                    }
-                ),
-                encoding="utf-8",
-            )
-            store = CameraSettingsStore(root)
+            store = CameraSettingsStore(root, settings)
             self.assertEqual(store.current.sources[0].name, "Ön")
             self.assertEqual(store.current.outputs[0].identifier, "live")
-            persisted = json.loads(settings.read_text(encoding="utf-8"))
-            migrated_source = persisted["extensions"]["camera"]["config"][
-                "video_sources"
-            ][0]
-            self.assertFalse(
-                {"aim_enabled", "aim_x", "aim_y"}.intersection(migrated_source)
-            )
-            self.assertFalse(hasattr(store.current.sources[0], "aim_enabled"))
             store.save(store.current)
             self.assertTrue(store.path.exists())
-            self.assertEqual(CameraSettingsStore(root).current, store.current)
+            self.assertEqual(CameraSettingsStore(root, settings).current, store.current)
 
     def test_record_all_creates_one_fixed_fps_output_per_camera(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

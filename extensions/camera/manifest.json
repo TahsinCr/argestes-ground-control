@@ -4,7 +4,7 @@
   "description": "Camera wall, input connections, local recording and live outputs",
   "category": "Media",
   "version": "1.0.0",
-  "api_major": 1,
+  "api_major": 2,
   "entry_point": "extensions.camera.plugin:create_extension",
   "provides": ["media.camera"],
   "default_enabled": false,

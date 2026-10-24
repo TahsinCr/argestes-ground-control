@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.extension.api import ClockQuality
 from src.services.settings import SettingsService
 from src.ui.i18n import t
 
@@ -213,7 +214,11 @@ class TelemetrySettingsPage(QWidget):
     def _clock_is_available(self, identifier):
         if self.clock_references is None:
             return False
-        return self.clock_references.current_time(identifier) is not None
+        status = self.clock_references.status(identifier)
+        return status.value is not None and status.quality not in {
+            ClockQuality.UNAVAILABLE,
+            ClockQuality.STALE,
+        }
 
     def add(self):
         for item in self.available.selectedItems():

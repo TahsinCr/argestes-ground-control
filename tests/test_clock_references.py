@@ -22,15 +22,16 @@ class ClockReferenceTests(unittest.TestCase):
         registry = ClockReferenceRegistry()
         local_time = datetime(2026, 10, 23, 12, 0, tzinfo=timezone(timedelta(hours=3)))
 
+        sample = ClockSample(local_time, datetime.now(UTC))
         identifier = registry.register(
-            "camera", "server.abc.utc", "Field server", lambda: local_time
+            "camera", "server.abc.utc", "Field server", lambda: sample
         )
 
         self.assertEqual(identifier, "camera.server.abc.utc")
         self.assertEqual(registry.references()[0].title, "Field server")
-        self.assertEqual(registry.current_time(identifier), local_time)
+        self.assertEqual(registry.status(identifier).value, local_time)
 
-        registry.register("camera", "server.abc.utc", "Renamed", lambda: local_time)
+        registry.register("camera", "server.abc.utc", "Renamed", lambda: sample)
         self.assertEqual(registry.references()[0].identifier, identifier)
         self.assertEqual(registry.references()[0].title, "Renamed")
 
@@ -43,15 +44,26 @@ class ClockReferenceTests(unittest.TestCase):
 
     def test_registry_treats_missing_invalid_and_failing_sources_as_unavailable(self) -> None:
         registry = ClockReferenceRegistry()
-        naive = registry.register("test_source", "naive", "Naive", lambda: datetime.now())
+        naive = registry.register(
+            "test_source", "naive", "Naive", lambda: datetime.now()
+        )
 
-        def fail() -> datetime:
+        def fail() -> ClockSample:
             raise RuntimeError("not ready")
 
         failed = registry.register("test_source", "failed", "Failed", fail)
-        self.assertIsNone(registry.current_time(naive))
-        self.assertIsNone(registry.current_time(failed))
-        self.assertIsNone(registry.current_time("missing.source"))
+        self.assertIs(
+            registry.status(naive).quality,
+            ClockQuality.UNAVAILABLE,
+        )
+        self.assertIs(
+            registry.status(failed).quality,
+            ClockQuality.UNAVAILABLE,
+        )
+        self.assertIs(
+            registry.status("missing.source").quality,
+            ClockQuality.UNAVAILABLE,
+        )
 
         registry.unregister_owner("test_source")
         self.assertEqual(registry.references(), ())
@@ -82,8 +94,8 @@ class ClockReferenceTests(unittest.TestCase):
             lambda: ClockSample(value, old_sample_time, estimated=True),
             stale_after_seconds=30.0,
         )
-        legacy = registry.register(
-            "clock_test", "legacy", "Legacy", lambda: value
+        invalid_provider = registry.register(
+            "clock_test", "invalid_provider", "Invalid provider", lambda: value
         )
         unknown_freshness = registry.register(
             "clock_test",
@@ -102,7 +114,7 @@ class ClockReferenceTests(unittest.TestCase):
         live_status = registry.status(live)
         estimated_status = registry.status(estimated)
         stale_status = registry.status(stale)
-        legacy_status = registry.status(legacy)
+        invalid_status = registry.status(invalid_provider)
         unknown_status = registry.status(unknown_freshness)
         future_status = registry.status(future_sample)
 
@@ -114,11 +126,10 @@ class ClockReferenceTests(unittest.TestCase):
         self.assertIs(estimated_status.quality, ClockQuality.ESTIMATED)
         self.assertIs(stale_status.quality, ClockQuality.STALE)
         self.assertGreaterEqual(stale_status.age_seconds, 60.0)
-        self.assertIsNone(registry.current_time(stale))
-        self.assertIs(legacy_status.quality, ClockQuality.UNKNOWN)
+        self.assertIs(stale_status.quality, ClockQuality.STALE)
+        self.assertIs(invalid_status.quality, ClockQuality.UNAVAILABLE)
         self.assertIs(unknown_status.quality, ClockQuality.UNKNOWN)
         self.assertGreaterEqual(unknown_status.age_seconds, 60.0)
-        self.assertEqual(registry.current_time(legacy), value)
         self.assertEqual(future_status.value, value)
         self.assertIsNone(future_status.age_seconds)
         self.assertIs(future_status.quality, ClockQuality.UNKNOWN)
@@ -188,7 +199,7 @@ class ClockReferenceTests(unittest.TestCase):
         reference, = registry.references()
         self.assertEqual(reference.extension_id, "siha_teknofest_server")
         self.assertEqual(reference.title, "Field server")
-        self.assertEqual(registry.current_time(reference.identifier), sample_time)
+        self.assertEqual(registry.status(reference.identifier).value, sample_time)
 
         session.config["name"] = "Renamed server"
         runtime._sync_clock_references()

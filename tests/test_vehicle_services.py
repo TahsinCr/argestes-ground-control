@@ -26,7 +26,6 @@ from extensions.mavlink.commands import DispatchCommandService
 from extensions.parameters.mutable import MutableParameterService
 from extensions.parameters.protocols.mavlink import VehicleParameterService
 from extensions.parameters.protocols.mavlink_defaults import decode_parameter_defaults
-from src.extension.api.parameters import ParameterService
 from extensions.battery.estimation import VoltageBatteryEstimator
 from extensions.battery.processor import BatteryProcessor
 from extensions.mavlink.telemetry import TelemetryDecoder, VehicleTelemetryService
@@ -795,41 +794,6 @@ class VehicleServiceTests(unittest.TestCase):
         )
         self.assertTrue(service._is_active_connection_message(rf_status))
         self.assertFalse(service._is_active_connection_message(foreign_message))
-
-    def test_optional_parameter_sync_status_supports_slotted_legacy_provider(self) -> None:
-        class LegacyParameterService(ParameterService):
-            __slots__ = ()
-
-            @property
-            def current(self):
-                return ()
-
-            @property
-            def changed(self):
-                return EventBus()
-
-            def start(self) -> None:
-                pass
-
-            def stop(self) -> None:
-                pass
-
-            def replace(self, _parameters) -> None:
-                pass
-
-            def upsert(self, _parameter) -> None:
-                pass
-
-            def update_values(self, _changes) -> None:
-                pass
-
-            def refresh(self) -> None:
-                pass
-
-        service = LegacyParameterService()
-
-        self.assertEqual(service.sync_status.state.value, "idle")
-        self.assertIs(service.sync_status_changed, service.sync_status_changed)
 
     def test_parameter_list_and_write_are_confirmed_by_vehicle_echo(self) -> None:
         vehicle = _FakeVehicle()

@@ -8,7 +8,6 @@ class TelemetryDisplayExtension:
             ),
             region="left",
             title="Araç Telemetrisi",
-            legacy_key="telemetry",
             order=200,
             preferred_height=280,
         )

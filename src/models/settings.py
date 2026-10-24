@@ -188,8 +188,7 @@ class BatteryAlarmSettings:
 class BatteryTelemetrySettings:
     """Battery display source and 4S voltage-estimation calibration."""
 
-    use_pixhawk_percent: bool | None = None
-    mode: str = "voltage"
+    use_pixhawk_percent: bool = False
     cell_count: int = 4
     full_voltage: float = 16.8
     reserve_voltage: float = 14.8
@@ -199,7 +198,7 @@ class BatteryTelemetrySettings:
     recovery_filter_seconds: float = 2.0
 
     def __post_init__(self) -> None:
-        self.mode = str(self.mode).strip().lower()
+        self.use_pixhawk_percent = bool(self.use_pixhawk_percent)
         self.cell_count = int(self.cell_count)
         self.full_voltage = float(self.full_voltage)
         self.reserve_voltage = float(self.reserve_voltage)
@@ -207,15 +206,6 @@ class BatteryTelemetrySettings:
         self.median_window = int(self.median_window)
         self.discharge_filter_seconds = float(self.discharge_filter_seconds)
         self.recovery_filter_seconds = float(self.recovery_filter_seconds)
-        if self.mode not in {"voltage", "autopilot"}:
-            raise ValueError(f"Desteklenmeyen batarya telemetri modu: {self.mode}")
-        # ``mode`` remains in persisted settings for backward compatibility.
-        # The boolean is the user-facing and authoritative percentage source.
-        if self.use_pixhawk_percent is None:
-            self.use_pixhawk_percent = self.mode == "autopilot"
-        else:
-            self.use_pixhawk_percent = bool(self.use_pixhawk_percent)
-        self.mode = "autopilot" if self.use_pixhawk_percent else "voltage"
         if self.cell_count <= 0:
             raise ValueError("Batarya hücre sayısı pozitif olmalı")
         if not 0.0 < self.reserve_percent < 100.0:
@@ -242,7 +232,7 @@ class BackendSettings:
     mock_mode: bool = False
     cache: CacheSettings = field(default_factory=CacheSettings)
     mavlink: MavlinkSettings = field(default_factory=MavlinkSettings)
-    mavlink_connections: list[MavlinkConnectionConfig] = field(default_factory=list)
+    mavlink_connections: list[MavlinkConnectionConfig] | None = None
     active_mavlink_connection_id: str = ""
     mission: MissionDefaults = field(default_factory=MissionDefaults)
     battery_alarm: BatteryAlarmSettings = field(default_factory=BatteryAlarmSettings)
@@ -251,16 +241,19 @@ class BackendSettings:
     )
 
     def __post_init__(self) -> None:
-        self.mavlink_connections = [
-            value
-            if isinstance(value, MavlinkConnectionConfig)
-            else MavlinkConnectionConfig(**value)
-            for value in self.mavlink_connections
-        ]
-        if not self.mavlink_connections:
+        if self.mavlink_connections is None:
             self.mavlink_connections = [
                 MavlinkConnectionConfig.from_mavlink(self.mavlink)
             ]
+        else:
+            self.mavlink_connections = [
+                value
+                if isinstance(value, MavlinkConnectionConfig)
+                else MavlinkConnectionConfig(**value)
+                for value in self.mavlink_connections
+            ]
+        if not self.mavlink_connections:
+            raise ValueError("En az bir telemetri profili gerekli")
         identifiers = [profile.identifier for profile in self.mavlink_connections]
         if len(identifiers) != len(set(identifiers)):
             raise ValueError("Telemetri profil kimlikleri benzersiz olmalı")
@@ -311,109 +304,80 @@ class SettingsModel(Model):
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "SettingsModel":
-        if "backend" in payload or "ui" in payload:
-            backend_payload = dict(payload.get("backend", {}))
-            ui_payload = dict(payload.get("ui", {}))
-            cache = CacheSettings(
-                **_known(CacheSettings, backend_payload.pop("cache", {}))
-            )
-            mavlink = MavlinkSettings(
-                **_known(MavlinkSettings, backend_payload.pop("mavlink", {}))
-            )
-            mavlink_connections = [
-                MavlinkConnectionConfig(**dict(item))
-                for item in backend_payload.pop("mavlink_connections", ())
-            ]
-            active_mavlink_connection_id = str(
-                backend_payload.pop("active_mavlink_connection_id", "")
-            )
-            battery_payload = dict(backend_payload.pop("battery_alarm", {}))
-            legacy_mode = battery_payload.pop("mode", None)
-            legacy_threshold = battery_payload.pop("threshold", None)
-            if legacy_mode is not None:
-                battery_payload.setdefault("warning_mode", legacy_mode)
-                battery_payload.setdefault("failsafe_mode", legacy_mode)
-            if legacy_threshold is not None:
-                battery_payload.setdefault(
-                    "warning_threshold",
-                    legacy_threshold,
-                )
-                battery_payload.setdefault(
-                    "failsafe_threshold",
-                    legacy_threshold,
-                )
-            battery_alarm = BatteryAlarmSettings(
-                **_known(BatteryAlarmSettings, battery_payload)
-            )
-            battery_telemetry_payload = dict(
-                backend_payload.pop("battery_telemetry", {})
-            )
-            # Migrate the former string mode without changing existing profiles.
-            battery_telemetry_payload.setdefault(
-                "use_pixhawk_percent",
-                battery_telemetry_payload.get("mode") == "autopilot",
-            )
-            battery_telemetry = BatteryTelemetrySettings(
-                **_known(BatteryTelemetrySettings, battery_telemetry_payload)
-            )
-            mission_payload = dict(backend_payload.pop("mission", {}))
-            radii = dict(DEFAULT_RADII)
-            radii.update(
-                {
-                    key: int(value)
-                    for key, value in mission_payload.get("radii", {}).items()
-                }
-            )
-            backend = BackendSettings(
-                **_known(BackendSettings, backend_payload),
-                cache=cache,
-                mavlink=mavlink,
-                mavlink_connections=mavlink_connections,
-                active_mavlink_connection_id=active_mavlink_connection_id,
-                battery_alarm=battery_alarm,
-                battery_telemetry=battery_telemetry,
-                mission=MissionDefaults(
-                    radii=radii,
-                    default_altitude_m=int(
-                        mission_payload.get("default_altitude_m", 100)
-                    ),
-                ),
-            )
-            return cls(
-                backend=backend,
-                ui=UiSettings(**_known(UiSettings, ui_payload)),
-                extensions=deepcopy(payload.get("extensions", {})),
-            )
-        return cls._from_legacy(payload)
-
-    @classmethod
-    def _from_legacy(cls, payload: dict[str, Any]) -> "SettingsModel":
+        if not isinstance(payload, dict) or not {
+            "backend",
+            "ui",
+            "extensions",
+        }.issubset(payload):
+            raise ValueError("Ayarlar güncel backend/ui/extensions biçiminde olmalı")
+        if not all(
+            isinstance(payload[key], dict) for key in ("backend", "ui", "extensions")
+        ):
+            raise ValueError("backend, ui ve extensions alanları nesne olmalı")
+        backend_payload = dict(payload["backend"])
+        ui_payload = dict(payload["ui"])
+        if "mavlink_connections" not in backend_payload:
+            raise ValueError("backend.mavlink_connections alanı gerekli")
+        if "mavlink" not in backend_payload:
+            raise ValueError("backend.mavlink alanı gerekli")
+        if "cache" not in backend_payload:
+            raise ValueError("backend.cache alanı gerekli")
+        if "mission" not in backend_payload:
+            raise ValueError("backend.mission alanı gerekli")
+        if "battery_alarm" not in backend_payload:
+            raise ValueError("backend.battery_alarm alanı gerekli")
+        if "battery_telemetry" not in backend_payload:
+            raise ValueError("backend.battery_telemetry alanı gerekli")
+        cache = CacheSettings(
+            **_known(CacheSettings, backend_payload.pop("cache", {}))
+        )
+        mavlink = MavlinkSettings(
+            **_known(MavlinkSettings, backend_payload.pop("mavlink", {}))
+        )
+        mavlink_connections = [
+            MavlinkConnectionConfig(**dict(item))
+            for item in backend_payload.pop("mavlink_connections", ())
+        ]
+        active_mavlink_connection_id = str(
+            backend_payload.pop("active_mavlink_connection_id", "")
+        )
+        battery_payload = dict(backend_payload.pop("battery_alarm", {}))
+        battery_alarm = BatteryAlarmSettings(
+            **_known(BatteryAlarmSettings, battery_payload)
+        )
+        battery_telemetry_payload = dict(
+            backend_payload.pop("battery_telemetry", {})
+        )
+        battery_telemetry = BatteryTelemetrySettings(
+            **_known(BatteryTelemetrySettings, battery_telemetry_payload)
+        )
+        mission_payload = dict(backend_payload.pop("mission", {}))
         radii = dict(DEFAULT_RADII)
-        for item_type in DEFAULT_RADII:
-            legacy_key = f"default_radius_{item_type}"
-            if legacy_key in payload:
-                radii[item_type] = int(payload[legacy_key])
+        radii.update(
+            {
+                key: int(value)
+                for key, value in mission_payload.get("radii", {}).items()
+            }
+        )
+        backend = BackendSettings(
+            **_known(BackendSettings, backend_payload),
+            cache=cache,
+            mavlink=mavlink,
+            mavlink_connections=mavlink_connections,
+            active_mavlink_connection_id=active_mavlink_connection_id,
+            battery_alarm=battery_alarm,
+            battery_telemetry=battery_telemetry,
+            mission=MissionDefaults(
+                radii=radii,
+                default_altitude_m=int(
+                    mission_payload.get("default_altitude_m", 100)
+                ),
+            ),
+        )
         return cls(
-            backend=BackendSettings(
-                mock_mode=bool(payload.get("mock_mode", False)),
-                cache=CacheSettings(
-                    enabled=bool(payload.get("cache_enabled", True)),
-                    limit_mb=int(payload.get("cache_limit_mb", 2048)),
-                    path=str(payload.get("cache_path", "")),
-                ),
-                mavlink=MavlinkSettings(
-                    auto_connect=bool(payload.get("auto_connect", True)),
-                ),
-                mission=MissionDefaults(radii=radii),
-            ),
-            ui=UiSettings(
-                language=str(payload.get("language", "tr")),
-                theme=str(payload.get("theme", "dark")),
-                map_layer=str(payload.get("map_layer", "vector")),
-                map_center_min_zoom=int(payload.get("map_center_min_zoom", 16)),
-                vehicle_trail_limit=int(payload.get("vehicle_trail_limit", 80)),
-                contact_trail_limit=int(payload.get("contact_trail_limit", 36)),
-            ),
+            backend=backend,
+            ui=UiSettings(**_known(UiSettings, ui_payload)),
+            extensions=deepcopy(payload["extensions"]),
         )
 
     @classmethod
@@ -448,91 +412,11 @@ class SettingsModel(Model):
 
     def patch(self, **changes: Any) -> "SettingsModel":
         result = self
-        for legacy_name, value in changes.items():
-            result = result.with_value(
-                _LEGACY_PATHS.get(legacy_name, legacy_name), value
-            )
+        for path, value in changes.items():
+            result = result.with_value(path, value)
         return result
-
-    @property
-    def language(self) -> str:
-        return self.ui.language
-
-    @property
-    def theme(self) -> str:
-        return self.ui.theme
-
-    @property
-    def map_layer(self) -> str:
-        return self.ui.map_layer
-
-    @property
-    def map_center_min_zoom(self) -> int:
-        return self.ui.map_center_min_zoom
-
-    @property
-    def vehicle_trail_limit(self) -> int:
-        return self.ui.vehicle_trail_limit
-
-    @property
-    def contact_trail_limit(self) -> int:
-        return self.ui.contact_trail_limit
-
-    @property
-    def mock_mode(self) -> bool:
-        return self.backend.mock_mode
-
-    @property
-    def cache_enabled(self) -> bool:
-        return self.backend.cache.enabled
-
-    @property
-    def cache_limit_mb(self) -> int:
-        return self.backend.cache.limit_mb
-
-    @property
-    def cache_path(self) -> str:
-        return self.backend.cache.path
-
-    @property
-    def default_radius_takeoff(self) -> int:
-        return self.backend.mission.radius_for("takeoff")
-
-    @property
-    def default_radius_waypoint(self) -> int:
-        return self.backend.mission.radius_for("waypoint")
-
-    @property
-    def default_radius_loiter(self) -> int:
-        return self.backend.mission.radius_for("loiter")
-
-    @property
-    def default_radius_rtl(self) -> int:
-        return self.backend.mission.radius_for("rtl")
-
-    @property
-    def default_radius_land(self) -> int:
-        return self.backend.mission.radius_for("land")
 
 
 def _known(model_type: type, payload: dict[str, Any]) -> dict[str, Any]:
     names = {item.name for item in fields(model_type)}
     return {key: value for key, value in payload.items() if key in names}
-
-
-_LEGACY_PATHS = {
-    "language": "ui.language",
-    "theme": "ui.theme",
-    "map_layer": "ui.map_layer",
-    "map_center_min_zoom": "ui.map_center_min_zoom",
-    "vehicle_trail_limit": "ui.vehicle_trail_limit",
-    "contact_trail_limit": "ui.contact_trail_limit",
-    "mock_mode": "backend.mock_mode",
-    "cache_enabled": "backend.cache.enabled",
-    "cache_limit_mb": "backend.cache.limit_mb",
-    "cache_path": "backend.cache.path",
-    **{
-        f"default_radius_{item_type}": f"backend.mission.radii.{item_type}"
-        for item_type in DEFAULT_RADII
-    },
-}

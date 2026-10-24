@@ -1,4 +1,4 @@
-"""Theme-aware workspace glyphs, with monochrome legacy Qt icon support."""
+"""Theme-aware workspace glyphs."""
 
 from PyQt6.QtCore import QRect, QRectF, QSize, Qt
 from PyQt6.QtGui import (
@@ -26,16 +26,6 @@ ICON_NAMES = {
     "folder": ("Workspace", "Çalışma alanı"),
     "layers": ("Group", "Grup"),
 }
-
-_LEGACY = {
-    "SP_DesktopIcon": "layout",
-    "SP_ComputerIcon": "grid",
-    "SP_FileDialogDetailedView": "logs",
-    "SP_FileDialogListView": "logs",
-    "SP_FileDialogContentsView": "grid",
-    "SP_DirIcon": "folder",
-}
-
 
 class _GlyphRenderer:
     def __init__(self, name):
@@ -66,7 +56,7 @@ class _GlyphRenderer:
             color.setAlphaF(0.3)
         elif mode == QIcon.Mode.Normal and state != QIcon.State.On:
             color.setAlphaF(0.72)
-        name = _LEGACY.get(self.name, self.name)
+        name = self.name
         painter.save()
         if name not in ICON_NAMES and name != "plus":
             source = (
@@ -209,7 +199,7 @@ def workspace_icon(name):
     # Native QIcon owns the rasters; no Python virtual callbacks survive
     # widgets or run during Qt's deferred window destruction.
     renderer = _GlyphRenderer(name)
-    glyph = _LEGACY.get(name, name)
+    glyph = name
     if glyph not in ICON_NAMES and glyph != "plus":
         source = (
             QApplication.instance()

@@ -50,12 +50,12 @@ class SettingsTests(unittest.TestCase):
             deadline = time.monotonic() + 3.0
             while time.monotonic() < deadline:
                 current = backend.current
-                if current.theme == "light" and current.map_layer == "satellite":
+                if current.ui.theme == "light" and current.ui.map_layer == "satellite":
                     break
                 time.sleep(0.01)
 
-            self.assertEqual(backend.current.theme, "light")
-            self.assertEqual(backend.current.map_layer, "satellite")
+            self.assertEqual(backend.current.ui.theme, "light")
+            self.assertEqual(backend.current.ui.map_layer, "satellite")
             self.assertEqual(backend.current.extensions, base["extensions"])
 
     def test_async_save_preserves_unrelated_backend_update_from_old_snapshot(
@@ -71,11 +71,11 @@ class SettingsTests(unittest.TestCase):
             backend.set_value("ui.map_layer", "satellite")
 
             deadline = time.monotonic() + 3.0
-            while time.monotonic() < deadline and backend.current.theme != "light":
+            while time.monotonic() < deadline and backend.current.ui.theme != "light":
                 time.sleep(0.01)
 
-            self.assertEqual(backend.current.theme, "light")
-            self.assertEqual(backend.current.map_layer, "satellite")
+            self.assertEqual(backend.current.ui.theme, "light")
+            self.assertEqual(backend.current.ui.map_layer, "satellite")
 
     @unittest.skipUnless(os.name == "posix", "POSIX file modes are required")
     def test_existing_settings_file_is_restricted_to_its_owner(self) -> None:
@@ -114,22 +114,17 @@ class SettingsTests(unittest.TestCase):
             self.assertTrue(restored.backend.mavlink.auto_connect)
             self.assertFalse(list((Path(directory) / "data").glob("*.tmp")))
 
-    def test_legacy_settings_are_split_between_backend_and_ui(self) -> None:
-        model = SettingsModel.from_dict(
-            {
-                "language": "en",
-                "theme": "light",
-                "mock_mode": True,
-                "cache_enabled": False,
-                "default_radius_land": 81,
-            }
-        )
-        self.assertEqual(model.ui.language, "en")
-        self.assertEqual(model.ui.theme, "light")
-        self.assertTrue(model.backend.mock_mode)
-        self.assertFalse(model.backend.cache.enabled)
-        self.assertEqual(model.backend.mission.radius_for("land"), 81)
-        self.assertIn("rtl", model.backend.mission.radii)
+    def test_flat_legacy_settings_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "backend/ui/extensions"):
+            SettingsModel.from_dict(
+                {
+                    "language": "en",
+                    "theme": "light",
+                    "mock_mode": True,
+                    "cache_enabled": False,
+                    "default_radius_land": 81,
+                }
+            )
 
     def test_every_schema_path_is_backed_by_the_settings_model(self) -> None:
         model = SettingsModel()
@@ -161,7 +156,7 @@ class SettingsTests(unittest.TestCase):
             received: list[SettingsModel] = []
             service.changed.subscribe(received.append)
 
-            service.patch(map_layer=service.current.map_layer)
+            service.patch(**{"ui.map_layer": service.current.ui.map_layer})
 
             self.assertEqual(settings_path.stat().st_mtime_ns, original_mtime)
             self.assertEqual(received, [])
@@ -303,7 +298,7 @@ class SettingsTests(unittest.TestCase):
     def test_voltage_battery_profile_derives_zero_percent_from_reserve(self) -> None:
         profile = SettingsModel().backend.battery_telemetry
 
-        self.assertEqual(profile.mode, "voltage")
+        self.assertFalse(profile.use_pixhawk_percent)
         self.assertEqual(profile.cell_count, 4)
         self.assertAlmostEqual(profile.full_voltage, 16.8)
         self.assertAlmostEqual(profile.reserve_voltage, 14.8)
@@ -316,23 +311,17 @@ class SettingsTests(unittest.TestCase):
             profile.empty_voltage,
         )
 
-    def test_legacy_battery_threshold_migrates_to_both_policies(self) -> None:
-        model = SettingsModel.from_dict(
-            {
-                "backend": {
-                    "battery_alarm": {
-                        "failsafe_enabled": True,
-                        "mode": "voltage",
-                        "threshold": 14.2,
-                    }
-                }
-            }
+    def test_legacy_battery_threshold_fields_are_not_mapped(self) -> None:
+        payload = SettingsModel().to_dict()
+        payload["backend"]["battery_alarm"].update(
+            {"mode": "voltage", "threshold": 14.2}
         )
+        model = SettingsModel.from_dict(payload)
         battery = model.backend.battery_alarm
-        self.assertEqual(battery.warning_mode, "voltage")
-        self.assertEqual(battery.warning_threshold, 14.2)
-        self.assertEqual(battery.failsafe_mode, "voltage")
-        self.assertEqual(battery.failsafe_threshold, 14.2)
+        self.assertEqual(battery.warning_mode, "percent")
+        self.assertEqual(battery.warning_threshold, 20.0)
+        self.assertEqual(battery.failsafe_mode, "percent")
+        self.assertEqual(battery.failsafe_threshold, 10.0)
 
 
 if __name__ == "__main__":

@@ -84,9 +84,6 @@ class TileCacheServer(TileCacheService):
         self._server_address: tuple[str, int] | None = None
         self._request_gate: asyncio.Semaphore | None = None
         self._clients: set[asyncio.Task] = set()
-        # Retained as a compatibility probe for older diagnostics. The async
-        # listener never allocates a dedicated server thread.
-        self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
         self._index: dict[str, dict[str, Any]] = {}
         self._total_bytes = 0

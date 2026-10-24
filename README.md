@@ -280,7 +280,7 @@ A minimal manifest looks like this:
   "description": "An operator tool",
   "category": "Tools",
   "version": "1.0.0",
-  "api_major": 1,
+  "api_major": 2,
   "entry_point": "extensions.example_tool.plugin:create_extension",
   "requires": [],
   "provides": ["tools.example"],
@@ -293,6 +293,11 @@ Provide `create_extension()` in `plugin.py`. Its returned object implements
 `configure(registrar, context)` and may implement `start(context)` and `stop()`.
 Use configuration to declare contributions, startup for runtime work, and
 shutdown to release workers, timers, subscriptions and connections.
+
+The current Extension API is major version 2. Manifests must declare
+`api_major: 2`; providers must implement the current clock-sample and parameter
+synchronization contracts. Extensions targeting earlier API majors must be
+updated before they can be loaded.
 
 ### Services and UI contributions
 

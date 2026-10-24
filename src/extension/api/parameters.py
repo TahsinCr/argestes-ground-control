@@ -27,8 +27,6 @@ class ParameterSyncStatus:
 
 
 class ParameterService(Service):
-    __slots__ = ("_sync_status_changed_fallback",)
-
     @property
     @abstractmethod
     def current(self) -> tuple[Parameter, ...]: ...
@@ -38,20 +36,14 @@ class ParameterService(Service):
     def changed(self) -> EventBus[tuple[Parameter, ...]]: ...
 
     @property
+    @abstractmethod
     def sync_status(self) -> ParameterSyncStatus:
-        """Return synchronization quality when the provider can report it."""
-
-        return ParameterSyncStatus()
+        """Report the provider's current parameter synchronization state."""
 
     @property
+    @abstractmethod
     def sync_status_changed(self) -> EventBus[ParameterSyncStatus]:
-        """Expose optional sync updates without requiring legacy providers to change."""
-
-        bus = getattr(self, "_sync_status_changed_fallback", None)
-        if bus is None:
-            bus = EventBus[ParameterSyncStatus]()
-            self._sync_status_changed_fallback = bus
-        return bus
+        """Publish parameter synchronization state changes."""
 
     @abstractmethod
     def replace(self, parameters: Iterable[Parameter]) -> None: ...

@@ -37,90 +37,7 @@ class SettingsService(SettingsRepository):
         self._extension_projections = {}
         self._extension_restorers = {}
         self._extension_schemas = {}
-        self._legacy_backend = {}
-        self._preservation_failed = False
         self._settings = self._load()
-        self._migrate_extensions()
-
-    def _migrate_extensions(self) -> None:
-        if self._preservation_failed:
-            return
-        directory = self._data_dir / "extensions"
-        states = (
-            load_json_file(directory / "state.json")
-            if (directory / "state.json").exists()
-            else {}
-        )
-        configs = {
-            path.parent.name: load_json_file(path)
-            for path in directory.glob("*/settings.json")
-        }
-        backend = self._legacy_backend
-        if "video_sources" in backend:
-            configs.setdefault(
-                "camera",
-                {
-                    key: backend[key]
-                    for key in (
-                        "video_sources",
-                        "video_shares",
-                        "active_video_source_id",
-                    )
-                    if key in backend
-                },
-            )
-        if "joystick" in backend:
-            configs.setdefault("joystick", backend["joystick"])
-        if "competition_servers" in backend:
-            configs.setdefault("teknofest", {"servers": backend["competition_servers"]})
-        configs.setdefault(
-            "map",
-            {
-                key: getattr(self._settings.ui, key)
-                for key in (
-                    "map_layer",
-                    "map_center_min_zoom",
-                    "vehicle_trail_limit",
-                    "contact_trail_limit",
-                )
-            },
-        )
-
-        def migrate(settings):
-            for identifier in set(states) | set(configs):
-                entry = settings.extensions.setdefault(identifier, {})
-                if identifier in states:
-                    entry.setdefault("enabled", states[identifier])
-                if identifier in configs:
-                    entry.setdefault("config", configs[identifier])
-            for old, new in (
-                ("map", "map_autonomy"),
-                ("teknofest", "siha_teknofest_server"),
-            ):
-                if old in settings.extensions:
-                    source = settings.extensions.pop(old)
-                    target = settings.extensions.setdefault(new, {})
-                    for key, value in source.items():
-                        if key == "config" and isinstance(value, dict):
-                            destination = target.setdefault("config", {})
-                            for setting, setting_value in value.items():
-                                destination.setdefault(setting, setting_value)
-                        else:
-                            target.setdefault(key, value)
-            return settings
-
-        self.update(migrate, notify=False)
-        if not directory.exists():
-            return
-        # Remove only successfully imported configuration; never unrelated data.
-        (directory / "state.json").unlink(missing_ok=True)
-        for path in directory.glob("*/settings.json"):
-            path.unlink()
-        for child in directory.iterdir():
-            if child.is_dir() and not any(child.iterdir()):
-                child.rmdir()
-        if not any(directory.iterdir()):
-            directory.rmdir()
 
     def extension_config(self, identifier: str) -> dict:
         with self._lock:
@@ -129,7 +46,7 @@ class SettingsService(SettingsRepository):
             )
 
     def bind_extension_settings(self, identifier, project, restore) -> None:
-        """Bridge legacy typed fields without teaching the host a protocol schema."""
+        """Keep extension-owned configuration aligned with typed runtime settings."""
         with self._lock:
             snapshot = self.current
             config = self.extension_config(identifier)
@@ -182,7 +99,6 @@ class SettingsService(SettingsRepository):
             self._secure_settings_permissions()
             try:
                 payload = load_json_file(self._settings_path)
-                self._legacy_backend = dict(payload.get("backend", {}))
                 settings = SettingsModel.from_dict(payload)
                 return settings
             except (OSError, TypeError, ValueError) as exc:
@@ -198,7 +114,6 @@ class SettingsService(SettingsRepository):
                     )
                 preserved_path = self._preserve_unreadable_settings()
                 if preserved_path is None:
-                    self._preservation_failed = True
                     if self._logger:
                         self._logger.event(
                             "settings.preserve_failed",

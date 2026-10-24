@@ -288,7 +288,7 @@ Temel bir manifest örneği:
   "description": "An operator tool",
   "category": "Tools",
   "version": "1.0.0",
-  "api_major": 1,
+  "api_major": 2,
   "entry_point": "extensions.example_tool.plugin:create_extension",
   "requires": [],
   "provides": ["tools.example"],
@@ -302,6 +302,11 @@ Temel bir manifest örneği:
 `start(context)` ve `stop()` metotlarını sunmalıdır. Yapılandırma aşamasında
 katkıları bildirin, çalışma zamanı işlerini başlangıçta başlatın; kapanışta
 worker, zamanlayıcı, abonelik ve bağlantıları temizleyin.
+
+Güncel Eklenti API’si ana sürüm 2’dir. Manifestte `api_major: 2` belirtilmeli;
+saat sağlayıcıları güncel zaman örneği sözleşmesini, parametre sağlayıcıları da
+senkronizasyon durumu sözleşmesini uygulamalıdır. Daha eski API ana sürümlerini
+hedefleyen eklentiler yüklenmeden önce güncellenmelidir.
 
 ### Servisler ve arayüz katkıları
 

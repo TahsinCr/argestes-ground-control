@@ -7,7 +7,6 @@ class QuickCommandsExtension:
             ),
             region="left",
             title="Hızlı Komutlar",
-            legacy_key="commands",
             order=300,
         )
 

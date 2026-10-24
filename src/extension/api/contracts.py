@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from src.services.logging_service import LoggingService
     from src.services.settings import SettingsService
 
-API_MAJOR = 1
+API_MAJOR = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,7 +54,6 @@ class VisualContribution:
     identifier: str
     factory: Callable[[Any], Any]
     primary: bool = False
-    legacy_key: str | None = None
     region: str = "workspace"
     title: str = ""
     initial_visible: bool = True
@@ -101,7 +100,6 @@ class ExtensionRegistrar:
         factory: Callable[[Any], Any],
         *,
         primary: bool = False,
-        legacy_key: str | None = None,
         region: str = "workspace",
         title: str = "",
         initial_visible: bool = True,
@@ -119,7 +117,6 @@ class ExtensionRegistrar:
                 identifier,
                 factory,
                 primary,
-                legacy_key,
                 region,
                 title,
                 initial_visible,

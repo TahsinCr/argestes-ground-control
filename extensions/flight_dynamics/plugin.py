@@ -7,7 +7,6 @@ class DynamicsExtension:
             ),
             region="left",
             title="Araç Dinamiği",
-            legacy_key="flight",
             order=100,
             preferred_height=205,
         )

@@ -106,9 +106,6 @@ class MutableVideoService(VideoService):
     def set_active_source(self, identifier: str) -> None:
         self._source_identifier = str(identifier)
 
-    def set_server_time_provider(self, provider: Callable[[], datetime | None]) -> None:
-        self.set_clock_provider(provider)
-
     def set_clock_provider(self, provider: Callable[[], datetime | None]) -> None:
         self._share_publisher.set_clock_provider(provider)
 
@@ -859,9 +856,6 @@ class MultiVideoService(VideoService):
         if self._started:
             with self._lock:
                 self._reconcile_running_sources()
-
-    def set_server_time_provider(self, provider: Callable[[], datetime | None]) -> None:
-        self.set_clock_provider(provider)
 
     def set_clock_provider(self, provider: Callable[[], datetime | None]) -> None:
         self._share_publisher.set_clock_provider(provider)

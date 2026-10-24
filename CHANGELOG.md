@@ -38,15 +38,18 @@ Release headings link each entry to its release date.
 * Clock providers can now publish the value's actual update timestamp and whether
   the clock value is estimated. The shared API reports measured sample age and
   marks a source stale only after its declared freshness limit; the TEKNOFEST
-  clock uses its existing 30-second expiration. Sources without a declared
-  freshness limit (including legacy datetime-only providers) remain usable but
-  report unknown freshness instead of being incorrectly labeled live.
+  clock uses its existing 30-second expiration. Providers must return a
+  timestamped `ClockSample`; sources without a declared freshness limit remain
+  usable but report unknown freshness instead of being incorrectly labeled live.
 * Added a GitHub Actions test workflow that checks out the Core submodule and
   installs the Qt platform libraries and extension test dependencies, then runs
   the application and Core suites in an offscreen Qt environment.
 
 ### Changed
 
+* Bumped the Extension API major version to 2. Every package manifest must now
+  declare `api_major`; all bundled packages target the new strict clock and
+  parameter-provider contracts.
 * TEKNOFEST request-history statistics and session-log exports now run outside
   the GUI thread. Log exports retain the existing locked, point-in-time copy so
   the selected JSON remains consistent while the logger is active.
@@ -251,18 +254,26 @@ Release headings link each entry to its release date.
 * Tile-cache invalidation now prevents in-flight downloads from repopulating a
   cleared cache, and timeout responses use the correct HTTP reason phrase.
 * Missing, empty and invalid cached tiles now remove their stale index entry and
-  byte count through one cleanup path. Parameter synchronization now exposes
+  byte count through one cleanup path. Parameter synchronization exposes
   loading, partial, complete, failed and disconnected states; partial or failed
-  catalogues remain visible but cannot be applied as though complete. Existing
-  parameter providers retain a default status and do not need to implement the
-  optional status events.
+  catalogues remain visible but cannot be applied as though complete. Every
+  parameter provider now implements the same explicit status and status-event
+  contract.
 * Session logs use the configured bounded rotation instead of an effectively
   unlimited file size.
 
 ### Removed
 
 * Removed the per-camera aim-point selector, crosshair rendering, and saved
-  coordinates. Existing camera profiles are migrated without the retired fields.
+  coordinates; the current camera schema no longer reads or writes them.
+* Removed previous-version settings and workspace migrations: flat settings
+  aliases and patch paths, former battery mode/threshold conversions, imports
+  from `data/extensions`, renamed extension-ID remapping, retired camera-field
+  stripping, legacy map-cache index conversion, workspace layouts older than
+  version 6, and clock/parameter API fallbacks for older providers. Only current
+  formats are used; old extension files are left untouched and are not imported
+  automatically. Manifests without an API major are rejected instead of being
+  silently assigned the host's current version.
 
 ### Security
 

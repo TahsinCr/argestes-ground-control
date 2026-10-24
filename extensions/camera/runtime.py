@@ -9,9 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from src.extension.api import ClockReferenceRegistry
+from src.extension.api import ClockQuality, ClockReferenceRegistry
 from src.services.logging_service import LoggingService
-from src.services.storage import load_json_file
 from src.services.settings import SettingsService
 
 from .capture import MultiVideoService
@@ -31,12 +30,9 @@ class CameraConfiguration:
 
 
 class CameraSettingsStore:
-    _RETIRED_SOURCE_FIELDS = frozenset({"aim_enabled", "aim_x", "aim_y"})
-
     def __init__(self, base_dir: Path, settings: SettingsService | None = None) -> None:
         self._settings = settings or SettingsService(base_dir)
         self.path = base_dir / "data" / "settings.json"
-        self._legacy_path = base_dir / "data" / "settings.json"
         self._lock = threading.RLock()
         self._current = self._read()
 
@@ -47,23 +43,9 @@ class CameraSettingsStore:
 
     def _read(self) -> CameraConfiguration:
         payload = self._settings.extension_config("camera")
-        if not payload:
-            legacy = load_json_file(self._legacy_path, {})
-            payload = dict(legacy.get("backend", {}))
-        raw_sources = payload.get("video_sources", ())
-        source_payloads = tuple(dict(item) for item in raw_sources)
-        has_retired_source_fields = any(
-            self._RETIRED_SOURCE_FIELDS.intersection(item) for item in source_payloads
-        )
         sources = tuple(
-            VideoSourceConfig(
-                **{
-                    key: value
-                    for key, value in item.items()
-                    if key not in self._RETIRED_SOURCE_FIELDS
-                }
-            )
-            for item in source_payloads
+            VideoSourceConfig(**dict(item))
+            for item in payload.get("video_sources", ())
         )
         if not sources:
             sources = (
@@ -88,15 +70,12 @@ class CameraSettingsStore:
         selected = str(payload.get("active_video_source_id", sources[0].identifier))
         if selected not in identifiers:
             selected = sources[0].identifier
-        configuration = CameraConfiguration(
+        return CameraConfiguration(
             sources,
             selected,
             outputs,
             str(payload.get("clock_reference_id", "system.local")),
         )
-        if has_retired_source_fields:
-            self.save(configuration)
-        return configuration
 
     def save(self, configuration: CameraConfiguration) -> None:
         payload = {
@@ -214,7 +193,10 @@ class CameraRuntime:
     def _current_clock_time(self) -> datetime | None:
         if self.clock_references is None:
             return datetime.now().astimezone()
-        return self.clock_references.current_time(self._clock_reference_id)
+        status = self.clock_references.status(self._clock_reference_id)
+        if status.quality in {ClockQuality.UNAVAILABLE, ClockQuality.STALE}:
+            return None
+        return status.value
 
     def _apply_outputs(self, config: CameraConfiguration) -> None:
         self.video.configure_shares(config.outputs)

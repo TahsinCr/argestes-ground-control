@@ -28,7 +28,7 @@ class BatteryProcessor:
                 self._last_sample = None
                 self._estimate = None
                 return snapshot
-            if self._settings.mode != "voltage" or snapshot.battery_voltage <= 0:
+            if self._settings.use_pixhawk_percent or snapshot.battery_voltage <= 0:
                 return snapshot
             sample = snapshot.battery_received_at
             if sample is not None and sample != self._last_sample:

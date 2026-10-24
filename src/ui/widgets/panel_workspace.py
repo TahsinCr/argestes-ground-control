@@ -300,7 +300,6 @@ class PanelWorkspace(QMainWindow):
     """Dockable shell around the unchanged content widgets."""
 
     STATE_VERSION = 6
-    LEGACY_STATE_VERSIONS = (1, 2, 3, 4, 5)
 
     def __init__(
         self,
@@ -597,11 +596,9 @@ class PanelWorkspace(QMainWindow):
         movable: bool = True,
         floatable: bool = True,
         closable: bool = True,
-        legacy_key: str | None = None,
     ) -> QDockWidget:
         dock = QDockWidget(title, self)
         dock.setObjectName(f"panel.{key}")
-        dock.setProperty("legacyPanelKey", legacy_key)
         dock.setAllowedAreas(allowed_areas)
         dock.setWidget(widget)
         self.addDockWidget(area, dock)
@@ -1312,7 +1309,7 @@ class PanelWorkspace(QMainWindow):
             if payload is None:
                 payload = json.loads(self.state_path.read_text(encoding="utf-8"))
             state_version = payload.get("version")
-            if state_version not in (*self.LEGACY_STATE_VERSIONS, self.STATE_VERSION):
+            if state_version != self.STATE_VERSION:
                 return False
             state = QByteArray.fromBase64(payload["state"].encode("ascii"))
             for key in tuple(self._locked_sizes):
@@ -1321,22 +1318,10 @@ class PanelWorkspace(QMainWindow):
                 self.window().restoreGeometry(
                     QByteArray.fromBase64(payload["window_geometry"].encode("ascii"))
                 )
-            legacy_docks = []
-            renamed = []
             restored_sizes: dict[str, tuple[int, int]] = {}
             sizes = payload.get("panel_sizes", {})
-            aliases = {"map.view": "map_autonomy.view"}
             if isinstance(sizes, dict):
                 for key, size in sizes.items():
-                    key = aliases.get(key, key)
-                    key = next(
-                        (
-                            new_key
-                            for new_key, dock in self.panels.items()
-                            if dock.property("legacyPanelKey") == key
-                        ),
-                        key,
-                    )
                     if key not in self.panels or not isinstance(size, dict):
                         continue
                     width, height = size.get("width"), size.get("height")
@@ -1358,27 +1343,7 @@ class PanelWorkspace(QMainWindow):
                 if isinstance(width, int) and not isinstance(width, bool) and width > 0:
                     self._independent_widths[key] = width
             self._restoring_panel_sizes = True
-            if state_version < self.STATE_VERSION:
-                for key, dock in self.panels.items():
-                    legacy_key = dock.property("legacyPanelKey")
-                    if legacy_key:
-                        renamed.append((dock, dock.objectName()))
-                        if legacy_key == "map" and "map.view" in sizes:
-                            legacy_key = "map.view"
-                        dock.setObjectName(f"panel.{legacy_key}")
-                for key in self._independent_widths:
-                    spacer = QDockWidget(self)
-                    spacer.setObjectName(f"panel-space.{key}")
-                    spacer.setWidget(QWidget(spacer))
-                    legacy_docks.append(spacer)
-            try:
-                restored = self.restoreState(state, state_version)
-            finally:
-                for dock, name in renamed:
-                    dock.setObjectName(name)
-                for spacer in legacy_docks:
-                    self.removeDockWidget(spacer)
-                    spacer.deleteLater()
+            restored = self.restoreState(state, state_version)
             if restored:
                 visible = payload.get("visible_panels")
                 if isinstance(visible, list):
@@ -1389,8 +1354,6 @@ class PanelWorkspace(QMainWindow):
                     Qt.DockWidgetArea.AllDockWidgetAreas,
                     QTabWidget.TabPosition.North,
                 )
-                if state_version == 1:
-                    self._restore_map_into_legacy_workspace()
                 self._normalize_panel_areas()
                 locks = payload.get("locked_sizes", {})
                 for key, size in locks.items() if isinstance(locks, dict) else ():
@@ -1442,34 +1405,3 @@ class PanelWorkspace(QMainWindow):
                     area for area in preferred_areas if dock.allowedAreas() & area
                 )
             self.move_panel_to_area(dock, destination)
-
-    def _restore_map_into_legacy_workspace(self) -> None:
-        """Reattach the map dock when upgrading layouts that used a central map."""
-        map_dock = self.panels.get("map")
-        if map_dock is None:
-            return
-        area = Qt.DockWidgetArea.RightDockWidgetArea
-        map_dock.setFloating(False)
-        self.move_panel_to_area(map_dock, area)
-        adjacent = next(
-            (
-                dock
-                for key, dock in self.panels.items()
-                if key
-                not in {
-                    "map",
-                    "flight",
-                    "telemetry",
-                    "commands",
-                    "logs",
-                    "parameters",
-                }
-                and dock.isVisible()
-                and not dock.isFloating()
-                and self.dockWidgetArea(dock) == area
-            ),
-            None,
-        )
-        if adjacent is not None:
-            self.place_panel(map_dock, adjacent, "right")
-        map_dock.show()

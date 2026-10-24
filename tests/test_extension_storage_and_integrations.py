@@ -26,35 +26,37 @@ from src.services.settings import SettingsService
 
 
 class ExtensionStorageTests(unittest.TestCase):
-    def test_migration_preserves_state_and_config_then_removes_old_directory(self):
+    def test_extension_settings_use_only_the_shared_current_format(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            old = root / "data/extensions"
-            (old / "camera").mkdir(parents=True)
-            (old / "state.json").write_text('{"camera": false}')
-            (old / "camera/settings.json").write_text('{"video_sources": [], "future_key": 9}')
             settings = SettingsService(root)
-            self.assertFalse(old.exists())
-            self.assertFalse(settings.current.extensions["camera"]["enabled"])
+            settings.update_extension(
+                "camera",
+                enabled=False,
+                config={"video_sources": [], "future_key": 9},
+            )
             self.assertEqual(settings.extension_config("camera")["future_key"], 9)
             stale = settings.current
             settings.update_extension("camera", config={"future_key": 10})
             settings.save(stale)
             self.assertEqual(settings.extension_config("camera")["future_key"], 10)
-            self.assertEqual(json.loads((root / "data/settings.json").read_text())["extensions"]["camera"]["config"]["future_key"], 10)
+            payload = json.loads((root / "data/settings.json").read_text())
+            self.assertFalse(payload["extensions"]["camera"]["enabled"])
+            self.assertEqual(payload["extensions"]["camera"]["config"]["future_key"], 10)
+            self.assertFalse((root / "data/extensions").exists())
 
     def test_concurrent_extension_updates_do_not_overwrite_other_owners(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = SettingsService(Path(directory))
             threads = [threading.Thread(target=settings.update_extension,
                                         args=(identifier,), kwargs={"config": {"value": value}})
-                       for value, identifier in enumerate(("camera", "map", "joystick", "siha_teknofest_server"))]
+                       for value, identifier in enumerate(("camera", "map_autonomy", "joystick", "siha_teknofest_server"))]
             for thread in threads:
                 thread.start()
             for thread in threads:
                 thread.join()
             self.assertEqual([settings.extension_config(key)["value"] for key in
-                              ("camera", "map", "joystick", "siha_teknofest_server")], [0, 1, 2, 3])
+                              ("camera", "map_autonomy", "joystick", "siha_teknofest_server")], [0, 1, 2, 3])
 
     def test_shared_json_session_includes_injected_extension_origin(self):
         with tempfile.TemporaryDirectory() as directory:

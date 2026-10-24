@@ -400,7 +400,7 @@ class MapPanel(PanelFrame):
         self._settings_service = settings_service
         self._js_ready = False
         self._script_queue: deque[str] = deque(maxlen=self._MAX_STARTUP_SCRIPTS)
-        self._base_layer = settings_service.current.map_layer
+        self._base_layer = settings_service.current.ui.map_layer
         self._align_initial_base_layer()
         self._cache_index_path = self._cache_index_file()
         self._tile_cache = tile_cache_service
@@ -531,7 +531,7 @@ class MapPanel(PanelFrame):
 
     def _align_initial_base_layer(self) -> None:
         state = getattr(self._planner_service, "state", MissionState())
-        preferred_layer = self._settings_service.current.map_layer
+        preferred_layer = self._settings_service.current.ui.map_layer
         if (
             preferred_layer in {"vector", "satellite"}
             and state.base_layer != preferred_layer
@@ -789,7 +789,6 @@ class MapPanel(PanelFrame):
 
     def _build_webview(self) -> None:
         self._cache_index_path = self._cache_index_file()
-        self._migrate_legacy_cache_index()
         settings = self._settings_service.current
         # Runtime resources are owned by MapExtension, not by a widget refresh.
         self._cache_base_url = self._tile_cache.base_url
@@ -843,7 +842,9 @@ class MapPanel(PanelFrame):
             QWebEngineProfile.HttpCacheType.MemoryHttpCache,
         )
         self._profile.setHttpCacheType(cache_type)
-        cache_size_bytes = min(settings.cache_limit_mb * 1024 * 1024, 2_147_000_000)
+        cache_size_bytes = min(
+            settings.backend.cache.limit_mb * 1024 * 1024, 2_147_000_000
+        )
         self._profile.setHttpCacheMaximumSize(cache_size_bytes)
 
         self._page = QWebEnginePage(self._profile, self)
@@ -940,7 +941,7 @@ class MapPanel(PanelFrame):
     def _ui_config(self) -> dict[str, Any]:
         settings = self._settings_service.current
         state = getattr(self._planner_service, "state", MissionState())
-        current_layer = state.base_layer or settings.map_layer
+        current_layer = state.base_layer or settings.ui.map_layer
         tool_config = map_tool_config()
         return {
             "layers": {
@@ -990,22 +991,26 @@ class MapPanel(PanelFrame):
                 "info": self._theme.info,
             },
             "tileCache": {
-                "enabled": settings.cache_enabled,
-                "baseUrl": self._tile_cache.base_url if settings.cache_enabled else "",
+                "enabled": settings.backend.cache.enabled,
+                "baseUrl": (
+                    self._tile_cache.base_url
+                    if settings.backend.cache.enabled
+                    else ""
+                ),
             },
             "currentLayer": current_layer,
             "missionDefaults": {
                 "defaultAltitude": settings.backend.mission.default_altitude_m,
                 "radii": {
-                    "takeoff": settings.default_radius_takeoff,
-                    "waypoint": settings.default_radius_waypoint,
-                    "loiter": settings.default_radius_loiter,
-                    "rtl": settings.default_radius_rtl,
-                    "land": settings.default_radius_land,
+                    "takeoff": settings.backend.mission.radius_for("takeoff"),
+                    "waypoint": settings.backend.mission.radius_for("waypoint"),
+                    "loiter": settings.backend.mission.radius_for("loiter"),
+                    "rtl": settings.backend.mission.radius_for("rtl"),
+                    "land": settings.backend.mission.radius_for("land"),
                 },
-                "centerMinZoom": settings.map_center_min_zoom,
-                "vehicleTrailLimit": settings.vehicle_trail_limit,
-                "contactTrailLimit": settings.contact_trail_limit,
+                "centerMinZoom": settings.ui.map_center_min_zoom,
+                "vehicleTrailLimit": settings.ui.vehicle_trail_limit,
+                "contactTrailLimit": settings.ui.contact_trail_limit,
             },
         }
 
@@ -1042,7 +1047,7 @@ class MapPanel(PanelFrame):
         overlays = [overlay.to_dict() for overlay in state.overlays]
         contact_trail_limit = max(
             1,
-            int(self._settings_service.current.contact_trail_limit),
+            int(self._settings_service.current.ui.contact_trail_limit),
         )
         contacts = []
         for contact in getattr(state, "contacts", []):
@@ -1607,18 +1612,10 @@ class MapPanel(PanelFrame):
             self._push_history(record)
 
     def _cache_index_file(self) -> Path:
-        return Path(self._settings_service.current.cache_path) / "cache-index.json"
-
-    def _migrate_legacy_cache_index(self) -> None:
-        legacy_path = self._base_dir / "data" / "cache-index.json"
-        if legacy_path == self._cache_index_path or not legacy_path.exists():
-            return
-        try:
-            archive_path = self._cache_index_path.parent / "coverage-index-legacy.json"
-            archive_path.parent.mkdir(parents=True, exist_ok=True)
-            legacy_path.replace(archive_path)
-        except OSError:
-            return
+        return (
+            Path(self._settings_service.current.backend.cache.path)
+            / "cache-index.json"
+        )
 
     def _on_bounds_changed(self, payload: dict[str, Any]) -> None:
         del payload

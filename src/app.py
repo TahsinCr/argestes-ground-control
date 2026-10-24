@@ -39,7 +39,7 @@ def run() -> int:
     backend_container = create_container(base_dir)
     backend_runtime = backend_container.resolve(RuntimeServices)
     app.setApplicationName(
-        t("app.title", backend_runtime.settings_service.current.language)
+        t("app.title", backend_runtime.settings_service.current.ui.language)
     )
     theme = apply_theme(app, backend_runtime.settings_service.current.ui.theme)
     ui_container = UiContainer(

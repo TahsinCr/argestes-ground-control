@@ -12,47 +12,32 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt
 from PyQt6.QtGui import QDragMoveEvent, QDropEvent, QMouseEvent, QRegion
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QDockWidget, QLabel, QStyle, QTabWidget
+from PyQt6.QtWidgets import QApplication, QLabel, QStyle, QTabWidget
 
 from src.ui.themes.style import DARK, LIGHT, build_stylesheet
 from src.ui.widgets.panel_workspace import PanelWorkspace
 
 
 class PanelWorkspaceTests(unittest.TestCase):
-    def test_legacy_offscreen_singleton_map_recovers_and_round_trips(self):
-        fixture = Path(__file__).parent / "fixtures" / "orphaned_dock_state.json"
-        payload = json.loads(fixture.read_text(encoding="utf-8"))
-        with tempfile.TemporaryDirectory() as directory:
-            workspace = PanelWorkspace(Path(directory) / "layout.json")
-            map_dock = workspace.add_panel(
-                "map_autonomy.view",
-                "Map",
-                QLabel("Map"),
-                Qt.DockWidgetArea.RightDockWidgetArea,
-            )
-            workspace.resize(1200, 800)
-            workspace.show()
-            self.app.processEvents()
-            try:
-                self.assertTrue(workspace.restore_layout(payload, restore_window=False))
-                QTest.qWait(30)
-                self.assertFalse(map_dock.isHidden())
-                self.assertEqual(map_dock.geometry(), workspace.rect())
-                repaired = workspace.capture_layout()
-                self.assertTrue(
-                    workspace.restore_layout(repaired, restore_window=False)
+    def test_workspace_rejects_pre_v6_layout_without_rewriting_it(self):
+        for version in range(1, PanelWorkspace.STATE_VERSION):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
+                state_path = Path(directory) / "layout.json"
+                original = json.dumps({"version": version, "state": ""})
+                state_path.write_text(original, encoding="utf-8")
+                workspace = PanelWorkspace(state_path)
+                dock = workspace.add_panel(
+                    "map_autonomy.view",
+                    "Map",
+                    QLabel("Map"),
+                    Qt.DockWidgetArea.RightDockWidgetArea,
                 )
-                QTest.qWait(30)
-                self.assertEqual(map_dock.geometry(), workspace.rect())
-                workspace.clear_layout()
-                retired = QDockWidget("Retired extension", workspace)
-                retired.setObjectName("panel.siha_teknofest_server.servers")
-                self.assertFalse(workspace.restoreDockWidget(retired))
-                retired.deleteLater()
-                map_dock.toggleViewAction().trigger()
-                QTest.qWait(30)
-                self.assertEqual(map_dock.geometry(), workspace.rect())
-            finally:
+                workspace.show()
+                self.app.processEvents()
+
+                self.assertFalse(workspace.restore_layout())
+                self.assertFalse(dock.isHidden())
+                self.assertEqual(state_path.read_text(encoding="utf-8"), original)
                 workspace.close()
 
     def test_drag_targets_and_preview_survive_overlay_paint_occlusion(self):
@@ -988,112 +973,6 @@ class PanelWorkspaceTests(unittest.TestCase):
             self.assertTrue(workspace.drop_panel_at(camera, right_edge))
             self.app.processEvents()
             self.assertGreater(camera.geometry().x(), map_dock.geometry().x())
-            workspace.close()
-
-    def test_legacy_central_map_layout_migrates_without_losing_camera(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            state_path = Path(directory) / "layout.json"
-            old = PanelWorkspace(state_path)
-            old.STATE_VERSION = 1
-            old.resize(1200, 700)
-            old.setCentralWidget(QLabel("Map"))
-            old.add_panel(
-                "camera.visual",
-                "Camera",
-                QLabel("Camera"),
-                Qt.DockWidgetArea.RightDockWidgetArea,
-            )
-            old.show()
-            self.app.processEvents()
-            old.save_layout()
-            old.close()
-            legacy_payload = json.loads(state_path.read_text(encoding="utf-8"))
-            self.assertEqual(legacy_payload["version"], 1)
-
-            workspace = PanelWorkspace(state_path)
-            workspace.resize(1200, 700)
-            map_dock = workspace.add_panel(
-                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.RightDockWidgetArea
-            )
-            camera = workspace.add_panel(
-                "camera.visual",
-                "Camera",
-                QLabel("Camera"),
-                Qt.DockWidgetArea.RightDockWidgetArea,
-            )
-            workspace.splitDockWidget(map_dock, camera, Qt.Orientation.Horizontal)
-            workspace.show()
-            self.app.processEvents()
-
-            self.assertTrue(workspace.restore_layout())
-            self.app.processEvents()
-            self.assertEqual(
-                workspace.dockWidgetArea(map_dock),
-                Qt.DockWidgetArea.RightDockWidgetArea,
-            )
-            self.assertEqual(
-                workspace.dockWidgetArea(camera), Qt.DockWidgetArea.RightDockWidgetArea
-            )
-            self.assertGreater(map_dock.width(), 100)
-            self.assertGreater(camera.width(), 100)
-            self.assertGreater(camera.x(), map_dock.x())
-            workspace.close()
-
-    def test_v2_layout_is_normalized_to_panel_regions(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            state_path = Path(directory) / "layout.json"
-            old = PanelWorkspace(state_path)
-            old.STATE_VERSION = 2
-            old.resize(1000, 600)
-            old_map = old.add_panel(
-                "map", "Map", QLabel("Map"), Qt.DockWidgetArea.BottomDockWidgetArea
-            )
-            old_camera = old.add_panel(
-                "camera",
-                "Camera",
-                QLabel("Camera"),
-                Qt.DockWidgetArea.RightDockWidgetArea,
-            )
-            old.show()
-            self.app.processEvents()
-            old.save_layout()
-            old.close()
-
-            workspace = PanelWorkspace(state_path)
-            workspace.resize(1000, 600)
-            map_dock = workspace.add_panel(
-                "map",
-                "Map",
-                QLabel("Map"),
-                Qt.DockWidgetArea.RightDockWidgetArea,
-                allowed_areas=(
-                    Qt.DockWidgetArea.LeftDockWidgetArea
-                    | Qt.DockWidgetArea.RightDockWidgetArea
-                    | Qt.DockWidgetArea.TopDockWidgetArea
-                ),
-            )
-            camera = workspace.add_panel(
-                "camera",
-                "Camera",
-                QLabel("Camera"),
-                Qt.DockWidgetArea.RightDockWidgetArea,
-                allowed_areas=(
-                    Qt.DockWidgetArea.LeftDockWidgetArea
-                    | Qt.DockWidgetArea.RightDockWidgetArea
-                    | Qt.DockWidgetArea.TopDockWidgetArea
-                ),
-            )
-            workspace.show()
-            self.app.processEvents()
-
-            self.assertTrue(workspace.restore_layout())
-            self.assertEqual(
-                workspace.dockWidgetArea(map_dock),
-                Qt.DockWidgetArea.RightDockWidgetArea,
-            )
-            self.assertEqual(
-                workspace.dockWidgetArea(camera), Qt.DockWidgetArea.RightDockWidgetArea
-            )
             workspace.close()
 
     def test_panel_visibility_stays_available_outside_edit_mode(self) -> None:

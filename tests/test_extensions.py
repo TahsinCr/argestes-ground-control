@@ -18,36 +18,17 @@ from extensions.vehicle_connection.runtime import ConnectionRuntime
 
 
 class ExtensionTests(unittest.TestCase):
-    def test_legacy_connection_preference_migrates_without_enabling_it(self) -> None:
-        for saved, expected in (
-            ({"telemetry": False}, False),
-            ({"telemetry": True, "vehicle_connection": False}, False),
-        ):
-            with self.subTest(saved=saved), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                path = root / "data/extensions/state.json"
-                path.parent.mkdir(parents=True)
-                path.write_text(json.dumps(saved))
-                container = create_container(root)
-                try:
-                    states = {
-                        item.manifest.identifier: item
-                        for item in container.resolve(ExtensionHost).list_extensions()
-                    }
-                    self.assertEqual(states["vehicle_connection"].enabled, expected)
-                    self.assertNotIn("telemetry", states)
-                    persisted = {
-                        key: entry["enabled"]
-                        for key, entry in json.loads(
-                            (root / "data/settings.json").read_text()
-                        )["extensions"].items()
-                        if "enabled" in entry
-                    }
-                    self.assertFalse(path.exists())
-                    self.assertNotIn("telemetry", persisted)
-                    self.assertEqual(persisted["vehicle_connection"], expected)
-                finally:
-                    container.shutdown()
+    def test_connection_preference_uses_current_extension_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = SettingsService(Path(directory))
+            settings.update_extension("vehicle_connection", enabled=False)
+
+            persisted = json.loads(
+                (Path(directory) / "data/settings.json").read_text()
+            )["extensions"]
+
+            self.assertFalse(persisted["vehicle_connection"]["enabled"])
+            self.assertNotIn("telemetry", persisted)
 
     def test_connection_shutdown_preserves_protocol_runtime_and_statuses(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -129,6 +110,34 @@ class ExtensionTests(unittest.TestCase):
                 )
             finally:
                 container.shutdown()
+
+    def test_manifest_must_declare_extension_api_major(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "example"
+            package.mkdir()
+            (package / "manifest.json").write_text(
+                '{"identifier":"example","name":"Example",'
+                '"version":"1.0.0",'
+                '"entry_point":"extensions.example.plugin:create_extension"}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ExtensionError, "Invalid manifest"):
+                ExtensionHost._discover(root)
+
+    def test_manifest_rejects_previous_extension_api_major(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "example"
+            package.mkdir()
+            (package / "manifest.json").write_text(
+                '{"identifier":"example","name":"Example",'
+                '"version":"1.0.0","api_major":1,'
+                '"entry_point":"extensions.example.plugin:create_extension"}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ExtensionError, "Incompatible extension API"):
+                ExtensionHost._discover(root)
 
     def test_telemetry_can_be_disabled_without_erasing_settings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -294,14 +303,24 @@ class ExtensionTests(unittest.TestCase):
             finally:
                 container.shutdown()
 
-    def test_corrupt_extension_state_does_not_restore_automatic_defaults(self) -> None:
+    def test_obsolete_extension_state_file_is_ignored_and_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / "data/extensions/state.json"
             path.parent.mkdir(parents=True)
-            path.write_text('{"mavlink": "false"}', encoding="utf-8")
-            with self.assertRaises(ExtensionError):
-                create_container(root)
+            original = '{"telemetry": false}'
+            path.write_text(original, encoding="utf-8")
+            container = create_container(root)
+            try:
+                host = container.resolve(ExtensionHost)
+                self.assertTrue(host.is_active("vehicle_connection"))
+                self.assertEqual(path.read_text(encoding="utf-8"), original)
+                self.assertNotIn(
+                    "telemetry",
+                    container.resolve(SettingsService).current.extensions,
+                )
+            finally:
+                container.shutdown()
 
     def test_discovery_does_not_autostart_new_extension(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -239,7 +239,7 @@ class WorkspaceViewTests(unittest.TestCase):
         groups = restored.active["categories"]
         self.assertEqual(len(groups), 1)
         self.assertEqual(groups[0]["panels"], ["a"])
-        self.assertEqual(groups[0]["icon"], "SP_ComputerIcon")
+        self.assertEqual(groups[0]["icon"], "grid")
         self.assertNotIn("layout", groups[0])
         restored.toggle_category("valid")
         self.assertTrue(self.a.isHidden())

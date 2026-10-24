@@ -153,11 +153,6 @@ class VideoSharePublisher:
             self._clock_provider = provider
             self._clock_generation += 1
 
-    def set_server_time_provider(self, provider: Callable[[], datetime | None]) -> None:
-        """Backward-compatible alias for the generic timestamp clock provider."""
-
-        self.set_clock_provider(provider)
-
     def set_active_source_provider(self, provider: Callable[[], str]) -> None:
         self._active_source = provider
 

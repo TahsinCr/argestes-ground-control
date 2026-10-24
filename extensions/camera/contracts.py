@@ -73,14 +73,7 @@ class VideoService(Service):
     def set_active_source(self, identifier: str) -> None: ...
 
     @abstractmethod
-    def set_server_time_provider(
-        self, provider: Callable[[], datetime | None]
-    ) -> None: ...
-
-    def set_clock_provider(self, provider: Callable[[], datetime | None]) -> None:
-        """Compatibility-neutral name for a timestamp source."""
-
-        self.set_server_time_provider(provider)
+    def set_clock_provider(self, provider: Callable[[], datetime | None]) -> None: ...
 
     @abstractmethod
     def configure(

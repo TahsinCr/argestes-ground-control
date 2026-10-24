@@ -44,7 +44,6 @@ class ParametersExtension:
             ),
             region="bottom",
             title="Parametreler",
-            legacy_key="parameters",
             initial_visible=False,
         )
 

@@ -68,7 +68,6 @@ class MapExtension:
                 context, parent, theme, language
             ),
             primary=True,
-            legacy_key="map",
         )
 
     def start(self, context):

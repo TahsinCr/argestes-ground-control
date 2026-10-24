@@ -45,7 +45,7 @@ class ClockStatus:
     quality: ClockQuality
 
 
-ClockProvider = Callable[[], ClockSample | datetime | None]
+ClockProvider = Callable[[], ClockSample | None]
 
 _MAX_FUTURE_UPDATE_SKEW_SECONDS = 2.0
 
@@ -65,9 +65,8 @@ class ClockReferenceRegistry:
 
     Identifiers are derived from the owning extension and its stable local key;
     display titles are intentionally not used as persistent identity. Providers
-    should return :class:`ClockSample` with aware timestamps. Legacy providers
-    returning an aware :class:`datetime` remain usable, but their freshness is
-    reported as unknown because they do not identify when their source updated.
+    must return :class:`ClockSample` with aware timestamps and the source update
+    time so freshness can be measured consistently.
     """
 
     _EXTENSION_ID = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
@@ -210,8 +209,7 @@ class ClockReferenceRegistry:
 
         A source can declare its established stale threshold at registration.
         Without one, age is still reported, but freshness remains ``UNKNOWN``;
-        the registry does not guess a threshold. Legacy datetime-only providers
-        also report ``UNKNOWN`` quality because they carry no update timestamp.
+        the registry does not guess a threshold.
         """
         with self._lock:
             entry = self._sources.get(str(identifier))
@@ -219,12 +217,6 @@ class ClockReferenceRegistry:
             return ClockStatus(None, None, None, ClockQuality.UNAVAILABLE)
         try:
             sample = entry[1]()
-            if isinstance(sample, datetime):
-                if self._is_aware(sample):
-                    return ClockStatus(
-                        sample, None, None, ClockQuality.UNKNOWN
-                    )
-                return ClockStatus(None, None, None, ClockQuality.UNAVAILABLE)
             if (
                 not isinstance(sample, ClockSample)
                 or not self._is_aware(sample.value)
@@ -262,10 +254,3 @@ class ClockReferenceRegistry:
             # A provider can temporarily be unavailable (for example, before
             # a server has supplied its first clock sample).
             return ClockStatus(None, None, None, ClockQuality.UNAVAILABLE)
-
-    def current_time(self, identifier: str) -> datetime | None:
-        """Return a usable time, preserving the legacy ``datetime | None`` API."""
-        status = self.status(identifier)
-        if status.quality in {ClockQuality.UNAVAILABLE, ClockQuality.STALE}:
-            return None
-        return status.value
