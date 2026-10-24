@@ -1222,6 +1222,90 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(service.current[0].default_value, 12.0)
         service.stop()
 
+    def test_defaults_worker_cannot_restore_catalogue_after_a_new_refresh(self) -> None:
+        vehicle = _FakeVehicle()
+        service = VehicleParameterService(vehicle)  # type: ignore[arg-type]
+        service.replace(
+            [Parameter(key="OLD", value=1.0, unit="-", category="test", description="")]
+        )
+        replace_started = threading.Event()
+        continue_replace = threading.Event()
+        refresh_started = threading.Event()
+        refresh_done = threading.Event()
+        original_replace = service.replace
+
+        def pause_defaults(parameters) -> None:
+            values = tuple(parameters)
+            if values and values[0].default_value == 12.0:
+                replace_started.set()
+                if not continue_replace.wait(2.0):
+                    raise TimeoutError("test did not release parameter defaults")
+            original_replace(values)
+
+        service.replace = pause_defaults
+        loader = lambda: {"OLD": 12.0}
+        worker = threading.Thread(
+            target=lambda: service._load_defaults_once(0, loader)
+        )
+
+        def refresh_catalogue() -> None:
+            refresh_started.set()
+            service.refresh()
+            refresh_done.set()
+
+        refresher = threading.Thread(target=refresh_catalogue)
+        worker.start()
+        try:
+            self.assertTrue(replace_started.wait(1.0))
+            self.assertFalse(service._sync_lock.acquire(blocking=False))
+
+            refresher.start()
+            self.assertTrue(refresh_started.wait(1.0))
+            continue_replace.set()
+            worker.join(1.0)
+            refresher.join(1.0)
+
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(refresher.is_alive())
+            self.assertTrue(refresh_done.is_set())
+            self.assertTrue(service._loading)
+            self.assertEqual(service.current, ())
+        finally:
+            continue_replace.set()
+            worker.join(1.0)
+            if refresher.ident is not None:
+                refresher.join(1.0)
+            service.stop()
+
+    def test_conflicting_parameter_names_and_indexes_fail_the_catalogue(self) -> None:
+        malformed_catalogues = (
+            ((b"FOO", 0), (b"FOO", 1)),
+            ((b"FIRST", 0), (b"SECOND", 0)),
+        )
+        for messages in malformed_catalogues:
+            with self.subTest(messages=messages):
+                vehicle = _FakeVehicle()
+                service = VehicleParameterService(vehicle)  # type: ignore[arg-type]
+                service.start()
+                try:
+                    for name, index in messages:
+                        vehicle.publish(
+                            _Message(
+                                message_type="PARAM_VALUE",
+                                param_id=name,
+                                param_value=1.0,
+                                param_count=2,
+                                param_index=index,
+                                param_type=9,
+                            )
+                        )
+                    self.assertEqual(
+                        service.sync_status.state, ParameterSyncState.FAILED
+                    )
+                    self.assertEqual(service.current, ())
+                finally:
+                    service.stop()
+
     def test_packed_parameter_defaults_decoder_uses_compiled_defaults(self) -> None:
         import struct
 

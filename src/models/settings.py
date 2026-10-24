@@ -353,12 +353,17 @@ class SettingsModel(Model):
         battery_telemetry = BatteryTelemetrySettings(
             **_known(BatteryTelemetrySettings, battery_telemetry_payload)
         )
-        mission_payload = dict(backend_payload.pop("mission", {}))
+        mission_payload = backend_payload.pop("mission", {})
+        if not isinstance(mission_payload, dict):
+            raise ValueError("backend.mission alanı nesne olmalı")
+        radii_payload = mission_payload.get("radii", {})
+        if not isinstance(radii_payload, dict):
+            raise ValueError("backend.mission.radii alanı nesne olmalı")
         radii = dict(DEFAULT_RADII)
         radii.update(
             {
                 key: int(value)
-                for key, value in mission_payload.get("radii", {}).items()
+                for key, value in radii_payload.items()
             }
         )
         backend = BackendSettings(

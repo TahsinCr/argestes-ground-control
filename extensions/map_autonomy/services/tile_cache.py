@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
+import os
 import shutil
 import threading
 import time
@@ -88,10 +89,9 @@ class TileCacheServer(TileCacheService):
         self._index: dict[str, dict[str, Any]] = {}
         self._total_bytes = 0
         self._generation = 0
-        self._inflight: dict[str, threading.Event] = {}
+        self._inflight: dict[tuple[int, str], threading.Event] = {}
         self._fetch_gate = threading.BoundedSemaphore(6)
         self._last_persist_at = 0.0
-        self._writes_since_persist = 0
         self._load_from_disk()
 
     @property
@@ -114,6 +114,10 @@ class TileCacheServer(TileCacheService):
         return self._cache_path / "cache-index.json"
 
     @property
+    def index_dirty_path(self) -> Path:
+        return self._cache_path / "cache-index.dirty"
+
+    @property
     def cache_path(self) -> Path:
         return self._cache_path
 
@@ -126,6 +130,7 @@ class TileCacheServer(TileCacheService):
                 # Requests already in flight belong to the previous cache
                 # root. Invalidate their writes before switching the index.
                 self._generation += 1
+                self._invalidate_inflight_locked()
                 self._cache_path = new_cache_path
             self._enabled = enabled
             self._limit_mb = limit_mb
@@ -152,20 +157,18 @@ class TileCacheServer(TileCacheService):
     def stop(self) -> None:
         with self._lock:
             server = self._server
-        if server is None:
-            if self._owns_async_runtime:
-                self._async_runtime.stop()
-            return
-        future = self._async_runtime.submit(self._stop_server(server))
-        try:
-            future.result(timeout=2.0)
-        except concurrent.futures.TimeoutError:
-            future.cancel()
+        if server is not None:
+            future = self._async_runtime.submit(self._stop_server(server))
+            try:
+                future.result(timeout=2.0)
+            except concurrent.futures.TimeoutError:
+                future.cancel()
         with self._lock:
-            self._persist_index_locked()
+            if self.index_dirty_path.exists():
+                self._persist_index_locked()
             if self._server is server:
                 self._server = None
-            self._server_address = None
+                self._server_address = None
         if self._owns_async_runtime:
             self._async_runtime.stop()
 
@@ -267,10 +270,12 @@ class TileCacheServer(TileCacheService):
             # that is being deleted; it may still serve its caller, but must
             # not repopulate the cache after this point.
             self._generation += 1
+            self._invalidate_inflight_locked()
             shutil.rmtree(self._tiles_root, ignore_errors=True)
             self._index.clear()
             self._total_bytes = 0
             self.index_path.unlink(missing_ok=True)
+            self.index_dirty_path.unlink(missing_ok=True)
         self.cache_changed.publish(0)
 
     def count_tiles(self) -> int:
@@ -306,7 +311,7 @@ class TileCacheServer(TileCacheService):
 
         owns_fetch = False
         if self._enabled:
-            wait_event = self._begin_fetch(tile.key)
+            wait_event = self._begin_fetch(tile.key, generation)
             if wait_event is not None:
                 wait_event.wait(timeout=9)
                 cached = self._read_cached_tile(tile)
@@ -333,7 +338,7 @@ class TileCacheServer(TileCacheService):
                 )
         finally:
             if owns_fetch:
-                self._finish_fetch(tile.key)
+                self._finish_fetch(tile.key, generation)
 
         remote_url = self._remote_url(tile)
         if remote_url:
@@ -350,19 +355,29 @@ class TileCacheServer(TileCacheService):
     def _tiles_root(self) -> Path:
         return self._cache_path / "tiles"
 
-    def _begin_fetch(self, key: str) -> threading.Event | None:
+    def _begin_fetch(
+        self, key: str, generation: int
+    ) -> threading.Event | None:
         with self._lock:
-            event = self._inflight.get(key)
+            if generation != self._generation:
+                return None
+            fetch_key = (generation, key)
+            event = self._inflight.get(fetch_key)
             if event is not None:
                 return event
-            self._inflight[key] = threading.Event()
+            self._inflight[fetch_key] = threading.Event()
             return None
 
-    def _finish_fetch(self, key: str) -> None:
+    def _finish_fetch(self, key: str, generation: int) -> None:
         with self._lock:
-            event = self._inflight.pop(key, None)
+            event = self._inflight.pop((generation, key), None)
             if event is not None:
                 event.set()
+
+    def _invalidate_inflight_locked(self) -> None:
+        for event in self._inflight.values():
+            event.set()
+        self._inflight.clear()
 
     def _parse_tile_request(self, raw_path: str) -> TileRequest | None:
         parts = [
@@ -424,6 +439,7 @@ class TileCacheServer(TileCacheService):
             generation = self._generation
             path = self._tile_path(tile)
         try:
+            file_version = path.stat()
             payload = path.read_bytes()
         except (FileNotFoundError, IsADirectoryError):
             self._remove_index_entry(tile, generation=generation)
@@ -431,10 +447,10 @@ class TileCacheServer(TileCacheService):
         except OSError:
             return None
         if not payload:
-            self._discard_invalid_cached_tile(tile, path, generation)
+            self._discard_invalid_cached_tile(tile, path, generation, file_version)
             return None
         if not self._looks_like_image(payload, tile.extension):
-            self._discard_invalid_cached_tile(tile, path, generation)
+            self._discard_invalid_cached_tile(tile, path, generation, file_version)
             return None
         self._touch_index(
             tile,
@@ -446,17 +462,32 @@ class TileCacheServer(TileCacheService):
         return payload
 
     def _discard_invalid_cached_tile(
-        self, tile: TileRequest, path: Path, generation: int
+        self,
+        tile: TileRequest,
+        path: Path,
+        generation: int,
+        file_version,
     ) -> None:
-        # Keep the generation check and file removal atomic with respect to
-        # clear()/configure(), so a stale read cannot delete a newer tile.
+        # The file may have been atomically replaced after the failed read.
         with self._lock:
             if generation != self._generation:
                 return
             try:
-                path.unlink(missing_ok=True)
+                current = path.stat()
             except OSError:
-                pass
+                current = None
+            if current is not None:
+                identity = lambda item: (
+                    item.st_dev,
+                    item.st_ino,
+                    item.st_size,
+                    item.st_mtime_ns,
+                    item.st_ctime_ns,
+                )
+                if identity(current) != identity(file_version):
+                    return
+                self._mark_index_dirty_locked()
+                path.unlink(missing_ok=True)
             self._remove_index_entry(tile, generation=generation)
 
     def _fetch_remote_tile(self, tile: TileRequest) -> tuple[bytes | None, str | None]:
@@ -517,6 +548,7 @@ class TileCacheServer(TileCacheService):
             if generation != self._generation:
                 return
             is_new_tile = tile.key not in self._index
+            self._mark_index_dirty_locked()
             ensure_directory(path.parent)
             temp_path = path.with_name(f".{path.name}.{threading.get_ident()}.tmp")
             temp_path.write_bytes(payload)
@@ -536,6 +568,19 @@ class TileCacheServer(TileCacheService):
         self._index.clear()
         self._total_bytes = 0
         tiles_root = self._tiles_root
+        if not self.index_dirty_path.exists():
+            loaded, changed = self._load_index_snapshot_locked()
+            if loaded:
+                previous_total = self._total_bytes
+                previous_count = len(self._index)
+                self._prune_if_needed_locked()
+                if (
+                    changed
+                    or len(self._index) != previous_count
+                    or self._total_bytes != previous_total
+                ):
+                    self._persist_index_locked()
+                return
         if tiles_root.exists():
             for path in tiles_root.rglob("*"):
                 tile = self._tile_from_path(path)
@@ -550,6 +595,87 @@ class TileCacheServer(TileCacheService):
                 self._touch_index(tile, path, persist=False)
         self._prune_if_needed_locked()
         self._persist_index_locked()
+
+    def _load_index_snapshot_locked(self) -> tuple[bool, bool]:
+        try:
+            payload = json.loads(self.index_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return False, False
+        if (
+            not isinstance(payload, dict)
+            or payload.get("version") != 2
+            or not isinstance(payload.get("entries"), list)
+        ):
+            return False, False
+
+        entries: dict[str, dict] = {}
+        total_bytes = 0
+        for item in payload["entries"]:
+            if not isinstance(item, list) or len(item) != 8:
+                return False, False
+            try:
+                provider, variant, z, x, y, extension, stored_size, updated_at = item
+                if (
+                    not isinstance(provider, str)
+                    or not isinstance(variant, str)
+                    or not isinstance(extension, str)
+                    or any(type(value) is not int for value in (z, x, y, stored_size, updated_at))
+                ):
+                    return False, False
+                if (
+                    not self._safe_component(provider)
+                    or not self._safe_component(variant)
+                    or extension not in {"png", "jpg"}
+                    or z < 0
+                    or z > 21
+                    or x < 0
+                    or y < 0
+                    or x >= (1 << z)
+                    or y >= (1 << z)
+                    or (provider == "carto" and variant not in CARTO_VARIANTS)
+                    or (provider == "esri" and variant != "world-imagery")
+                    or provider not in {"carto", "esri"}
+                ):
+                    return False, False
+                tile = TileRequest(
+                    provider,
+                    variant,
+                    z,
+                    x,
+                    y,
+                    extension,
+                )
+                relative_path = os.path.join(
+                    "tiles",
+                    provider,
+                    variant,
+                    str(z),
+                    str(x),
+                    f"{y}.{extension}",
+                )
+            except (TypeError, ValueError):
+                return False, False
+            if stored_size <= 0:
+                return False, False
+            if tile.key in entries:
+                return False, False
+            entries[tile.key] = {
+                "key": tile.key,
+                "provider": tile.provider,
+                "variant": tile.variant,
+                "z": tile.z,
+                "x": tile.x,
+                "y": tile.y,
+                "extension": tile.extension,
+                "path": relative_path,
+                "size": stored_size,
+                "updated_at": updated_at,
+            }
+            total_bytes += stored_size
+
+        self._index = entries
+        self._total_bytes = total_bytes
+        return True, False
 
     def _tile_from_path(self, path: Path) -> TileRequest | None:
         if not path.is_file() or path.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
@@ -645,22 +771,46 @@ class TileCacheServer(TileCacheService):
 
     def _persist_index_locked(self) -> None:
         ensure_directory(self._cache_path)
-        entries = sorted(
+        indexed = sorted(
             self._index.values(),
             key=lambda item: item.get("updated_at", 0),
             reverse=True,
         )
+        entries = [
+            [
+                item["provider"],
+                item["variant"],
+                item["z"],
+                item["x"],
+                item["y"],
+                item["extension"],
+                item["size"],
+                item["updated_at"],
+            ]
+            for item in indexed
+        ]
         temp_path = self.index_path.with_suffix(".json.tmp")
-        temp_path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+        temp_path.write_text(
+            json.dumps({"version": 2, "entries": entries}, separators=(",", ":")),
+            encoding="utf-8",
+        )
         temp_path.replace(self.index_path)
+        try:
+            self.index_dirty_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         self._last_persist_at = time.monotonic()
-        self._writes_since_persist = 0
 
     def _request_persist_locked(self) -> None:
-        self._writes_since_persist += 1
         elapsed = time.monotonic() - self._last_persist_at
-        if self._writes_since_persist >= 24 or elapsed >= 1.5:
+        if elapsed >= 1.5:
             self._persist_index_locked()
+
+    def _mark_index_dirty_locked(self) -> None:
+        if self.index_dirty_path.exists():
+            return
+        ensure_directory(self._cache_path)
+        self.index_dirty_path.touch()
 
     def _prune_if_needed_locked(self) -> None:
         limit_bytes = max(32, int(self._limit_mb)) * 1024 * 1024
@@ -668,6 +818,7 @@ class TileCacheServer(TileCacheService):
         if total <= limit_bytes:
             return
         target = int(limit_bytes * 0.9)
+        self._mark_index_dirty_locked()
         for entry in sorted(
             self._index.values(), key=lambda item: item.get("updated_at", 0)
         ):

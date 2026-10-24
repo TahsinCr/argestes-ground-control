@@ -41,6 +41,8 @@ class ServerSession:
         self.history_write_failures = 0
         self._stop = threading.Event()
         self._thread = None
+        self._lifecycle_lock = threading.RLock()
+        self._restart_when_stopped = False
         self._opener = build_opener(HTTPCookieProcessor(CookieJar()))
         self._request_lock = threading.Lock()
         self.clock = None
@@ -49,17 +51,26 @@ class ServerSession:
         self.updated = EventBus[dict]()
 
     def start(self):
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(
-            target=self._run, name="TeknofestServer", daemon=True
-        )
-        self._thread.start()
+        with self._lifecycle_lock:
+            if self._thread is not None and self._thread.is_alive():
+                if self._stop.is_set():
+                    self._restart_when_stopped = True
+                return
+            self._restart_when_stopped = False
+            self._stop.clear()
+            self._thread = threading.Thread(
+                target=self._run_with_lifecycle,
+                name="TeknofestServer",
+                daemon=True,
+            )
+            self._thread.start()
 
     def stop(self, timeout_s=None):
-        self._stop.set()
-        thread = self._thread
+        with self._lifecycle_lock:
+            self._restart_when_stopped = False
+            self._stop.set()
+            self.connected = False
+            thread = self._thread
         if thread and thread is not threading.current_thread():
             timeout = (
                 float(self.config.get("timeout_s", 3)) + 1
@@ -68,8 +79,19 @@ class ServerSession:
             )
             thread.join(timeout=timeout)
         stopped = thread is None or not thread.is_alive() or thread is threading.current_thread()
-        self.connected = False
         return stopped
+
+    def _run_with_lifecycle(self):
+        try:
+            self._run()
+        finally:
+            with self._lifecycle_lock:
+                if self._thread is threading.current_thread():
+                    self._thread = None
+                restart = self._restart_when_stopped
+                self._restart_when_stopped = False
+                if restart:
+                    self.start()
 
     def request(self, path, payload=None):
         with self._request_lock:
@@ -514,7 +536,7 @@ class CompetitionRuntime:
                 with self._lifecycle_lock:
                     if not self._closed:
                         for identifier, session in previous_sessions.items():
-                            if was_running.get(identifier) and stopped.get(identifier):
+                            if was_running.get(identifier):
                                 session.start()
                 raise RuntimeError(
                     "An existing TEKNOFEST session is still stopping; profiles were not changed"

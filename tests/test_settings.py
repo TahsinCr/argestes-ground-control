@@ -176,6 +176,26 @@ class SettingsTests(unittest.TestCase):
                 )
             )
 
+    def test_malformed_mission_radii_are_preserved_before_safe_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base_dir = Path(directory)
+            settings_path = base_dir / "data" / "settings.json"
+            settings_path.parent.mkdir(parents=True)
+            payload = SettingsModel.default(base_dir).to_dict()
+            payload["backend"]["mission"]["radii"] = []
+            original = json.dumps(payload)
+            settings_path.write_text(original, encoding="utf-8")
+
+            service = SettingsService(base_dir)
+
+            backups = tuple(settings_path.parent.glob("settings.corrupt-*.json"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_text(encoding="utf-8"), original)
+            self.assertEqual(
+                service.current.backend.mission.radii,
+                SettingsModel.default(base_dir).backend.mission.radii,
+            )
+
     def test_unreadable_settings_file_is_preserved_before_defaults_are_written(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base_dir = Path(directory)

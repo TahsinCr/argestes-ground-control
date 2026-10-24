@@ -96,8 +96,8 @@ existing one-second resolution.
 
 ## Tile-cache file-tree probe
 
-Measure startup index rebuild, JSON persistence, warm cache hits, eight-way
-concurrent hits, and pruning using real temporary files:
+Measure startup index rebuild, clean checkpoint reopen, JSON persistence, warm
+cache hits, eight-way concurrent hits, and pruning using real temporary files:
 
 ```sh
 .venv/bin/python tools/tile_cache_storage_probe.py
@@ -109,13 +109,14 @@ per tile, so the directory tree and file count are real but payload sizes do not
 represent a normal map. On this machine `/tmp` is `tmpfs`; the measurements below
 are a warm-cache indexing baseline, not SSD/HDD performance.
 
-On 24 October 2026, startup index rebuild took 505 ms / 2.54 s / 5.07 s for
-10k / 50k / 100k files. Persisting the 100k-entry index took 108 ms. Warm hit
-P50 remained 16 µs across all three sizes; eight concurrent cache hits had a
-P95 of 0.42–0.45 ms. Pruning a 100k-file cache to a 1 MiB limit and persisting
-the remainder took 119 ms on tmpfs. These results confirm that rebuilding the
-index is the largest measured cost at this scale, but do not justify changing
-the on-disk format or locking strategy without a run on the target filesystem.
+On 24 October 2026, the 10k / 50k / 100k cold-index rebuilds took 498 ms /
+2.48 s / 5.00 s; reopening the clean compact checkpoint took 47 ms / 275 ms /
+513 ms. Persisting the 100k-entry checkpoint took 88 ms. Warm-hit P50 was
+17–18 µs, and eight concurrent cache hits had a P95 of 0.45–0.55 ms. Pruning a
+100k-file cache to a 1 MiB limit and persisting the remainder took 64 ms on
+tmpfs. A dirty, missing or invalid checkpoint still triggers a full scan; this
+keeps interrupted cache writes recoverable. These measurements use synthetic
+68-byte PNGs and a warm `/tmp` tmpfs page cache, not the target storage device.
 
 For a running application, import `AdapterProbe` from `tools.qt_queue_probe` in
 a development/debugger session and construct it with an existing Qt service

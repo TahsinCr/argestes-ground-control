@@ -119,6 +119,17 @@ def probe_count(
                 server._persist_index_locked()
             index_write_s = time.perf_counter() - index_write_started
 
+            server.stop()
+            checkpoint_started = time.perf_counter()
+            server = TileCacheServer(
+                cache_path=root,
+                enabled=True,
+                limit_mb=1024,
+            )
+            checkpoint_load_s = time.perf_counter() - checkpoint_started
+            if server.count_tiles() != count:
+                raise RuntimeError("checkpoint reopen did not restore every tile")
+
             prune_s = None
             if measure_prune and tile_count_bytes > 1024 * 1024:
                 prune_started = time.perf_counter()
@@ -133,6 +144,7 @@ def probe_count(
                 "indexed_tiles": indexed,
                 "tile_payload_bytes": tile_count_bytes,
                 "startup_rebuild_ms": round(startup_s * 1000, 3),
+                "checkpoint_load_ms": round(checkpoint_load_s * 1000, 3),
                 "index_persist_ms": round(index_write_s * 1000, 3),
                 "warm_cache_hit": distribution(hit_latencies),
                 "concurrent_cache_hits": {
@@ -174,7 +186,7 @@ def main() -> int:
     print(
         json.dumps(
             {
-                "measurement": "temporary file-backed tile-cache index rebuild",
+                "measurement": "temporary file-backed tile-cache rebuild and checkpoint load",
                 "provider_access": "none; all image files are generated locally",
                 "tile_fixture": (
                     f"same {len(PNG_1X1)}-byte valid 1x1 PNG repeated for each tile; "

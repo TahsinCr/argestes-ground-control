@@ -104,6 +104,12 @@ Release headings link each entry to its release date.
 * Warm tile-cache hits use the already-read payload size and update the existing
   LRU timestamp in place, avoiding repeated file metadata calls and index-entry
   reconstruction without changing the timestamp's one-second resolution.
+* Tile-cache startup now loads a compact, versioned checkpoint instead of
+  walking every tile file on each clean launch. Cache writes mark the checkpoint
+  dirty until its atomic save completes; an interrupted update falls back to a
+  full rebuild. Full-index persistence is now time-batched rather than triggered
+  every 24 tiles. In the synthetic 100k-file tmpfs probe, clean reopen fell from
+  about 5.0 s to 0.51 s; target-disk performance will differ.
 * TEKNOFEST request history is stored directly at
   `data/siha_teknofest_history.sqlite3`; the former nested database is not
   migrated automatically.
@@ -137,6 +143,12 @@ Release headings link each entry to its release date.
   an older read or fetch restore metadata, overwrite the new cache, or delete a
   tile created after the cache changed. Cache inspection returns independent
   metadata dictionaries instead of exposing the live index.
+* Tile downloads are deduplicated per cache generation. Clearing or switching
+  the cache wakes old waiters, and a late fetch cannot clear a newer request's
+  in-flight entry.
+* A corrupt tile read now removes the file only if its file identity still
+  matches the version that was read; an atomic replacement made in the meantime
+  is preserved.
 * TEKNOFEST management events now require an authenticated, non-stopping server
   session at the point the request lock is acquired. A queued event can no
   longer overtake login or start after session shutdown; failed delivery remains
@@ -145,6 +157,18 @@ Release headings link each entry to its release date.
   catalogue. Timer and streamed catalogue updates are scoped to the active
   refresh generation, and `PARAM_VALUE` indexes outside `0..param_count-1` no
   longer count toward catalogue completion.
+* MAVLink parameter defaults are applied under the same refresh lock as the
+  catalogue generation check, so a stale defaults worker cannot restore a list
+  that a newer refresh has cleared. Duplicate parameter names or conflicting
+  parameter indexes now fail the catalogue instead of reporting false
+  completion.
+* A TEKNOFEST profile edit that times out while an old request is unwinding
+  leaves the saved profile untouched and restarts that session when the pending
+  stop finishes. An explicit disconnect or application shutdown cancels that
+  deferred restart.
+* Settings loading now rejects a non-object `backend.mission` or
+  `backend.mission.radii` value as malformed input. The existing recovery path
+  preserves the original file before writing safe defaults.
 * Camera-panel video outputs now take the frame and freshness timestamp from the
   same selected camera. Switching sources can no longer label a cached frame
   from another camera as the new source.

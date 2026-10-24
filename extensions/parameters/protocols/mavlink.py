@@ -56,6 +56,8 @@ class VehicleParameterService(MutableParameterService):
         self._progress_buffer: dict[str, Parameter] = {}
         self._last_progress_publish = 0.0
         self._received_indexes: set[int] = set()
+        self._parameter_keys_by_index: dict[int, str] = {}
+        self._parameter_indexes_by_key: dict[str, int] = {}
         self._expected_count = 0
         self._loading = False
         self._pending_writes: dict[str, _PendingWrite] = {}
@@ -100,6 +102,8 @@ class VehicleParameterService(MutableParameterService):
             self._parameter_buffer.clear()
             self._progress_buffer.clear()
             self._received_indexes.clear()
+            self._parameter_keys_by_index.clear()
+            self._parameter_indexes_by_key.clear()
             self._loading = False
             self._set_sync_status(ParameterSyncStatus())
 
@@ -283,6 +287,8 @@ class VehicleParameterService(MutableParameterService):
                 self._parameter_buffer.clear()
                 self._progress_buffer.clear()
                 self._received_indexes.clear()
+                self._parameter_keys_by_index.clear()
+                self._parameter_indexes_by_key.clear()
                 for pending in self._pending_writes.values():
                     pending.event.set()
                 self._set_sync_status(
@@ -337,39 +343,71 @@ class VehicleParameterService(MutableParameterService):
             progress_parameters: tuple[Parameter, ...] = ()
             partial_status = None
             expected_count = None
+            catalog_conflict = None
             if loading:
-                self._parameter_buffer[key] = parameter
-                self._progress_buffer[key] = parameter
                 self._expected_count = max(self._expected_count, count)
                 if count > 0 and 0 <= index < count:
-                    self._received_indexes.add(index)
-                complete = (
-                    self._expected_count > 0
-                    and len(self._received_indexes) >= self._expected_count
-                )
-                if complete:
+                    indexed_key = self._parameter_keys_by_index.get(index)
+                    indexed_at = self._parameter_indexes_by_key.get(key)
+                    if indexed_key is not None and indexed_key != key:
+                        catalog_conflict = "index_reused"
+                    elif indexed_at is not None and indexed_at != index:
+                        catalog_conflict = "name_reused"
+                    else:
+                        self._parameter_keys_by_index[index] = key
+                        self._parameter_indexes_by_key[key] = index
+                        self._received_indexes.add(index)
+                if catalog_conflict is not None:
+                    received = len(self._received_indexes)
                     expected_count = self._expected_count
-                    received_parameters = tuple(self._parameter_buffer.values())
+                    self._loading = False
                     self._parameter_buffer.clear()
                     self._progress_buffer.clear()
                     self._received_indexes.clear()
-                    self._loading = False
+                    self._parameter_keys_by_index.clear()
+                    self._parameter_indexes_by_key.clear()
                     self._cancel_refresh_timer()
-                else:
-                    received_parameters = ()
-                    now = time.monotonic()
-                    if (
-                        len(self._progress_buffer) >= self.PROGRESS_BATCH_SIZE
-                        or now - self._last_progress_publish >= self.PROGRESS_INTERVAL_S
-                    ):
-                        progress_parameters = tuple(self._progress_buffer.values())
-                        self._progress_buffer.clear()
-                        self._last_progress_publish = now
-                        partial_status = ParameterSyncStatus(
-                            ParameterSyncState.PARTIAL,
-                            len(self._received_indexes) or len(self._parameter_buffer),
-                            self._expected_count or None,
+                    self._set_sync_status(
+                        ParameterSyncStatus(
+                            ParameterSyncState.FAILED,
+                            received,
+                            expected_count or None,
                         )
+                    )
+                    received_parameters = ()
+                else:
+                    self._parameter_buffer[key] = parameter
+                    self._progress_buffer[key] = parameter
+                    complete = (
+                        self._expected_count > 0
+                        and len(self._received_indexes) >= self._expected_count
+                        and len(self._parameter_buffer) >= self._expected_count
+                    )
+                    if complete:
+                        expected_count = self._expected_count
+                        received_parameters = tuple(self._parameter_buffer.values())
+                        self._parameter_buffer.clear()
+                        self._progress_buffer.clear()
+                        self._received_indexes.clear()
+                        self._parameter_keys_by_index.clear()
+                        self._parameter_indexes_by_key.clear()
+                        self._loading = False
+                        self._cancel_refresh_timer()
+                    else:
+                        received_parameters = ()
+                        now = time.monotonic()
+                        if (
+                            len(self._progress_buffer) >= self.PROGRESS_BATCH_SIZE
+                            or now - self._last_progress_publish >= self.PROGRESS_INTERVAL_S
+                        ):
+                            progress_parameters = tuple(self._progress_buffer.values())
+                            self._progress_buffer.clear()
+                            self._last_progress_publish = now
+                            partial_status = ParameterSyncStatus(
+                                ParameterSyncState.PARTIAL,
+                                len(self._received_indexes) or len(self._parameter_buffer),
+                                self._expected_count or None,
+                            )
             else:
                 received_parameters = ()
             pending = self._pending_writes.get(key)
@@ -383,6 +421,17 @@ class VehicleParameterService(MutableParameterService):
             )
             if confirmed:
                 pending.confirmed = True
+
+        if catalog_conflict is not None:
+            self._event(
+                "parameter.catalog_conflict",
+                "Araç parametre kataloğunda yinelenen ad veya çelişkili indeks bulundu",
+                severity="danger",
+                details={"parameter": key, "index": index, "conflict": catalog_conflict},
+            )
+            if confirmed and pending is not None:
+                pending.event.set()
+            return
 
         if progress_parameters:
             with self._sync_lock:
@@ -501,14 +550,14 @@ class VehicleParameterService(MutableParameterService):
         with self._sync_lock:
             if generation != self._defaults_generation or not self._vehicle.connected:
                 return
-        parameters = self.current
-        enriched = tuple(
-            replace(parameter, default_value=defaults.get(parameter.key))
-            for parameter in parameters
-        )
-        matched = sum(parameter.key in defaults for parameter in parameters)
-        if matched:
-            self.replace(enriched)
+            parameters = self.current
+            enriched = tuple(
+                replace(parameter, default_value=defaults.get(parameter.key))
+                for parameter in parameters
+            )
+            matched = sum(parameter.key in defaults for parameter in parameters)
+            if matched:
+                self.replace(enriched)
         self._event(
             "parameter.defaults_received",
             f"Uçuş cihazından {matched} parametrenin varsayılan değeri alındı",
@@ -649,6 +698,8 @@ class VehicleParameterService(MutableParameterService):
                 self._parameter_buffer.clear()
                 self._progress_buffer.clear()
                 self._received_indexes.clear()
+                self._parameter_keys_by_index.clear()
+                self._parameter_indexes_by_key.clear()
                 retry = False
                 keep_waiting = False
             else:

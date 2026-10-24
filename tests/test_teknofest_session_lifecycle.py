@@ -326,6 +326,9 @@ class TeknofestSessionLifecycleTests(unittest.TestCase):
             running = True
             config = {"timeout_s": 0.1}
 
+            def start(self):
+                self.running = True
+
             def stop(self, *, timeout_s=None):
                 return False
 
@@ -404,6 +407,119 @@ class TeknofestSessionLifecycleTests(unittest.TestCase):
             self.assertEqual(set(runtime.sessions), {"old-a", "old-b"})
         finally:
             runtime.worker.shutdown(wait=True, cancel_futures=True)
+
+    def test_profile_timeout_restarts_session_after_its_request_finishes(self) -> None:
+        first_login_started = threading.Event()
+        release_first_login = threading.Event()
+        restarted_login_started = threading.Event()
+        release_restarted_login = threading.Event()
+        login_count = 0
+        login_lock = threading.Lock()
+
+        class Settings:
+            def __init__(self) -> None:
+                self.servers = [
+                    {
+                        "identifier": "old",
+                        "timeout_s": 0.1,
+                        "base_url": "http://127.0.0.1:1",
+                    }
+                ]
+                self.updated = False
+
+            def extension_config(self, _identifier):
+                return {"servers": self.servers}
+
+            def update_extension(self, _identifier, *, config):
+                self.updated = True
+                self.servers = config["servers"]
+
+        settings = Settings()
+        old_session = ServerSession(
+            settings.servers[0], lambda: None, database=None, logger=None
+        )
+
+        def controlled_request(path, payload=None):
+            nonlocal login_count
+            if path != "/api/giris":
+                return {}
+            with login_lock:
+                login_count += 1
+                attempt = login_count
+            if attempt == 1:
+                first_login_started.set()
+                if not release_first_login.wait(2.0):
+                    raise TimeoutError("test did not release the initial login")
+            else:
+                restarted_login_started.set()
+                if not release_restarted_login.wait(2.0):
+                    raise TimeoutError("test did not release the restarted login")
+            return {"takim_numarasi": 1}
+
+        old_session.request = controlled_request
+        old_session.start()
+        self.assertTrue(first_login_started.wait(1.0))
+
+        runtime = object.__new__(CompetitionRuntime)
+        runtime._lifecycle_lock = threading.RLock()
+        runtime._closed = False
+        runtime.settings = settings
+        runtime.telemetry = SimpleNamespace(current=None)
+        runtime.database = None
+        runtime.logger = SimpleNamespace(event=lambda *args, **kwargs: None)
+        runtime.clock_references = None
+        runtime._clock_reference_ids = set()
+        runtime.sessions = {"old": old_session}
+        runtime._profile_generations = {"old": 1}
+        runtime.worker = ThreadPoolExecutor(max_workers=1)
+
+        new_config = CompetitionServerConfig(identifier="new").to_dict(
+            include_password=True
+        )
+        try:
+            with self.assertRaisesRegex(RuntimeError, "still stopping"):
+                runtime.configure([new_config]).result(timeout=2.0)
+            self.assertFalse(settings.updated)
+
+            release_first_login.set()
+            self.assertTrue(restarted_login_started.wait(1.0))
+            self.assertTrue(old_session.running)
+        finally:
+            release_first_login.set()
+            release_restarted_login.set()
+            runtime.stop()
+            runtime.worker.shutdown(wait=True, cancel_futures=True)
+
+    def test_explicit_stop_cancels_a_queued_session_restart(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        runs = 0
+
+        session = ServerSession(
+            {"timeout_s": 0.1}, lambda: None, database=None, logger=None
+        )
+
+        def blocked_run():
+            nonlocal runs
+            runs += 1
+            entered.set()
+            release.wait(1.0)
+
+        session._run = blocked_run
+        session.start()
+        thread = session._thread
+        try:
+            self.assertTrue(entered.wait(1.0))
+            self.assertFalse(session.stop(timeout_s=0))
+            session.start()
+            self.assertFalse(session.stop(timeout_s=0))
+        finally:
+            release.set()
+            if thread is not None:
+                thread.join(1.0)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(runs, 1)
 
 
 if __name__ == "__main__":
