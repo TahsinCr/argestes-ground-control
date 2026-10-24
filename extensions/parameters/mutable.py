@@ -6,13 +6,15 @@ from dataclasses import replace
 
 from src.core.events import EventBus
 from src.models.parameters import Parameter
-from src.extension.api.parameters import ParameterService
+from src.extension.api.parameters import ParameterService, ParameterSyncStatus
 
 
 class MutableParameterService(ParameterService):
     def __init__(self, parameters: Iterable[Parameter] = ()) -> None:
         self._parameters = {item.key: replace(item) for item in parameters}
         self._changed = EventBus[tuple[Parameter, ...]]()
+        self._sync_status = ParameterSyncStatus()
+        self._sync_status_changed = EventBus[ParameterSyncStatus]()
         self._lock = threading.RLock()
 
     @property
@@ -23,6 +25,22 @@ class MutableParameterService(ParameterService):
     @property
     def changed(self) -> EventBus[tuple[Parameter, ...]]:
         return self._changed
+
+    @property
+    def sync_status(self) -> ParameterSyncStatus:
+        with self._lock:
+            return self._sync_status
+
+    @property
+    def sync_status_changed(self) -> EventBus[ParameterSyncStatus]:
+        return self._sync_status_changed
+
+    def _set_sync_status(self, status: ParameterSyncStatus) -> None:
+        with self._lock:
+            if self._sync_status == status:
+                return
+            self._sync_status = status
+        self._sync_status_changed.publish(status)
 
     def start(self) -> None:
         self._changed.publish(self.current)

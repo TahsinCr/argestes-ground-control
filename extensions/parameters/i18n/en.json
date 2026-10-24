@@ -1,5 +1,11 @@
 {
   "extension.parameters.name": "Parameters",
   "extension.parameters.description": "MAVLink parameter inspection and editing",
-  "extension.parameters.category": "Vehicle"
+  "extension.parameters.category": "Vehicle",
+  "parameters.sync.idle": "Parameter list has not been verified",
+  "parameters.sync.loading": "Loading parameters: {received}/{expected}",
+  "parameters.sync.partial": "Partial parameter list: {received}/{expected}",
+  "parameters.sync.complete": "Complete parameter list: {received}",
+  "parameters.sync.failed": "Parameter transfer failed: {received}/{expected}; Apply disabled",
+  "parameters.sync.disconnected": "Vehicle disconnected; parameters may be stale"
 }

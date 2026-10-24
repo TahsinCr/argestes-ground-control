@@ -67,10 +67,12 @@ class ParametersExtension:
         panel = ParametersPanel("", "", "", parent)
         adapter = QtParameterService(context.services.resolve(ParameterService), panel)
         adapter.parameters_changed.connect(panel.set_parameters)
+        adapter.sync_status_changed.connect(panel.set_sync_status)
         panel.apply_requested.connect(adapter.update_values)
         adapter.write_finished.connect(panel.finish_apply)
         panel.reset_requested.connect(adapter.refresh)
         panel.set_parameters(adapter.current)
+        panel.set_sync_status(adapter.sync_status)
         panel.set_language(language)
         panel.prepare_shutdown = adapter.close
         return panel

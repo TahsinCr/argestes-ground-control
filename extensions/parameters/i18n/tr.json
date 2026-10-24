@@ -1,5 +1,11 @@
 {
   "extension.parameters.name": "Parametreler",
   "extension.parameters.description": "MAVLink parametre inceleme ve düzenleme",
-  "extension.parameters.category": "Araç"
+  "extension.parameters.category": "Araç",
+  "parameters.sync.idle": "Parametre listesi henüz doğrulanmadı",
+  "parameters.sync.loading": "Parametreler alınıyor: {received}/{expected}",
+  "parameters.sync.partial": "Kısmi parametre listesi: {received}/{expected}",
+  "parameters.sync.complete": "Tam parametre listesi: {received}",
+  "parameters.sync.failed": "Parametre aktarımı başarısız: {received}/{expected}; Uygula kapalı",
+  "parameters.sync.disconnected": "Araç bağlantısı yok; parametreler güncel değil"
 }

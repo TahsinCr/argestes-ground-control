@@ -420,23 +420,27 @@ class TileCacheServer(TileCacheService):
     def _read_cached_tile(self, tile: TileRequest) -> bytes | None:
         path = self._tile_path(tile)
         try:
-            if not path.is_file() or path.stat().st_size <= 0:
-                path.unlink(missing_ok=True)
-                return None
             payload = path.read_bytes()
+        except (FileNotFoundError, IsADirectoryError):
+            self._remove_index_entry(tile)
+            return None
         except OSError:
             return None
-        if not self._looks_like_image(payload, tile.extension):
-            path.unlink(missing_ok=True)
-            with self._lock:
-                removed = self._index.pop(tile.key, None)
-                if removed is not None:
-                    self._total_bytes = max(
-                        0,
-                        self._total_bytes - int(removed.get("size", 0)),
-                    )
+        if not payload:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self._remove_index_entry(tile)
             return None
-        self._touch_index(tile, path, persist=False)
+        if not self._looks_like_image(payload, tile.extension):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self._remove_index_entry(tile)
+            return None
+        self._touch_index(tile, path, persist=False, size=len(payload))
         return payload
 
     def _fetch_remote_tile(self, tile: TileRequest) -> tuple[bytes | None, str | None]:
@@ -501,7 +505,7 @@ class TileCacheServer(TileCacheService):
             temp_path = path.with_name(f".{path.name}.{threading.get_ident()}.tmp")
             temp_path.write_bytes(payload)
             temp_path.replace(path)
-            self._touch_index(tile, path, persist=False)
+            self._touch_index(tile, path, persist=False, size=len(payload))
             self._prune_if_needed_locked()
             self._request_persist_locked()
             count = len(self._index)
@@ -555,11 +559,33 @@ class TileCacheServer(TileCacheService):
             else None
         )
 
-    def _touch_index(self, tile: TileRequest, path: Path, *, persist: bool) -> None:
+    def _touch_index(
+        self,
+        tile: TileRequest,
+        path: Path,
+        *,
+        persist: bool,
+        size: int | None = None,
+    ) -> None:
+        updated_at = int(time.time())
         try:
-            stat = path.stat()
-            relative_path = str(path.relative_to(self._cache_path))
+            if size is None:
+                size = path.stat().st_size
         except OSError:
+            return
+        with self._lock:
+            previous = self._index.get(tile.key)
+            if (
+                not persist
+                and previous is not None
+                and int(previous.get("size", -1)) == size
+            ):
+                if int(previous.get("updated_at", -1)) != updated_at:
+                    previous["updated_at"] = updated_at
+                return
+        try:
+            relative_path = str(path.relative_to(self._cache_path))
+        except (OSError, ValueError):
             return
         with self._lock:
             previous = self._index.get(tile.key)
@@ -574,12 +600,23 @@ class TileCacheServer(TileCacheService):
                 "y": tile.y,
                 "extension": tile.extension,
                 "path": relative_path,
-                "size": stat.st_size,
-                "updated_at": int(time.time()),
+                "size": size,
+                "updated_at": updated_at,
             }
-            self._total_bytes += stat.st_size
+            self._total_bytes += size
             if persist:
                 self._persist_index_locked()
+
+    def _remove_index_entry(self, tile: TileRequest) -> None:
+        with self._lock:
+            removed = self._index.pop(tile.key, None)
+            if removed is None:
+                return
+            self._total_bytes = max(
+                0,
+                self._total_bytes - int(removed.get("size", 0)),
+            )
+            self._request_persist_locked()
 
     def _persist_index_locked(self) -> None:
         ensure_directory(self._cache_path)

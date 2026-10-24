@@ -7,6 +7,7 @@ from src.extension.api.parameters import ParameterService
 
 class QtParameterService(_QtAdapter):
     parameters_changed = pyqtSignal(object)
+    sync_status_changed = pyqtSignal(object)
     write_finished = pyqtSignal(object, object)
     _UI_UPDATE_INTERVAL_MS = 100
 
@@ -18,7 +19,12 @@ class QtParameterService(_QtAdapter):
         self._parameter_lock = threading.Lock()
         self._latest_parameters = None
         self._parameter_update_scheduled = False
+        self._latest_sync_status = None
+        self._sync_status_update_scheduled = False
         self._subscriptions.append(backend.changed.subscribe(self._capture_parameters))
+        self._subscriptions.append(
+            backend.sync_status_changed.subscribe(self._capture_sync_status)
+        )
         self._parameter_timer = QTimer(self)
         self._parameter_timer.setSingleShot(True)
         self._parameter_timer.setInterval(self._UI_UPDATE_INTERVAL_MS)
@@ -34,6 +40,16 @@ class QtParameterService(_QtAdapter):
         if should_schedule:
             self._post(self._start_parameter_timer)
 
+    def _capture_sync_status(self, status) -> None:
+        should_schedule = False
+        with self._parameter_lock:
+            self._latest_sync_status = status
+            if not self._sync_status_update_scheduled:
+                self._sync_status_update_scheduled = True
+                should_schedule = True
+        if should_schedule:
+            self._post(self._start_parameter_timer)
+
     @pyqtSlot()
     def _start_parameter_timer(self) -> None:
         if not self._closed and not self._parameter_timer.isActive():
@@ -43,21 +59,32 @@ class QtParameterService(_QtAdapter):
     def _emit_latest_parameters(self) -> None:
         with self._parameter_lock:
             parameters = self._latest_parameters
+            sync_status = self._latest_sync_status
             self._latest_parameters = None
+            self._latest_sync_status = None
             self._parameter_update_scheduled = False
+            self._sync_status_update_scheduled = False
         if parameters is not None:
             self.parameters_changed.emit(parameters)
+        if sync_status is not None:
+            self.sync_status_changed.emit(sync_status)
 
     def close(self) -> None:
         self._parameter_timer.stop()
         with self._parameter_lock:
             self._latest_parameters = None
+            self._latest_sync_status = None
             self._parameter_update_scheduled = False
+            self._sync_status_update_scheduled = False
         super().close()
 
     @property
     def current(self):
         return self.backend.current
+
+    @property
+    def sync_status(self):
+        return self.backend.sync_status
 
     def replace(self, parameters) -> None:
         self.backend.replace(parameters)

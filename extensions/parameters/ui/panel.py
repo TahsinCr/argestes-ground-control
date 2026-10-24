@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 )
 
 from src.ui.i18n import t
+from src.extension.api.parameters import ParameterSyncState, ParameterSyncStatus
 from src.models.parameters import Parameter
 from src.ui.widgets.common import PanelFrame, compact_button, horizontal_row
 
@@ -37,6 +38,7 @@ class ParametersPanel(PanelFrame):
         self._invalid_values: dict[str, str] = {}
         self._validation_errors: dict[str, str] = {}
         self._language = "tr"
+        self._sync_status = ParameterSyncStatus()
         self._write_in_progress = False
         self._write_error: str | None = None
         self.setMinimumWidth(0)
@@ -91,6 +93,9 @@ class ParametersPanel(PanelFrame):
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(0, 0, 0, 0)
         footer_layout.setSpacing(6)
+        self.sync_status_label = QLabel(footer)
+        self.sync_status_label.setProperty("role", "note")
+        footer_layout.addWidget(self.sync_status_label)
         self.pending_label = QLabel(footer)
         self.pending_label.setProperty("role", "note")
         footer_layout.addWidget(self.pending_label, 1)
@@ -120,6 +125,10 @@ class ParametersPanel(PanelFrame):
         )
         if self.category_combo.count():
             self.category_combo.setItemText(0, t("table.parameters.all", language))
+        self._update_footer()
+
+    def set_sync_status(self, status: ParameterSyncStatus) -> None:
+        self._sync_status = status
         self._update_footer()
 
     def set_parameters(self, parameters: Iterable[Parameter]) -> None:
@@ -386,6 +395,7 @@ class ParametersPanel(PanelFrame):
         self._update_footer()
 
     def _update_footer(self) -> None:
+        self._update_sync_status_label()
         count = len(self._dirty_values)
         if self._write_in_progress:
             self.pending_label.setText(t("parameters.write_in_progress", self._language))
@@ -408,7 +418,16 @@ class ParametersPanel(PanelFrame):
             )
             self.pending_label.setToolTip(self._write_error or "")
         can_apply = (
-            count > 0 and not self._write_in_progress and not self._validation_errors
+            count > 0
+            and not self._write_in_progress
+            and not self._validation_errors
+            and self._sync_status.state
+            not in {
+                ParameterSyncState.LOADING,
+                ParameterSyncState.PARTIAL,
+                ParameterSyncState.FAILED,
+                ParameterSyncState.DISCONNECTED,
+            }
         )
         can_reset = (
             (count > 0 or bool(self._validation_errors))
@@ -418,8 +437,48 @@ class ParametersPanel(PanelFrame):
         self.reset_button.setEnabled(can_reset)
         self.table.setEnabled(not self._write_in_progress)
 
+    def _update_sync_status_label(self) -> None:
+        status = self._sync_status
+        expected = (
+            str(status.expected_count)
+            if status.expected_count is not None
+            else "?"
+        )
+        if status.state == ParameterSyncState.LOADING:
+            message = t("parameters.sync.loading", self._language).format(
+                received=status.received_count,
+                expected=expected,
+            )
+        elif status.state == ParameterSyncState.PARTIAL:
+            message = t("parameters.sync.partial", self._language).format(
+                received=status.received_count,
+                expected=expected,
+            )
+        elif status.state == ParameterSyncState.COMPLETE:
+            message = t("parameters.sync.complete", self._language).format(
+                received=status.received_count,
+            )
+        elif status.state == ParameterSyncState.FAILED:
+            message = t("parameters.sync.failed", self._language).format(
+                received=status.received_count,
+                expected=expected,
+            )
+        elif status.state == ParameterSyncState.DISCONNECTED:
+            message = t("parameters.sync.disconnected", self._language)
+        else:
+            message = t("parameters.sync.idle", self._language)
+        self.sync_status_label.setText(message)
+        self.sync_status_label.setToolTip(message)
+
     def apply_changes(self) -> None:
         if not self._dirty_values or self._write_in_progress or self._validation_errors:
+            return
+        if self._sync_status.state in {
+            ParameterSyncState.LOADING,
+            ParameterSyncState.PARTIAL,
+            ParameterSyncState.FAILED,
+            ParameterSyncState.DISCONNECTED,
+        }:
             return
         changes = dict(self._dirty_values)
         self._write_in_progress = True

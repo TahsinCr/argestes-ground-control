@@ -368,6 +368,7 @@ class CompetitionRuntime:
             context.base_dir / "data" / "siha_teknofest_server" / "history.sqlite3"
         )
         self.sessions = {}
+        self._profile_generations = {}
         self.worker = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="CompetitionControl"
         )
@@ -392,6 +393,7 @@ class CompetitionRuntime:
                 self.database,
                 self.logger,
             )
+            self._profile_generations[config["identifier"]] = 1
         self._sync_clock_references()
 
     def _sync_clock_references(self):
@@ -520,6 +522,11 @@ class CompetitionRuntime:
                         if was_running.get(identifier):
                             session.start()
                     raise
+                for identifier in previous_sessions.keys() | new_sessions.keys():
+                    if previous_sessions.get(identifier) is not new_sessions.get(identifier):
+                        self._profile_generations[identifier] = (
+                            self._profile_generations.get(identifier, 0) + 1
+                        )
                 self.sessions = new_sessions
                 self._sync_clock_references()
                 self.start()
@@ -539,16 +546,46 @@ class CompetitionRuntime:
 
         return self.worker.submit(refresh)
 
+    def _submit_profile_event(self, identifier, path, payload):
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("Competition extension stopped")
+            if identifier not in self.sessions:
+                raise ValueError("Unknown TEKNOFEST server profile")
+            generation = self._profile_generations.get(identifier, 0)
+            return self.worker.submit(
+                self._request_current_session,
+                identifier,
+                generation,
+                path,
+                payload,
+            )
+
+    def _request_current_session(self, identifier, generation, path, payload):
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("Competition extension stopped")
+            session = self.sessions.get(identifier)
+            current_generation = self._profile_generations.get(identifier, 0)
+        if session is None:
+            raise ValueError("Unknown TEKNOFEST server profile")
+        if current_generation != generation:
+            raise RuntimeError(
+                "TEKNOFEST server profile changed before the event was sent; "
+                "submit the event again for the current profile"
+            )
+        return session.request(path, payload)
+
     def submit_lock_event(self, identifier, event):
-        return self.worker.submit(
-            self.sessions[identifier].request,
+        return self._submit_profile_event(
+            identifier,
             "/api/kilitlenme_bilgisi",
             event.to_payload(),
         )
 
     def submit_kamikaze_event(self, identifier, event):
-        return self.worker.submit(
-            self.sessions[identifier].request,
+        return self._submit_profile_event(
+            identifier,
             "/api/kamikaze_bilgisi",
             event.to_payload(),
         )

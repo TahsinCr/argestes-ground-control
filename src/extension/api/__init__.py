@@ -23,7 +23,7 @@ from .contracts import (
 )
 from .vehicle import MissionControl, RcControl
 from .telemetry import TelemetryPipeline
-from .parameters import ParameterService
+from .parameters import ParameterService, ParameterSyncState, ParameterSyncStatus
 from .settings import validate_settings
 
 __all__ = [
@@ -49,4 +49,6 @@ __all__ = [
     "RcControl",
     "TelemetryPipeline",
     "ParameterService",
+    "ParameterSyncState",
+    "ParameterSyncStatus",
 ]

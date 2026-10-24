@@ -67,7 +67,7 @@ class ExtensionTests(unittest.TestCase):
 
         root = Path(__file__).resolve().parents[1]
         owned = set(json.loads((root / "src/ui/i18n/tr.json").read_text()))
-        for extension in ("camera", "mavlink", "vehicle_connection"):
+        for extension in ("camera", "mavlink", "parameters", "vehicle_connection"):
             directory = root / "extensions" / extension / "i18n"
             tr = json.loads((directory / "tr.json").read_text())
             en = json.loads((directory / "en.json").read_text())

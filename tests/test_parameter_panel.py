@@ -61,6 +61,30 @@ class ParametersPanelTests(unittest.TestCase):
         self.assertEqual(self.panel._dirty_values, {})
         self.assertEqual(self.panel._original_values["TEST_A"], 2.5)
 
+    def test_partial_parameter_catalogue_is_visible_and_blocks_apply(self) -> None:
+        from src.extension.api.parameters import ParameterSyncState, ParameterSyncStatus
+
+        self.panel.table.item(0, 1).setText("2.5")
+        self.panel.set_sync_status(
+            ParameterSyncStatus(ParameterSyncState.PARTIAL, 1, 3)
+        )
+
+        self.assertIn("1/3", self.panel.sync_status_label.text())
+        self.assertFalse(self.panel.apply_button.isEnabled())
+        self.panel.apply_changes()
+        self.assertEqual(self.submitted, [])
+
+        self.panel.set_sync_status(
+            ParameterSyncStatus(ParameterSyncState.FAILED, 1, 3)
+        )
+        self.assertIn("1/3", self.panel.sync_status_label.text())
+        self.assertFalse(self.panel.apply_button.isEnabled())
+
+        self.panel.set_sync_status(
+            ParameterSyncStatus(ParameterSyncState.COMPLETE, 3, 3)
+        )
+        self.assertTrue(self.panel.apply_button.isEnabled())
+
     def test_backend_refresh_preserves_unapplied_draft_and_original(self) -> None:
         self.panel.table.item(0, 1).setText("2.5")
         self.panel.set_parameters(

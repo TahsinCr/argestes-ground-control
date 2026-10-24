@@ -26,6 +26,7 @@ from extensions.mavlink.commands import DispatchCommandService
 from extensions.parameters.mutable import MutableParameterService
 from extensions.parameters.protocols.mavlink import VehicleParameterService
 from extensions.parameters.protocols.mavlink_defaults import decode_parameter_defaults
+from src.extension.api.parameters import ParameterService
 from extensions.battery.estimation import VoltageBatteryEstimator
 from extensions.battery.processor import BatteryProcessor
 from extensions.mavlink.telemetry import TelemetryDecoder, VehicleTelemetryService
@@ -795,6 +796,41 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertTrue(service._is_active_connection_message(rf_status))
         self.assertFalse(service._is_active_connection_message(foreign_message))
 
+    def test_optional_parameter_sync_status_supports_slotted_legacy_provider(self) -> None:
+        class LegacyParameterService(ParameterService):
+            __slots__ = ()
+
+            @property
+            def current(self):
+                return ()
+
+            @property
+            def changed(self):
+                return EventBus()
+
+            def start(self) -> None:
+                pass
+
+            def stop(self) -> None:
+                pass
+
+            def replace(self, _parameters) -> None:
+                pass
+
+            def upsert(self, _parameter) -> None:
+                pass
+
+            def update_values(self, _changes) -> None:
+                pass
+
+            def refresh(self) -> None:
+                pass
+
+        service = LegacyParameterService()
+
+        self.assertEqual(service.sync_status.state.value, "idle")
+        self.assertIs(service.sync_status_changed, service.sync_status_changed)
+
     def test_parameter_list_and_write_are_confirmed_by_vehicle_echo(self) -> None:
         vehicle = _FakeVehicle()
         service = VehicleParameterService(
@@ -825,6 +861,9 @@ class VehicleServiceTests(unittest.TestCase):
         )
         values = {item.key: item.value for item in service.current}
         self.assertEqual(values, {"KNOWN": 3, "NEW_PARAM": 4.5})
+        self.assertEqual(service.sync_status.state.value, "complete")
+        self.assertEqual(service.sync_status.received_count, 2)
+        self.assertEqual(service.sync_status.expected_count, 2)
 
         service.update_values({"KNOWN": 7})
         self.assertEqual(vehicle.parameter_writes, [("KNOWN", 7, 6)])
@@ -963,6 +1002,7 @@ class VehicleServiceTests(unittest.TestCase):
         vehicle.connection_changed.publish(vehicle.state)
 
         self.assertEqual(service.current, ())
+        self.assertEqual(service.sync_status.state.value, "disconnected")
         service.stop()
 
     def test_incomplete_parameter_list_is_retried_and_reported(self) -> None:
@@ -976,7 +1016,9 @@ class VehicleServiceTests(unittest.TestCase):
         )
         service.start()
         time.sleep(0.12)
+        status = service.sync_status
         service.stop()
+        self.assertEqual(status.state.value, "failed")
         self.assertEqual(vehicle.parameter_requests, 2)
         self.assertEqual(logs.history[-1].action, "parameter.sync_failed")
 
@@ -1001,10 +1043,16 @@ class VehicleServiceTests(unittest.TestCase):
 
         service._check_refresh_timeout()
 
-        self.assertEqual(vehicle.parameter_requests, 1)
-        self.assertTrue(service._loading)
-        self.assertEqual(service._refresh_attempt, 1)
+        status = service.sync_status
+        still_loading = service._loading
+        refresh_attempt = service._refresh_attempt
         service.stop()
+        self.assertEqual(vehicle.parameter_requests, 1)
+        self.assertTrue(still_loading)
+        self.assertEqual(refresh_attempt, 1)
+        self.assertEqual(status.state.value, "partial")
+        self.assertEqual(status.received_count, 1)
+        self.assertEqual(status.expected_count, 3)
 
     def test_parameter_catalogue_is_published_in_streaming_batches(self) -> None:
         vehicle = _FakeVehicle()

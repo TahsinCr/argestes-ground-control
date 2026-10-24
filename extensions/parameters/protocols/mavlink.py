@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from src.core.events import Subscription
+from src.extension.api.parameters import ParameterSyncState, ParameterSyncStatus
 from src.models.parameters import Parameter
 from src.models.vehicle import VehicleConnectionState
 from src.services.logging_service import ServiceLogger
@@ -78,6 +79,10 @@ class VehicleParameterService(MutableParameterService):
         self._changed.publish(self.current)
         if self._vehicle.connected and self._refresh_on_connect:
             self.refresh()
+        elif not self._vehicle.connected:
+            self._set_sync_status(
+                ParameterSyncStatus(ParameterSyncState.DISCONNECTED)
+            )
 
     def stop(self) -> None:
         for subscription in self._subscriptions:
@@ -94,9 +99,13 @@ class VehicleParameterService(MutableParameterService):
             self._progress_buffer.clear()
             self._received_indexes.clear()
             self._loading = False
+        self._set_sync_status(ParameterSyncStatus())
 
     def refresh(self) -> None:
         if not self._vehicle.connected:
+            self._set_sync_status(
+                ParameterSyncStatus(ParameterSyncState.DISCONNECTED)
+            )
             raise ConnectionError("Parametre listesi için uçuş cihazı bağlı değil")
         self.replace(())
         with self._sync_lock:
@@ -110,11 +119,21 @@ class VehicleParameterService(MutableParameterService):
             self._refresh_attempt = 1
             self._refresh_progress_count = 0
             self._last_progress_publish = time.monotonic()
+        self._set_sync_status(ParameterSyncStatus(ParameterSyncState.LOADING))
         try:
             self._vehicle.request_parameters()
         except Exception:
             with self._sync_lock:
                 self._loading = False
+                received = len(self._received_indexes) or len(self._parameter_buffer)
+                expected = self._expected_count
+            self._set_sync_status(
+                ParameterSyncStatus(
+                    ParameterSyncState.FAILED,
+                    received,
+                    expected or None,
+                )
+            )
             raise
         self._arm_refresh_timer()
 
@@ -250,6 +269,7 @@ class VehicleParameterService(MutableParameterService):
                 self._received_indexes.clear()
                 for pending in self._pending_writes.values():
                     pending.event.set()
+            self._set_sync_status(ParameterSyncStatus(ParameterSyncState.DISCONNECTED))
             self.replace(())
 
     def _consume_message(self, message: Any) -> None:
@@ -296,6 +316,8 @@ class VehicleParameterService(MutableParameterService):
             loading = self._loading
             complete = False
             progress_parameters: tuple[Parameter, ...] = ()
+            partial_status = None
+            expected_count = None
             if loading:
                 self._parameter_buffer[key] = parameter
                 self._progress_buffer[key] = parameter
@@ -307,6 +329,7 @@ class VehicleParameterService(MutableParameterService):
                     or len(self._parameter_buffer) >= self._expected_count
                 )
                 if complete:
+                    expected_count = self._expected_count
                     received_parameters = tuple(self._parameter_buffer.values())
                     self._parameter_buffer.clear()
                     self._progress_buffer.clear()
@@ -323,6 +346,11 @@ class VehicleParameterService(MutableParameterService):
                         progress_parameters = tuple(self._progress_buffer.values())
                         self._progress_buffer.clear()
                         self._last_progress_publish = now
+                        partial_status = ParameterSyncStatus(
+                            ParameterSyncState.PARTIAL,
+                            len(self._received_indexes) or len(self._parameter_buffer),
+                            self._expected_count or None,
+                        )
             else:
                 received_parameters = ()
             pending = self._pending_writes.get(key)
@@ -339,8 +367,17 @@ class VehicleParameterService(MutableParameterService):
 
         if progress_parameters:
             self.upsert_many(progress_parameters)
+            if partial_status is not None:
+                self._set_sync_status(partial_status)
         if complete:
             self.replace(received_parameters)
+            self._set_sync_status(
+                ParameterSyncStatus(
+                    ParameterSyncState.COMPLETE,
+                    len(received_parameters),
+                    expected_count,
+                )
+            )
             self._event(
                 "parameter.sync_received",
                 f"Uçuş cihazından {len(received_parameters)} parametrenin tamamı alındı",
@@ -579,9 +616,23 @@ class VehicleParameterService(MutableParameterService):
         if progress_parameters:
             self.upsert_many(progress_parameters)
         if keep_waiting:
+            self._set_sync_status(
+                ParameterSyncStatus(
+                    ParameterSyncState.PARTIAL if received else ParameterSyncState.LOADING,
+                    received,
+                    expected or None,
+                )
+            )
             self._arm_refresh_timer()
             return
         if not retry:
+            self._set_sync_status(
+                ParameterSyncStatus(
+                    ParameterSyncState.FAILED,
+                    received,
+                    expected or None,
+                )
+            )
             self._event(
                 "parameter.sync_failed",
                 "Araç parametre listesi eksiksiz alınamadı",
@@ -589,6 +640,13 @@ class VehicleParameterService(MutableParameterService):
                 details={"received_count": received, "expected_count": expected},
             )
             return
+        self._set_sync_status(
+            ParameterSyncStatus(
+                ParameterSyncState.PARTIAL if received else ParameterSyncState.LOADING,
+                received,
+                expected or None,
+            )
+        )
         self._event(
             "parameter.sync_retry",
             f"Eksik parametre listesi yeniden isteniyor ({attempt}/{self._max_refresh_attempts})",

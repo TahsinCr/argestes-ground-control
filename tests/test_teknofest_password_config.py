@@ -61,6 +61,7 @@ def _runtime(settings, logger):
     runtime.database = object()
     runtime.logger = logger
     runtime.sessions = {}
+    runtime._profile_generations = {}
     runtime.worker = _InlineWorker()
     runtime._lifecycle_lock = threading.RLock()
     runtime._closed = False

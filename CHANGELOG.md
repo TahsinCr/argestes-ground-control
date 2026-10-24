@@ -13,6 +13,10 @@ Release headings link each entry to its release date.
   nested value types without changing their saved layout or specialized UI.
 * Added `tools/qt_queue_probe.py` to measure EventBus-to-Qt delivery, callback
   duration, sampled queue depth and event-loop delay with configurable workloads.
+* Added `tools/teknofest_queue_probe.py` for loopback-only measurements of
+  management-queue wait, profile replacement time and HTTP/server response time.
+* Added `tools/tile_cache_probe.py` to compare warm cache hits with direct reads
+  at synthetic 10k, 50k and 100k index sizes.
 * Added a standalone `tools/camera_capture_probe.py` for measuring the camera
   extension's real GStreamer USB capture path without saving or displaying frames.
 * Added **Logs** to Settings to inspect session-log storage, export a selected
@@ -75,6 +79,9 @@ Release headings link each entry to its release date.
 * TEKNOFEST test-server passwords are now stored directly in the extension's
   `data/settings.json` configuration. Removed the OS keyring integration and its
   dependency; passwords remain excluded from logs and SQLite request history.
+* Warm tile-cache hits use the already-read payload size and update the existing
+  LRU timestamp in place, avoiding repeated file metadata calls and index-entry
+  reconstruction without changing the timestamp's one-second resolution.
 
 ### Fixed
 
@@ -97,6 +104,10 @@ Release headings link each entry to its release date.
   snapshots.
 * SIHA Teknofest Server connect, disconnect and profile configuration requests
   now share its serialized worker; a stopped runtime rejects new work.
+* Queued TEKNOFEST lock and kamikaze events now resolve the current session when
+  the worker executes them and check the profile generation. Events prepared
+  before a profile replacement fail explicitly and must be submitted again;
+  they cannot be sent through either the stale or replacement session.
 * Disconnect requests now reach the connection backend while a reconnect is
   still running. The connection popup exposes cancellation during that state,
   and each operation reports its own completion so the UI does not wait for a
@@ -236,6 +247,12 @@ Release headings link each entry to its release date.
   overlay IDs and mission points.
 * Tile-cache invalidation now prevents in-flight downloads from repopulating a
   cleared cache, and timeout responses use the correct HTTP reason phrase.
+* Missing, empty and invalid cached tiles now remove their stale index entry and
+  byte count through one cleanup path. Parameter synchronization now exposes
+  loading, partial, complete, failed and disconnected states; partial or failed
+  catalogues remain visible but cannot be applied as though complete. Existing
+  parameter providers retain a default status and do not need to implement the
+  optional status events.
 * Session logs use the configured bounded rotation instead of an effectively
   unlimited file size.
 

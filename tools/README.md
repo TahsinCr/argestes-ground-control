@@ -43,6 +43,53 @@ flight workload.
 Repeat runs on the target machine and compare counts and distributions together.
 Redirect JSON output to a local file when collecting longer runs.
 
+## TEKNOFEST management-queue probe
+
+Measure the current `CompetitionRuntime` management executor against a local
+HTTP endpoint only:
+
+```sh
+.venv/bin/python tools/teknofest_queue_probe.py --events 20
+.venv/bin/python tools/teknofest_queue_probe.py --events 20 --management-stall-ms 20 --profile-stop-delay-ms 25 --server-delay-ms 15
+```
+
+The probe records enqueue-to-start wait and task execution separately, uses the
+real runtime configuration and request path, and reports the client HTTP round
+trip beside loopback handler time. Queue and profile-stop holds are explicitly
+synthetic; the tool never contacts a real TEKNOFEST host or vehicle. It is useful
+for identifying which portion of a controlled scenario occupies the serial
+executor, not for predicting a radio or competition-server SLA.
+
+On 24 October 2026, the 20-event run with a 20 ms queue hold, 25 ms old-profile
+stop and 15 ms loopback response delay completed all events. Profile replacement
+executed in 29.9 ms; the client request round trip was 16.3 ms at P50, and event
+queue wait was 184.0 ms at P50 / 314.4 ms at P95. The wait accumulates because
+the same worker deliberately processes each delayed request in order. This
+synthetic result does not justify a second worker pool; real server and radio
+timings still need to be measured before changing event ordering.
+
+## Tile-cache hit probe
+
+Compare the existing file-backed cache-hit path with a direct read using a
+page-cache-warm 32 KiB image and synthetic indexes of increasing size:
+
+```sh
+.venv/bin/python tools/tile_cache_probe.py
+.venv/bin/python tools/tile_cache_probe.py --iterations 5000 --sizes 10000,50000,100000
+```
+
+Only one image file is created; the remaining index entries are in-memory test
+data. The reported difference estimates the Python metadata, validation and
+locking work around a local read. It excludes network fetches, cold storage,
+real-world tile-size distribution and concurrent map requests.
+
+On 24 October 2026, the 100,000-entry case measured a direct-read P50 of 3.3 µs
+and a cache-hit P50 of 10.9 µs (P95 3.4 µs and 11.2 µs respectively). Avoiding
+repeated metadata calls and rebuilding an unchanged index entry brought the
+cache-hit median down from about 22.3 µs to roughly 10.8 µs across repeated runs.
+The cache remains file-backed, and its LRU timestamp still advances at the
+existing one-second resolution.
+
 For a running application, import `AdapterProbe` from `tools.qt_queue_probe` in
 a development/debugger session and construct it with an existing Qt service
 adapter: `probe = AdapterProbe(qt_service)`. Existing subscriptions then pass
