@@ -6,16 +6,20 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 from extensions.siha_teknofest_server.runtime import (
     CompetitionDatabase,
+    CompetitionRuntime,
     ServerSession,
     validate_servers,
 )
+from extensions.siha_teknofest_server.models import CompetitionServerConfig
 from src.container import create_container
 from src.extension.api.protocol import ActiveProtocol
 from src.extension.host import ExtensionHost
@@ -102,6 +106,61 @@ class ExtensionStorageTests(unittest.TestCase):
 
 
 class CompetitionDeliveryTests(unittest.TestCase):
+    def test_server_timeout_accepts_the_configured_range(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = SettingsService(root)
+            runtime = object.__new__(CompetitionRuntime)
+            runtime._lifecycle_lock = threading.RLock()
+            runtime._closed = False
+            runtime.settings = settings
+            runtime.telemetry = SimpleNamespace(current=None)
+            runtime.database = None
+            runtime.logger = None
+            runtime.clock_references = None
+            runtime._clock_reference_ids = set()
+            runtime.sessions = {}
+            runtime._profile_generations = {}
+            runtime.worker = ThreadPoolExecutor(max_workers=1)
+            try:
+                for timeout in (15.0, 15.1, 30.0, 120.0):
+                    with self.subTest(timeout=timeout):
+                        config = CompetitionServerConfig(
+                            identifier=f"timeout-{timeout}", timeout_s=timeout
+                        ).to_dict(include_password=True)
+                        runtime.configure([config]).result(timeout=2.0)
+                        saved = SettingsService(root).extension_config(
+                            "siha_teknofest_server"
+                        )["servers"][0]
+                        self.assertEqual(saved["timeout_s"], timeout)
+
+                reloaded = object.__new__(CompetitionRuntime)
+                reloaded.settings = SettingsService(root)
+                reloaded.telemetry = SimpleNamespace(current=None)
+                reloaded.database = None
+                reloaded.logger = None
+                reloaded.sessions = {}
+                reloaded._profile_generations = {}
+                reloaded.clock_references = None
+                reloaded._clock_reference_ids = set()
+                reloaded._load()
+                self.assertEqual(
+                    reloaded.sessions["timeout-120.0"].config["timeout_s"],
+                    120.0,
+                )
+            finally:
+                runtime.stop()
+                runtime.worker.shutdown(wait=True, cancel_futures=True)
+
+            with self.assertRaises(ValueError):
+                validate_servers(
+                    [
+                        CompetitionServerConfig(
+                            identifier="too-long", timeout_s=120.1
+                        ).to_dict()
+                    ]
+                )
+
     def test_database_history_failure_does_not_mask_http_response(self):
         class Database:
             @staticmethod

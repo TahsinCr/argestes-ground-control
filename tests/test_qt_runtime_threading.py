@@ -175,7 +175,7 @@ class QtRuntimeThreadingTests(unittest.TestCase):
         adapter = QtTelemetryService(backend)
         dynamics: list[TelemetrySnapshot] = []
         regular: list[TelemetrySnapshot] = []
-        adapter.flight_dynamics_updated.connect(dynamics.append)
+        adapter.vehicle_dynamics_updated.connect(dynamics.append)
         adapter.telemetry_updated.connect(regular.append)
         started_at = datetime.now(UTC)
 

@@ -452,7 +452,7 @@ class MapPanel(PanelFrame):
         self._guided_goto_target: Point | None = None
         self._guided_goto_arrival_radius_m = 0.0
         self._navigation_mode = ""
-        self._flight_mode = ""
+        self._vehicle_mode = ""
         self._last_telemetry_payload: dict[str, Any] | None = None
         self._pending_telemetry_payload: dict[str, Any] | None = None
         self._telemetry_push_clock = QElapsedTimer()
@@ -561,7 +561,7 @@ class MapPanel(PanelFrame):
         self._send_ui_config()
 
     def update_snapshot(self, snapshot: TelemetrySnapshot) -> None:
-        self._flight_mode = snapshot.flight_mode.strip().upper()
+        self._vehicle_mode = snapshot.vehicle_mode.strip().upper()
         active = bool(
             snapshot.telemetry_link
             and snapshot.autopilot_link
@@ -600,7 +600,7 @@ class MapPanel(PanelFrame):
             self._last_vehicle_timestamp = None
 
         guided_goto: dict[str, object] | None = None
-        guided_mode_active = self._flight_mode == "GUIDED"
+        guided_mode_active = self._vehicle_mode == "GUIDED"
         if active and guided_mode_active and self._guided_goto_target is not None:
             remaining_distance_m = current_point.distance_to(self._guided_goto_target)
             if remaining_distance_m <= self._guided_goto_arrival_radius_m:
@@ -637,7 +637,7 @@ class MapPanel(PanelFrame):
             "lat": snapshot.latitude,
             "lon": snapshot.longitude,
             "heading": snapshot.heading,
-            "mode": snapshot.flight_mode,
+            "mode": snapshot.vehicle_mode,
             "alt": snapshot.altitude_agl,
             "speed": snapshot.ground_speed,
             "armed": snapshot.armed,
@@ -1373,7 +1373,7 @@ class MapPanel(PanelFrame):
             if not (-90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
                 self.info_generated.emit("warning", "GUIDED GOTO koordinatı geçersiz")
                 return
-            if self._flight_mode != "GUIDED":
+            if self._vehicle_mode != "GUIDED":
                 self.info_generated.emit(
                     "warning", "GOTO yalnızca GUIDED modunda kullanılabilir"
                 )

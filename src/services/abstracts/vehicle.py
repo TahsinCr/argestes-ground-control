@@ -18,7 +18,7 @@ class MissionTransferInterrupted(RuntimeError):
 
 
 class VehicleService(Service):
-    """Abstract the flight controller from MAVLink, simulators or other transports."""
+    """Abstract vehicle control from MAVLink, simulators or other transports."""
 
     @property
     @abstractmethod

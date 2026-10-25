@@ -16,7 +16,12 @@ os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --no-sandbox"
 
 from extensions.camera.capture import GStreamerVideoService
 from extensions.camera.models import VideoShareConfig, VideoSourceConfig, VideoStreamStats
-from extensions.camera.runtime import CameraRuntime, CameraSettingsStore, _ConnectionAttempt
+from extensions.camera.runtime import (
+    CameraConfiguration,
+    CameraRuntime,
+    CameraSettingsStore,
+    _ConnectionAttempt,
+)
 from src.container import create_container
 from src.extension.host import ExtensionHost
 from src.services.settings import SettingsService
@@ -277,6 +282,58 @@ class CameraExtensionTests(unittest.TestCase):
             store.save(store.current)
             self.assertTrue(store.path.exists())
             self.assertEqual(CameraSettingsStore(root, settings).current, store.current)
+
+    def test_concurrent_camera_setting_updates_preserve_unrelated_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = SettingsService(root)
+            store = CameraSettingsStore(root, settings)
+            source = VideoSourceConfig(
+                identifier="front",
+                name="Front",
+                source_type="usb",
+                source_uri="/dev/video0",
+            )
+            output = VideoShareConfig(
+                identifier="live",
+                name="Live",
+                endpoint="rtmp://example.test/live",
+                connection_type="rtmp",
+                codec="h264",
+            )
+            ready = Event()
+
+            def update_sources() -> None:
+                ready.wait(1.0)
+                store.update(
+                    lambda current: CameraConfiguration(
+                        (source,),
+                        "front",
+                        current.outputs,
+                        current.clock_reference_id,
+                    )
+                )
+
+            def update_outputs() -> None:
+                ready.wait(1.0)
+                store.update(
+                    lambda current: CameraConfiguration(
+                        current.sources,
+                        current.active_source_id,
+                        (output,),
+                        current.clock_reference_id,
+                    )
+                )
+
+            with ThreadPoolExecutor(max_workers=2) as workers:
+                source_update = workers.submit(update_sources)
+                output_update = workers.submit(update_outputs)
+                ready.set()
+                source_update.result(timeout=2.0)
+                output_update.result(timeout=2.0)
+
+            self.assertEqual(store.current.sources, (source,))
+            self.assertEqual(store.current.outputs, (output,))
 
     def test_record_all_creates_one_fixed_fps_output_per_camera(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

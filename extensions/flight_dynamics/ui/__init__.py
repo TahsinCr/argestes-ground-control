@@ -1,1 +1,1 @@
-"""Flight dynamics presentation."""
+"""Vehicle dynamics presentation."""

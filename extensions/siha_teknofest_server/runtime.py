@@ -9,11 +9,12 @@ import sqlite3
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future
 from contextlib import closing
 from datetime import UTC, datetime
 from http.cookiejar import CookieJar
 from pathlib import Path
+from queue import Empty, Queue
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 from src.core.events import EventBus
@@ -24,6 +25,66 @@ from .models import (
     CompetitionServerConfig,
     CompetitionServerTime,
 )
+
+SERVER_STOP_GRACE_S = 4.0
+
+
+class _DaemonSerialWorker:
+    """Serialize management jobs without letting network I/O hold process exit."""
+
+    def __init__(self, name):
+        self._name = name
+        self._tasks = Queue()
+        self._lock = threading.Lock()
+        self._closed = False
+        self._thread = None
+
+    def submit(self, function, /, *args, **kwargs):
+        future = Future()
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("cannot schedule new futures after shutdown")
+            if self._thread is None:
+                self._thread = threading.Thread(
+                    target=self._run, name=self._name, daemon=True
+                )
+                self._thread.start()
+            self._tasks.put((future, function, args, kwargs))
+        return future
+
+    def shutdown(self, *, wait=False, cancel_futures=False):
+        with self._lock:
+            if not self._closed:
+                self._closed = True
+                if cancel_futures:
+                    while True:
+                        try:
+                            task = self._tasks.get_nowait()
+                        except Empty:
+                            break
+                        if task is not None:
+                            task[0].cancel()
+                if self._thread is not None:
+                    self._tasks.put(None)
+            thread = self._thread
+        if wait and thread is not None and thread is not threading.current_thread():
+            thread.join()
+
+    def _run(self):
+        while True:
+            task = self._tasks.get()
+            if task is None:
+                return
+            future, function, args, kwargs = task
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                result = function(*args, **kwargs)
+            except BaseException as exc:  # noqa: BLE001
+                # Complete the Future even when a task raises a base exception.
+                future.set_exception(exc)
+            else:
+                future.set_result(result)
 
 
 class ServerSession:
@@ -73,7 +134,7 @@ class ServerSession:
             thread = self._thread
         if thread and thread is not threading.current_thread():
             timeout = (
-                float(self.config.get("timeout_s", 3)) + 1
+                SERVER_STOP_GRACE_S
                 if timeout_s is None
                 else max(0.0, float(timeout_s))
             )
@@ -257,7 +318,7 @@ def telemetry_payload(snapshot, config, server_time=None):
         "iha_yatis": snapshot.roll,
         "iha_hizi": snapshot.air_speed,
         "iha_batarya": snapshot.battery_percent,
-        "iha_otonom": int(snapshot.flight_mode.upper() in {"AUTO", "GUIDED"}),
+        "iha_otonom": int(snapshot.vehicle_mode.upper() in {"AUTO", "GUIDED"}),
         "iha_kilitlenme": 0,
         "hedef_merkez_X": 0,
         "hedef_merkez_Y": 0,
@@ -400,9 +461,7 @@ class CompetitionRuntime:
         )
         self.sessions = {}
         self._profile_generations = {}
-        self.worker = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="CompetitionControl"
-        )
+        self.worker = _DaemonSerialWorker("CompetitionControl")
         self._lifecycle_lock = threading.RLock()
         self._closed = False
         self._load()
@@ -412,12 +471,7 @@ class CompetitionRuntime:
             "servers", []
         )
         configs = validate_servers(raw_configs)
-        if len({item["identifier"] for item in configs}) != len(configs):
-            raise ValueError("Duplicate competition server identity")
         for config in configs:
-            timeout = float(config.get("timeout_s", 3))
-            if not 0.1 <= timeout <= 15:
-                raise ValueError("Server timeout must be between 0.1 and 15 seconds")
             self.sessions[config["identifier"]] = ServerSession(
                 config,
                 lambda: self.telemetry.current,
@@ -531,7 +585,17 @@ class CompetitionRuntime:
                 identifier: session.running
                 for identifier, session in previous_sessions.items()
             }
-            stopped = self._stop_sessions(previous_sessions)
+            replacement_grace = max(
+                (
+                    float(session.config.get("timeout_s", 3)) + 1.0
+                    for session in previous_sessions.values()
+                ),
+                default=0.0,
+            )
+            stopped = self._stop_sessions(
+                previous_sessions,
+                grace_s=min(SERVER_STOP_GRACE_S, replacement_grace),
+            )
             if not all(stopped.values()):
                 with self._lifecycle_lock:
                     if not self._closed:
@@ -560,7 +624,12 @@ class CompetitionRuntime:
                         )
                 self.sessions = new_sessions
                 self._sync_clock_references()
-                self.start()
+                for identifier, session in self.sessions.items():
+                    if (
+                        session.config.get("auto_connect", False)
+                        or was_running.get(identifier, False)
+                    ):
+                        session.start()
 
         with self._lifecycle_lock:
             if self._closed:
@@ -570,9 +639,45 @@ class CompetitionRuntime:
     def refresh_reference_data(self, identifier):
         def refresh():
             session = self.sessions[identifier]
-            session.reference["qr"] = session.request("/api/qr_koordinati")
-            session.reference["hss"] = session.request("/api/hss_koordinatlari")
-            session.updated.publish(dict(session.reference))
+            refreshed = {}
+            failures = {}
+            for name, path in (
+                ("qr", "/api/qr_koordinati"),
+                ("hss", "/api/hss_koordinatlari"),
+            ):
+                try:
+                    refreshed[name] = session.request_authenticated(path)
+                except Exception as exc:  # noqa: BLE001
+                    # Preserve one endpoint's response if its peer fails.
+                    failures[name] = exc
+
+            if refreshed:
+                with self._lifecycle_lock:
+                    if self._closed:
+                        return dict(session.reference)
+                    session.reference.update(refreshed)
+                    snapshot = dict(session.reference)
+                session.updated.publish(snapshot)
+            if failures:
+                self.logger.event(
+                    "server.reference_refresh_partial"
+                    if refreshed
+                    else "server.reference_refresh_failed",
+                    "Competition reference data refresh was incomplete",
+                    severity="warning",
+                    details={
+                        "server": identifier,
+                        "failed": sorted(failures),
+                        "errors": {
+                            name: str(error) for name, error in failures.items()
+                        },
+                    },
+                )
+                if not refreshed:
+                    raise RuntimeError(
+                        "Could not refresh competition reference data: "
+                        + ", ".join(sorted(failures))
+                    ) from next(iter(failures.values()))
             return dict(session.reference)
 
         return self.worker.submit(refresh)
@@ -629,7 +734,7 @@ class CompetitionRuntime:
         # Cancel queued requests and let that worker finish without holding the
         # extension host or UI shutdown path open.
         self.worker.shutdown(wait=False, cancel_futures=True)
-        stopped = self._stop_sessions(sessions)
+        stopped = self._stop_sessions(sessions, grace_s=SERVER_STOP_GRACE_S)
         for identifier, did_stop in stopped.items():
             if not did_stop:
                 self.logger.event(
@@ -643,18 +748,12 @@ class CompetitionRuntime:
         self._clock_reference_ids.clear()
 
     @staticmethod
-    def _stop_sessions(sessions):
+    def _stop_sessions(sessions, *, grace_s=SERVER_STOP_GRACE_S):
         """Signal every session first, then join against one shared deadline."""
         items = tuple(sessions.items())
         for _identifier, session in items:
             session.stop(timeout_s=0)
-        grace = max(
-            (
-                float(session.config.get("timeout_s", 3)) + 1.0
-                for _identifier, session in items
-            ),
-            default=0.0,
-        )
+        grace = max(0.0, float(grace_s)) if items else 0.0
         deadline = time.monotonic() + grace
         return {
             identifier: session.stop(timeout_s=max(0.0, deadline - time.monotonic()))
@@ -669,6 +768,4 @@ def validate_servers(configs):
     ]
     if len({item["identifier"] for item in parsed}) != len(parsed):
         raise ValueError("Duplicate competition server identity")
-    if any(item["timeout_s"] > 15 for item in parsed):
-        raise ValueError("Server timeout must not exceed 15 seconds")
     return parsed

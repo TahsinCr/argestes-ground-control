@@ -29,7 +29,7 @@ class TelemetrySnapshot(Model):
     gps_satellites: int | None
     gps_fix: str
     gps_hdop: float | None
-    flight_mode: str
+    vehicle_mode: str
     mission_index: int
     mission_total: int
     armed: bool
@@ -256,7 +256,7 @@ class TelemetrySnapshot(Model):
             gps_satellites=None,
             gps_fix="NO FIX",
             gps_hdop=None,
-            flight_mode="DISCONNECTED",
+            vehicle_mode="DISCONNECTED",
             mission_index=0,
             mission_total=0,
             armed=False,

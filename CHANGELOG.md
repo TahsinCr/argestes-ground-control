@@ -5,6 +5,17 @@ Release headings link each entry to its release date.
 
 ## [Unreleased]
 
+### Changed
+
+* Generalized shared vehicle telemetry and command terminology: the normalized
+  mode field, command capability, and MAVLink parameter groups now use
+  vehicle-oriented names. Telemetry, dynamics, connection, and mission status
+  UI no longer describes the connected system as an aircraft. MAVLink-specific
+  mode names and actual aviation measurements such as airspeed remain explicit
+  where they are part of the underlying protocol or data.
+
+## [2.1-beta] - 24.10.2026
+
 ### Added
 
 * Added package-owned recursive settings schemas, checked before persistence
@@ -213,6 +224,23 @@ Release headings link each entry to its release date.
   extension registration or removal calls cannot replace or unregister them.
 * Telemetry panels now resolve clock labels from current registry metadata when
   a source is added or renamed while the panel is already open.
+* TEKNOFEST timeout validation now accepts the full configured 0.1–120-second
+  range. Profile replacement has a shared stop deadline capped at four seconds;
+  if an old request is still active, the replacement is rejected and the prior
+  profile is retained. Application shutdown uses the same bounded session-stop
+  policy, and a lazily started daemon worker keeps in-flight management requests
+  from holding the process open after shutdown.
+* QR/HSS reference refresh now waits for an authenticated server session,
+  preserves whichever endpoint succeeds, and reports partial or total failure.
+* MAVLink automatic recovery and connection status now require a saved profile;
+  an empty profile list no longer triggers a fallback transport or displays a
+  synthetic active profile.
+* GPS status chips now show connecting and disconnecting phases as yellow even
+  before satellite data arrives; a disconnected receiver without a fix remains
+  red, and connected quality continues to follow the configured satellite bands.
+* Removing a missing tile from the cache index now marks the checkpoint dirty
+  before persistence is requested, so throttled writes cannot restore the stale
+  entry after restart.
 * Restricted map `data:` requests to the exact empty favicon and blank-tile SVG
   used by the packaged map page; other SVG payloads are rejected.
 * The generic extension settings page now leaves structured list/object values
@@ -220,6 +248,27 @@ Release headings link each entry to its release date.
 * Fixed blank map layers when the local tile-cache server starts after the map
   page. The WebEngine request allowlist now follows the server's current
   loopback address instead of rejecting proxied vector and satellite tiles.
+* A session-log write error no longer interrupts the operation that emitted the
+  event. The original entry stays in memory and one warning marks each
+  continuous persistence-failure period; failed records are not silently
+  retried.
+* A queued MAVLink command whose monotonic dispatch deadline has expired is
+  rejected before transmission. Battery RTL requests carry that deadline, so a
+  failsafe delayed behind an active command cannot execute unexpectedly late.
+* Mission synchronization now rejects results from workers superseded by
+  stop/start, preventing an older download from replacing the current mission.
+* Camera source, output, and clock-setting updates now apply to the latest
+  persisted configuration while holding the settings-store lock, preserving
+  unrelated fields during concurrent edits.
+* Non-finite coordinates and altitude values are rejected from mission points;
+  non-finite MAVLink parameter samples are ignored before they can corrupt the
+  parameter catalogue or a pending write.
+* MAVLink connection-state publication is serialized with shutdown, preserving
+  the final disconnected notification when connection and stop race.
+* Editing a SIHA Teknofest Server profile now keeps sessions that were already
+  connected, including manually connected profiles with auto-connect disabled.
+* Camera pipeline errors redact URI credentials and sensitive query values
+  before they reach logs or displayed connection state.
 * Extension discovery now reconciles the workspace UI when a refresh unloads a
   removed package or one of its dependents. Stale panel/status contributions and
   categories are removed without rebuilding unaffected extensions.

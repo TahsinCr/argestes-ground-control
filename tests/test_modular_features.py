@@ -112,8 +112,12 @@ class ModularFeatureTests(unittest.TestCase):
                 gps._telemetry_changed(
                     TelemetrySnapshot.zero().copy(gps_satellites=0)
                 )
-                self.assertEqual(gps.state, "danger")
+                self.assertEqual(gps.state, "warning")
                 gps._phase = ConnectionPhase.DISCONNECTED
+                gps._telemetry_changed(
+                    TelemetrySnapshot.zero().copy(gps_satellites=0)
+                )
+                self.assertEqual(gps.state, "danger")
                 gps._telemetry_changed(
                     TelemetrySnapshot.zero().copy(
                         position_valid=True,

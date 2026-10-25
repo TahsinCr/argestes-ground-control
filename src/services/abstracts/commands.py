@@ -20,7 +20,7 @@ class CommandService(ABC):
         return self.command_definitions
 
     @property
-    def available_flight_modes(self) -> tuple[str, ...]:
+    def available_vehicle_modes(self) -> tuple[str, ...]:
         """Modes advertised by the currently connected autopilot."""
 
         return ()

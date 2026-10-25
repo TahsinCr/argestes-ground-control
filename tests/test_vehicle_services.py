@@ -910,6 +910,34 @@ class VehicleServiceTests(unittest.TestCase):
 
         self.assertEqual(service.current, ())
 
+    def test_non_finite_parameter_echo_is_ignored_without_losing_catalogue(self) -> None:
+        service = VehicleParameterService(_FakeVehicle())  # type: ignore[arg-type]
+        parameter = Parameter(
+            key="TEST_VALUE",
+            value=4,
+            unit="-",
+            category="Test",
+            description="Test parameter",
+        )
+        service.upsert(parameter)
+
+        for raw_value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=raw_value):
+                service._consume_message(
+                    SimpleNamespace(
+                        get_type=lambda: "PARAM_VALUE",
+                        get_srcSystem=lambda: 1,
+                        get_srcComponent=lambda: 1,
+                        param_id=b"TEST_VALUE\x00",
+                        param_value=raw_value,
+                        param_count=1,
+                        param_index=0,
+                        param_type=6,
+                    )
+                )
+
+        self.assertEqual(service.current, (parameter,))
+
     def test_partial_parameter_write_reports_confirmed_uncertain_and_unattempted(self) -> None:
         class _PartialVehicle(_FakeVehicle):
             def set_parameter(
@@ -1382,6 +1410,59 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertTrue(all(not worker.is_alive() for worker in workers))
         self.assertEqual(vehicle.maximum_active, 1)
 
+    def test_expired_failsafe_is_not_sent_after_a_queued_command_finishes(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        executed: list[str] = []
+
+        class SlowVehicle:
+            connected = True
+            state = VehicleConnectionState(True, "test", 1, 1)
+
+            def execute(self, request: CommandRequest) -> bool:
+                executed.append(request.source)
+                if request.source == "operator":
+                    entered.set()
+                    if not release.wait(1.0):
+                        raise TimeoutError("test did not release the command")
+                return True
+
+        commands = DispatchCommandService(
+            SlowVehicle(),  # type: ignore[arg-type]
+            MutableParameterService(),
+        )
+        results: list[CommandResult] = []
+        first = threading.Thread(
+            target=commands.dispatch,
+            args=(CommandRequest("ARM", source="operator"),),
+        )
+        second = threading.Thread(
+            target=lambda: results.append(
+                commands.dispatch(
+                    CommandRequest(
+                        "APPLY_MODE",
+                        {"mode": "RTL", "battery_failsafe": True},
+                        source="battery-failsafe",
+                        deadline_monotonic=time.monotonic() + 0.03,
+                    )
+                )
+            )
+        )
+        first.start()
+        self.assertTrue(entered.wait(1.0))
+        second.start()
+        time.sleep(0.05)
+        release.set()
+        first.join(timeout=1.0)
+        second.join(timeout=1.0)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(executed, ["operator"])
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0].accepted)
+        self.assertEqual(results[0].details["error_type"], "TimeoutError")
+
     def test_queued_navigation_commands_keep_only_the_newest_target(self) -> None:
         first_started = threading.Event()
         release_first = threading.Event()
@@ -1592,7 +1673,7 @@ class VehicleServiceTests(unittest.TestCase):
 
         capabilities = vehicle.capabilities
 
-        self.assertEqual(capabilities.flight_modes, ("GUIDED", "BRAKE", "RTL"))
+        self.assertEqual(capabilities.vehicle_modes, ("GUIDED", "BRAKE", "RTL"))
         self.assertTrue(capabilities.supports("TAKEOFF"))
         self.assertTrue(capabilities.supports("HOLD"))
         self.assertTrue(capabilities.supports("MISSION_PAUSE"))
@@ -1741,7 +1822,7 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(logs.history[-1].details["item_types"], {"waypoint": 1})
         self.assertEqual(
             localized_log_message(logs.history[-1], "tr"),
-            "1 görev öğeli tek seferlik plan uçuş cihazı tarafından kabul edildi",
+            "1 görev öğeli tek seferlik plan araç denetleyicisi tarafından kabul edildi",
         )
 
     def test_failed_mission_upload_log_preserves_plan_summary(self) -> None:

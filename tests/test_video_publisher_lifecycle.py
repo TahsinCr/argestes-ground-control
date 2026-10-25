@@ -5,13 +5,40 @@ import time
 import unittest
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from src.core.events import EventBus
 from extensions.camera.publishing import VideoSharePublisher
 from extensions.camera.models import VideoFrame, VideoShareConfig, VideoSourceFrame
+from src.services.logging_service import LoggingService
 
 
 class VideoPublisherLifecycleTests(unittest.TestCase):
+    def test_pipeline_errors_redact_uri_credentials_and_tokens(self) -> None:
+        secret_uri = "rtsp://operator:password@example.test/live?token=secret-token"
+        logs = LoggingService()
+        publisher = VideoSharePublisher(EventBus(), logs.child("VIDEO"))
+        config = VideoShareConfig(
+            identifier="camera-output",
+            name="Camera output",
+            endpoint=secret_uri,
+            connection_type="rtsp",
+            codec="h264",
+        )
+
+        with patch.object(
+            publisher,
+            "_wait_for_frame",
+            side_effect=RuntimeError(f"GStreamer failed to open {secret_uri}"),
+        ):
+            publisher._run_target(config, threading.Event())
+
+        messages = "\n".join(entry.message for entry in logs.history)
+        self.assertNotIn("operator", messages)
+        self.assertNotIn("password", messages)
+        self.assertNotIn("secret-token", messages)
+        self.assertIn("[redacted]", messages)
+
     def test_removed_source_releases_cached_frame_and_timestamp(self) -> None:
         publisher = VideoSharePublisher(EventBus(), source_frames=EventBus())
         frame = VideoFrame(

@@ -59,6 +59,29 @@ class TileCacheGenerationTests(unittest.TestCase):
             finally:
                 server.stop()
 
+    def test_missing_tile_removal_survives_checkpoint_and_reopen(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            tile = TileRequest("provider", "default", 1, 3, 0, "png")
+            server = TileCacheServer(cache_path=directory, enabled=True, limit_mb=4)
+            path = server._tile_path(tile)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(self.PNG_HEADER)
+            server._touch_index(tile, path, persist=True)
+            path.unlink()
+
+            self.assertIsNone(server._read_cached_tile(tile))
+            self.assertTrue(server.index_dirty_path.exists())
+            server.stop()
+
+            reopened = TileCacheServer(
+                cache_path=directory, enabled=True, limit_mb=4
+            )
+            try:
+                self.assertEqual(reopened.count_tiles(), 0)
+                self.assertNotIn(tile.key, reopened._index)
+            finally:
+                reopened.stop()
+
     def test_cache_hit_started_before_clear_cannot_restore_index_entry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             server = TileCacheServer(cache_path=directory, enabled=True, limit_mb=4)

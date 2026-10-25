@@ -41,7 +41,7 @@
   "joystick.action_mode": "Change Mode",
   "joystick.action_servo": "Set Servo",
   "joystick.settings": "Settings",
-  "joystick.mode": "Flight mode",
+  "joystick.mode": "Vehicle mode",
   "joystick.servo": "Servo channel",
   "joystick.servo_pwm": "PWM value",
   "joystick.press_button": "Press a controller button for button assignment {row}.",

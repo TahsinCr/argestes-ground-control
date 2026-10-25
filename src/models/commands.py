@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -13,12 +14,18 @@ class CommandRequest(Model):
     parameters: dict[str, Any] = field(default_factory=dict)
     source: str = "ui"
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    deadline_monotonic: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "code", self.code.strip().upper())
         object.__setattr__(self, "parameters", dict(self.parameters))
         if not self.code:
             raise ValueError("Komut kodu boş olamaz")
+        if self.deadline_monotonic is not None:
+            deadline = float(self.deadline_monotonic)
+            if not math.isfinite(deadline):
+                raise ValueError("Komut zaman sınırı sonlu bir değer olmalı")
+            object.__setattr__(self, "deadline_monotonic", deadline)
 
     def to_dict(self) -> dict[str, Any]:
         return {

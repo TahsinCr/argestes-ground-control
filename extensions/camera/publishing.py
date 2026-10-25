@@ -28,6 +28,16 @@ _interface_cache: tuple[tuple[str, str], ...] = ()
 _interface_cache_at = 0.0
 _interface_refreshing = False
 _RECORDING_FRAME_STALE_S = 1.0
+_URI_USERINFO = re.compile(r"(\b[a-z][a-z0-9+.-]*://)[^/@\s]+@", re.IGNORECASE)
+_URI_SECRET_QUERY = re.compile(
+    r"([?&](?:password|passwd|token|access_token|secret|api[_-]?key|authorization)=)[^&#\s]*",
+    re.IGNORECASE,
+)
+
+
+def _redact_pipeline_error(message: str) -> str:
+    message = _URI_USERINFO.sub(r"\1[redacted]@", str(message))
+    return _URI_SECRET_QUERY.sub(r"\1[redacted]", message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -546,10 +556,11 @@ class VideoSharePublisher:
                         config.identifier, "active", detail, stop_event=stop_event
                     )
         except Exception as exc:
-            self._set_state(config.identifier, "error", str(exc), stop_event=stop_event)
+            detail = _redact_pipeline_error(str(exc))
+            self._set_state(config.identifier, "error", detail, stop_event=stop_event)
             self._event(
                 "video.share_failed",
-                f"Video paylaşımı başlatılamadı: {config.name}: {exc}",
+                f"Video paylaşımı başlatılamadı: {config.name}: {detail}",
                 "danger",
                 {"share_id": config.identifier},
             )
@@ -562,9 +573,10 @@ class VideoSharePublisher:
                             pipeline, appsrc, Gst
                         )
                         if not finalization_result.finalized:
+                            detail = _redact_pipeline_error(finalization_result.detail)
                             self._event(
                                 "video.recording.finalization_failed",
-                                f"Kayıt dosyası güvenle sonlandırılamadı: {config.name}: {finalization_result.detail}",
+                                f"Kayıt dosyası güvenle sonlandırılamadı: {config.name}: {detail}",
                                 "danger",
                                 {
                                     "share_id": config.identifier,
@@ -576,11 +588,13 @@ class VideoSharePublisher:
                 except Exception as exc:
                     if config.output_type == "record":
                         finalization_result = VideoFinalizationResult(
-                            "pipeline_error", f"MP4 sonlandırma doğrulanamadı: {exc}"
+                            "pipeline_error",
+                            f"MP4 sonlandırma doğrulanamadı: {_redact_pipeline_error(str(exc))}",
                         )
+                        detail = _redact_pipeline_error(str(exc))
                         self._event(
                             "video.publisher.pipeline_shutdown_failed",
-                            f"Video pipeline'ı güvenle kapatılamadı: {config.name}: {exc}",
+                            f"Video pipeline'ı güvenle kapatılamadı: {config.name}: {detail}",
                             "warning",
                             {"share_id": config.identifier},
                         )
@@ -708,7 +722,9 @@ class VideoSharePublisher:
                 detail = str(error)
                 if debug:
                     detail = f"{detail} ({debug})"
-                result = VideoFinalizationResult("pipeline_error", detail)
+                result = VideoFinalizationResult(
+                    "pipeline_error", _redact_pipeline_error(detail)
+                )
                 return result
             if message.type != Gst.MessageType.EOS:
                 result = VideoFinalizationResult(
@@ -717,7 +733,9 @@ class VideoSharePublisher:
                 return result
             result = VideoFinalizationResult("finalized", "MP4 EOS ile sonlandırıldı")
         except Exception as exc:
-            result = VideoFinalizationResult("pipeline_error", str(exc))
+            result = VideoFinalizationResult(
+                "pipeline_error", _redact_pipeline_error(str(exc))
+            )
         finally:
             try:
                 state_result = pipeline.set_state(Gst.State.NULL)
@@ -733,7 +751,8 @@ class VideoSharePublisher:
                 if result.finalized:
                     result = VideoFinalizationResult(
                         "pipeline_error",
-                        f"MP4 EOS alındı ancak pipeline kapatılamadı: {exc}",
+                        "MP4 EOS alındı ancak pipeline kapatılamadı: "
+                        f"{_redact_pipeline_error(str(exc))}",
                     )
         return result
 

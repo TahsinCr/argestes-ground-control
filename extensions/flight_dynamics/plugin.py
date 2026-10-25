@@ -22,7 +22,7 @@ class DynamicsExtension:
         indicator = AttitudeIndicator(theme, panel)
         panel.body_layout.addWidget(indicator, 1)
         feed = QtTelemetryService(context.services.resolve(TelemetryService), panel)
-        feed.flight_dynamics_updated.connect(indicator.update_snapshot)
+        feed.vehicle_dynamics_updated.connect(indicator.update_snapshot)
         indicator.update_snapshot(feed.current)
         panel.set_theme = indicator.set_theme
 

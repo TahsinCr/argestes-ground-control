@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Mapping
 from types import MappingProxyType
 from src.core.events import EventBus
@@ -18,7 +19,7 @@ class DispatchCommandService(CommandService):
         CommandDefinition("ARM", "safety"),
         CommandDefinition("DISARM", "safety"),
         CommandDefinition("FORCE_ARM", "safety", requires_confirmation=True),
-        CommandDefinition("SET_MODE", "flight", ("mode",)),
+        CommandDefinition("SET_MODE", "vehicle", ("mode",)),
         CommandDefinition("GOTO", "navigation", ("latitude", "longitude"), True),
         CommandDefinition("SET_HOME", "navigation", ("latitude", "longitude")),
         CommandDefinition("TAKEOFF", "navigation"),
@@ -92,9 +93,9 @@ class DispatchCommandService(CommandService):
         )
 
     @property
-    def available_flight_modes(self) -> tuple[str, ...]:
+    def available_vehicle_modes(self) -> tuple[str, ...]:
         capabilities = self._vehicle_capabilities()
-        return capabilities.flight_modes if capabilities is not None else ()
+        return capabilities.vehicle_modes if capabilities is not None else ()
 
     @property
     def available_command_codes(self) -> tuple[str, ...]:
@@ -110,12 +111,16 @@ class DispatchCommandService(CommandService):
 
     def dispatch(self, request: CommandRequest) -> CommandResult:
         request = self._normalize_request(request)
+        if self._request_expired(request):
+            return self._complete_expired(request)
         navigation_revision: int | None = None
         if request.code in self._NAVIGATION_COMMANDS:
             with self._navigation_lock:
                 self._navigation_revision += 1
                 navigation_revision = self._navigation_revision
         with self._dispatch_lock:
+            if self._request_expired(request):
+                return self._complete_expired(request)
             if navigation_revision is not None:
                 with self._navigation_lock:
                     latest_revision = self._navigation_revision
@@ -126,6 +131,39 @@ class DispatchCommandService(CommandService):
                         latest_revision,
                     )
             return self._dispatch_serial(request)
+
+    @staticmethod
+    def _request_expired(request: CommandRequest) -> bool:
+        return (
+            request.deadline_monotonic is not None
+            and time.monotonic() >= request.deadline_monotonic
+        )
+
+    def _complete_expired(self, request: CommandRequest) -> CommandResult:
+        message = "Komut zaman sınırını aştı; araç denetleyicisine gönderilmedi"
+        result = CommandResult(
+            request,
+            False,
+            message,
+            {
+                "code": request.code,
+                "source": request.source,
+                "error": message,
+                "error_type": "TimeoutError",
+            },
+        )
+        if self._logger:
+            self._logger.event(
+                "command.expired",
+                message,
+                severity="warning",
+                details=result.details,
+                device_id=(
+                    self._vehicle.state.device_id if self._vehicle.connected else None
+                ),
+            )
+        self._completed.publish(result)
+        return result
 
     def _complete_superseded_navigation(
         self,
@@ -259,7 +297,7 @@ class DispatchCommandService(CommandService):
         if request.code == "APPLY_MODE":
             mode = str(request.parameters.get("mode", "")).strip().upper()
             if not mode:
-                raise ValueError("Uygulanacak uçuş modu seçilmedi")
+                raise ValueError("Uygulanacak araç modu seçilmedi")
             details: dict[str, object] = {"mode": mode}
             forwarded = CommandRequest(
                 "SET_MODE",
@@ -342,7 +380,13 @@ class DispatchCommandService(CommandService):
         canonical_code = self._ALIASES.get(request.code, request.code)
         if canonical_code == request.code:
             return request
-        return CommandRequest(canonical_code, request.parameters, request.source)
+        return CommandRequest(
+            canonical_code,
+            request.parameters,
+            request.source,
+            request.timestamp,
+            request.deadline_monotonic,
+        )
 
     def _vehicle_capabilities(self) -> VehicleCapabilities | None:
         capabilities = getattr(self._vehicle, "capabilities", None)
@@ -384,8 +428,8 @@ class DispatchCommandService(CommandService):
             mode = str(request.parameters.get("mode", "")).strip().upper()
             if (
                 capabilities is not None
-                and capabilities.flight_modes
-                and mode not in capabilities.flight_modes
+                and capabilities.vehicle_modes
+                and mode not in capabilities.vehicle_modes
             ):
                 raise ValueError(f"Bağlı araç modu desteklemiyor: {mode}")
 
@@ -399,21 +443,21 @@ class DispatchCommandService(CommandService):
             mode = "döngü görevi" if details.get("loop") else "tek seferlik görev"
             return (
                 f"{int(details.get('item_count', 0))} görev öğesi {mode} olarak "
-                "uçuş cihazı tarafından kabul edildi"
+                "araç denetleyicisi tarafından kabul edildi"
             )
         if request.code == "SET_TARGET_PROFILE":
             return f"{int(details.get('profile_field_count', 0))} uçuş profili değeri doğrulandı"
         if request.code == "SET_MISSION_TASK":
-            return f"{details.get('task', 'Görev')} uçuş cihazı tarafından doğrulandı"
+            return f"{details.get('task', 'Görev')} araç denetleyicisi tarafından doğrulandı"
         if request.code == "APPLY_MODE":
-            mode = str(details.get("mode", "Uçuş modu"))
+            mode = str(details.get("mode", "Araç modu"))
             return f"{mode} modu heartbeat ile doğrulandı"
         if request.code == "FORCE_ARM":
-            return "ZORLA ARM uçuş cihazı heartbeat verisiyle doğrulandı"
+            return "ZORLA ARM araç denetleyicisi heartbeat verisiyle doğrulandı"
         return (
-            f"{request.code} uçuş cihazında doğrulandı"
+            f"{request.code} araç denetleyicisinde doğrulandı"
             if confirmed
-            else f"{request.code} uçuş cihazına iletildi; bu mesaj türü onay üretmiyor"
+            else f"{request.code} araç denetleyicisine iletildi; bu mesaj türü onay üretmiyor"
         )
 
     @staticmethod

@@ -103,7 +103,7 @@ class BatteryAlarmTests(unittest.TestCase):
         zero_battery = self.base.copy(
             armed=True,
             battery_percent=0,
-            flight_mode="AUTO",
+            vehicle_mode="AUTO",
         )
         self.assertTrue(service.evaluate(zero_battery, settings))
         self.assertEqual(requested_modes, [])
@@ -129,7 +129,7 @@ class BatteryAlarmTests(unittest.TestCase):
         )
         warning_battery = self.base.copy(
             armed=True,
-            flight_mode="AUTO",
+            vehicle_mode="AUTO",
         )
         self.assertTrue(service.evaluate(warning_battery, settings))
         self.assertEqual(requested_modes, [])
@@ -153,6 +153,32 @@ class BatteryAlarmTests(unittest.TestCase):
         )
         self.assertEqual(requested_modes, ["RTL", "RTL"])
 
+    def test_logging_io_failure_does_not_suppress_rtl_request(self) -> None:
+        requested_modes: list[str] = []
+        service = BatteryAlarmService(
+            self.logs.child("BATTERY"),
+            requested_modes.append,
+        )
+        settings = BatteryAlarmSettings(
+            failsafe_enabled=True,
+            warning_mode="percent",
+            warning_threshold=20,
+            failsafe_mode="percent",
+            failsafe_threshold=10,
+        )
+        armed = self.base.copy(armed=True, vehicle_mode="AUTO", battery_percent=9)
+
+        with patch.object(self.logs, "_persist_many", side_effect=OSError("disk full")):
+            self.assertTrue(service.evaluate(armed, settings))
+
+        self.assertEqual(requested_modes, ["RTL"])
+        self.assertTrue(
+            any(
+                entry.action == "logging.persistence_failed"
+                for entry in self.logs.history
+            )
+        )
+
     def test_enabled_failsafe_waits_until_vehicle_is_armed(self) -> None:
         requested_modes: list[str] = []
         service = BatteryAlarmService(
@@ -169,7 +195,7 @@ class BatteryAlarmTests(unittest.TestCase):
         low_battery = self.base.copy(
             battery_voltage=14.0,
             armed=False,
-            flight_mode="AUTO",
+            vehicle_mode="AUTO",
         )
         self.assertTrue(service.evaluate(low_battery, settings))
         self.assertEqual(requested_modes, [])
@@ -194,7 +220,7 @@ class BatteryAlarmTests(unittest.TestCase):
             armed=True,
             battery_percent=15,
             battery_voltage=13.8,
-            flight_mode="AUTO",
+            vehicle_mode="AUTO",
         )
         self.assertTrue(service.evaluate(warning_only, settings))
         self.assertEqual(requested_modes, [])
@@ -204,7 +230,7 @@ class BatteryAlarmTests(unittest.TestCase):
             armed=True,
             battery_percent=9,
             battery_voltage=14.8,
-            flight_mode="AUTO",
+            vehicle_mode="AUTO",
         )
         self.assertTrue(service.evaluate(critical_only, settings))
         self.assertEqual(requested_modes, ["RTL"])
@@ -230,7 +256,7 @@ class BatteryAlarmTests(unittest.TestCase):
         low_battery = self.base.copy(
             armed=True,
             battery_percent=9,
-            flight_mode="AUTO",
+            vehicle_mode="AUTO",
         )
 
         with patch("extensions.battery.alarm.time.monotonic", return_value=0.0):
@@ -259,7 +285,7 @@ class BatteryAlarmTests(unittest.TestCase):
         low_battery = self.base.copy(
             armed=True,
             battery_percent=9,
-            flight_mode="AUTO",
+            vehicle_mode="AUTO",
         )
 
         service.evaluate(low_battery, settings)
@@ -288,7 +314,7 @@ class BatteryAlarmTests(unittest.TestCase):
         low_battery = self.base.copy(
             armed=True,
             battery_percent=9,
-            flight_mode="AUTO",
+            vehicle_mode="AUTO",
         )
 
         service.evaluate(low_battery, settings)
@@ -326,7 +352,7 @@ class BatteryAlarmTests(unittest.TestCase):
         critical = self.base.copy(
             armed=True,
             battery_percent=9,
-            flight_mode="AUTO",
+            vehicle_mode="AUTO",
         )
 
         service.evaluate(critical, settings)
@@ -340,7 +366,7 @@ class BatteryAlarmTests(unittest.TestCase):
         service.evaluate(critical, settings)
         self.assertEqual(requested_modes, ["RTL"])
 
-        disarmed = critical.copy(armed=False, flight_mode="STANDBY")
+        disarmed = critical.copy(armed=False, vehicle_mode="STANDBY")
         service.evaluate(disarmed, settings)
         service.evaluate(critical, settings)
         self.assertEqual(requested_modes, ["RTL", "RTL"])
@@ -359,7 +385,7 @@ class BatteryAlarmTests(unittest.TestCase):
         low_battery = self.base.copy(
             armed=True,
             battery_percent=9,
-            flight_mode="AUTO",
+            vehicle_mode="AUTO",
         )
 
         service.evaluate(low_battery, settings)

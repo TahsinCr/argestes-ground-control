@@ -153,7 +153,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
     def capabilities(self) -> VehicleCapabilities:
         """Return live MAVLink capabilities without guessing vehicle family.
 
-        MAVLink command support is adapter-level; individual flight modes are
+        MAVLink command support is adapter-level; individual vehicle modes are
         queried from the connected autopilot's own mode mapping.  This works
         for Plane, Copter, Rover, VTOL and simulator dialects without a UI
         maintaining a brittle list of vehicle-specific modes.
@@ -195,7 +195,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
             commands.append("HOLD")
         return VehicleCapabilities(
             command_codes=tuple(commands),
-            flight_modes=modes,
+            vehicle_modes=modes,
             vehicle_type=self._state.vehicle_type,
             autopilot_type=self._state.autopilot_type,
         )
@@ -289,7 +289,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         self._event(
             "success",
             "vehicle.connected",
-            f"Uçuş cihazına bağlanıldı ({self._state.device_id})",
+            f"Araç denetleyicisine bağlanıldı ({self._state.device_id})",
             details=self._state.to_dict(),
         )
 
@@ -318,7 +318,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
             self._event(
                 "success",
                 "vehicle.telemetry_stream_profile_requested",
-                "Uçuş cihazından hızlı telemetri akışı istendi",
+                "Araç denetleyicisinden hızlı telemetri akışı istendi",
                 details={
                     "rates": ", ".join(
                         f"{name}={rate:g} Hz" for name, rate in requested.items()
@@ -370,7 +370,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         self._event(
             "info",
             "vehicle.disconnected",
-            f"Uçuş cihazı bağlantısı kapatıldı ({previous.device_id})",
+            f"Araç denetleyicisi bağlantısı kapatıldı ({previous.device_id})",
             device_id=previous.device_id,
         )
 
@@ -437,7 +437,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
     def send_rc_override(self, channels: Iterable[int | None]) -> None:
         if not self.connected:
             raise ConnectionError(
-                "Uçuş cihazı bağlantısı hazır değil: RC_CHANNELS_OVERRIDE"
+                "Araç denetleyicisi bağlantısı hazır değil: RC_CHANNELS_OVERRIDE"
             )
         source = tuple(channels)
         if len(source) > 18:
@@ -637,7 +637,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
             self._event(
                 "success",
                 "mission.upload_confirmed",
-                f"{route_item_count} görev öğesi uçuş cihazı tarafından kabul edildi",
+                f"{route_item_count} görev öğesi araç denetleyicisi tarafından kabul edildi",
                 details={
                     "item_count": route_item_count,
                     "wire_item_count": len(items),
@@ -703,7 +703,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
             self._event(
                 "success",
                 "mission.download_confirmed",
-                f"Uçuş cihazından {count} görev öğesi alındı",
+                f"Araç denetleyicisinden {count} görev öğesi alındı",
                 details={
                     "vehicle_item_count": count,
                     "supported_item_count": len(overlays),
@@ -751,7 +751,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
     @property
     def _target(self) -> tuple[int, int]:
         if not self.connected:
-            raise ConnectionError("Uçuş cihazı bağlı değil")
+            raise ConnectionError("Araç denetleyicisi bağlı değil")
         connection = self._client.connection
         return connection.target_system, connection.target_component
 
@@ -882,7 +882,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         self._event(
             "info",
             "vehicle.goto_sent",
-            "GUIDED konum hedefi uçuş cihazına iletildi",
+            "GUIDED konum hedefi araç denetleyicisine iletildi",
             details={
                 "latitude": latitude / 1e7,
                 "longitude": longitude / 1e7,
@@ -944,7 +944,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         self._event(
             "success",
             "vehicle.home_set",
-            "Home/merkez noktası uçuş cihazında güncellendi",
+            "Home/merkez noktası araç denetleyicisinde güncellendi",
             details={
                 "latitude": latitude,
                 "longitude": longitude,
@@ -1416,7 +1416,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
             self._event(
                 "success",
                 "vehicle.link_recovered",
-                f"Uçuş cihazı heartbeat bağlantısı geri geldi ({recovered.device_id})",
+                f"Araç denetleyicisi heartbeat bağlantısı geri geldi ({recovered.device_id})",
                 details=recovered.to_dict(),
                 device_id=recovered.device_id,
             )
@@ -1472,7 +1472,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                 self._event(
                     "warning",
                     "vehicle.link_lost",
-                    f"Uçuş cihazı heartbeat bağlantısı kesildi ({lost.device_id})",
+                    f"Araç denetleyicisi heartbeat bağlantısı kesildi ({lost.device_id})",
                     details={"heartbeat_timeout_s": timeout},
                     device_id=lost.device_id,
                 )

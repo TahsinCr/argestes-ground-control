@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import tempfile
+import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
-from src.models.mission import MapContact, MapOverlay, MissionState
+from src.core.events import EventBus
+from src.models.geometry import Point
+from src.models.mission import MapOverlay, MissionState
 from src.models.vehicle import VehicleConnectionState
 from src.services.abstracts.vehicle import MissionTransferInterrupted
 from extensions.map_autonomy.services.planner import PlannerService
@@ -35,6 +36,13 @@ class MissionTests(unittest.TestCase):
             {waypoint_id, rtl_id, safe_id, route_id},
         )
         self.assertEqual(state.revision, 4)
+
+    def test_point_rejects_non_finite_altitude_but_allows_negative_altitude(self) -> None:
+        for altitude in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(altitude=altitude), self.assertRaises(ValueError):
+                Point(39.9, 32.8, altitude)
+
+        self.assertEqual(Point(39.9, 32.8, -25.0).altitude, -25.0)
 
     def test_snapshots_do_not_allow_external_mutation(self) -> None:
         overlay = MapOverlay("wp-1", "waypoint", "WP", [[39.9, 32.8]], "#fff", 35)
@@ -163,6 +171,62 @@ class MissionTests(unittest.TestCase):
         self.assertEqual(
             [item.overlay_id for item in service.state.overlays], ["operator-wp"]
         )
+
+    def test_old_vehicle_download_is_discarded_after_stop_and_restart(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        applied = threading.Event()
+        stale = MapOverlay(
+            "stale-wp", "waypoint", "Stale", [[39.91, 32.81, 120]], "#fff", 35
+        )
+        current = MapOverlay(
+            "current-wp", "waypoint", "Current", [[39.92, 32.82, 130]], "#fff", 35
+        )
+
+        class Vehicle:
+            connected = True
+            state = VehicleConnectionState(True, "test", 1, 1)
+            connection_changed = EventBus()
+
+            def __init__(self) -> None:
+                self.download_count = 0
+
+            def download_mission(self):
+                self.download_count += 1
+                if self.download_count == 1:
+                    entered.set()
+                    if not release.wait(1.0):
+                        raise TimeoutError("test did not release the stale download")
+                    return [stale]
+                return [current]
+
+        vehicle = Vehicle()
+        service = PlannerService(vehicle=vehicle)  # type: ignore[arg-type]
+        subscription = service._changed.subscribe(
+            lambda state: applied.set()
+            if any(item.overlay_id == "current-wp" for item in state.overlays)
+            else None
+        )
+        try:
+            service.start()
+            self.assertTrue(entered.wait(1.0))
+
+            stopping = threading.Thread(target=service.stop)
+            stopping.start()
+            self.assertTrue(service._stop_event.wait(1.0))
+            service.start()
+            release.set()
+
+            self.assertTrue(applied.wait(1.0))
+            stopping.join(timeout=1.0)
+            self.assertFalse(stopping.is_alive())
+            self.assertEqual(
+                [item.overlay_id for item in service.state.overlays], ["current-wp"]
+            )
+        finally:
+            release.set()
+            service.stop()
+            subscription.cancel()
 
 
 if __name__ == "__main__":

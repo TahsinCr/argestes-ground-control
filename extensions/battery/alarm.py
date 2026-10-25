@@ -171,7 +171,7 @@ class BatteryAlarmService:
             or time.monotonic() < self._failsafe_retry_after
         ):
             return
-        if snapshot.flight_mode.strip().upper() == self.FAILSAFE_MODE:
+        if snapshot.vehicle_mode.strip().upper() == self.FAILSAFE_MODE:
             self._failsafe_dispatched = True
             return
         if self._failsafe_handler is None:
@@ -257,7 +257,7 @@ class BatteryAlarmService:
                 return
             self._failsafe_pending = False
             # The command may still complete at the transport. Never resend an
-            # outcome-unknown flight command automatically.
+            # outcome-unknown vehicle command automatically.
             self._failsafe_dispatched = True
             self._failsafe_generation += 1
             self._failsafe_timeout_timer = None

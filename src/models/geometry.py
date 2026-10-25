@@ -20,6 +20,8 @@ class Point(Model):
             raise ValueError("Enlem -90..90 aralığında olmalı")
         if not -180.0 <= self.longitude <= 180.0:
             raise ValueError("Boylam -180..180 aralığında olmalı")
+        if not math.isfinite(self.altitude):
+            raise ValueError("Yükseklik sonlu bir sayı olmalı")
 
     def distance_to(self, other: "Point", *, include_altitude: bool = False) -> float:
         lat1, lat2 = math.radians(self.latitude), math.radians(other.latitude)

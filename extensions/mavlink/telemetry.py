@@ -16,7 +16,7 @@ from src.services.telemetry import MutableTelemetryService
 
 
 class TelemetryDecoder:
-    """Convert flight-controller messages into the UI-independent telemetry model."""
+    """Convert vehicle-controller messages into the shared telemetry model."""
 
     STANDARD_GRAVITY_MPS2 = 9.80665
     FIX_TYPES = {
@@ -54,7 +54,7 @@ class TelemetryDecoder:
             system_status = int(getattr(message, "system_status", -1))
             updates.update(
                 armed=bool(base_mode & 128),
-                flight_mode=snapshot.flight_mode,
+                vehicle_mode=snapshot.vehicle_mode,
                 system_status=self.SYSTEM_STATES.get(
                     system_status, f"STATE {system_status}"
                 ),
@@ -468,7 +468,7 @@ class VehicleTelemetryService(MutableTelemetryService):
             snapshot = self._decoder.apply(self._current_for_decoder(), message)
             if message_type == "HEARTBEAT":
                 snapshot = snapshot.copy(
-                    flight_mode=self._vehicle.mode_name(message, snapshot.flight_mode)
+                    vehicle_mode=self._vehicle.mode_name(message, snapshot.vehicle_mode)
                 )
             transport = getattr(
                 self._vehicle, "transport_stats", VehicleTransportStats()
@@ -527,7 +527,7 @@ class VehicleTelemetryService(MutableTelemetryService):
             if self._logger:
                 self._logger.event(
                     "telemetry.decode_failed",
-                    f"Uçuş cihazı mesajı çözümlenemedi: {exc}",
+                    f"Araç denetleyicisi mesajı çözümlenemedi: {exc}",
                     severity="warning",
                     details={
                         "message_type": str(

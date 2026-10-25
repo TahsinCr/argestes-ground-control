@@ -21,12 +21,12 @@ from src.ui.widgets.common import PanelFrame, compact_button
 
 
 class VehicleControlsPanel(PanelFrame):
-    """Vehicle-neutral flight mode, arming and navigation controls."""
+    """Vehicle-neutral mode, arming and navigation controls."""
 
     command_requested = pyqtSignal(str, dict)
 
     def __init__(
-        self, flight_modes=(), language: str = "tr", parent: QWidget | None = None
+        self, vehicle_modes=(), language: str = "tr", parent: QWidget | None = None
     ) -> None:
         super().__init__("", "", parent)
         self._connected = False
@@ -130,7 +130,7 @@ class VehicleControlsPanel(PanelFrame):
         content_layout.addWidget(profile_card)
         content_layout.addStretch(1)
         self.set_language(language)
-        self.set_flight_modes(flight_modes)
+        self.set_vehicle_modes(vehicle_modes)
         self.set_available(False)
         self._set_command_status(t("command.status.disconnected", language), "warning")
 
@@ -159,7 +159,7 @@ class VehicleControlsPanel(PanelFrame):
                 )
             )
 
-    def set_flight_modes(self, modes) -> None:
+    def set_vehicle_modes(self, modes) -> None:
         selected = self.mode_combo.currentData()
         names = tuple(
             dict.fromkeys(
@@ -184,7 +184,7 @@ class VehicleControlsPanel(PanelFrame):
         was_connected = self._connected
         self._connected = bool(snapshot.telemetry_link and snapshot.autopilot_link)
         self._armed = bool(snapshot.armed)
-        self._telemetry_mode = str(snapshot.flight_mode or "").strip().upper()
+        self._telemetry_mode = str(snapshot.vehicle_mode or "").strip().upper()
         mode_index = self.mode_combo.findData(self._telemetry_mode)
         if self._mode_selection_dirty and self.mode_selection_matches(
             self._telemetry_mode

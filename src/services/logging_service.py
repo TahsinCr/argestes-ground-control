@@ -106,6 +106,7 @@ class LoggingService(LogService):
         self._log_path = Path(log_path) if log_path is not None else None
         self._max_file_bytes = int(max_file_bytes)
         self._backup_count = int(backup_count)
+        self._persistence_failed = False
         if self._log_path is not None:
             self._log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -159,10 +160,32 @@ class LoggingService(LogService):
         )
         if not snapshots:
             return
+        persistence_warning = None
         with self._lock:
             self._history.extend(snapshots)
-            self._persist_many(snapshots)
-        for snapshot in snapshots:
+            try:
+                self._persist_many(snapshots)
+            except OSError as exc:
+                if not self._persistence_failed:
+                    persistence_warning = LogEntry(
+                        source="SYSTEM",
+                        action="logging.persistence_failed",
+                        message=(
+                            "Olay günlüğü diske yazılamadı; kayıt bu oturumda "
+                            "yalnızca bellekte tutuluyor"
+                        ),
+                        severity="danger",
+                        details={
+                            "path": str(self._log_path),
+                            "error": str(exc),
+                        },
+                    )
+                    self._history.append(persistence_warning)
+                self._persistence_failed = True
+            else:
+                self._persistence_failed = False
+        published = snapshots + ((persistence_warning,) if persistence_warning else ())
+        for snapshot in published:
             self._entries.publish(replace(snapshot, details=dict(snapshot.details)))
 
     def reemit_history(self) -> None:

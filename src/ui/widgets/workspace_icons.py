@@ -19,7 +19,7 @@ ICON_NAMES = {
     "compass": ("Navigation", "Seyrüsefer"),
     "camera": ("Camera", "Kamera"),
     "chart": ("Telemetry", "Telemetri"),
-    "flight": ("Flight", "Uçuş"),
+    "flight": ("Vehicle", "Araç"),
     "logs": ("Logs", "Loglar"),
     "sliders": ("Parameters", "Parametreler"),
     "terminal": ("Commands", "Komutlar"),

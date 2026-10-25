@@ -164,9 +164,15 @@ class ClockReferenceTests(unittest.TestCase):
         previous = CameraConfiguration((), "", ())
         saved = []
         provider_updates = []
+
+        def update(change):
+            configuration = change(previous)
+            saved.append(configuration)
+            return configuration
+
         runtime.settings = SimpleNamespace(
             current=previous,
-            save=saved.append,
+            update=update,
         )
         runtime.video = SimpleNamespace(set_clock_provider=provider_updates.append)
         runtime._clock_reference_id = "system.utc"

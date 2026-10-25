@@ -25,7 +25,7 @@ class VoltageBatteryEstimator:
     filter deliberately follows recovery faster than voltage sag: motor-load
     dips therefore do not immediately look like lost capacity, while the
     display recovers promptly after the load is removed. Flight safety remains
-    the responsibility of the flight controller's raw-voltage failsafes.
+    the responsibility of the vehicle controller's raw-voltage failsafes.
     """
 
     def __init__(self, settings: BatteryTelemetrySettings) -> None:

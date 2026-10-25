@@ -1158,7 +1158,7 @@
       activeTool: 'pan',
       currentLayer: 'vector',
       missionLoop: false,
-      flightMode: '',
+      vehicleMode: '',
       selectedId: null,
       overlayOrder: [],
       layers: new Map(),
@@ -1246,7 +1246,7 @@
           label.textContent = title;
         }
         button.title = tool === 'send' && !state.commandAvailable
-          ? `${title} — uçuş cihazı bağlı değil`
+          ? `${title} — araç denetleyicisi bağlı değil`
           : title;
       });
       document.querySelectorAll('#context-menu button').forEach((button) => {
@@ -1383,7 +1383,7 @@
             return;
           }
           if (tool === 'send') {
-            window.ykiMap.setMissionTransferState('pending', 'Görev planı uçuş cihazına gönderiliyor…');
+            window.ykiMap.setMissionTransferState('pending', 'Görev planı araç denetleyicisine gönderiliyor…');
             emitAction({ type: 'mission_send_request', loop: state.missionLoop });
             return;
           }
@@ -2719,7 +2719,7 @@
       });
       ['goto'].forEach((action) => {
         menu.querySelector(`[data-action="${action}"]`).style.display = (
-          !deletable && state.flightMode === 'GUIDED'
+          !deletable && state.vehicleMode === 'GUIDED'
         ) ? 'flex' : 'none';
       });
       menu.querySelector('[data-action="delete"]').style.display = deletable
@@ -3954,7 +3954,7 @@
           const title = state.ui.tools[tool] || TOOL_DEFAULTS[tool];
           button.title = state.commandAvailable
             ? title
-            : `${title} — uçuş cihazı bağlı değil`;
+            : `${title} — araç denetleyicisi bağlı değil`;
         });
       },
 
@@ -4088,7 +4088,7 @@
         if (payload && Object.prototype.hasOwnProperty.call(payload, 'commandAvailable')) {
           window.ykiMap.setCommandAvailable(payload.commandAvailable);
         }
-        state.flightMode = String(payload && payload.mode || '').trim().toUpperCase();
+        state.vehicleMode = String(payload && payload.mode || '').trim().toUpperCase();
         updateGpsSummary(payload || {});
         updateHomeReference(payload || {});
         const localReadout = document.querySelector('#local-readout');

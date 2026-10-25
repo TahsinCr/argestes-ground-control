@@ -116,7 +116,7 @@ class VehicleParameterService(MutableParameterService):
                 self._set_sync_status(
                     ParameterSyncStatus(ParameterSyncState.DISCONNECTED)
                 )
-            raise ConnectionError("Parametre listesi için uçuş cihazı bağlı değil")
+            raise ConnectionError("Parametre listesi için araç denetleyicisi bağlı değil")
         with self._sync_lock:
             self._refresh_generation += 1
             generation = self._refresh_generation
@@ -154,7 +154,7 @@ class VehicleParameterService(MutableParameterService):
         if not changes:
             return
         if not self._vehicle.connected:
-            error = ConnectionError("Parametre yazmak için uçuş cihazı bağlı değil")
+            error = ConnectionError("Parametre yazmak için araç denetleyicisi bağlı değil")
             self._event(
                 "parameter.write_failed",
                 str(error),
@@ -264,7 +264,7 @@ class VehicleParameterService(MutableParameterService):
                     self._pending_writes.pop(key, None)
         self._event(
             "parameter.write_confirmed",
-            f"{len(parameters)} parametre uçuş cihazında doğrulandı",
+            f"{len(parameters)} parametre araç denetleyicisinde doğrulandı",
             severity="success",
             details={
                 "changes": {
@@ -315,7 +315,12 @@ class VehicleParameterService(MutableParameterService):
         key = self._parameter_name(message.param_id)
         if not key:
             return
-        raw_value = float(message.param_value)
+        try:
+            raw_value = float(message.param_value)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if not math.isfinite(raw_value):
+            return
         existing = self._find(key)
         value = self._coerce_received_value(raw_value, existing)
         raw_type = getattr(
@@ -329,7 +334,7 @@ class VehicleParameterService(MutableParameterService):
             category=existing.category if existing else self._category_for(key),
             description=existing.description
             if existing
-            else "ArduPilot uçuş cihazı parametresi",
+            else "ArduPilot araç denetleyicisi parametresi",
             value_type=value_type,
             default_value=existing.default_value if existing else None,
         )
@@ -460,7 +465,7 @@ class VehicleParameterService(MutableParameterService):
             if completed_current_refresh:
                 self._event(
                     "parameter.sync_received",
-                    f"Uçuş cihazından {len(received_parameters)} parametrenin tamamı alındı",
+                    f"Araç denetleyicisinden {len(received_parameters)} parametrenin tamamı alındı",
                     severity="success",
                     details={"parameter_count": len(received_parameters)},
                 )
@@ -477,14 +482,14 @@ class VehicleParameterService(MutableParameterService):
             if applied_live_update and confirmed:
                 self._event(
                     "parameter.value_echo",
-                    f"{key} uçuş cihazı tarafından doğrulandı",
+                    f"{key} araç denetleyicisi tarafından doğrulandı",
                     severity="success",
                     details={"parameter": key, "previous": previous, "value": value},
                 )
             elif applied_live_update and previous != value:
                 self._event(
                     "parameter.vehicle_update",
-                    f"{key} uçuş cihazından güncellendi",
+                    f"{key} araç denetleyicisinden güncellendi",
                     details={"parameter": key, "previous": previous, "value": value},
                 )
         if confirmed and pending is not None:
@@ -542,7 +547,7 @@ class VehicleParameterService(MutableParameterService):
             if generation == current and self._vehicle.connected:
                 self._event(
                     "parameter.defaults_unavailable",
-                    f"Parametre varsayılanları uçuş cihazından alınamadı: {exc}",
+                    f"Parametre varsayılanları araç denetleyicisinden alınamadı: {exc}",
                     severity="warning",
                 )
             return
@@ -560,7 +565,7 @@ class VehicleParameterService(MutableParameterService):
                 self.replace(enriched)
         self._event(
             "parameter.defaults_received",
-            f"Uçuş cihazından {matched} parametrenin varsayılan değeri alındı",
+            f"Araç denetleyicisinden {matched} parametrenin varsayılan değeri alındı",
             severity="success",
             details={"parameter_count": matched, "available_count": len(defaults)},
         )
@@ -637,8 +642,8 @@ class VehicleParameterService(MutableParameterService):
             "SR": "telemetry",
             "GPS": "navigation",
             "EK": "navigation",
-            "ARSPD": "flight",
-            "TECS": "flight",
+            "ARSPD": "vehicle",
+            "TECS": "vehicle",
             "LAND": "landing",
             "Q_": "vtol",
         }

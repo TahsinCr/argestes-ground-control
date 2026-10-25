@@ -47,6 +47,7 @@ class PlannerService(Service):
         self._vehicle_subscription: Subscription | None = None
         self._sync_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._sync_generation = 0
         self._default_radii = {
             "takeoff": 35.0,
             "waypoint": 35.0,
@@ -67,7 +68,9 @@ class PlannerService(Service):
             return MissionState.from_dict(self._state.to_dict())
 
     def start(self) -> None:
-        self._stop_event.clear()
+        with self._lock:
+            self._sync_generation += 1
+            self._stop_event.clear()
         self._changed.publish(self.state)
         self._log("info", "mission.planner_started", "YKİ planlayıcısı hazır")
         if self._vehicle is not None and self._vehicle_subscription is None:
@@ -78,15 +81,20 @@ class PlannerService(Service):
                 self._schedule_vehicle_sync()
 
     def stop(self) -> None:
-        self._stop_event.set()
-        if self._vehicle_subscription is not None:
-            self._vehicle_subscription.cancel()
+        with self._lock:
+            self._sync_generation += 1
+            self._stop_event.set()
+            subscription = self._vehicle_subscription
             self._vehicle_subscription = None
-        thread = self._sync_thread
+            thread = self._sync_thread
+        if subscription is not None:
+            subscription.cancel()
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=2.0)
-        if thread is None or not thread.is_alive():
-            self._sync_thread = None
+        with self._lock:
+            if thread is None or not thread.is_alive():
+                if self._sync_thread is thread:
+                    self._sync_thread = None
 
     def default_color(self, item_type: str) -> str:
         return self.DEFAULT_COLORS.get(item_type, "#61a8ff")
@@ -424,13 +432,13 @@ class PlannerService(Service):
             self._schedule_vehicle_sync()
 
     def request_vehicle_sync(self) -> bool:
-        """Fetch the flight-controller mission into the shared planner state."""
+        """Fetch the vehicle-controller mission into the shared planner state."""
 
         if self._vehicle is None or not self._vehicle.connected:
             self._log(
                 "warning",
                 "mission.download_unavailable",
-                "Uçuş cihazına bağlı değilken görev planı çekilemez",
+                "Araç denetleyicisine bağlı değilken görev planı alınamaz",
             )
             return False
         return self._schedule_vehicle_sync()
@@ -439,33 +447,47 @@ class PlannerService(Service):
         if self._vehicle is None:
             return False
         with self._lock:
+            if self._stop_event.is_set():
+                return False
             if self._sync_thread is not None and self._sync_thread.is_alive():
                 return False
+            generation = self._sync_generation
             self._sync_thread = threading.Thread(
                 target=self._sync_from_vehicle,
+                args=(generation,),
                 name="VehicleMissionSync",
                 daemon=True,
             )
             self._sync_thread.start()
             return True
 
-    def _sync_from_vehicle(self) -> None:
+    def _sync_from_vehicle(self, generation: int | None = None) -> None:
         if self._vehicle is None:
             return
         with self._lock:
+            generation = (
+                self._sync_generation if generation is None else generation
+            )
+            if self._stop_event.is_set() or generation != self._sync_generation:
+                return
             expected_overlays = tuple(
                 item.to_dict() for item in self._state.overlays
             )
             expected_loop = self._state.mission_loop
         try:
             overlays = self._vehicle.download_mission()
-            if self._stop_event.is_set():
-                return
-            if not self._apply_vehicle_mission(
-                overlays,
-                expected_overlays=expected_overlays,
-                expected_loop=expected_loop,
-            ):
+            with self._lock:
+                if (
+                    self._stop_event.is_set()
+                    or generation != self._sync_generation
+                ):
+                    return
+                applied = self._apply_vehicle_mission(
+                    overlays,
+                    expected_overlays=expected_overlays,
+                    expected_loop=expected_loop,
+                )
+            if not applied:
                 self._log(
                     "warning",
                     "mission.download_conflict",
@@ -477,17 +499,17 @@ class PlannerService(Service):
             # A manual upload has priority; a future reconnect can refresh the plan.
             return
         except Exception as exc:
-            if self._logger and not self._stop_event.is_set():
+            if self._logger and self._sync_is_current(generation):
                 self._logger.event(
                     "mission.download_failed",
-                    f"Uçuş cihazı görev planı alınamadı: {exc}",
+                    f"Araç denetleyicisinden görev planı alınamadı: {exc}",
                     severity="danger",
                     device_id=self._vehicle.state.device_id
                     if self._vehicle.connected
                     else None,
                 )
         else:
-            if self._logger:
+            if self._logger and self._sync_is_current(generation):
                 self._logger.event(
                     "mission.state_synchronized",
                     f"Backend görev durumu {len(overlays)} araç öğesiyle eşitlendi",
@@ -498,9 +520,23 @@ class PlannerService(Service):
                     else None,
                 )
         finally:
+            reschedule = False
             with self._lock:
                 if self._sync_thread is threading.current_thread():
                     self._sync_thread = None
+                    reschedule = (
+                        generation != self._sync_generation
+                        and not self._stop_event.is_set()
+                    )
+            if reschedule:
+                self._schedule_vehicle_sync()
+
+    def _sync_is_current(self, generation: int) -> bool:
+        with self._lock:
+            return (
+                not self._stop_event.is_set()
+                and generation == self._sync_generation
+            )
 
     def _apply_vehicle_mission(
         self,

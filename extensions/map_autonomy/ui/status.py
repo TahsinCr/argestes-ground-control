@@ -71,10 +71,7 @@ class GpsStatusChip(StatusChip):
         )
         no_satellites = satellites is None or int(satellites) <= 0
 
-        if no_satellites or not self._gps_ready:
-            self.set_state("danger")
-            message = t("status.gps.quality.poor", self.language)
-        elif self._phase in {
+        if self._phase in {
             ConnectionPhase.CONNECTING,
             ConnectionPhase.DISCONNECTING,
         }:
@@ -85,6 +82,9 @@ class GpsStatusChip(StatusChip):
                 else "status.gps.disconnecting",
                 self.language,
             )
+        elif no_satellites or not self._gps_ready:
+            self.set_state("danger")
+            message = t("status.gps.quality.poor", self.language)
         elif quality == "success":
             self.set_state("success")
             message = t("status.gps.quality.good", self.language)

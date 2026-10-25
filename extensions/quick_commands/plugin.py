@@ -18,7 +18,7 @@ class QuickCommandsExtension:
         from src.services.abstracts.commands import CommandService
 
         commands = QtCommandService(context.services.resolve(CommandService), parent)
-        panel = VehicleControlsPanel(commands.available_flight_modes, language, parent)
+        panel = VehicleControlsPanel(commands.available_vehicle_modes, language, parent)
         feed = QtTelemetryService(context.services.resolve(TelemetryService), panel)
         commands.setParent(panel)
         panel.command_requested.connect(commands.issue_command)
@@ -26,7 +26,7 @@ class QuickCommandsExtension:
         commands.command_completed.connect(panel.command_completed)
 
         def update(snapshot):
-            panel.set_flight_modes(commands.available_flight_modes)
+            panel.set_vehicle_modes(commands.available_vehicle_modes)
             panel.update_snapshot(snapshot)
 
         feed.telemetry_updated.connect(update)

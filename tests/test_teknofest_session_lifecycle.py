@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -15,6 +18,188 @@ from extensions.siha_teknofest_server.runtime import (
 
 
 class TeknofestSessionLifecycleTests(unittest.TestCase):
+    def test_profile_edit_keeps_a_manually_connected_session_running(self) -> None:
+        config = CompetitionServerConfig(
+            identifier="manual", auto_connect=False
+        ).to_dict(include_password=True)
+
+        class Settings:
+            def __init__(self) -> None:
+                self.servers = [config]
+
+            def extension_config(self, _identifier):
+                return {"servers": self.servers}
+
+            def update_extension(self, _identifier, *, config):
+                self.servers = config["servers"]
+
+        class Session:
+            def __init__(self, profile, running=False):
+                self.config = profile
+                self.running = running
+                self.started = False
+
+            def start(self):
+                self.started = True
+                self.running = True
+
+            def stop(self, *, timeout_s=None):
+                self.running = False
+                return True
+
+        previous = Session(config, running=True)
+        replacement = Session(config)
+        runtime = object.__new__(CompetitionRuntime)
+        runtime._lifecycle_lock = threading.RLock()
+        runtime._closed = False
+        runtime.settings = Settings()
+        runtime.telemetry = SimpleNamespace(current=None)
+        runtime.database = None
+        runtime.logger = None
+        runtime.clock_references = None
+        runtime._clock_reference_ids = set()
+        runtime.sessions = {"manual": previous}
+        runtime._profile_generations = {"manual": 1}
+        runtime.worker = ThreadPoolExecutor(max_workers=1)
+        try:
+            with patch(
+                "extensions.siha_teknofest_server.runtime.ServerSession",
+                return_value=replacement,
+            ):
+                runtime.configure([config]).result(timeout=1.0)
+
+            self.assertTrue(replacement.started)
+        finally:
+            runtime.stop()
+
+    def test_management_worker_preserves_fifo_and_does_not_hold_process_exit(
+        self,
+    ) -> None:
+        script = """\
+import threading
+from extensions.siha_teknofest_server.runtime import _DaemonSerialWorker
+
+worker = _DaemonSerialWorker('shutdown-test')
+order = []
+futures = [worker.submit(order.append, value) for value in range(3)]
+[future.result(timeout=1) for future in futures]
+assert order == [0, 1, 2]
+started = threading.Event()
+worker.submit(lambda: (started.set(), threading.Event().wait()))
+assert started.wait(1)
+worker.shutdown(wait=False, cancel_futures=True)
+"""
+        subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True,
+            timeout=2.0,
+        )
+
+    def test_session_shutdown_budget_is_independent_of_http_timeout(self) -> None:
+        class SlowThread:
+            timeout = None
+
+            def join(self, timeout=None):
+                self.timeout = timeout
+
+            def is_alive(self):
+                return True
+
+        session = ServerSession(
+            {"identifier": "server", "timeout_s": 120},
+            snapshot=lambda: None,
+            database=None,
+            logger=None,
+        )
+        thread = SlowThread()
+        session._thread = thread
+
+        self.assertFalse(session.stop())
+        self.assertLessEqual(thread.timeout, 4.0)
+
+        class Session:
+            def __init__(self):
+                self.config = {"timeout_s": 120}
+                self.waits = []
+
+            def stop(self, *, timeout_s=None):
+                self.waits.append(timeout_s)
+                return True
+
+        managed = Session()
+        self.assertEqual(
+            CompetitionRuntime._stop_sessions({"server": managed}),
+            {"server": True},
+        )
+        self.assertEqual(managed.waits[0], 0)
+        self.assertLessEqual(managed.waits[1], 4.0)
+
+    def test_reference_refresh_requires_login_and_keeps_partial_success(self) -> None:
+        session = ServerSession(
+            {"identifier": "server", "timeout_s": 0.1},
+            snapshot=lambda: None,
+            database=None,
+            logger=None,
+        )
+        requests = []
+        session._request = lambda path, payload=None: requests.append(path)
+
+        class Logger:
+            def __init__(self):
+                self.events = []
+
+            def event(self, *args, **kwargs):
+                self.events.append((args, kwargs))
+
+        logger = Logger()
+        worker = ThreadPoolExecutor(max_workers=1)
+        runtime = SimpleNamespace(
+            sessions={"server": session},
+            worker=worker,
+            logger=logger,
+            _lifecycle_lock=threading.RLock(),
+            _closed=False,
+        )
+        try:
+            future = CompetitionRuntime.refresh_reference_data(runtime, "server")
+            with self.assertRaisesRegex(RuntimeError, "Could not refresh") as error:
+                future.result(timeout=1)
+            self.assertIn("login is not complete", str(error.exception.__cause__))
+            self.assertEqual(requests, [])
+
+            session.connected = True
+
+            def refresh_request(path, _payload=None):
+                requests.append(path)
+                if path == "/api/hss_koordinatlari":
+                    raise OSError("HSS unavailable")
+                return {"coordinates": [1]}
+
+            session._request = refresh_request
+            updates = []
+            session.updated.subscribe(updates.append)
+            result = CompetitionRuntime.refresh_reference_data(
+                runtime, "server"
+            ).result(timeout=1)
+
+            self.assertEqual(
+                requests[-2:],
+                ["/api/qr_koordinati", "/api/hss_koordinatlari"],
+            )
+            self.assertEqual(result["qr"], {"coordinates": [1]})
+            self.assertEqual(session.reference["qr"], {"coordinates": [1]})
+            self.assertEqual(updates[-1]["qr"], {"coordinates": [1]})
+            self.assertTrue(
+                any(
+                    args[0] == "server.reference_refresh_partial"
+                    and kwargs["details"]["failed"] == ["hss"]
+                    for args, kwargs in logger.events
+                )
+            )
+        finally:
+            worker.shutdown(wait=True)
+
     def test_stopped_runtime_rejects_a_new_server_connection(self) -> None:
         class Session:
             started = False
@@ -247,7 +432,7 @@ class TeknofestSessionLifecycleTests(unittest.TestCase):
 
         self.assertEqual(stopped, {"0": True, "1": True, "2": True})
 
-    def test_runtime_shutdown_does_not_wait_for_management_executor(self) -> None:
+    def test_runtime_shutdown_does_not_wait_for_management_worker(self) -> None:
         class Session:
             config = {"timeout_s": 0.1}
 
@@ -324,12 +509,14 @@ class TeknofestSessionLifecycleTests(unittest.TestCase):
 
         class Session:
             running = True
-            config = {"timeout_s": 0.1}
+            config = {"timeout_s": 120}
+            timeouts = []
 
             def start(self):
                 self.running = True
 
             def stop(self, *, timeout_s=None):
+                self.timeouts.append(timeout_s)
                 return False
 
         runtime = object.__new__(CompetitionRuntime)
@@ -348,6 +535,7 @@ class TeknofestSessionLifecycleTests(unittest.TestCase):
                 future.result(timeout=1.0)
             self.assertIs(runtime.sessions["old"], old_session)
             self.assertFalse(runtime.settings.updated)
+            self.assertLessEqual(old_session.timeouts[-1], 4.0)
         finally:
             runtime.worker.shutdown(wait=True, cancel_futures=True)
 
@@ -436,7 +624,10 @@ class TeknofestSessionLifecycleTests(unittest.TestCase):
 
         settings = Settings()
         old_session = ServerSession(
-            settings.servers[0], lambda: None, database=None, logger=None
+            settings.servers[0],
+            lambda: None,
+            database=None,
+            logger=SimpleNamespace(event=lambda *args, **kwargs: None),
         )
 
         def controlled_request(path, payload=None):

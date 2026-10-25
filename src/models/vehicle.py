@@ -62,13 +62,13 @@ class VehicleCapabilities(Model):
     """Capabilities advertised by the active vehicle adapter.
 
     ``command_codes`` intentionally represents protocol operations, while
-    ``flight_modes`` is populated from the connected autopilot.  Consumers
+    ``vehicle_modes`` is populated from the connected autopilot.  Consumers
     must treat an empty capability set as "not yet known", rather than
     guessing from a vehicle type number.
     """
 
     command_codes: tuple[str, ...] = ()
-    flight_modes: tuple[str, ...] = ()
+    vehicle_modes: tuple[str, ...] = ()
     vehicle_type: int | None = None
     autopilot_type: int | None = None
 
@@ -83,12 +83,12 @@ class VehicleCapabilities(Model):
         modes = tuple(
             dict.fromkeys(
                 str(mode).strip().upper()
-                for mode in self.flight_modes
+                for mode in self.vehicle_modes
                 if str(mode).strip()
             )
         )
         object.__setattr__(self, "command_codes", commands)
-        object.__setattr__(self, "flight_modes", modes)
+        object.__setattr__(self, "vehicle_modes", modes)
 
     def supports(self, code: str) -> bool:
         return code.strip().upper() in self.command_codes

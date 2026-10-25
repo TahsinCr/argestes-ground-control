@@ -156,7 +156,7 @@ class AttitudeIndicator(QWidget):
                         )
                     # Other MAVLink messages may publish the same telemetry
                     # snapshot. An unchanged source timestamp is not treated
-                    # as a new flight-dynamics sample.
+                    # as a new vehicle-dynamics sample.
                     if (
                         self._MIN_SAMPLE_PERIOD_S
                         <= sample_period_s
@@ -399,7 +399,7 @@ class AttitudeIndicator(QWidget):
             major_step=20.0,
             color=QColor(self._theme.warning),
         )
-        self._draw_flight_readouts(painter, hud_rect)
+        self._draw_vehicle_readouts(painter, hud_rect)
         painter.end()
 
     def _draw_horizon(self, painter: QPainter, rect: QRectF) -> None:
@@ -558,7 +558,7 @@ class AttitudeIndicator(QWidget):
 
         painter.restore()
 
-    def _draw_flight_readouts(self, painter: QPainter, rect: QRectF) -> None:
+    def _draw_vehicle_readouts(self, painter: QPainter, rect: QRectF) -> None:
         connected = self._render_data_available
         box_width = min(94.0, max(76.0, (rect.width() - 18.0) / 2.0))
         box_height = 36.0

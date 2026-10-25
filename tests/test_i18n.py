@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import ast
-import json
 import unittest
 from pathlib import Path
 
 from src.models.logs import LogEntry
 from src.ui.i18n import (
-    ENGLISH,
-    TURKISH,
     localized_log_message,
     normalize_language,
     t,
@@ -20,8 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class I18nTests(unittest.TestCase):
     def test_languages_do_not_fall_back_to_each_other(self) -> None:
-        self.assertEqual(t("panel.telemetry", "tr"), "Uçuş Telemetrisi")
-        self.assertEqual(t("panel.telemetry", "en"), "Flight Telemetry")
+        self.assertEqual(t("panel.telemetry", "tr"), "Araç Telemetrisi")
+        self.assertEqual(t("panel.telemetry", "en"), "Vehicle Telemetry")
         self.assertEqual(t("missing.key", "en"), "[missing.key]")
         self.assertEqual(normalize_language("en-US"), "en")
         self.assertEqual(normalize_language("tr_TR"), "tr")
@@ -52,11 +48,11 @@ class I18nTests(unittest.TestCase):
         )
         self.assertEqual(
             localized_log_message(mode_entry, "tr"),
-            "AUTO uçuş moduna geçiş heartbeat ile doğrulandı",
+            "AUTO araç moduna geçiş heartbeat ile doğrulandı",
         )
         self.assertEqual(
             localized_log_message(mode_entry, "en"),
-            "Flight mode change to AUTO confirmed by heartbeat",
+            "Vehicle mode change to AUTO confirmed by heartbeat",
         )
 
         mission_entry = LogEntry(
@@ -73,11 +69,11 @@ class I18nTests(unittest.TestCase):
         )
         self.assertEqual(
             localized_log_message(mission_entry, "tr"),
-            "4 görev öğeli döngü planı uçuş cihazı tarafından kabul edildi",
+            "4 görev öğeli döngü planı araç denetleyicisi tarafından kabul edildi",
         )
         self.assertEqual(
             localized_log_message(mission_entry, "en"),
-            "Loop mission with 4 items accepted by the flight controller",
+            "Loop mission with 4 items accepted by the vehicle controller",
         )
 
     def test_unstructured_logs_keep_the_original_message(self) -> None:

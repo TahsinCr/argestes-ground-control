@@ -64,7 +64,7 @@ class UiContractTests(unittest.TestCase):
     def test_telemetry_custom_layout_uses_selected_order_and_no_grid_holes(self):
         panel = TelemetryPanel("", "", DARK)
         self.assertGreaterEqual(len(panel.readouts), 50)
-        fields = ["battery_voltage", "latitude", "flight_mode"]
+        fields = ["battery_voltage", "latitude", "vehicle_mode"]
         panel.configure_layout({"fields": fields, "layout": "list", "grouped": False})
         grid = panel.section_grids["flight"]
         for row, key in enumerate(fields):
@@ -1297,7 +1297,7 @@ class UiContractTests(unittest.TestCase):
         panel.add_entry(
             LogEntry(
                 "VEHICLE",
-                "Uçuş cihazı bağlantısı kaybedildi",
+                "Araç denetleyicisi bağlantısı kaybedildi",
                 severity="danger",
                 action="vehicle.link_lost",
             )
@@ -1307,7 +1307,7 @@ class UiContractTests(unittest.TestCase):
         self.assertIsNone(panel.table.cellWidget(0, 1))
         self.assertEqual(panel.table.item(0, 1).text(), "Info")
 
-        panel.search_input.setText("flight-controller")
+        panel.search_input.setText("vehicle-controller")
         self.assertEqual(panel.table.rowCount(), 1)
         self.assertIn("link lost", panel.table.item(0, 3).text().lower())
 
@@ -1881,7 +1881,7 @@ class UiContractTests(unittest.TestCase):
                 altitude_msl=932.7,
                 climb_rate=2.4,
                 throttle_percent=47.0,
-                flight_mode="AUTO",
+                vehicle_mode="AUTO",
                 system_status="ACTIVE",
                 armed=True,
                 ekf_ok=True,
@@ -1892,7 +1892,7 @@ class UiContractTests(unittest.TestCase):
         self.assertFalse(hasattr(panel, "cards"))
         self.assertNotIn("airspeed", panel.readouts)
         self.assertTrue(panel.readouts["ground_speed"].isHidden())
-        self.assertEqual(panel.readouts["flight_mode"].text(), "AUTO")
+        self.assertEqual(panel.readouts["vehicle_mode"].text(), "AUTO")
         self.assertEqual(panel.readouts["vehicle_state"].text(), "ARMED · ACTIVE")
         self.assertEqual(panel.readouts["altitude_agl"].text(), "84.2 m")
         self.assertEqual(panel.readouts["altitude_msl"].text(), "932.7 m")

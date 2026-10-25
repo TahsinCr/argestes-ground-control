@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -108,6 +109,16 @@ class CameraSettingsStore:
             self._settings.update_extension("camera", config=payload)
             self._current = checked
 
+    def update(
+        self,
+        change: Callable[[CameraConfiguration], CameraConfiguration],
+    ) -> CameraConfiguration:
+        """Atomically update selected camera settings without losing sibling fields."""
+        with self._lock:
+            configuration = change(self._current)
+            self.save(configuration)
+            return self._current
+
 
 class CameraRuntime:
     """Serialize capture reconfiguration away from the Qt thread."""
@@ -169,14 +180,14 @@ class CameraRuntime:
     ) -> Future[None]:
         if not sources or active_id not in {item.identifier for item in sources}:
             raise ValueError("Active camera must be one of the configured sources")
-        previous = self.settings.current
-        config = CameraConfiguration(
-            sources,
-            active_id,
-            previous.outputs,
-            previous.clock_reference_id,
+        config = self.settings.update(
+            lambda previous: CameraConfiguration(
+                sources,
+                active_id,
+                previous.outputs,
+                previous.clock_reference_id,
+            )
         )
-        self.settings.save(config)
         return self._worker.submit(self._apply_sources, config)
 
     def _apply_sources(self, config: CameraConfiguration) -> None:
@@ -185,30 +196,32 @@ class CameraRuntime:
             self.video.start()
 
     def save_outputs(self, outputs: tuple[VideoShareConfig, ...]) -> None:
-        previous = self.settings.current
-        config = CameraConfiguration(
-            previous.sources,
-            previous.active_source_id,
-            outputs,
-            previous.clock_reference_id,
-        )
-        for output in config.outputs:
-            output.validate_output_compatibility()
-        self.settings.save(config)
+        def update_outputs(previous: CameraConfiguration) -> CameraConfiguration:
+            config = CameraConfiguration(
+                previous.sources,
+                previous.active_source_id,
+                outputs,
+                previous.clock_reference_id,
+            )
+            for output in config.outputs:
+                output.validate_output_compatibility()
+            return config
+
+        config = self.settings.update(update_outputs)
         self._worker.submit(self._apply_outputs, config)
 
     def save_clock_reference(self, identifier: str) -> None:
-        previous = self.settings.current
         reference_id = str(identifier).strip()
         if not reference_id:
             raise ValueError("A camera clock reference must be selected")
-        config = CameraConfiguration(
-            previous.sources,
-            previous.active_source_id,
-            previous.outputs,
-            reference_id,
+        self.settings.update(
+            lambda previous: CameraConfiguration(
+                previous.sources,
+                previous.active_source_id,
+                previous.outputs,
+                reference_id,
+            )
         )
-        self.settings.save(config)
         self._clock_reference_id = reference_id
         self.video.set_clock_provider(self._current_clock_time)
 

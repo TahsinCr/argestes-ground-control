@@ -190,14 +190,14 @@ class VehicleConnectionControlService(ConnectionControlService):
             phase,
             summary,
             detail,
-            vehicle_state.endpoint or settings.endpoint,
+            vehicle_state.endpoint or (profile.endpoint if profile is not None else ""),
             float(settings.heartbeat_timeout),
             {
                 "baud": settings.baud,
                 "auto_connect": settings.auto_connect,
                 "autoreconnect": settings.autoreconnect,
-                "profile_id": profile.identifier,
-                "profile_name": profile.name,
+                "profile_id": profile.identifier if profile is not None else "",
+                "profile_name": profile.name if profile is not None else "",
                 "vehicle_connected": connected,
                 "retry_attempt": self._retry_attempt,
                 "available": True,
@@ -488,6 +488,11 @@ class VehicleConnectionControlService(ConnectionControlService):
         backend = self._settings.current.backend
         if bool(getattr(backend, "mock_mode", False)):
             return False
+        if not any(
+            item.identifier == backend.active_mavlink_connection_id
+            for item in backend.mavlink_connections
+        ):
+            return False
         settings = backend.mavlink
         return bool(settings.autoreconnect or (initial and settings.auto_connect))
 
@@ -566,7 +571,7 @@ class VehicleConnectionControlService(ConnectionControlService):
             },
         )
 
-    def _active_profile(self) -> MavlinkConnectionConfig:
+    def _active_profile(self) -> MavlinkConnectionConfig | None:
         backend = self._settings.current.backend
         return next(
             (
@@ -574,7 +579,7 @@ class VehicleConnectionControlService(ConnectionControlService):
                 for item in backend.mavlink_connections
                 if item.identifier == backend.active_mavlink_connection_id
             ),
-            MavlinkConnectionConfig.from_mavlink(backend.mavlink),
+            None,
         )
 
     def _publish_vehicle_channels(self) -> None:

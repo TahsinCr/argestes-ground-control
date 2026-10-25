@@ -28,7 +28,7 @@ class TelemetryPanel(PanelFrame):
         (
             "flight",
             (
-                ("flight_mode", "telemetry.flight_mode"),
+                ("vehicle_mode", "telemetry.vehicle_mode"),
                 ("vehicle_state", "telemetry.vehicle_state"),
                 ("altitude_agl", "telemetry.altitude_agl"),
                 ("altitude_msl", "telemetry.altitude_msl"),
@@ -240,13 +240,13 @@ class TelemetryPanel(PanelFrame):
             values = {
                 key: "--" for key in self.readouts if key not in self._clock_field_ids
             }
-            values["flight_mode"] = snapshot.flight_mode
+            values["vehicle_mode"] = snapshot.vehicle_mode
             self._set_readout_values(values)
             return
         arm_state = "ARMED" if snapshot.armed else "DISARMED"
         self._set_readout_values(
             {
-                "flight_mode": snapshot.flight_mode,
+                "vehicle_mode": snapshot.vehicle_mode,
                 "vehicle_state": f"{arm_state} · {snapshot.system_status}",
                 "altitude_agl": f"{snapshot.altitude_agl:0.1f} m",
                 "altitude_msl": f"{snapshot.altitude_msl:0.1f} m",

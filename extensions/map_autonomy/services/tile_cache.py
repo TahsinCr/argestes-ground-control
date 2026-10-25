@@ -761,9 +761,11 @@ class TileCacheServer(TileCacheService):
         with self._lock:
             if generation is not None and generation != self._generation:
                 return
-            removed = self._index.pop(tile.key, None)
+            removed = self._index.get(tile.key)
             if removed is None:
                 return
+            self._mark_index_dirty_locked()
+            self._index.pop(tile.key)
             self._total_bytes = max(
                 0,
                 self._total_bytes - int(removed.get("size", 0)),

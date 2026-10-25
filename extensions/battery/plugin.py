@@ -32,8 +32,10 @@ class BatteryExtension:
         registrar.settings_page(lambda parent: self._settings_page(context, parent))
 
     def start(self, context):
+        import time
         from concurrent.futures import ThreadPoolExecutor
         from .alarm import BatteryAlarmService
+        from src.models.commands import CommandRequest
         from src.extension.api.telemetry import TelemetryPipeline
         from src.services.abstracts.commands import CommandService
         from src.services.abstracts.telemetry import TelemetryService
@@ -48,14 +50,21 @@ class BatteryExtension:
             max_workers=1,
             thread_name_prefix="BatteryFailsafe",
         )
-        self.alarm = BatteryAlarmService(
-            context.services.resolve(LoggingService).child("BATTERY"),
-            lambda mode: self._failsafe_executor.submit(
-                commands.issue_command,
+
+        def dispatch_failsafe(mode):
+            request = CommandRequest(
                 "APPLY_MODE",
                 {"mode": mode, "battery_failsafe": True},
                 source="battery-failsafe",
-            ),
+                deadline_monotonic=(
+                    time.monotonic() + BatteryAlarmService.FAILSAFE_TIMEOUT_S
+                ),
+            )
+            return self._failsafe_executor.submit(commands.dispatch, request)
+
+        self.alarm = BatteryAlarmService(
+            context.services.resolve(LoggingService).child("BATTERY"),
+            dispatch_failsafe,
         )
         self._alarm_settings = settings.current.backend.battery_alarm
         self._telemetry_subscription = telemetry.updated.subscribe(

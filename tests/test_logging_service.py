@@ -4,11 +4,40 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from src.services.logging_service import LoggingService
 
 
 class LoggingServiceTests(unittest.TestCase):
+    def test_persistence_failure_is_visible_in_memory_and_does_not_escape(self) -> None:
+        with TemporaryDirectory() as directory:
+            service = LoggingService(log_path=Path(directory) / "session.json")
+            delivered = []
+            service.entries.subscribe(delivered.append)
+
+            with patch.object(
+                service, "_persist_many", side_effect=OSError("disk full")
+            ):
+                service.log("COMMAND", "first")
+                service.log("COMMAND", "second")
+
+            failures = [
+                entry
+                for entry in delivered
+                if entry.action == "logging.persistence_failed"
+            ]
+            self.assertEqual(len(failures), 1)
+            self.assertIn("yalnızca bellekte", failures[0].message)
+            self.assertEqual(
+                [
+                    entry.message
+                    for entry in service.history
+                    if entry.source == "COMMAND"
+                ],
+                ["first", "second"],
+            )
+
     def test_bounded_history_keeps_the_newest_entries_in_order(self) -> None:
         service = LoggingService(max_entries=3)
 

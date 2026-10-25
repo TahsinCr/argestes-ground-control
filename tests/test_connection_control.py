@@ -29,7 +29,6 @@ class _Settings:
         self.current.backend.mavlink.dialect = "ardupilotmega"
         self.current.backend.mavlink.source_system = 255
         self.current.backend.mavlink.source_component = 0
-        self.current.backend.active_mavlink_connection_id = "telemetry"
 
     def update(self, mutator, *, notify=True):
         self.current = mutator(self.current)
@@ -288,6 +287,17 @@ class VehicleConnectionControlTests(unittest.TestCase):
         time.sleep(0.05)
 
         self.assertEqual(self.vehicle.reconnect_calls, 0)
+
+    def test_recovery_and_status_require_a_configured_profile(self) -> None:
+        self.settings.current.backend.mavlink_connections = []
+        self.settings.current.backend.active_mavlink_connection_id = ""
+        self.vehicle.lose_heartbeat()
+        time.sleep(0.05)
+
+        self.assertEqual(self.vehicle.reconnect_calls, 0)
+        status = self.service.status("telemetry")
+        self.assertEqual(status.options["profile_id"], "")
+        self.assertEqual(status.options["profile_name"], "")
 
     def test_failed_reconnect_keeps_the_exponential_retry_delay(self) -> None:
         self.service.stop()

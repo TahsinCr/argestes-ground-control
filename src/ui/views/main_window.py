@@ -534,7 +534,7 @@ class MainWindow(QMainWindow):
         self.workspace.language = self.language
         labels = {
             "map": "Map" if english else "Harita",
-            "flight": "Flight Dynamics" if english else "Araç Dinamiği",
+            "flight": "Vehicle Dynamics" if english else "Araç Dinamiği",
             "telemetry": "Vehicle Telemetry" if english else "Araç Telemetrisi",
             "commands": "Quick Commands" if english else "Hızlı Komutlar",
             "logs": "Logs" if english else "Loglar",
