@@ -5,6 +5,8 @@ Release headings link each entry to its release date.
 
 ## [Unreleased]
 
+## [2.1.1-beta] - 25.10.2026
+
 ### Changed
 
 * Generalized shared vehicle telemetry and command terminology: the normalized
