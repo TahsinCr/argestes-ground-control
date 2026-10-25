@@ -2360,6 +2360,16 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertTrue(math.isnan(items[1][7]))
         self.assertEqual(ignored, ["safe_zone"])
 
+    def test_default_mission_altitude_update_rejects_non_finite_values(self) -> None:
+        client = SimpleNamespace(endpoint=SimpleNamespace(uri="test"))
+        vehicle = MavlinkVehicleService(client)  # type: ignore[arg-type]
+
+        for altitude in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(altitude=altitude), self.assertRaises(ValueError):
+                vehicle.set_default_mission_altitude(altitude)
+
+        self.assertEqual(vehicle._default_mission_altitude, 100.0)
+
     def test_mission_upload_rejects_non_finite_fallback_altitude_before_sending(
         self,
     ) -> None:

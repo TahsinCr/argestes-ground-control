@@ -77,7 +77,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
             not math.isfinite(self._default_mission_altitude)
             or self._default_mission_altitude <= 0
         ):
-            raise ValueError("Varsayılan görev irtifası pozitif olmalı")
+            raise ValueError("Varsayılan görev irtifası sonlu ve pozitif olmalı")
         self._changed = EventBus[VehicleConnectionState]()
         self._state = VehicleConnectionState(
             False, client.endpoint.uri, protocol="mavlink"
@@ -507,8 +507,8 @@ class MavlinkVehicleService(MavlinkVehiclePort):
 
     def set_default_mission_altitude(self, altitude_m: float) -> None:
         value = float(altitude_m)
-        if value <= 0:
-            raise ValueError("Varsayılan görev irtifası pozitif olmalı")
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("Varsayılan görev irtifası sonlu ve pozitif olmalı")
         self._default_mission_altitude = value
 
     def execute(self, request: CommandRequest) -> bool:

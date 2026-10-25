@@ -261,7 +261,7 @@ Release headings link each entry to its release date.
   persisted configuration while holding the settings-store lock, preserving
   unrelated fields during concurrent edits.
 * Non-finite coordinates and point altitudes are rejected, and MAVLink mission
-  metadata/default altitudes are checked before upload messages are sent.
+  metadata/default altitudes are checked both when configured and before upload.
   Non-finite parameter samples are ignored before they can corrupt the
   parameter catalogue or a pending write.
 * MAVLink connection-state publication is serialized with shutdown, preserving
