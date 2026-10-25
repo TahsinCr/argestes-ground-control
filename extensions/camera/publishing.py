@@ -30,7 +30,7 @@ _interface_refreshing = False
 _RECORDING_FRAME_STALE_S = 1.0
 _URI_USERINFO = re.compile(r"(\b[a-z][a-z0-9+.-]*://)[^/@\s]+@", re.IGNORECASE)
 _URI_SECRET_QUERY = re.compile(
-    r"([?&](?:password|passwd|token|access_token|secret|api[_-]?key|authorization)=)[^&#\s]*",
+    r"([?&](?:password|passwd|token|access_token|refresh_token|secret|auth|authorization|signature|sig|key|api[_-]?key)=)[^&#\s]*",
     re.IGNORECASE,
 )
 

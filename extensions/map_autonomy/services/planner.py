@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import math
 import threading
-from collections.abc import Iterable
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from src.core.abstracts import Service
@@ -107,8 +107,8 @@ class PlannerService(Service):
         normalized: dict[str, float] = {}
         for key, value in values.items():
             numeric = float(value)
-            if numeric <= 0:
-                raise ValueError(f"{key} çapı pozitif olmalı")
+            if not math.isfinite(numeric) or numeric <= 0:
+                raise ValueError(f"{key} çapı sonlu ve pozitif olmalı")
             normalized[key] = numeric
         with self._lock:
             self._default_radii.update(normalized)

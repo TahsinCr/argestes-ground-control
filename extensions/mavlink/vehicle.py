@@ -39,6 +39,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
     LINK_PING_INTERVAL_S = 1.0
     LINK_PING_STALE_S = 5.0
     HOME_HEARTBEAT_MAX_AGE_S = 3.0
+    MISSION_TRANSFER_RETRIES = 5
     TRANSPORT_STATUS_TYPES = frozenset({"RADIO", "RADIO_STATUS"})
     DEFAULT_STREAM_RATES_HZ = {
         "ATTITUDE": 20.0,
@@ -596,19 +597,58 @@ class MavlinkVehicleService(MavlinkVehiclePort):
             )
 
             sent_sequences: set[int] = set()
+            last_sequence: int | None = None
+            retries = 0
             deadline = time.monotonic() + self._operation_timeout * max(2, len(items))
-            while len(sent_sequences) < len(items):
+            while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("Görev yükleme isteği zaman aşımına uğradı")
-                request = self._client.wait_for(
-                    {"MISSION_REQUEST_INT", "MISSION_REQUEST"},
-                    predicate=lambda message: self._message_source_matches(
-                        message, system, component
-                    ),
-                    timeout=min(self._operation_timeout, remaining),
-                    after_sequence=boundary,
+                retry_interval = min(
+                    1.5 if last_sequence is None else 0.25,
+                    self._operation_timeout / (self.MISSION_TRANSFER_RETRIES + 1),
                 )
+                try:
+                    request = self._client.wait_for(
+                        {"MISSION_REQUEST_INT", "MISSION_REQUEST", "MISSION_ACK"},
+                        predicate=lambda message: self._message_source_matches(
+                            message, system, component
+                        ),
+                        timeout=min(retry_interval, remaining),
+                        after_sequence=boundary,
+                    )
+                except TimeoutError:
+                    if retries >= self.MISSION_TRANSFER_RETRIES:
+                        raise TimeoutError(
+                            "Görev yükleme yanıtı beş yeniden denemeden sonra alınamadı"
+                        )
+                    retries += 1
+                    if last_sequence is None:
+                        self._client.call_mav(
+                            "mission_count_send", system, component, len(items), mission_type
+                        )
+                    else:
+                        self._client.call_mav(
+                            "mission_item_int_send",
+                            system,
+                            component,
+                            last_sequence,
+                            *items[last_sequence],
+                            mission_type,
+                        )
+                    continue
+                retries = 0
+                response_type = request.get_type()
+                if response_type == "MISSION_ACK":
+                    if int(request.type) != mavlink.MAV_MISSION_ACCEPTED:
+                        raise RuntimeError(
+                            f"Araç görev planını reddetti: {request.type}"
+                        )
+                    if len(sent_sequences) != len(items):
+                        raise RuntimeError(
+                            "Araç tüm görev öğeleri gönderilmeden kabul ACK'i döndürdü"
+                        )
+                    break
                 sequence = int(request.seq)
                 if not 0 <= sequence < len(items):
                     raise ValueError(f"Araç geçersiz görev sırası istedi: {sequence}")
@@ -622,19 +662,7 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                     mission_type,
                 )
                 sent_sequences.add(sequence)
-
-            acknowledgement = self._client.wait_for(
-                "MISSION_ACK",
-                predicate=lambda message: self._message_source_matches(
-                    message, system, component
-                ),
-                timeout=self._operation_timeout,
-                after_sequence=boundary,
-            )
-            if int(acknowledgement.type) != mavlink.MAV_MISSION_ACCEPTED:
-                raise RuntimeError(
-                    f"Araç görev planını reddetti: {acknowledgement.type}"
-                )
+                last_sequence = sequence
             self._client.call_mav("mission_set_current_send", system, component, 1)
             route_item_count = len(route_items)
             self._event(
@@ -664,6 +692,10 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                 "MISSION_COUNT",
                 after_sequence=boundary,
                 target=(system, component),
+                retry=lambda: self._client.call_mav(
+                    "mission_request_list_send", system, component, mission_type
+                ),
+                retry_interval_s=1.5,
             )
             count = int(count_message.count)
             overlays: list[MapOverlay] = []
@@ -684,6 +716,13 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                     ),
                     after_sequence=boundary,
                     target=(system, component),
+                    retry=lambda expected=sequence: self._client.call_mav(
+                        "mission_request_int_send",
+                        system,
+                        component,
+                        expected,
+                        mission_type,
+                    ),
                 )
                 if (
                     int(getattr(item, "command", -1))
@@ -721,35 +760,70 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         after_sequence: int,
         target: tuple[int, int],
         predicate=None,
+        retry=None,
+        retry_interval_s: float = 0.25,
     ) -> Any:
+        retry_count = 0
         deadline = time.monotonic() + self._operation_timeout
+        retry_interval = min(
+            retry_interval_s,
+            self._operation_timeout / (self.MISSION_TRANSFER_RETRIES + 1),
+        )
+        next_retry = time.monotonic() + retry_interval
+        expected_types = (
+            {message_types}
+            if isinstance(message_types, str)
+            else set(message_types)
+        )
+        wait_types = expected_types | {"MISSION_ACK"}
         while True:
             if self._mission_download_cancel.is_set():
                 raise MissionTransferInterrupted(
                     "Otomatik görev indirme kullanıcı gönderimi için ertelendi"
                 )
-            remaining = deadline - time.monotonic()
+            now = time.monotonic()
+            remaining = deadline - now
             if remaining <= 0:
-                expected = (
-                    sorted(message_types)
-                    if isinstance(message_types, set)
-                    else [message_types]
-                )
                 raise TimeoutError(
-                    f"MAVLink mesajı beklenirken zaman aşımı: {expected}"
+                    f"MAVLink mesajı beklenirken zaman aşımı: {sorted(expected_types)}"
                 )
+            if (
+                retry is not None
+                and retry_count < self.MISSION_TRANSFER_RETRIES
+                and now >= next_retry
+            ):
+                retry()
+                retry_count += 1
+                next_retry = now + retry_interval
+                continue
+            wait_timeout = min(0.25, remaining)
+            if retry is not None and retry_count < self.MISSION_TRANSFER_RETRIES:
+                wait_timeout = min(wait_timeout, max(0.001, next_retry - now))
             try:
-                return self._client.wait_for(
-                    message_types,
+                message = self._client.wait_for(
+                    wait_types,
                     predicate=lambda message: (
                         self._message_source_matches(message, *target)
-                        and (predicate is None or predicate(message))
+                        and (
+                            message.get_type() == "MISSION_ACK"
+                            or predicate is None
+                            or predicate(message)
+                        )
                     ),
-                    timeout=min(0.25, remaining),
+                    timeout=wait_timeout,
                     after_sequence=after_sequence,
                 )
             except TimeoutError:
                 continue
+            if message.get_type() == "MISSION_ACK":
+                if int(message.type) != self._client.mavlink.MAV_MISSION_ACCEPTED:
+                    raise RuntimeError(
+                        f"Araç görev indirmesini reddetti: {message.type}"
+                    )
+                raise RuntimeError(
+                    "Görev öğesi beklenirken araç erken kabul ACK'i gönderdi"
+                )
+            return message
 
     @property
     def _target(self) -> tuple[int, int]:
@@ -1253,13 +1327,14 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                 radius = float(overlay.radius_m or 0.0)
                 takeoff_pitch = 0.0
                 if overlay_type == "takeoff":
-                    takeoff_pitch = max(
-                        0.0,
-                        min(
-                            90.0,
-                            float(overlay.metadata.get("takeoff_pitch_deg") or 0.0),
-                        ),
+                    requested_pitch = float(
+                        overlay.metadata.get("takeoff_pitch_deg") or 0.0
                     )
+                    if not math.isfinite(requested_pitch):
+                        raise ValueError(
+                            f"Görev öğesi {overlay.overlay_id} sonlu olmayan kalkış açısı içeriyor"
+                        )
+                    takeoff_pitch = min(90.0, max(0.0, requested_pitch))
                 acceptance_radius = (
                     radius if overlay_type in {"waypoint", "route"} else 0.0
                 )

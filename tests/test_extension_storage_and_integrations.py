@@ -230,7 +230,14 @@ class CompetitionDeliveryTests(unittest.TestCase):
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 if self.path == "/api/giris":
-                    response = {"takim_numarasi": 21}
+                    response = {
+                        "takim_numarasi": 21,
+                        "access_token": "token-from-server",
+                        "user": {
+                            "display_name": "Pilot",
+                            "refresh-token": "refresh-secret",
+                        },
+                    }
                 else:
                     bodies.append(body)
                     delivered.set()
@@ -260,6 +267,10 @@ class CompetitionDeliveryTests(unittest.TestCase):
                 config = {"identifier": "local", "base_url": f"http://127.0.0.1:{server.server_port}",
                           "username": "pilot", "password": "not-in-sql", "timeout_s": 1, "team_number": 21}
                 session = ServerSession(config, lambda: snapshot, database, LoggingService().child("TEST"))
+                login_response = session._request(
+                    "/api/giris", {"sifre": "not-in-sql"}
+                )
+                self.assertEqual(login_response["access_token"], "token-from-server")
                 session.start()
                 try:
                     self.assertTrue(delivered.wait(3))
@@ -272,7 +283,14 @@ class CompetitionDeliveryTests(unittest.TestCase):
                     rows = connection.execute("SELECT endpoint,request,response FROM exchanges").fetchall()
                 self.assertEqual(rows[0][0], "/api/giris")
                 self.assertEqual(json.loads(rows[0][1]), None)
+                stored_login = json.loads(rows[0][2])
+                self.assertEqual(stored_login["takim_numarasi"], 21)
+                self.assertEqual(stored_login["user"]["display_name"], "Pilot")
+                self.assertEqual(stored_login["access_token"], "[redacted]")
+                self.assertEqual(stored_login["user"]["refresh-token"], "[redacted]")
                 self.assertNotIn("not-in-sql", str(rows))
+                self.assertNotIn("token-from-server", str(rows))
+                self.assertNotIn("refresh-secret", str(rows))
                 self.assertIn("/api/telemetri_gonder", [row[0] for row in rows])
         finally:
             server.shutdown()

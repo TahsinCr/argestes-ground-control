@@ -218,6 +218,8 @@ class DispatchCommandService(CommandService):
             )
         try:
             self._validate_request(request)
+            if self._request_expired(request):
+                return self._complete_expired(request)
             confirmed, details = self._execute(request)
             details = {**request_details, **details}
         except NotImplementedError as exc:

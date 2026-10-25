@@ -32,7 +32,10 @@ def _create_vehicle_stack(
         source_component=mavlink.source_component,
         autoreconnect=mavlink.autoreconnect,
     )
-    client = MavlinkClient(endpoint)
+    client = MavlinkClient(
+        endpoint,
+        router_options={"state_capacity": 512, "source_capacity": 64},
+    )
     vehicle = MavlinkVehicleService(
         client,
         logging.child("VEHICLE"),

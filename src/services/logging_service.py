@@ -323,14 +323,38 @@ class LoggingService(LogService):
             exists = self._log_path.exists() and self._log_path.stat().st_size > 2
             mode = "r+b" if self._log_path.exists() else "w+b"
             with self._log_path.open(mode) as handle:
+                original_size = handle.seek(0, os.SEEK_END)
                 if exists:
-                    handle.seek(-1, os.SEEK_END)
+                    handle.seek(original_size - 1)
                     prefix = b",\n"
                 else:
                     handle.seek(0)
                     prefix = b"["
-                handle.write(prefix + ",\n".join(payloads).encode("utf-8") + b"]")
-                handle.truncate()
+                try:
+                    handle.write(
+                        prefix + ",\n".join(payloads).encode("utf-8") + b"]"
+                    )
+                    handle.flush()
+                    handle.truncate()
+                except OSError:
+                    # Restore the prior array terminator after a partial append.
+                    # A fresh/empty file has no prior record to preserve.
+                    try:
+                        if exists:
+                            handle.seek(original_size - 1)
+                            handle.write(b"]")
+                            handle.flush()
+                            handle.truncate(original_size)
+                        else:
+                            handle.seek(0)
+                            handle.write(b"[]")
+                            handle.flush()
+                            handle.truncate(2)
+                    except OSError as rollback_error:
+                        raise OSError(
+                            "JSON oturum kaydı kısmi yazıldı; geri alma da başarısız oldu"
+                        ) from rollback_error
+                    raise
         else:
             with self._log_path.open("a", encoding="utf-8") as handle:
                 handle.write("\n".join(payloads))

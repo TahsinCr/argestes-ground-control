@@ -22,7 +22,7 @@ from extensions.camera.models import (
 )
 from extensions.camera.contracts import VideoService
 from src.services.logging_service import ServiceLogger
-from extensions.camera.publishing import VideoSharePublisher
+from extensions.camera.publishing import VideoSharePublisher, _redact_pipeline_error
 
 
 class MutableVideoService(VideoService):
@@ -625,11 +625,13 @@ class GStreamerVideoService(MutableVideoService):
                 continue
             if message.type == Gst.MessageType.ERROR:
                 error, debug = message.parse_error()
+                safe_error = _redact_pipeline_error(str(error))
+                safe_debug = _redact_pipeline_error(debug or "")
                 self._event(
                     "video.pipeline_error",
-                    f"GStreamer hatası: {error}",
+                    f"GStreamer hatası: {safe_error}",
                     severity="danger",
-                    details={"debug": debug or ""},
+                    details={"debug": safe_debug},
                 )
                 self._set_connected(False)
                 self._stop_event.set()

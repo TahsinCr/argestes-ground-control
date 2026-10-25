@@ -44,6 +44,14 @@ class MissionTests(unittest.TestCase):
 
         self.assertEqual(Point(39.9, 32.8, -25.0).altitude, -25.0)
 
+    def test_planner_rejects_non_finite_default_radii(self) -> None:
+        for value in (float("nan"), float("inf"), float("-inf"), 0, -1):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.service.set_default_radii({"waypoint": value})
+
+        self.service.set_default_radii({"waypoint": 42.5})
+        self.assertEqual(self.service._default_radii["waypoint"], 42.5)
+
     def test_snapshots_do_not_allow_external_mutation(self) -> None:
         overlay = MapOverlay("wp-1", "waypoint", "WP", [[39.9, 32.8]], "#fff", 35)
         self.service.upsert_overlay(overlay)

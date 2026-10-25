@@ -206,6 +206,43 @@ class CameraExtensionTests(unittest.TestCase):
         self.assertTrue(service._stop_event.is_set())
         self.assertEqual(events[0][0], "video.connection_timeout")
 
+    def test_capture_pipeline_errors_redact_uri_and_query_credentials(self) -> None:
+        service = GStreamerVideoService(
+            "rtsp",
+            "rtsp://camera:camera-password@example.test/live?token=token-secret&sig=sig-secret",
+        )
+        error = (
+            "failed rtsp://camera:camera-password@example.test/live?"
+            "token=token-secret&sig=sig-secret&auth=auth-secret"
+        )
+        message = SimpleNamespace(
+            type=1,
+            parse_error=lambda: (error, f"debug: {error}"),
+        )
+        service._pipeline = SimpleNamespace(
+            get_bus=lambda: SimpleNamespace(
+                timed_pop_filtered=lambda *_args: message
+            )
+        )
+        service._gst = SimpleNamespace(
+            MSECOND=1,
+            MessageType=SimpleNamespace(ERROR=1, EOS=2, STATE_CHANGED=4),
+        )
+        events: list[tuple[str, str, dict]] = []
+        service._event = lambda name, text, **kwargs: events.append(
+            (name, text, kwargs.get("details", {}))
+        )
+        service._verify_negotiated_resolution = lambda: None
+        service._check_frame_timeout = lambda: None
+        service._check_connection_timeout = lambda: None
+
+        service._watch_bus()
+
+        serialized = str(events)
+        for secret in ("camera-password", "token-secret", "sig-secret", "auth-secret"):
+            self.assertNotIn(secret, serialized)
+        self.assertIn("[redacted]", serialized)
+
     def test_camera_is_optional_and_does_not_auto_connect_without_profile_flag(
         self,
     ) -> None:

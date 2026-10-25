@@ -27,6 +27,39 @@ from .models import (
 )
 
 SERVER_STOP_GRACE_S = 4.0
+_SENSITIVE_HISTORY_FIELDS = frozenset(
+    {
+        "authorization",
+        "auth",
+        "cookie",
+        "key",
+        "apikey",
+        "password",
+        "passwd",
+        "token",
+        "access_token",
+        "refresh_token",
+        "secret",
+        "signature",
+        "sig",
+        "api_key",
+    }
+)
+
+
+def _redact_history_response(value):
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            normalized = str(key).strip().casefold().replace("-", "_")
+            sensitive = normalized in _SENSITIVE_HISTORY_FIELDS or normalized.endswith(
+                ("token", "secret", "password", "passwd", "_key")
+            )
+            result[key] = "[redacted]" if sensitive else _redact_history_response(item)
+        return result
+    if isinstance(value, list):
+        return [_redact_history_response(item) for item in value]
+    return value
 
 
 class _DaemonSerialWorker:
@@ -199,7 +232,7 @@ class ServerSession:
                     self.config["identifier"],
                     path,
                     None if path == "/api/giris" else payload,
-                    response,
+                    _redact_history_response(response),
                     error,
                     time.monotonic() - started,
                 )

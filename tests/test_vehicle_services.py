@@ -32,6 +32,7 @@ from extensions.battery.processor import BatteryProcessor
 from extensions.mavlink.telemetry import TelemetryDecoder, VehicleTelemetryService
 from src.services.abstracts.vehicle import MissionTransferInterrupted
 from extensions.mavlink.vehicle import MavlinkVehicleService
+from extensions.mavlink.wiring import _create_vehicle_stack
 from src.ui.i18n import localized_log_message
 
 
@@ -89,6 +90,15 @@ class _FakeVehicle:
 
 
 class VehicleServiceTests(unittest.TestCase):
+    def test_mavlink_wiring_bounds_router_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            stack = _create_vehicle_stack(
+                SettingsService(Path(directory)), LoggingService()
+            )
+
+        self.assertEqual(stack.client.router._state_capacity, 512)
+        self.assertEqual(stack.client.router._source_capacity, 64)
+
     def test_domain_services_subscribe_through_vehicle_abstraction(self) -> None:
         vehicle = _FakeVehicle()
         telemetry = VehicleTelemetryService(vehicle)  # type: ignore[arg-type]
@@ -1463,6 +1473,30 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertFalse(results[0].accepted)
         self.assertEqual(results[0].details["error_type"], "TimeoutError")
 
+    def test_command_deadline_is_rechecked_after_dispatch_subscribers(self) -> None:
+        executed: list[str] = []
+
+        class Vehicle:
+            connected = True
+            state = VehicleConnectionState(True, "test", 1, 1)
+
+            def execute(self, request: CommandRequest) -> bool:
+                executed.append(request.code)
+                return True
+
+        commands = DispatchCommandService(
+            Vehicle(),  # type: ignore[arg-type]
+            MutableParameterService(),
+        )
+        commands.dispatched.subscribe(lambda _request: time.sleep(0.04))
+        result = commands.dispatch(
+            CommandRequest("ARM", deadline_monotonic=time.monotonic() + 0.02)
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.details["error_type"], "TimeoutError")
+        self.assertEqual(executed, [])
+
     def test_queued_navigation_commands_keep_only_the_newest_target(self) -> None:
         first_started = threading.Event()
         release_first = threading.Event()
@@ -2004,9 +2038,12 @@ class VehicleServiceTests(unittest.TestCase):
                 self.mavlink = mavlink
                 self.sent: list[tuple[str, tuple]] = []
                 self.responses = [
-                    SimpleNamespace(seq=0),
-                    SimpleNamespace(seq=1),
-                    SimpleNamespace(type=mavlink.MAV_MISSION_ACCEPTED),
+                    SimpleNamespace(seq=0, get_type=lambda: "MISSION_REQUEST_INT"),
+                    SimpleNamespace(seq=1, get_type=lambda: "MISSION_REQUEST_INT"),
+                    SimpleNamespace(
+                        type=mavlink.MAV_MISSION_ACCEPTED,
+                        get_type=lambda: "MISSION_ACK",
+                    ),
                 ]
 
             def call_mav(self, method: str, *args) -> None:
@@ -2054,6 +2091,181 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(client.sent[2][1][11:13], (391_000_000, 321_000_000))
         self.assertEqual(client.sent[3][1], (1, 1, 1))
 
+    def test_mission_upload_retries_count_and_serves_duplicate_item_requests(self) -> None:
+        mavlink = SimpleNamespace(
+            MAV_CMD_NAV_TAKEOFF=22,
+            MAV_CMD_NAV_WAYPOINT=16,
+            MAV_CMD_NAV_LOITER_UNLIM=17,
+            MAV_CMD_NAV_RETURN_TO_LAUNCH=20,
+            MAV_CMD_NAV_LAND=21,
+            MAV_FRAME_GLOBAL_RELATIVE_ALT_INT=6,
+            MAV_MISSION_TYPE_MISSION=0,
+            MAV_MISSION_ACCEPTED=0,
+        )
+
+        def response(kind: str, **fields):
+            return SimpleNamespace(
+                **fields,
+                get_type=lambda: kind,
+                get_srcSystem=lambda: 1,
+                get_srcComponent=lambda: 1,
+            )
+
+        class Client:
+            endpoint = SimpleNamespace(uri="test")
+            connection = SimpleNamespace(target_system=1, target_component=1)
+            router = SimpleNamespace(sequence=0)
+            is_connected = True
+
+            def __init__(self) -> None:
+                self.mavlink = mavlink
+                self.sent: list[tuple[str, tuple]] = []
+                self.responses = [
+                    TimeoutError("lost MISSION_COUNT"),
+                    response("MISSION_REQUEST_INT", seq=0),
+                    response("MISSION_REQUEST_INT", seq=1),
+                    response("MISSION_REQUEST_INT", seq=1),
+                    response("MISSION_ACK", type=mavlink.MAV_MISSION_ACCEPTED),
+                ]
+
+            def call_mav(self, method: str, *args) -> None:
+                self.sent.append((method, args))
+
+            def wait_for(self, *_args, **kwargs):
+                answer = self.responses.pop(0)
+                if isinstance(answer, Exception):
+                    time.sleep(kwargs["timeout"])
+                    raise answer
+                if not kwargs["predicate"](answer):
+                    raise AssertionError("target mission response did not match")
+                return answer
+
+        client = Client()
+        vehicle = MavlinkVehicleService(client, operation_timeout=0.02)  # type: ignore[arg-type]
+        vehicle._state = VehicleConnectionState(True, "test", 1, 1)
+        count = vehicle.upload_mission(
+            [MapOverlay("wp", "waypoint", "WP", [[39.1, 32.1]], "#fff", 35)]
+        )
+
+        self.assertEqual(count, 1)
+        self.assertEqual(
+            [call[0] for call in client.sent].count("mission_count_send"), 2
+        )
+        self.assertEqual(
+            [call[1][2] for call in client.sent if call[0] == "mission_item_int_send"],
+            [0, 1, 1],
+        )
+
+    def test_mission_upload_stops_immediately_on_negative_ack(self) -> None:
+        mavlink = SimpleNamespace(
+            MAV_CMD_NAV_TAKEOFF=22,
+            MAV_CMD_NAV_WAYPOINT=16,
+            MAV_CMD_NAV_LOITER_UNLIM=17,
+            MAV_CMD_NAV_RETURN_TO_LAUNCH=20,
+            MAV_CMD_NAV_LAND=21,
+            MAV_FRAME_GLOBAL_RELATIVE_ALT_INT=6,
+            MAV_MISSION_TYPE_MISSION=0,
+            MAV_MISSION_ACCEPTED=0,
+        )
+        acknowledgement = SimpleNamespace(
+            type=1,
+            get_type=lambda: "MISSION_ACK",
+            get_srcSystem=lambda: 1,
+            get_srcComponent=lambda: 1,
+        )
+
+        class Client:
+            endpoint = SimpleNamespace(uri="test")
+            connection = SimpleNamespace(target_system=1, target_component=1)
+            router = SimpleNamespace(sequence=0)
+            is_connected = True
+
+            def __init__(self) -> None:
+                self.mavlink = mavlink
+                self.sent: list[tuple[str, tuple]] = []
+
+            def call_mav(self, method: str, *args) -> None:
+                self.sent.append((method, args))
+
+            def wait_for(self, *_args, **kwargs):
+                if not kwargs["predicate"](acknowledgement):
+                    raise AssertionError("target rejection ACK did not match")
+                return acknowledgement
+
+        client = Client()
+        vehicle = MavlinkVehicleService(client)  # type: ignore[arg-type]
+        vehicle._state = VehicleConnectionState(True, "test", 1, 1)
+
+        with self.assertRaisesRegex(RuntimeError, "reddetti"):
+            vehicle.upload_mission(
+                [MapOverlay("wp", "waypoint", "WP", [[39.1, 32.1]], "#fff", 35)]
+            )
+        self.assertNotIn("mission_item_int_send", [call[0] for call in client.sent])
+
+    def test_mission_download_retries_count_and_lost_items(self) -> None:
+        mavlink = SimpleNamespace(
+            MAV_MISSION_TYPE_MISSION=0,
+            MAV_MISSION_ACCEPTED=0,
+            MAV_CMD_NAV_TAKEOFF=22,
+            MAV_CMD_NAV_WAYPOINT=16,
+            MAV_CMD_NAV_LOITER_UNLIM=17,
+            MAV_CMD_NAV_RETURN_TO_LAUNCH=20,
+            MAV_CMD_NAV_LAND=21,
+            MAV_CMD_DO_JUMP=177,
+        )
+
+        def response(kind: str, **fields):
+            return SimpleNamespace(
+                **fields,
+                get_type=lambda: kind,
+                get_srcSystem=lambda: 1,
+                get_srcComponent=lambda: 1,
+            )
+
+        class Client:
+            endpoint = SimpleNamespace(uri="test")
+            connection = SimpleNamespace(target_system=1, target_component=1)
+            router = SimpleNamespace(sequence=0)
+            is_connected = True
+
+            def __init__(self) -> None:
+                self.mavlink = mavlink
+                self.sent: list[tuple[str, tuple]] = []
+                self.responses = [
+                    TimeoutError("lost MISSION_COUNT"),
+                    response("MISSION_COUNT", count=2),
+                    TimeoutError("lost MISSION_ITEM_INT"),
+                    response("MISSION_ITEM_INT", seq=0, command=16),
+                    response("MISSION_ITEM_INT", seq=1, command=999),
+                ]
+
+            def call_mav(self, method: str, *args) -> None:
+                self.sent.append((method, args))
+
+            def wait_for(self, _types, *, timeout, predicate, **_kwargs):
+                answer = self.responses.pop(0)
+                if isinstance(answer, Exception):
+                    time.sleep(timeout)
+                    raise answer
+                if not predicate(answer):
+                    raise AssertionError("target mission response did not match")
+                return answer
+
+        client = Client()
+        vehicle = MavlinkVehicleService(client, operation_timeout=0.02)  # type: ignore[arg-type]
+        vehicle._state = VehicleConnectionState(True, "test", 1, 1)
+        overlays = vehicle.download_mission()
+
+        self.assertEqual(overlays, [])
+        self.assertEqual(
+            [call[0] for call in client.sent].count("mission_request_list_send"), 2
+        )
+        self.assertEqual(
+            [call[1][2] for call in client.sent if call[0] == "mission_request_int_send"],
+            [0, 0, 1],
+        )
+        self.assertEqual(client.sent[-1][0], "mission_ack_send")
+
     def test_mission_download_filters_count_by_target_source(self) -> None:
         mavlink = SimpleNamespace(
             MAV_MISSION_TYPE_MISSION=0,
@@ -2085,6 +2297,7 @@ class VehicleServiceTests(unittest.TestCase):
                     get_srcSystem=lambda: 7,
                     get_srcComponent=lambda: 1,
                     count=0,
+                    get_type=lambda: "MISSION_COUNT",
                 )
                 if not predicate(target):
                     raise AssertionError("target MISSION_COUNT did not match")
@@ -2100,6 +2313,7 @@ class VehicleServiceTests(unittest.TestCase):
             get_srcSystem=lambda: 7,
             get_srcComponent=lambda: 1,
             seq=0,
+            get_type=lambda: "MISSION_ITEM_INT",
         )
 
         class Client:
@@ -2155,16 +2369,19 @@ class VehicleServiceTests(unittest.TestCase):
                 self.mavlink = mavlink
                 self.download_waiting = threading.Event()
                 self.responses = [
-                    SimpleNamespace(seq=0),
-                    SimpleNamespace(seq=1),
-                    SimpleNamespace(type=mavlink.MAV_MISSION_ACCEPTED),
+                    SimpleNamespace(seq=0, get_type=lambda: "MISSION_REQUEST_INT"),
+                    SimpleNamespace(seq=1, get_type=lambda: "MISSION_REQUEST_INT"),
+                    SimpleNamespace(
+                        type=mavlink.MAV_MISSION_ACCEPTED,
+                        get_type=lambda: "MISSION_ACK",
+                    ),
                 ]
 
             def call_mav(self, *_args) -> None:
                 return
 
             def wait_for(self, message_types, *, timeout, **_kwargs):
-                if message_types == "MISSION_COUNT":
+                if "MISSION_COUNT" in message_types:
                     self.download_waiting.set()
                     time.sleep(min(timeout, 0.01))
                     raise TimeoutError("mission count not available")
@@ -2219,8 +2436,17 @@ class VehicleServiceTests(unittest.TestCase):
                 self.mavlink = mavlink
                 self.sent: list[tuple[str, tuple]] = []
                 self.responses = [
-                    *(SimpleNamespace(seq=sequence) for sequence in range(5)),
-                    SimpleNamespace(type=mavlink.MAV_MISSION_ACCEPTED),
+                    *(
+                        SimpleNamespace(
+                            seq=sequence,
+                            get_type=lambda: "MISSION_REQUEST_INT",
+                        )
+                        for sequence in range(5)
+                    ),
+                    SimpleNamespace(
+                        type=mavlink.MAV_MISSION_ACCEPTED,
+                        get_type=lambda: "MISSION_ACK",
+                    ),
                 ]
 
             def call_mav(self, method: str, *args) -> None:
@@ -2359,6 +2585,22 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertEqual(items[2][10], 0.0)
         self.assertTrue(math.isnan(items[1][7]))
         self.assertEqual(ignored, ["safe_zone"])
+
+        for pitch in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(pitch=pitch), self.assertRaisesRegex(ValueError, "kalkış açısı"):
+                MavlinkVehicleService._mission_items(
+                    [
+                        MapOverlay(
+                            "takeoff-invalid",
+                            "takeoff",
+                            "Takeoff",
+                            [[39.0, 32.0, 100]],
+                            "#fff",
+                            metadata={"takeoff_pitch_deg": pitch},
+                        )
+                    ],
+                    mavlink,
+                )
 
     def test_default_mission_altitude_update_rejects_non_finite_values(self) -> None:
         client = SimpleNamespace(endpoint=SimpleNamespace(uri="test"))

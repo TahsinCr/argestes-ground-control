@@ -14,6 +14,28 @@ Release headings link each entry to its release date.
   mode names and actual aviation measurements such as airspeed remain explicit
   where they are part of the underlying protocol or data.
 
+### Fixed
+
+* Recheck command deadlines after synchronous dispatch subscribers and request
+  validation, immediately before vehicle execution, so an expired failsafe is
+  not sent after a slow callback.
+* Make MAVLink mission transfers recover from packet loss: uploads resend the
+  count or most recently requested item, serve duplicate item requests until
+  the final acknowledgement, and stop immediately on a rejection. Downloads
+  retry the list/item request within the configured operation timeout and
+  surface early negative acknowledgements.
+* Clear all message caches and histories when the Core MAVLink router starts a
+  new connection session, and cap the application router's retained message
+  state while leaving room for normal multi-component vehicles.
+* Redact credentials from camera capture errors as well as publishing errors;
+  the shared camera URI filter now covers auth, signature and key query fields.
+* Reject non-finite planner radii and TAKEOFF pitch metadata instead of allowing
+  NaN or infinity to enter a plan or be silently clamped.
+* Preserve the previous JSON session log when an append fails partway through;
+  report explicitly if the rollback itself cannot be completed.
+* Redact secret-like fields recursively from SIHA Teknofest response history
+  without changing the response returned to the application.
+
 ## [2.1-beta] - 24.10.2026
 
 ### Added
