@@ -96,7 +96,7 @@ class MissionTests(unittest.TestCase):
             ),
             vehicle=Vehicle(),  # type: ignore[arg-type]
         )
-        service._sync_from_vehicle()
+        service._sync_from_vehicle(service._sync_generation)
         self.assertEqual([item.overlay_id for item in service.state.overlays], ["local-wp"])
 
     def test_manual_vehicle_sync_requires_connection_and_imports_the_plan(self) -> None:
@@ -166,7 +166,7 @@ class MissionTests(unittest.TestCase):
         service = PlannerService(vehicle=vehicle)  # type: ignore[arg-type]
         vehicle.planner = service
 
-        service._sync_from_vehicle()
+        service._sync_from_vehicle(service._sync_generation)
 
         self.assertEqual(
             [item.overlay_id for item in service.state.overlays], ["operator-wp"]

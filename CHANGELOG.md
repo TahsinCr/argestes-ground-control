@@ -260,8 +260,9 @@ Release headings link each entry to its release date.
 * Camera source, output, and clock-setting updates now apply to the latest
   persisted configuration while holding the settings-store lock, preserving
   unrelated fields during concurrent edits.
-* Non-finite coordinates and altitude values are rejected from mission points;
-  non-finite MAVLink parameter samples are ignored before they can corrupt the
+* Non-finite coordinates and point altitudes are rejected, and MAVLink mission
+  metadata/default altitudes are checked before upload messages are sent.
+  Non-finite parameter samples are ignored before they can corrupt the
   parameter catalogue or a pending write.
 * MAVLink connection-state publication is serialized with shutdown, preserving
   the final disconnected notification when connection and stop race.

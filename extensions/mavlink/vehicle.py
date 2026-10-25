@@ -73,7 +73,10 @@ class MavlinkVehicleService(MavlinkVehiclePort):
         self._logger = logger
         self._operation_timeout = float(operation_timeout)
         self._default_mission_altitude = float(default_mission_altitude)
-        if self._default_mission_altitude <= 0:
+        if (
+            not math.isfinite(self._default_mission_altitude)
+            or self._default_mission_altitude <= 0
+        ):
             raise ValueError("Varsayılan görev irtifası pozitif olmalı")
         self._changed = EventBus[VehicleConnectionState]()
         self._state = VehicleConnectionState(
@@ -1243,6 +1246,10 @@ class MavlinkVehicleService(MavlinkVehiclePort):
                     if len(point) > 2
                     else float(overlay.metadata.get("altitude", fallback_altitude))
                 )
+                if not math.isfinite(altitude):
+                    raise ValueError(
+                        f"Görev öğesi {overlay.overlay_id} sonlu olmayan irtifa içeriyor"
+                    )
                 radius = float(overlay.radius_m or 0.0)
                 takeoff_pitch = 0.0
                 if overlay_type == "takeoff":

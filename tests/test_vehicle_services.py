@@ -2360,6 +2360,55 @@ class VehicleServiceTests(unittest.TestCase):
         self.assertTrue(math.isnan(items[1][7]))
         self.assertEqual(ignored, ["safe_zone"])
 
+    def test_mission_upload_rejects_non_finite_fallback_altitude_before_sending(
+        self,
+    ) -> None:
+        mavlink = SimpleNamespace(
+            MAV_CMD_NAV_TAKEOFF=22,
+            MAV_CMD_NAV_WAYPOINT=16,
+            MAV_CMD_NAV_LOITER_UNLIM=17,
+            MAV_CMD_NAV_RETURN_TO_LAUNCH=20,
+            MAV_CMD_NAV_LAND=21,
+            MAV_FRAME_GLOBAL_RELATIVE_ALT_INT=6,
+        )
+
+        class Client:
+            endpoint = SimpleNamespace(uri="test")
+
+            def __init__(self) -> None:
+                self.mavlink = mavlink
+                self.sent: list[tuple[str, tuple]] = []
+
+            def call_mav(self, method: str, *args) -> None:
+                self.sent.append((method, args))
+
+        client = Client()
+        vehicle = MavlinkVehicleService(client)  # type: ignore[arg-type]
+        vehicle._state = VehicleConnectionState(True, "test", 1, 1)
+
+        for altitude in (float("nan"), float("inf"), float("-inf")):
+            overlay = MapOverlay(
+                "wp",
+                "waypoint",
+                "WP",
+                [[39.1, 32.1]],
+                "#fff",
+                metadata={"altitude": altitude},
+            )
+            with self.subTest(altitude=altitude), self.assertRaisesRegex(
+                ValueError, "sonlu olmayan irtifa"
+            ):
+                vehicle.upload_mission([overlay])
+
+        self.assertEqual(client.sent, [])
+        for altitude in (float("nan"), float("inf")):
+            with self.subTest(default_altitude=altitude), self.assertRaises(
+                ValueError
+            ):
+                MavlinkVehicleService(
+                    client, default_mission_altitude=altitude  # type: ignore[arg-type]
+                )
+
     def test_structured_logs_are_persisted_outside_ui(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "events.jsonl"

@@ -461,13 +461,10 @@ class PlannerService(Service):
             self._sync_thread.start()
             return True
 
-    def _sync_from_vehicle(self, generation: int | None = None) -> None:
+    def _sync_from_vehicle(self, generation: int) -> None:
         if self._vehicle is None:
             return
         with self._lock:
-            generation = (
-                self._sync_generation if generation is None else generation
-            )
             if self._stop_event.is_set() or generation != self._sync_generation:
                 return
             expected_overlays = tuple(
